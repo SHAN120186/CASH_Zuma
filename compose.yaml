@@ -1,0 +1,71 @@
+# Шаблон размещения; реальные Docker/PostgreSQL/HTTPS не запускались в среде сборки.
+services:
+  db:
+    image: postgres:16
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: zuma
+      POSTGRES_USER: zuma
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Укажите пароль в .env}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    networks: [database]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U zuma -d zuma"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+  web:
+    build: .
+    restart: unless-stopped
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      DATABASE_URL: postgresql+psycopg://zuma:${POSTGRES_PASSWORD}@db:5432/zuma
+      DATA_DIR: /app/data
+      COOKIE_SECURE: "1"
+      ALLOWED_HOSTS: ${DOMAIN:?Укажите свой домен в .env},localhost,127.0.0.1
+      PUBLIC_ORIGIN: https://${DOMAIN}
+    volumes:
+      - model_data:/app/data
+    networks:
+      frontend:
+        ipv4_address: 172.29.113.2
+      database: {}
+    read_only: true
+    tmpfs: [/tmp]
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health',timeout=4)"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+  proxy:
+    image: caddy:2
+    restart: unless-stopped
+    depends_on: [web]
+    environment:
+      DOMAIN: ${DOMAIN}
+      ACME_EMAIL: ${ACME_EMAIL:?Укажите email администратора в .env}
+    ports: ["80:80", "443:443"]
+    volumes:
+      - ./deploy/Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    networks:
+      frontend:
+        ipv4_address: 172.29.113.3
+networks:
+  frontend:
+    ipam:
+      config:
+        - subnet: 172.29.113.0/24
+  database:
+    internal: true
+volumes:
+  postgres_data:
+  model_data:
+  caddy_data:
+  caddy_config:

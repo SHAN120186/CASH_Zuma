@@ -1,0 +1,9 @@
+# Подключается дополнительно: docker compose -f compose.yaml -f compose.drive.yaml up -d --build
+# Файл ключа должен заранее существовать НА СЕРВЕРЕ и быть доступным uid 10001 только для чтения.
+services:
+  web:
+    environment:
+      GOOGLE_DRIVE_FILE_ID: 1XCZbSDWBLjf-X5lqvBaLQhvb3R0eRSRr
+      GOOGLE_APPLICATION_CREDENTIALS: /run/secrets/google.json
+    volumes:
+      - ./secrets/google-service-account.json:/run/secrets/google.json:ro
