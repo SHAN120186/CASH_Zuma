@@ -4,6 +4,7 @@ RUN npm install -g pnpm@11.19.0
 COPY frontend/package.json frontend/pnpm-lock.yaml frontend/pnpm-workspace.yaml ./
 RUN pnpm install --frozen-lockfile
 COPY frontend/ ./
+COPY release.json /release.json
 RUN pnpm run build
 
 FROM postgres:17-bookworm
