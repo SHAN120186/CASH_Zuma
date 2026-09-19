@@ -6,16 +6,23 @@
   --canvas: #f1f3f2;
   --ink: #26394a;
   --muted: #596779;
-  --primary: #315d91;
+  --primary: #086a56;
   --border: #d9e0e4;
-  --tint: #e8eff5;
+  --tint: #e7f1ed;
   --sidebar: #f8f9f7;
-  --nav-active: #e2ebf4;
-  --focus: #315d91;
+  --nav-active: #e0efe8;
+  --focus: #086a56;
 }
-body { color: var(--ink); background: var(--canvas); }
+body { color: var(--ink); background: var(--canvas); font-family: 'Manrope',sans-serif; }
+.period-filter { margin-bottom:20px; }
+.period-caption { margin-left:14px; color:var(--muted); font-size:12px; }
+.period-panel { display:flex; flex-wrap:wrap; gap:12px; align-items:end; padding:18px 0 0; }
+.period-panel label { display:grid; gap:6px; font-size:12px; }
+.pagination { display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:12px; margin:20px 0; }
+.request-list td { vertical-align:middle; }
+@media(max-width:600px){.period-caption{display:block;margin:8px 0}.period-panel label{width:100%}.request-list{overflow-x:auto}}
 button, .button { background: var(--primary); color: #fff; }
-button:hover:not(:disabled), .button:hover { background: #264d7b; }
+button:hover:not(:disabled), .button:hover { background: #075442; }
 .secondary { background: var(--surface); color: #43566d; border-color: var(--border); }
 .secondary:hover:not(:disabled) { background: var(--tint); }
 .ghost { background: transparent; color: inherit; }
@@ -37,9 +44,9 @@ th { background: #eaeceC; color: #596575; }
 td { border-color: #e1e3e4; }
 .badge, .total, .form-note { background: var(--tint); color: #435a73; }
 .symbol, .loading, a { color: var(--primary); }
-.hero { background: linear-gradient(120deg, #31557e, #4f7196); color: #fff; }
-.hero p, .hero small, .hero span, .hero footer { color: #edf0f5; }
-.hero footer { border-color: #8c9aad; }
+.hero { background: #086a56; color: #fff; }
+.hero p, .hero small, .hero span, .hero footer { color: #e1e8ef; }
+.hero footer { border-color: #ffffff35; }
 .chart polyline { stroke: var(--primary); }
 .chart path { stroke: var(--border); }
 .warning { background: #f2ebdb; color: #775b2b; border-color: #d9cba9; }

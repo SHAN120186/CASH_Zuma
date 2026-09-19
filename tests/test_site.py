@@ -38,6 +38,8 @@ class SiteTests(unittest.TestCase):
         b=self.client.get('/api/bootstrap').json();self.cat=b['categories'][1]['id']
         r=self.post('/api/accounts',{'name':'Test bank','kind':'bank','currency':'UZS','opening':'1000000.00','opening_date':str(today()-timedelta(days=10))})
         self.acc=r.json()['id']
+        # Most legacy budget tests exercise the one-financier path below the limit.
+        self.post('/api/approval-policy',{'amount':'1000000'})
     def tearDown(self):
         if hasattr(self,'approver'):self.approver[0].close()
         self.client.close()
@@ -496,5 +498,72 @@ class SiteTests(unittest.TestCase):
         self.assertEqual(sorted(codes),[200,409])
         b=next(b for b in self.client.get('/api/budgets').json() if b['category_id']==self.cat)
         self.assertEqual(b['reserved'],'600.00');cl.close()
+
+    def test_49_two_stage_approval_and_payment_gate(self):
+        self.post('/api/approval-policy',{'amount':'100'})
+        cashier,ch=self.make_user('cashier','cashier')
+        director,dh=self.make_user('director','director2')
+        try:
+            r=self.request('101',client=cashier,headers=ch).json();rid=r['id']
+            self.assertEqual(self.post(f'/api/requests/{rid}/decision',{'action':'approve'},director,dh).status_code,403)
+            first=self.approve(rid).json()
+            self.assertEqual(first['status'],'pending');self.assertEqual(first['approval_stage'],'director')
+            self.assertEqual(self.approve(rid).status_code,403)
+            self.assertEqual(self.ledger('101','out',request_id=rid).status_code,409)
+            approved=self.post(f'/api/requests/{rid}/decision',{'action':'approve'},director,dh)
+            self.assertEqual(approved.status_code,200,approved.text);self.assertEqual(approved.json()['status'],'approved')
+            self.assertEqual(self.ledger('101','out',request_id=rid).status_code,200)
+            low=self.request('100').json();self.assertEqual(self.approve(low['id']).json()['status'],'approved')
+            self.assertEqual(self.post('/api/ledger',{'account_id':self.acc,'category_id':self.cat,'amount':'1','kind':'out','date':self.date,'reference':'BYPASS','note':'Без утверждения платежа'},cashier,ch).status_code,403)
+        finally:cashier.close();director.close()
+
+    def test_50_missing_limit_and_edit_reset(self):
+        with unit(True) as s:s.delete(s.get(Setting,'approval_limit_UZS'))
+        r=self.request('1').json();first=self.approve(r['id']).json()
+        self.assertEqual(first['status'],'pending')
+        ret=self.post(f"/api/requests/{r['id']}/decision",{'action':'return','note':'Возвращаем на уточнение'})
+        self.assertIsNone(ret.json()['finance_approved_by'])
+        self.post(f"/api/requests/{r['id']}/decision",{'action':'submit'})
+        row=next(x for x in self.client.get('/api/requests').json() if x['id']==r['id'])
+        self.assertEqual(row['approval_stage'],'finance')
+
+    def test_51_archive_preserves_history_and_blocks_new_entries(self):
+        self.assertEqual(self.post(f'/api/accounts/{self.acc}/archive',{'archived':True,'reason':'Закрытие банковского счёта'}).status_code,409)
+        aid=self.post('/api/accounts',{'name':'Closed bank','kind':'bank','currency':'UZS','opening':'0','opening_date':self.date}).json()['id']
+        self.ledger('10',account_id=aid,reference='CLOSEDIN')
+        self.ledger('10','out',account_id=aid,reference='CLOSEDOUT')
+        self.assertEqual(self.post(f'/api/accounts/{aid}/archive',{'archived':True,'reason':'Закрытие банковского счёта'}).status_code,200)
+        self.assertNotIn(aid,[a['id'] for a in self.client.get('/api/accounts').json()])
+        self.assertIn(aid,[a['id'] for a in self.client.get('/api/accounts?archived=true').json()])
+        self.assertEqual(self.ledger('1',account_id=aid,reference='BLOCKED').status_code,409)
+        self.assertEqual(len([x for x in self.client.get('/api/ledger').json() if x['account_id']==aid]),2)
+        self.assertEqual(self.client.get('/api/dashboard').json()['balance'],'1000000.00')
+        self.assertEqual(self.post(f'/api/accounts/{aid}/archive',{'archived':False,'reason':'Возобновление работы счёта'}).status_code,200)
+
+    def test_52_server_filters_full_history_and_pagination(self):
+        with unit(True) as s:
+            for i in range(515):s.add(Ledger(account_id=self.acc,category_id=self.cat,kind='in',amount=100,date=today()-timedelta(days=2) if i==0 else today(),reference=f'BATCH-{i}',counterparty='Old supplier' if i==0 else 'Recent',creator_id=1))
+        old=str(today()-timedelta(days=2))
+        result=self.client.get('/api/ledger',params={'paginated':True,'date_from':old,'date_to':old,'q':'Old supplier','currency':'UZS'}).json()
+        self.assertEqual(result['total'],1);self.assertEqual(result['items'][0]['reference'],'BATCH-0')
+        page=self.client.get('/api/ledger?paginated=true&page=2').json()
+        self.assertEqual(page['total'],515);self.assertEqual(len(page['items']),10)
+        self.assertEqual(self.client.get('/api/ledger?date_from=2026-12-01&date_to=2026-01-01').status_code,422)
+        for _ in range(6):self.request('1')
+        requests=self.client.get('/api/requests',params={'paginated':True,'date_from':self.date,'date_to':self.date,'state':'pending','q':'Supplier'}).json()
+        self.assertEqual(requests['total'],6)
+
+    def test_53_password_reset_revokes_sessions_and_hides_password(self):
+        cl,h=self.make_user('employee','resetme')
+        try:
+            uid=cl.get('/api/me').json()['user']['id']
+            self.assertEqual(self.post(f'/api/users/{uid}/password',{'password':PASSWORD+'new'},cl,h).status_code,403)
+            self.assertEqual(self.post(f'/api/users/{uid}/password',{'password':PASSWORD+'new'}).status_code,200)
+            self.assertEqual(cl.get('/api/me').status_code,401)
+            self.assertEqual(cl.post('/api/login',json={'username':'resetme','password':PASSWORD}).status_code,401)
+            self.assertEqual(cl.post('/api/login',json={'username':'resetme','password':PASSWORD+'new'}).status_code,200)
+            self.assertNotIn(PASSWORD,self.client.get('/api/audit').text)
+            self.assertNotIn('password',self.client.get('/api/users').text)
+        finally:cl.close()
 
 if __name__=='__main__':unittest.main(verbosity=2)

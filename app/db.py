@@ -81,6 +81,8 @@ class Account(Base):
     allow_overdraft = Column(Boolean, nullable=False, default=False)
     created_by = Column(Integer, ForeignKey('users.id'), nullable=False)
 
+    archived = Column(Boolean, nullable=False, default=False)
+
 class Budget(Base):
     __tablename__ = 'budgets'
     id = Column(Integer, primary_key=True)
@@ -106,6 +108,7 @@ class PaymentRequest(Base):
     status = Column(String(20), nullable=False, default='pending')
     decision_note = Column(Text, nullable=False, default='')
     approved_by = Column(Integer, ForeignKey('users.id'), nullable=True)
+    finance_approved_by = Column(Integer, ForeignKey('users.id'), nullable=True)
     version = Column(Integer, nullable=False, default=1)
     last_editor_id = Column(Integer, ForeignKey('users.id'), nullable=True)
     priority = Column(String(12), nullable=False, default='normal')
@@ -236,10 +239,13 @@ def initialize():
         if 'last_attempt' not in {c['name'] for c in inspect(conn).get_columns('report_schedules')}:
             conn.execute(text('ALTER TABLE report_schedules ADD COLUMN last_attempt DATE'))
         columns={c['name'] for c in inspect(conn).get_columns('payment_requests')}
+        if 'finance_approved_by' not in columns:conn.execute(text('ALTER TABLE payment_requests ADD COLUMN finance_approved_by INTEGER REFERENCES users(id)'))
+        if 'archived' not in {c['name'] for c in inspect(conn).get_columns('accounts')}:
+            conn.execute(text('ALTER TABLE accounts ADD COLUMN archived BOOLEAN NOT NULL DEFAULT FALSE'))
         for name,definition in [('version','INTEGER NOT NULL DEFAULT 1'),('last_editor_id','INTEGER REFERENCES users(id)'),('priority',"VARCHAR(12) NOT NULL DEFAULT 'normal'")]:
             if name not in columns:conn.execute(text(f'ALTER TABLE payment_requests ADD COLUMN {name} {definition}'))
     with Session(engine) as s:
-        for name in ('admin','director','finance','accountant','employee','auditor'):
+        for name in ('admin','director','finance','accountant','employee','auditor','cashier'):
             if not s.scalar(select(Role).where(Role.name==name)):s.add(Role(name=name))
         s.flush()
         roles={r.name:r.id for r in s.scalars(select(Role))}

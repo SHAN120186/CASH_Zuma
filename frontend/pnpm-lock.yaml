@@ -8,9 +8,9 @@ importers:
 
   .:
     dependencies:
-      '@fontsource/inter':
-        specifier: ^5.3.0
-        version: 5.3.0
+      '@fontsource/manrope':
+        specifier: 5.2.8
+        version: 5.2.8
       vue:
         specifier: ^3.5.0
         version: 3.5.42
@@ -197,8 +197,8 @@ packages:
     cpu: [x64]
     os: [win32]
 
-  '@fontsource/inter@5.3.0':
-    resolution: {integrity: sha512-RofMylZmjlJEfELXeNHFWBRcSs75rGU/6bV2S2jfnvv/3rPXPGe0LgUJTklcHZ9lM4OZmAVFhcJPnACfb91A3g==}
+  '@fontsource/manrope@5.2.8':
+    resolution: {integrity: sha512-gJHJmcuUk7qWcNCfcAri/DJQtXtBYqi9yKratr4jXhSo0I3xUtNNKI+igQIcw5c+m95g0vounk8ZnX/kb8o0TA==}
 
   '@jridgewell/sourcemap-codec@1.6.0':
     resolution: {integrity: sha512-T7jf+5zgsZHwNJ4lvQ7/aezbyk0nNX+zJVWpmHA7VYsEx7a7qr5Rg5IbtJFqkgze5Y2sruq1RUY8Q837Od7iFw==}
@@ -590,7 +590,7 @@ snapshots:
   '@esbuild/win32-x64@0.28.2':
     optional: true
 
-  '@fontsource/inter@5.3.0': {}
+  '@fontsource/manrope@5.2.8': {}
 
   '@jridgewell/sourcemap-codec@1.6.0': {}
 

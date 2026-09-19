@@ -6,11 +6,12 @@ from fastapi import HTTPException, Request
 from sqlalchemy import select, delete
 from .db import User, LoginSession, LoginAttempt, now, DATA
 
-ROLES = {'admin':'Администратор', 'director':'Директор', 'finance':'Казначей',
+ROLES = {'admin':'Администратор', 'director':'Директор', 'finance':'Финансист / казначей', 'cashier':'Кассир',
          'accountant':'Бухгалтер', 'employee':'Инициатор', 'auditor':'Аудитор'}
 PERMS = {
  'admin': {'view','ledger','export','request','write','approve','budget','import','users','schedule','catalog','audit'},
- 'director': {'view','ledger','export'},
+ 'director': {'view','ledger','export','approve'},
+ 'cashier': {'request','ledger','write'},
  'finance': {'view','ledger','export','request','write','approve','budget','import','schedule'},
  'accountant': {'ledger'},
  'employee': {'request'},

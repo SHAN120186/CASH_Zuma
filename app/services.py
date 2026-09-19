@@ -76,6 +76,11 @@ def check_request_version(r,version):
     if version is None:raise HTTPException(428,'Обновите список заявок: для действия нужна версия документа.')
     if r.version!=version:raise HTTPException(409,'Заявка уже изменена другим пользователем. Обновите список и проверьте изменения.')
 
+def needs_director(s,r):
+    threshold=s.get(Setting,'approval_limit_UZS')
+    a=get(s,Account,r.account_id)
+    return a.currency!='UZS' or threshold is None or r.amount>int(threshold.value)
+
 def request_json(s,r,accounts=None,categories=None,users=None):
     a=get(s,Account,r.account_id);c=get(s,Category,r.category_id)
     b=budget_state(s,c.id,str(r.due_date)[:7],a.currency,r.amount if r.status in ('pending','draft') else 0)
@@ -83,17 +88,22 @@ def request_json(s,r,accounts=None,categories=None,users=None):
             'account_id':a.id,'account':a.name,'currency':a.currency,'counterparty':r.counterparty,
             'amount':money(r.amount),'date':str(r.due_date),'status':r.status,'purpose':r.purpose,
             'version':r.version,'last_editor_id':r.last_editor_id,'priority':r.priority,
+            'created_at':str(r.created_at),'finance_approved_by':r.finance_approved_by,
+            'approval_stage':('director' if r.finance_approved_by else 'finance') if r.status=='pending' else None,
             'project':r.project,'decision_note':r.decision_note,'overdue':r.due_date<today() and r.status in ('pending','approved'),
             'budget':budget_json(b)}
 
 def post_ledger(s,u,data):
     a=get(s,Account,data.account_id)
+    if a.archived:raise HTTPException(409,'Счёт в архиве. Сначала восстановите его.')
+    if u.role=='cashier' and (data.kind!='out' or not data.request_id):raise HTTPException(403,'Кассир фиксирует оплату только утверждённой заявки.')
     if data.date>today():raise HTTPException(422,'Будущий платёж — это заявка или ожидаемое поступление, а не факт.')
     if data.date<a.opening_date:raise HTTPException(422,'Операция раньше даты начального остатка счёта.')
     n=amount(data.amount);kind=data.kind
     target=None
     if kind=='transfer':
         target=get(s,Account,data.to_account_id)
+        if target.archived:raise HTTPException(409,'Счёт-получатель в архиве.')
         if target.id==a.id or target.currency!=a.currency:raise HTTPException(422,'Для перевода нужны разные счета одной валюты. Конвертация в этой версии не поддерживается.')
         if data.date<target.opening_date:raise HTTPException(422,'Дата перевода раньше начального остатка счёта-получателя.')
     else:get(s,Category,data.category_id)

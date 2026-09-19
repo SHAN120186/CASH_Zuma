@@ -5,12 +5,12 @@ from datetime import date, timedelta
 import datetime as dt
 from typing import Literal, Optional
 from contextlib import asynccontextmanager
-from fastapi import FastAPI, Request, Response, HTTPException
+from fastapi import FastAPI, Request, Response, HTTPException, Query
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.middleware.trustedhost import TrustedHostMiddleware
 from pydantic import BaseModel, Field, ConfigDict
-from sqlalchemy import select, delete, func
+from sqlalchemy import select, delete, func, or_
 from sqlalchemy.exc import IntegrityError, OperationalError
 from sqlalchemy.orm.exc import StaleDataError
 from .db import *
@@ -26,7 +26,7 @@ PUBLIC_ORIGIN=os.getenv('PUBLIC_ORIGIN','').rstrip('/')
 async def lifespan(app):
     initialize()
     yield
-app=FastAPI(title='UZGERMED Mini ERP Treasury',version='2.2.0',docs_url=None,redoc_url=None,openapi_url=None,lifespan=lifespan)
+app=FastAPI(title='UZGERMED Mini ERP Treasury',version='2.3.0',docs_url=None,redoc_url=None,openapi_url=None,lifespan=lifespan)
 app.add_middleware(TrustedHostMiddleware,allowed_hosts=ALLOWED)
 app.mount('/static',StaticFiles(directory=ROOT/'app'/'static'),name='static')
 
@@ -74,7 +74,7 @@ def release_version():return FileResponse(ROOT/'release.json',media_type='applic
 
 def visible_request(s,r,u):
     data=request_json(s,r)
-    if u.role=='employee':data['budget']={'limit':None,'hidden':True,'over':data['budget']['over'],'mode':data['budget']['mode']}
+    if u.role in ('employee','cashier'):data['budget']={'limit':None,'hidden':True,'over':data['budget']['over'],'mode':data['budget']['mode']}
     return data
 
 class Input(BaseModel):model_config=ConfigDict(extra='forbid',str_strip_whitespace=True)
@@ -87,10 +87,10 @@ class UserIn(Input):
     username:str=Field(pattern=r'^[a-zA-Z0-9_.-]{3,80}$')
     name:str=Field(min_length=2,max_length=160)
     password:str=Field(min_length=12,max_length=128)
-    role:Literal['admin','director','finance','accountant','employee','auditor']
+    role:Literal['admin','director','finance','accountant','employee','auditor','cashier']
 class UserEdit(Input):
     model_config=ConfigDict(extra='forbid',str_strip_whitespace=False)
-    role:Literal['admin','director','finance','accountant','employee','auditor']
+    role:Literal['admin','director','finance','accountant','employee','auditor','cashier']
     active:bool
     password:str=Field(default='',max_length=128)
 class PasswordIn(Input):
@@ -162,6 +162,17 @@ class ReserveIn(Input):
     currency:Literal['UZS','USD','EUR']
     amount:str
 
+class ArchiveIn(Input):
+    archived:bool
+    reason:str=Field(min_length=10,max_length=1000)
+
+class ResetPasswordIn(Input):
+    model_config=ConfigDict(extra='forbid',str_strip_whitespace=False)
+    password:str=Field(min_length=12,max_length=128)
+
+class ApprovalLimitIn(Input):
+    amount:str
+
 @app.post('/api/login')
 def login(body:LoginIn,request:Request,response:Response):
     error=None
@@ -213,7 +224,7 @@ def change_password(data:PasswordIn,request:Request):
 def bootstrap(request:Request):
     with unit() as s:
         user,session=session_user(s,request)
-        a=[{'id':a.id,'name':a.name,'kind':a.kind,'currency':a.currency,'opening_date':str(a.opening_date)} for a in s.scalars(select(Account).order_by(Account.name))]
+        a=[{'id':a.id,'name':a.name,'kind':a.kind,'currency':a.currency,'opening_date':str(a.opening_date)} for a in s.scalars(select(Account).where(Account.archived==False).order_by(Account.name))]
         c=[{'id':c.id,'name':c.name,'activity':c.activity,'type':c.type} for c in s.scalars(select(Category).order_by(Category.id))]
         cp=[{'name':x.name,'inn':x.inn} for x in s.scalars(select(Counterparty).order_by(Counterparty.name).limit(1000))]
         return {'accounts':a,'categories':c,'counterparties':cp,'roles':ROLES,'today':str(today()),'user':user_json(user),'csrf':session.csrf}
@@ -231,15 +242,43 @@ def get_dashboard(request:Request,currency:Literal['UZS','USD','EUR']='UZS',days
         session_user(s,request,'view');return dashboard(s,currency,days)
 
 @app.get('/api/accounts')
-def accounts(request:Request):
+def accounts(request:Request,archived:bool=False):
     with unit() as s:
         session_user(s,request,'view')
         return [{'id':a.id,'name':a.name,'kind':a.kind,'currency':a.currency,'opening':money(a.opening),
-                 'balance':money(account_balance(s,a)),'opening_date':str(a.opening_date),'allow_overdraft':a.allow_overdraft} for a in s.scalars(select(Account).order_by(Account.id))]
+                 'balance':money(account_balance(s,a)),'opening_date':str(a.opening_date),'allow_overdraft':a.allow_overdraft,'archived':a.archived} for a in s.scalars(select(Account).where(Account.archived==archived).order_by(Account.id))]
+
+@app.post('/api/accounts/{id}/archive')
+def archive_account(id:int,data:ArchiveIn,request:Request):
+    with unit(True) as s:
+        u,_=session_user(s,request,'users');a=get(s,Account,id)
+        if data.archived:
+            if account_balance(s,a)!=0:raise HTTPException(409,'Сначала перенесите остаток: архивировать можно счёт с нулевым балансом.')
+            if s.scalar(select(PaymentRequest.id).where(PaymentRequest.account_id==id,PaymentRequest.status.in_(['draft','pending','approved','returned'])).limit(1)) or s.scalar(select(Receipt.id).where(Receipt.account_id==id,Receipt.status=='expected').limit(1)):
+                raise HTTPException(409,'Сначала закройте или перенесите незавершённые заявки и поступления.')
+        a.archived=data.archived
+        log(s,u,'Счёт в архиве' if data.archived else 'Счёт восстановлен','account',id,data.reason)
+        return {'ok':True}
+
+@app.get('/api/approval-policy')
+def approval_policy(request:Request):
+    with unit() as s:
+        session_user(s,request,'users');r=s.get(Setting,'approval_limit_UZS')
+        return {'amount':money(int(r.value)) if r else None,'currency':'UZS'}
+
+@app.post('/api/approval-policy')
+def set_approval_policy(data:ApprovalLimitIn,request:Request):
+    with unit(True) as s:
+        u,_=session_user(s,request,'users');n=amount(data.amount,True)
+        r=s.get(Setting,'approval_limit_UZS')
+        if not r:r=Setting(key='approval_limit_UZS');s.add(r)
+        r.value=str(n);log(s,u,'Изменён порог согласования','setting','approval_limit_UZS',money(n))
+        return {'ok':True}
 @app.post('/api/accounts')
 def add_account(data:AccountIn,request:Request):
     with unit(True) as s:
         u,_=session_user(s,request,'write')
+        if u.role=='cashier':raise HTTPException(403,'Счета создаёт финансист или администратор.')
         if data.opening_date>today():raise HTTPException(422,'Начальный остаток не может быть задан будущей датой.')
         if data.kind=='cash' and data.allow_overdraft:raise HTTPException(422,'Для кассы отрицательный остаток запрещён.')
         a=Account(name=data.name,kind=data.kind,currency=data.currency,opening=amount(data.opening,True),opening_date=data.opening_date,allow_overdraft=data.allow_overdraft,created_by=u.id)
@@ -249,6 +288,8 @@ def add_account(data:AccountIn,request:Request):
 def edit_account(id:int,data:AccountEdit,request:Request):
     with unit(True) as s:
         u,_=session_user(s,request,'write');a=get(s,Account,id)
+        if u.role=='cashier':raise HTTPException(403,'Счета изменяет финансист или администратор.')
+        if a.archived:raise HTTPException(409,'Сначала восстановите счёт из архива.')
         if data.opening_date>today():raise HTTPException(422,'Начальный остаток не может быть задан будущей датой.')
         if data.kind=='cash' and data.allow_overdraft:raise HTTPException(422,'Для кассы отрицательный остаток запрещён.')
         entries=list(s.scalars(select(Ledger).where((Ledger.account_id==id)|(Ledger.to_account_id==id))))
@@ -305,17 +346,27 @@ def save_reserve(data:ReserveIn,request:Request):
         row.value=str(n);log(s,u,'Изменён минимальный резерв','setting',key,money(n));return {'ok':True}
 
 @app.get('/api/requests')
-def requests_list(request:Request):
+def requests_list(request:Request,date_from:Optional[date]=None,date_to:Optional[date]=None,currency:Optional[Literal['UZS','USD','EUR']]=None,q:str='',state:str='',page:int=Query(1,ge=1),page_size:int=Query(10,ge=1,le=100),paginated:bool=False):
     with unit() as s:
         u,_=session_user(s,request)
         if not ({'request','view'} & PERMS[u.role]):raise HTTPException(403,'Недостаточно прав для просмотра заявок.')
-        q=select(PaymentRequest).order_by(PaymentRequest.id.desc()).limit(500)
-        if u.role=='employee':q=q.where(PaymentRequest.creator_id==u.id)
-        return [visible_request(s,r,u) for r in s.scalars(q)]
+        if date_from and date_to and date_from>date_to:raise HTTPException(422,'Начало периода позже окончания.')
+        query=select(PaymentRequest).join(Account,Account.id==PaymentRequest.account_id)
+        if u.role in ('employee','cashier'):query=query.where(PaymentRequest.creator_id==u.id)
+        if currency:query=query.where(Account.currency==currency)
+        if date_from:query=query.where(PaymentRequest.due_date>=date_from)
+        if date_to:query=query.where(PaymentRequest.due_date<=date_to)
+        if state:query=query.where(PaymentRequest.status==state)
+        if q:query=query.where(or_(PaymentRequest.counterparty.ilike('%'+q+'%'),PaymentRequest.purpose.ilike('%'+q+'%'),Account.name.ilike('%'+q+'%')))
+        total=s.scalar(select(func.count()).select_from(query.subquery()))
+        query=query.order_by(PaymentRequest.due_date.desc(),PaymentRequest.id.desc())
+        items=[visible_request(s,r,u) for r in s.scalars(query.offset((page-1)*page_size).limit(page_size) if paginated else query.limit(500))]
+        return {'items':items,'total':total,'page':page,'page_size':page_size} if paginated else items
 @app.post('/api/requests')
 def add_request(data:RequestIn,request:Request):
     with unit(True) as s:
         u,_=session_user(s,request,'request');a=get(s,Account,data.account_id);get(s,Category,data.category_id)
+        if a.archived:raise HTTPException(409,'Счёт в архиве.')
         if data.date<a.opening_date:raise HTTPException(422,'Дата раньше начала учёта выбранного счёта.')
         n=amount(data.amount)
         if data.status=='pending':enforce_budget(s,data.category_id,data.date,a.currency,n,data.purpose)
@@ -331,19 +382,21 @@ def edit_request(id:int,data:RequestEdit,request:Request):
         check_request_version(r,data.version)
         if r.status not in ('draft','pending','returned','rejected'):raise HTTPException(409,'Редактирование доступно до утверждения. Утверждённую заявку сначала верните на доработку.')
         a=get(s,Account,data.account_id);get(s,Category,data.category_id);n=amount(data.amount)
+        if a.archived:raise HTTPException(409,'Счёт в архиве.')
         if data.date<a.opening_date:raise HTTPException(422,'Дата раньше начала учёта выбранного счёта.')
         if data.status=='pending':enforce_budget(s,data.category_id,data.date,a.currency,n,data.purpose,r.id)
         before=visible_request(s,r,u)
         for key in ('account_id','category_id','counterparty','purpose','project','priority','status'):setattr(r,key,getattr(data,key))
-        r.amount=n;r.due_date=data.date;r.approved_by=None;r.last_editor_id=u.id;r.decision_note=data.reason
+        r.amount=n;r.due_date=data.date;r.approved_by=None;r.finance_approved_by=None;r.last_editor_id=u.id;r.decision_note=data.reason
         remember_counterparty(s,data.counterparty);s.flush()
         log(s,u,'Изменена заявка','request',r.id,json.dumps({'before':before,'after':visible_request(s,r,u),'reason':data.reason},ensure_ascii=False))
         return visible_request(s,r,u)
 @app.post('/api/requests/{id}/decision')
 def decide(id:int,data:DecisionIn,request:Request):
     with unit(True) as s:
-        u,_=session_user(s,request,'request');r=get(s,PaymentRequest,id);a=get(s,Account,r.account_id)
-        if u.role=='employee' and r.creator_id!=u.id:raise HTTPException(403,'Доступны только собственные заявки.')
+        u,_=session_user(s,request);r=get(s,PaymentRequest,id);a=get(s,Account,r.account_id)
+        if not ({'request','approve'} & PERMS[u.role]):raise HTTPException(403,'Недостаточно прав.')
+        if u.role in ('employee','cashier') and r.creator_id!=u.id:raise HTTPException(403,'Доступны только собственные заявки.')
         check_request_version(r,data.version)
         before={'status':r.status,'date':str(r.due_date),'version':r.version,'approved_by':r.approved_by}
         if data.action=='submit':
@@ -370,10 +423,17 @@ def decide(id:int,data:DecisionIn,request:Request):
             if u.id in (r.creator_id,r.last_editor_id):raise HTTPException(403,'Автор и последний редактор не могут согласовать свою заявку, включая администратора. Нужен другой согласующий.')
             if data.action=='approve':
                 enforce_budget(s,r.category_id,r.due_date,a.currency,r.amount,data.note,r.id)
-                r.status='approved';r.approved_by=u.id
+                if r.finance_approved_by is None:
+                    if u.role not in ('finance','admin'):raise HTTPException(403,'Сначала требуется проверка финансиста.')
+                    r.finance_approved_by=u.id
+                    if not needs_director(s,r):r.status='approved';r.approved_by=u.id
+                else:
+                    if u.role not in ('director','admin') or u.id==r.finance_approved_by:raise HTTPException(403,'Требуется отдельное подтверждение директора.')
+                    r.status='approved';r.approved_by=u.id
             else:
                 if len(data.note)<5:raise HTTPException(422,'Укажите причину отклонения.')
                 r.status='rejected';r.approved_by=None
+        if data.action in ('submit','cancel','return','reschedule','reject'):r.finance_approved_by=None
         r.decision_note=data.note
         s.flush()
         log(s,u,'Действие по заявке: '+data.action,'request',r.id,json.dumps({'before':before,'after':{'status':r.status,'date':str(r.due_date),'version':r.version,'approved_by':r.approved_by},'reason':data.note},ensure_ascii=False))
@@ -393,21 +453,31 @@ def get_receipts(request:Request):
 def add_receipt(data:ReceiptIn,request:Request):
     with unit(True) as s:
         u,_=session_user(s,request,'schedule');a=get(s,Account,data.account_id);get(s,Category,data.category_id)
+        if a.archived:raise HTTPException(409,'Счёт в архиве.')
         if data.date<a.opening_date:raise HTTPException(422,'Дата раньше начала учёта счёта.')
         r=Receipt(account_id=a.id,category_id=data.category_id,counterparty=data.counterparty,amount=amount(data.amount),due_date=data.date,note=data.note,creator_id=u.id)
         remember_counterparty(s,data.counterparty)
         s.add(r);s.flush();log(s,u,'План поступления','receipt',r.id,data.counterparty);return {'id':r.id}
 
 @app.get('/api/ledger')
-def ledger_list(request:Request):
+def ledger_list(request:Request,date_from:Optional[date]=None,date_to:Optional[date]=None,currency:Optional[Literal['UZS','USD','EUR']]=None,q:str='',page:int=Query(1,ge=1),page_size:int=Query(10,ge=1,le=100),paginated:bool=False):
     with unit() as s:
         session_user(s,request,'ledger');acc={a.id:a for a in s.scalars(select(Account))};cats={c.id:c.name for c in s.scalars(select(Category))}
         reversed_ids={t.reversal_of for t in s.scalars(select(Ledger).where(Ledger.reversal_of!=None))}
-        return [{'id':t.id,'date':str(t.date),'kind':t.kind,'account_id':t.account_id,'account':acc[t.account_id].name,
+        if date_from and date_to and date_from>date_to:raise HTTPException(422,'Начало периода позже окончания.')
+        query=select(Ledger).join(Account,Account.id==Ledger.account_id).outerjoin(Category,Category.id==Ledger.category_id)
+        if currency:query=query.where(Account.currency==currency)
+        if date_from:query=query.where(Ledger.date>=date_from)
+        if date_to:query=query.where(Ledger.date<=date_to)
+        if q:query=query.where(or_(Ledger.counterparty.ilike('%'+q+'%'),Ledger.reference.ilike('%'+q+'%'),Ledger.note.ilike('%'+q+'%'),Account.name.ilike('%'+q+'%'),Category.name.ilike('%'+q+'%')))
+        total=s.scalar(select(func.count()).select_from(query.subquery()))
+        query=query.order_by(Ledger.date.desc(),Ledger.id.desc())
+        items=[{'id':t.id,'date':str(t.date),'kind':t.kind,'account_id':t.account_id,'account':acc[t.account_id].name,
                  'to_account':acc[t.to_account_id].name if t.to_account_id else '', 'currency':acc[t.account_id].currency,
                  'category':cats.get(t.category_id,'Внутренний перевод'),'amount':money(t.amount),'counterparty':t.counterparty,
                  'reference':t.reference,'note':t.note,'request_id':t.request_id,'receipt_id':t.receipt_id,
-                 'reversal_of':t.reversal_of,'reversed':t.id in reversed_ids} for t in s.scalars(select(Ledger).order_by(Ledger.date.desc(),Ledger.id.desc()).limit(500))]
+                 'reversal_of':t.reversal_of,'reversed':t.id in reversed_ids} for t in s.scalars(query.offset((page-1)*page_size).limit(page_size) if paginated else query.limit(500))]
+        return {'items':items,'total':total,'page':page,'page_size':page_size} if paginated else items
 @app.post('/api/ledger')
 def add_ledger(data:LedgerIn,request:Request):
     with unit(True) as s:
@@ -520,6 +590,16 @@ def edit_user(id:int,data:UserEdit,request:Request):
         s.execute(delete(LoginSession).where(LoginSession.user_id==u.id))
         log(s,admin,'Изменены права / пароль пользователя','user',id,f'{data.role}; active={data.active}; сессии отозваны')
         return user_json(u)
+
+@app.post('/api/users/{id}/password')
+def reset_user_password(id:int,data:ResetPasswordIn,request:Request):
+    with unit(True) as s:
+        admin,_=session_user(s,request,'users');u=get(s,User,id)
+        try:u.password_hash=hash_password(data.password)
+        except ValueError as e:raise HTTPException(422,str(e))
+        s.execute(delete(LoginSession).where(LoginSession.user_id==id))
+        log(s,admin,'Сброшен пароль; сессии отозваны','user',id)
+        return {'ok':True}
 @app.get('/api/audit')
 def audit(request:Request):
     with unit() as s:
