@@ -149,13 +149,23 @@ class SiteTests(unittest.TestCase):
         d=self.client.get('/api/dashboard').json();self.assertEqual(d['balance'],'1000000.00');self.assertEqual(d['outgoing7'],'100.00')
         self.assertEqual(self.post(f'/api/ledger/{tid}/reverse',{'reason':'Повторная ошибочная операция'}).status_code,409)
     def test_14_excel_snapshot_isolated_and_idempotent(self):
-        path=ROOT/'source'/'FinModel_2026_Zuma_Pharm_v8.xlsx';raw=path.read_bytes()
+        # Self-contained synthetic workbook; CI must never require financial source data.
+        import io
+        from datetime import date
+        from openpyxl import Workbook
+        book=Workbook();book.active.title='09_Statements'
+        cash=book.create_sheet('09_CASH_Flow');balance=book.create_sheet('09b_Balance')
+        cash['C4']=date(2023,1,1);cash['B54']='Test closing balance';cash['I54']=12500
+        cash['D54']='=I54+1'
+        balance['D8']='Test cash';balance['R8']=13500
+        out=io.BytesIO();book.save(out);book.close();raw=out.getvalue()
         headers={**self.h,'Content-Type':'application/octet-stream','X-Filename':'FinModel.xlsx'}
         r=self.client.post('/api/model/upload',content=raw,headers=headers);self.assertEqual(r.status_code,200,r.text);self.assertTrue(r.json()['created'])
         r2=self.client.post('/api/model/upload',content=raw,headers=headers);self.assertFalse(r2.json()['created'])
         m=self.client.get('/api/model').json();self.assertEqual(len(m['versions']),1)
-        self.assertEqual(m['snapshot']['summary']['cash_close_july']['value'],'1350593723')
-        self.assertEqual(m['snapshot']['summary']['balance_cash_july']['value'],'1457280281')
+        self.assertEqual(m['snapshot']['summary']['cash_close_july']['value'],'12500')
+        self.assertEqual(m['snapshot']['summary']['balance_cash_july']['value'],'13500')
+        self.assertIn('09_CASH_Flow!D54',m['snapshot']['missing_cache'])
         self.assertTrue(any('2023' in x for x in m['snapshot']['warnings']))
         self.assertEqual(self.client.get('/api/dashboard').json()['balance'],'1000000.00')
     def test_15_revoked_session_and_logout(self):
