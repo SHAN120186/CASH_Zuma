@@ -26,7 +26,7 @@ PUBLIC_ORIGIN=os.getenv('PUBLIC_ORIGIN','').rstrip('/')
 async def lifespan(app):
     initialize()
     yield
-app=FastAPI(title='UZGERMED Mini ERP Treasury',version='2.3.0',docs_url=None,redoc_url=None,openapi_url=None,lifespan=lifespan)
+app=FastAPI(title='UZGERMED Treasury',version='2.4.0',docs_url=None,redoc_url=None,openapi_url=None,lifespan=lifespan)
 app.add_middleware(TrustedHostMiddleware,allowed_hosts=ALLOWED)
 app.mount('/static',StaticFiles(directory=ROOT/'app'/'static'),name='static')
 
@@ -114,8 +114,9 @@ class BudgetIn(Input):
     category_id:int
     month:str=Field(pattern=r'^20\d{2}-(0[1-9]|1[0-2])$')
     currency:Literal['UZS','USD','EUR']
-    amount:str
+    amount:Optional[str]=None
     mode:Literal['soft','hard']='soft'
+    cost_group:Optional[Literal['fixed','variable','other']]=None
     source:str=Field(default='Введён вручную',max_length=240)
     reason:str=Field(min_length=10,max_length=1000)
 class RequestIn(Input):
@@ -171,7 +172,8 @@ class ResetPasswordIn(Input):
     password:str=Field(min_length=12,max_length=128)
 
 class ApprovalLimitIn(Input):
-    amount:str
+    amount:Optional[str]=None
+    currency:Literal['UZS','USD','EUR']='UZS'
 
 @app.post('/api/login')
 def login(body:LoginIn,request:Request,response:Response):
@@ -264,15 +266,22 @@ def archive_account(id:int,data:ArchiveIn,request:Request):
 def approval_policy(request:Request):
     with unit() as s:
         session_user(s,request,'users');r=s.get(Setting,'approval_limit_UZS')
-        return {'amount':money(int(r.value)) if r else None,'currency':'UZS'}
+        limits={c:money(int(v.value)) if (v:=s.get(Setting,'approval_limit_'+c)) else None for c in ('UZS','USD','EUR')}
+        return {'amount':money(int(r.value)) if r else None,'currency':'UZS','limits':limits}
 
 @app.post('/api/approval-policy')
 def set_approval_policy(data:ApprovalLimitIn,request:Request):
     with unit(True) as s:
-        u,_=session_user(s,request,'users');n=amount(data.amount,True)
-        r=s.get(Setting,'approval_limit_UZS')
-        if not r:r=Setting(key='approval_limit_UZS');s.add(r)
-        r.value=str(n);log(s,u,'Изменён порог согласования','setting','approval_limit_UZS',money(n))
+        u,_=session_user(s,request,'users');key='approval_limit_'+data.currency
+        r=s.get(Setting,key)
+        if data.amount is None:
+            if r:s.delete(r)
+            detail='Не настроен; все суммы требуют директора'
+        else:
+            n=amount(data.amount,True)
+            if not r:r=Setting(key=key);s.add(r)
+            r.value=str(n);detail=money(n)+' '+data.currency
+        log(s,u,'Изменён порог согласования','setting',key,detail)
         return {'ok':True}
 @app.post('/api/accounts')
 def add_account(data:AccountIn,request:Request):
@@ -326,12 +335,16 @@ def budgets(request:Request,month:str='',currency:Literal['UZS','USD','EUR']='UZ
     month=month or str(today())[:7]
     with unit() as s:
         session_user(s,request,'view')
-        return [dict(category_id=c.id,category=c.name,month=month,currency=currency,**budget_json(budget_state(s,c.id,month,currency))) for c in s.scalars(select(Category).order_by(Category.id))]
+        return [dict(category_id=c.id,category=c.name,cost_group=c.cost_group,month=month,currency=currency,**budget_json(budget_state(s,c.id,month,currency))) for c in s.scalars(select(Category).where(Category.type=='outcome').order_by(Category.id))]
 @app.post('/api/budgets')
 def save_budget(data:BudgetIn,request:Request):
     with unit(True) as s:
-        u,_=session_user(s,request,'budget');get(s,Category,data.category_id)
+        u,_=session_user(s,request,'budget');c=get(s,Category,data.category_id)
+        if data.cost_group is not None and data.cost_group!=c.cost_group:
+            log(s,u,'Изменена группа затрат','category',c.id,json.dumps({'before':c.cost_group,'after':data.cost_group,'reason':data.reason},ensure_ascii=False))
+            c.cost_group=data.cost_group
         b=s.scalar(select(Budget).where(Budget.category_id==data.category_id,Budget.month==data.month,Budget.currency==data.currency))
+        if data.amount is None:return {'id':b.id if b else None}
         old={'amount':money(b.amount),'mode':b.mode} if b else None
         if not b:b=Budget(category_id=data.category_id,month=data.month,currency=data.currency);s.add(b)
         b.amount=amount(data.amount,True);b.mode=data.mode;b.source=data.source;s.flush()
@@ -507,16 +520,9 @@ def reverse(id:int,data:ReverseIn,request:Request):
 def operational_report(request:Request,year:int=2026,currency:Literal['UZS','USD','EUR']='UZS'):
     if not 2000<=year<=2100:raise HTTPException(422,'Некорректный год.')
     with unit() as s:
-        session_user(s,request,'view');aids={a.id for a in s.scalars(select(Account)) if a.currency==currency}
-        cats=list(s.scalars(select(Category).order_by(Category.id)));entries=list(s.scalars(select(Ledger).where(Ledger.date>=date(year,1,1),Ledger.date<=date(year,12,31))))
-        rows=[];totals=[0]*12
-        for c in cats:
-            values=[0]*12
-            for t in entries:
-                if t.account_id in aids and t.category_id==c.id and t.kind!='transfer':values[t.date.month-1]+=t.amount if t.kind=='in' else -t.amount
-            if any(values):rows.append({'category':c.name,'activity':c.activity,'values':[money(v) for v in values]})
-            totals=[a+b for a,b in zip(totals,values)]
-        return {'rows':rows,'totals':[money(v) for v in totals],'currency':currency,'year':year,'note':'Только операции сайта. Внутренние переводы исключены. Снимки Excel и начальные остатки не являются оборотом.'}
+        session_user(s,request,'view')
+        from .cash_report import report
+        return report(s,year,currency)
 
 @app.get('/api/export/ledger.csv')
 def export_ledger(request:Request):
@@ -610,3 +616,6 @@ def audit(request:Request):
 
 from .erp import router as erp_router
 app.include_router(erp_router)
+
+from .review_api import router as review_router
+app.include_router(review_router)

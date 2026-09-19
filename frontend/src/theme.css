@@ -62,7 +62,7 @@ td { border-color: #e1e3e4; }
 .login-lines { border-color: #93a0b0; }
 .login-lines polyline { stroke: #d2deed; }
 
-/* Clear hierarchy and editorial spacing, adapted to financial tables. */
+/* Shared hierarchy for financial tables. */
 .app-icon { flex-shrink: 0; vertical-align: middle; }
 .brand { color: #244c77; gap: 12px; letter-spacing: 1.4px; }
 .brand > span { display: grid; place-items: center; width: 38px; height: 42px; padding: 0; border: 0; border-bottom: 3px solid #b69766; border-radius: 0; font-weight: 600; font-size: 30px; }

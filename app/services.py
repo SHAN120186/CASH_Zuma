@@ -77,9 +77,9 @@ def check_request_version(r,version):
     if r.version!=version:raise HTTPException(409,'Заявка уже изменена другим пользователем. Обновите список и проверьте изменения.')
 
 def needs_director(s,r):
-    threshold=s.get(Setting,'approval_limit_UZS')
     a=get(s,Account,r.account_id)
-    return a.currency!='UZS' or threshold is None or r.amount>int(threshold.value)
+    threshold=s.get(Setting,'approval_limit_'+a.currency)
+    return threshold is None or r.amount>int(threshold.value)
 
 def request_json(s,r,accounts=None,categories=None,users=None):
     a=get(s,Account,r.account_id);c=get(s,Category,r.category_id)

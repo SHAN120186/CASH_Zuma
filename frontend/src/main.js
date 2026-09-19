@@ -6,4 +6,5 @@ import '@fontsource/manrope/latin-400.css';
 import '@fontsource/manrope/latin-600.css';
 import './style.css';
 import './theme.css';
+import './review.css';
 createApp(App).mount('#app');

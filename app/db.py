@@ -62,6 +62,17 @@ class Category(Base):
     name = Column(String(160), unique=True, nullable=False)
     activity = Column(String(20), nullable=False, default='operating')
     type = Column(String(12), nullable=False, default='outcome')
+    cost_group = Column(String(12), nullable=False, default='other')
+
+class CashPlan(Base):
+    __tablename__ = 'cash_plans'
+    id = Column(Integer, primary_key=True)
+    month = Column(String(7), nullable=False)
+    currency = Column(String(3), nullable=False)
+    opening = Column(BigInteger, nullable=True)
+    payload = Column(Text, nullable=False, default='{}')
+    version = Column(Integer, nullable=False, default=1)
+    __table_args__ = (UniqueConstraint('month', 'currency'),)
 
 class Counterparty(Base):
     __tablename__ = 'counterparties'
@@ -233,6 +244,7 @@ def initialize():
         columns={c['name'] for c in inspect(conn).get_columns('users')}
         if 'role_id' not in columns:conn.execute(text('ALTER TABLE users ADD COLUMN role_id INTEGER REFERENCES roles(id)'))
         columns={c['name'] for c in inspect(conn).get_columns('categories')}
+        if 'cost_group' not in columns:conn.execute(text("ALTER TABLE categories ADD COLUMN cost_group VARCHAR(12) NOT NULL DEFAULT 'other'"))
         if 'type' not in columns:
             conn.execute(text("ALTER TABLE categories ADD COLUMN type VARCHAR(12) NOT NULL DEFAULT 'outcome'"))
             conn.execute(text("UPDATE categories SET type='income' WHERE name IN ('Поступления от покупателей','Получение кредита')"))

@@ -355,7 +355,7 @@ class SiteTests(unittest.TestCase):
         self.ledger('100','out')
         r=self.client.get(f'/api/export/report.xlsx?year={today().year}')
         self.assertEqual(r.status_code,200,r.text[:200])
-        wb=load_workbook(io.BytesIO(r.content));self.assertEqual(wb.active['A3'].data_type,'s');self.assertEqual(wb.active.cell(3,today().month+1).value,-100);wb.close()
+        wb=load_workbook(io.BytesIO(r.content));row=next(r for r in wb.active if r[0].value=='Выплата · =1+1');self.assertEqual(row[0].data_type,'s');self.assertEqual(row[today().month].value,-100);wb.close()
         r=self.client.get(f'/api/export/report.pdf?year={today().year}')
         self.assertEqual(r.status_code,200);self.assertTrue(r.content.startswith(b'%PDF-'))
 
@@ -565,5 +565,90 @@ class SiteTests(unittest.TestCase):
             self.assertNotIn(PASSWORD,self.client.get('/api/audit').text)
             self.assertNotIn('password',self.client.get('/api/users').text)
         finally:cl.close()
+
+
+    def test_54_multicurrency_approval_limits(self):
+        from app.services import needs_director
+        for curr in ('USD','EUR'):
+            a=self.post('/api/accounts',{'name':'Currency '+curr,'kind':'bank','currency':curr,'opening':'0','opening_date':self.date}).json()['id']
+            with unit() as ss:self.assertTrue(needs_director(ss,PaymentRequest(account_id=a,amount=100)))
+            self.assertEqual(self.post('/api/approval-policy',{'currency':curr,'amount':'100'}).status_code,200)
+            with unit() as ss:
+                self.assertFalse(needs_director(ss,PaymentRequest(account_id=a,amount=10000)))
+                self.assertTrue(needs_director(ss,PaymentRequest(account_id=a,amount=10001)))
+        limits=self.client.get('/api/approval-policy').json()['limits']
+        self.assertEqual(limits,{'UZS':'1000000.00','USD':'100.00','EUR':'100.00'})
+        self.post('/api/approval-policy',{'currency':'USD','amount':None})
+        self.assertIsNone(self.client.get('/api/approval-policy').json()['limits']['USD'])
+
+    def test_55_cashflow_reconciles_balances_and_plan(self):
+        import io
+        from app.cash_report import report
+        with unit(True) as ss:
+            a=ss.get(Account,self.acc);a.opening_date=date(2025,1,1);a.opening=10000
+            ss.add(Ledger(account_id=a.id,category_id=1,kind='in',amount=20000,date=date(2025,1,10),reference='CFIN',creator_id=1))
+            ss.add(Ledger(account_id=a.id,category_id=self.cat,kind='out',amount=4000,date=date(2025,1,20),reference='CFOUT',creator_id=1))
+            ss.add(Account(name='Archived report account',kind='bank',currency='UZS',opening=7000,opening_date=date(2025,2,15),archived=True,created_by=1))
+            ss.add(Account(name='Month boundary account',kind='bank',currency='UZS',opening=5000,opening_date=date(2025,3,1),created_by=1))
+        d=self.client.get('/api/report?year=2025').json()
+        self.assertEqual(d['opening'][0],'100.00');self.assertEqual(d['totals'][0],'160.00');self.assertEqual(d['closing'][0],'260.00')
+        self.assertEqual(d['opening'][1],'260.00');self.assertEqual(d['opening_adjustments'][1],'70.00');self.assertEqual(d['closing'][1],'330.00')
+        self.assertEqual(d['opening'][2],'330.00');self.assertEqual(d['opening_adjustments'][2],'50.00');self.assertEqual(d['closing'][2],'380.00')
+        self.assertEqual(d['closing'][11],'380.00')
+        self.assertIsNone(d['plan_totals'][0])
+        items=[{'category_id':r['category_id'],'kind':r['kind'],'amount':'0'} for r in d['rows']]
+        next(r for r in items if r['category_id']==1)['amount']='180'
+        next(r for r in items if r['category_id']==self.cat)['amount']='50'
+        p={'month':'2025-01','currency':'UZS','version':0,'opening':'100','reason':'План утверждён для проверки','items':items}
+        self.assertEqual(self.post('/api/cash-plan',p).status_code,200)
+        self.assertEqual(self.post('/api/cash-plan',p).status_code,409)
+        d=self.client.get('/api/report?year=2025').json()
+        self.assertEqual(d['plan_totals'][0],'130.00');self.assertEqual(d['plan_closing'][0],'230.00')
+        self.assertEqual(d['plan_opening'][1],'230.00');self.assertIsNone(d['plan_closing'][1])
+        from openpyxl import load_workbook
+        exported=self.client.get('/api/export/report.xlsx?year=2025&currency=UZS&mode=plan&start_month=1&end_month=2')
+        self.assertEqual(exported.status_code,200)
+        wb=load_workbook(io.BytesIO(exported.content));ws=wb.active
+        self.assertEqual(ws.cell(2,8).value,'За период · План')
+        self.assertEqual(ws.cell(3,9).value,100)
+        self.assertEqual(ws.cell(ws.max_row,9).value,330)
+        self.assertEqual(ws.cell(ws.max_row,8).value,'Не задан');wb.close()
+        pdf=self.client.get('/api/export/report.pdf?year=2025&currency=UZS&mode=plan&start_month=1&end_month=2')
+        self.assertEqual(pdf.status_code,200);self.assertTrue(pdf.content.startswith(b'%PDF'))
+        p['version']=1;p['items'][0]['amount']=None
+        self.assertEqual(self.post('/api/cash-plan',p).status_code,200)
+        self.assertIsNone(self.client.get('/api/report?year=2025').json()['plan_totals'][0])
+        cl,h=self.make_user('accountant','planreader')
+        self.assertEqual(self.post('/api/cash-plan',p,cl,h).status_code,403);cl.close()
+
+    def test_56_audit_tashkent_range_and_history(self):
+        with unit(True) as ss:
+            ss.add(Audit(user_id=1,action='Особое событие',entity='account',created_at=datetime(2025,1,1,20,30)))
+            for i in range(205):ss.add(Audit(user_id=1,action='API GET',entity='api',created_at=datetime(2025,1,3)))
+        r=self.client.get('/api/audit/history?date_from=2025-01-02&date_to=2025-01-02').json()
+        self.assertEqual(r['total'],1);self.assertEqual(r['items'][0]['date'],'02.01.2025 01:30')
+        r=self.client.get('/api/audit/history?date_from=2025-01-03&date_to=2025-01-03&technical=true&page=2').json()
+        self.assertEqual(r['total'],205);self.assertEqual(len(r['items']),20)
+        self.assertEqual(self.client.get('/api/audit/history?date_from=2025-02-01&date_to=2025-01-01').status_code,422)
+        cl,h=self.make_user('employee','auditblocked');self.assertEqual(cl.get('/api/audit/history').status_code,403);cl.close()
+
+    def test_57_budget_groups_and_named_import(self):
+        group_only={'category_id':self.cat,'month':self.month,'currency':'UZS','amount':None,'cost_group':'fixed','reason':'Группа без нового лимита'}
+        self.assertEqual(self.post('/api/budgets',group_only).status_code,200)
+        before=self.client.get('/api/budgets?month='+self.month).json()
+        self.assertIsNone(next(r for r in before if r['category_id']==self.cat)['limit'])
+        r=self.post('/api/budgets',{'category_id':self.cat,'month':self.month,'currency':'UZS','amount':'100','cost_group':'variable','reason':'Настройка группы затрат'})
+        self.assertEqual(r.status_code,200)
+        rows=self.client.get('/api/budgets?month='+self.month).json()
+        self.assertEqual(next(r for r in rows if r['category_id']==self.cat)['cost_group'],'variable')
+        self.assertNotIn(1,[r['category_id'] for r in rows])
+        self.assertEqual(self.post('/api/budgets',group_only).status_code,200)
+        after=self.client.get('/api/budgets?month='+self.month).json()
+        self.assertEqual(next(r for r in after if r['category_id']==self.cat)['limit'],'100.00')
+        template=self.client.get('/api/import/template.csv').content.decode('utf-8-sig')
+        raw=template+f'{self.date};Поступление;Test bank;;Поступления от покупателей;12.34;Покупатель;NAMED;Оплата по договору\r\n'
+        result=self.client.post('/api/import/preview',content=raw.encode('utf-8'),headers={**self.h,'X-Filename':'named.csv'})
+        self.assertEqual(result.status_code,200,result.text);self.assertTrue(result.json()['can_commit'],result.text)
+        self.assertEqual(result.json()['rows'][0]['account_id'],self.acc)
 
 if __name__=='__main__':unittest.main(verbosity=2)

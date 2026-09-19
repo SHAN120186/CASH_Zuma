@@ -16,6 +16,7 @@ from .services import post_ledger, money, get, log, today
 router=APIRouter()
 MAX_IMPORT=5*1024*1024
 HEADERS=['date','kind','account_id','to_account_id','category_id','amount','counterparty','reference','note']
+FRIENDLY=['Дата','Тип','Счёт','Счёт получателя','Статья','Сумма','Контрагент','Документ','Комментарий']
 
 async def read_upload(request,limit=MAX_IMPORT):
     raw=bytearray()
@@ -51,8 +52,9 @@ def parse_rows(raw,name):
         else:raise ValueError('Поддерживаются CSV UTF-8 и XLSX.')
         if not rows:raise ValueError('Пустая таблица.')
         headers=[str(h).strip() for h in rows[0]]
+        headers=[dict(zip(FRIENDLY,HEADERS)).get(h,h) for h in headers]
         if len(headers)!=len(set(headers)):raise ValueError('Заголовки не должны повторяться.')
-        if set(headers)!=set(HEADERS):raise ValueError('Нужны столбцы: '+', '.join(HEADERS))
+        if set(headers)!=set(HEADERS):raise ValueError('Нужны столбцы: '+', '.join(FRIENDLY))
         result=[]
         for line,row in enumerate(rows[1:],2):
             if not any(str(v).strip() for v in row):continue
@@ -75,7 +77,15 @@ def preview(s,u,raw,name):
             try:
                 with s.begin_nested():
                     for key in ('account_id','category_id','to_account_id'):
-                        data[key]=int(data[key]) if str(data[key]).strip() else None
+                        value=str(data[key]).strip()
+                        if not value:data[key]=None
+                        elif value.isdigit():data[key]=int(value)
+                        else:
+                            cls=Category if key=='category_id' else Account
+                            match=s.scalar(select(cls).where(cls.name==value))
+                            if not match:raise ValueError('Не найдено название: '+value)
+                            data[key]=match.id
+                    data['kind']={'Поступление':'in','Выплата':'out','Расход':'out','Перевод':'transfer'}.get(str(data['kind']).strip(),data['kind'])
                     model=LedgerIn(**data)
                     post_ledger(s,u,model)
                     valid.append(model.model_dump(mode='json'))
@@ -91,7 +101,7 @@ def preview(s,u,raw,name):
 @router.get('/api/import/template.csv')
 def template(request:Request):
     with unit() as s:session_user(s,request,'import')
-    return Response(('\ufeff'+';'.join(HEADERS)+'\r\n').encode('utf-8'),media_type='text/csv',headers={'Content-Disposition':'attachment; filename="transactions-template.csv"'})
+    return Response(('\ufeff'+';'.join(FRIENDLY)+'\r\n').encode('utf-8'),media_type='text/csv',headers={'Content-Disposition':'attachment; filename="transactions-template.csv"'})
 
 @router.post('/api/import/preview')
 async def import_preview(request:Request):
@@ -160,47 +170,17 @@ def report_data(s,year,currency):
         totals=[a+b for a,b in zip(totals,values)]
     return rows, [money(v) for v in totals]
 
-def render_report(s,year,currency,format):
-    rows,totals=report_data(s,year,currency)
-    title=f'Cash Flow {year} · {currency}'
-    headers=['Статья','Янв','Фев','Мар','Апр','Май','Июн','Июл','Авг','Сен','Окт','Ноя','Дек']
-    stream=io.BytesIO()
-    if format=='xlsx':
-        from openpyxl import Workbook
-        from openpyxl.styles import Font, PatternFill
-        wb=Workbook();ws=wb.active;ws.title='Cash Flow';ws.append([title]);ws.append(headers)
-        for row in rows+[['Чистый поток']+totals]:
-            # force text cell for user-controlled category names; avoid formula execution
-            ws.append([row[0]]+[Decimal(v) for v in row[1:]])
-            ws.cell(ws.max_row,1).data_type='s'
-            for cell in ws[ws.max_row][1:]:cell.number_format='#,##0.00;[Red]-#,##0.00'
-        for cell in ws[2]:cell.font=Font(color='FFFFFF',bold=True);cell.fill=PatternFill('solid',fgColor='153F45')
-        ws.freeze_panes='B3';ws.column_dimensions['A'].width=40
-        from openpyxl.utils import get_column_letter
-        for i in range(2,14):ws.column_dimensions[get_column_letter(i)].width=19
-        wb.save(stream)
-    else:
-        from reportlab.platypus import SimpleDocTemplate,Table,TableStyle,Paragraph,Spacer
-        from reportlab.lib.pagesizes import A3,landscape
-        from reportlab.lib.styles import ParagraphStyle
-        from reportlab.pdfbase import pdfmetrics
-        from reportlab.pdfbase.ttfonts import TTFont
-        from xml.sax.saxutils import escape
-        font=next((p for p in [ROOT/'app'/'fonts'/'DejaVuSans.ttf',Path('/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf'),Path('C:/Windows/Fonts/arial.ttf')] if p.exists()),None)
-        if not font:raise HTTPException(503,'Шрифт PDF не установлен на сервере.')
-        pdfmetrics.registerFont(TTFont('Zuma',str(font)))
-        style=ParagraphStyle('zuma',fontName='Zuma',fontSize=7,leading=10)
-        content=[[Paragraph(escape(str(v)),style) for v in r] for r in [headers]+rows+[['Чистый поток']+totals]]
-        table=Table(content,colWidths=[155]+[77]*12,repeatRows=1)
-        table.setStyle(TableStyle([('BACKGROUND',(0,0),(-1,0),'#e1f2ee'),('GRID',(0,0),(-1,-1),.3,'#d0dbdf'),('VALIGN',(0,0),(-1,-1),'TOP'),('BOTTOMPADDING',(0,0),(-1,-1),8)]))
-        SimpleDocTemplate(stream,pagesize=landscape(A3),rightMargin=30,leftMargin=30).build([Paragraph(title,ParagraphStyle('title',fontName='Zuma',fontSize=18)),Spacer(1,18),table,Spacer(1,12),Paragraph('Фактические операции. Внутренние переводы и сторнированные операции исключены.',style)])
-    return stream.getvalue()
+def render_report(s,year,currency,format,mode='actual',start_month=1,end_month=12):
+    from .report_export import render
+    return render(s,year,currency,format,mode,start_month,end_month)
 
 @router.get('/api/export/report.{format}')
-def export_report(format:Literal['xlsx','pdf'],request:Request,year:int=2026,currency:Literal['UZS','USD','EUR']='UZS'):
+def export_report(format:Literal['xlsx','pdf'],request:Request,year:int=2026,currency:Literal['UZS','USD','EUR']='UZS',mode:Literal['actual','plan']='actual',start_month:int=1,end_month:int=12):
     if not 2000<=year<=2100:raise HTTPException(422,'Некорректный год.')
     with unit() as s:
-        session_user(s,request,'export');raw=render_report(s,year,currency,format)
+        session_user(s,request,'export')
+        if not 1<=start_month<=end_month<=12:raise HTTPException(422,'Некорректные месяцы.')
+        raw=render_report(s,year,currency,format,mode,start_month,end_month)
     mime='application/pdf' if format=='pdf' else 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
     return Response(raw,media_type=mime,headers={'Content-Disposition':f'attachment; filename="cashflow-{year}-{currency}.{format}"'})
 
