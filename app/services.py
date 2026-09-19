@@ -14,6 +14,14 @@ def amount(value, allow_zero=False):
         return int(n*100)
     except (ValueError, InvalidOperation, TypeError):raise HTTPException(422,'Сумма должна быть положительной, не более 100 трлн, с максимум двумя знаками после запятой.')
 def money(n):return format(Decimal(n)/100,'.2f')
+
+def effective_cashflows(s):
+    """Обороты без исправленных операций и компенсирующих записей сторно.
+
+    Остатки по-прежнему считаются по полному журналу проводок.
+    """
+    reversed_ids=select(Ledger.reversal_of).where(Ledger.reversal_of.is_not(None))
+    return select(Ledger).where(Ledger.reversal_of.is_(None),Ledger.id.not_in(reversed_ids))
 def get(s,cls,id):
     value=s.get(cls,id)
     if not value:raise HTTPException(404,'Запись не найдена.')
@@ -44,12 +52,9 @@ def budget_state(s,category,month,currency,extra=0,exclude_request=None):
     b=s.scalar(select(Budget).where(Budget.category_id==category,Budget.month==month,Budget.currency==currency))
     accounts={a.id:a for a in s.scalars(select(Account))}
     spent=0
-    for t in s.scalars(select(Ledger).where(Ledger.category_id==category)):
+    for t in s.scalars(effective_cashflows(s).where(Ledger.category_id==category)):
         if str(t.date)[:7]!=month or accounts[t.account_id].currency!=currency:continue
         if t.kind=='out':spent+=t.amount
-        elif t.kind=='in' and t.reversal_of:
-            origin=s.get(Ledger,t.reversal_of)
-            if origin and origin.kind=='out':spent-=t.amount
     reserved=sum(r.amount for r in s.scalars(select(PaymentRequest).where(PaymentRequest.category_id==category,PaymentRequest.status=='approved'))
                  if str(r.due_date)[:7]==month and accounts[r.account_id].currency==currency and r.id!=exclude_request)
     used=spent+reserved
@@ -67,12 +72,17 @@ def enforce_budget(s,category,dt,currency,n,note,exclude=None):
 def budget_json(b):
     return {k:(money(v) if v is not None else None) if k in {'limit','spent','reserved','used','remaining','after'} else v for k,v in b.items()}
 
+def check_request_version(r,version):
+    if version is None:raise HTTPException(428,'Обновите список заявок: для действия нужна версия документа.')
+    if r.version!=version:raise HTTPException(409,'Заявка уже изменена другим пользователем. Обновите список и проверьте изменения.')
+
 def request_json(s,r,accounts=None,categories=None,users=None):
     a=get(s,Account,r.account_id);c=get(s,Category,r.category_id)
     b=budget_state(s,c.id,str(r.due_date)[:7],a.currency,r.amount if r.status in ('pending','draft') else 0)
     return {'id':r.id,'number':f'CF-{r.id:05d}','creator_id':r.creator_id,'category_id':c.id,'category':c.name,
             'account_id':a.id,'account':a.name,'currency':a.currency,'counterparty':r.counterparty,
             'amount':money(r.amount),'date':str(r.due_date),'status':r.status,'purpose':r.purpose,
+            'version':r.version,'last_editor_id':r.last_editor_id,'priority':r.priority,
             'project':r.project,'decision_note':r.decision_note,'overdue':r.due_date<today() and r.status in ('pending','approved'),
             'budget':budget_json(b)}
 
@@ -90,6 +100,7 @@ def post_ledger(s,u,data):
     req=None;rec=None
     if data.request_id:
         req=get(s,PaymentRequest,data.request_id)
+        check_request_version(req,data.request_version)
         if kind!='out' or req.status!='approved' or req.account_id!=a.id or req.amount!=n or req.category_id!=data.category_id:
             raise HTTPException(409,'Оплатить можно только утверждённую заявку, целиком, на её счёт и сумму.')
     if data.receipt_id:
@@ -112,21 +123,39 @@ def post_ledger(s,u,data):
 
 def dashboard(s,currency,horizon=30):
     accounts=[a for a in s.scalars(select(Account)) if a.currency==currency]
-    ids={a.id for a in accounts};start=today();current=sum(account_balance(s,a) for a in accounts)
+    ids={a.id for a in accounts};start=today()
+    account_balances={a.id:account_balance(s,a) for a in accounts}
+    current=sum(account_balances.values())
     req=[r for r in s.scalars(select(PaymentRequest)) if r.account_id in ids]
     receipt=[r for r in s.scalars(select(Receipt)) if r.account_id in ids and r.status=='expected']
     approved=[r for r in req if r.status=='approved']
+    pending=[r for r in req if r.status=='pending']
     reserve=s.get(Setting,'reserve_'+currency);reserve=int(reserve.value) if reserve else 0
-    days=[];bal=current
+    days=[];bal=current;requested_bal=current;requested_accounts=account_balances.copy()
     for i in range(horizon):
         day=start+timedelta(days=i)
         ins=[r for r in receipt if max(start,r.due_date)==day]
         outs=[r for r in approved if max(start,r.due_date)==day]
-        inc=sum(r.amount for r in ins);out=sum(r.amount for r in outs);bal+=inc-out
-        days.append({'date':str(day),'incoming':money(inc),'outgoing':money(out),'balance':money(bal),
-                     'risk':bal<reserve,'events':[{'id':r.id,'kind':'in','name':r.counterparty,'amount':money(r.amount),'overdue':r.due_date<start} for r in ins]+
-                     [{'id':r.id,'kind':'out','name':r.counterparty,'amount':money(r.amount),'overdue':r.due_date<start} for r in outs]})
-    period=[t for t in s.scalars(select(Ledger)) if t.account_id in ids and t.date.year==start.year and t.date.month==start.month and t.date<=start]
+        waiting=[r for r in pending if max(start,r.due_date)==day]
+        inc=sum(r.amount for r in ins);out=sum(r.amount for r in outs)
+        opening=bal;requested_opening=requested_bal
+        all_out=out+sum(r.amount for r in waiting)
+        bal+=inc-out;requested_bal+=inc-all_out
+        for r in ins:account_balances[r.account_id]+=r.amount
+        for r in outs:account_balances[r.account_id]-=r.amount
+        for r in ins:requested_accounts[r.account_id]+=r.amount
+        for r in outs+waiting:requested_accounts[r.account_id]-=r.amount
+        shortfalls=[{'account_id':a.id,'account':a.name,'balance':money(account_balances[a.id]),
+                     'allow_overdraft':a.allow_overdraft} for a in accounts if account_balances[a.id]<0]
+        requested_shortfalls=[{'account_id':a.id,'account':a.name,'balance':money(requested_accounts[a.id])} for a in accounts if requested_accounts[a.id]<0]
+        days.append({'date':str(day),'opening':money(opening),'incoming':money(inc),'outgoing':money(out),'balance':money(bal),
+                     'requested_opening':money(requested_opening),'requested_outgoing':money(all_out),'requested_balance':money(requested_bal),
+                     'requested_risk':requested_bal<reserve or bool(requested_shortfalls),'requested_account_shortfalls':requested_shortfalls,
+                     'risk':bal<reserve or bool(shortfalls),'reserve_risk':bal<reserve,'account_shortfalls':shortfalls,
+                     'events':[{'id':r.id,'kind':'in','name':r.counterparty,'amount':money(r.amount),'overdue':r.due_date<start} for r in ins]+
+                     [{'id':r.id,'kind':'out','name':r.counterparty,'amount':money(r.amount),'overdue':r.due_date<start,'priority':r.priority} for r in outs],
+                     'pending_events':[{'id':r.id,'kind':'pending','name':r.counterparty,'amount':money(r.amount),'overdue':r.due_date<start,'priority':r.priority} for r in waiting]})
+    period=[t for t in s.scalars(effective_cashflows(s)) if t.account_id in ids and t.date.year==start.year and t.date.month==start.month and t.date<=start]
     pending=[r for r in req if r.status=='pending']
     return {'currency':currency,'as_of':str(start),'account_count':len(accounts),'balance':money(current) if accounts else None,
             'reserve':money(reserve),'pending_count':len(pending),'pending_amount':money(sum(r.amount for r in pending)),
@@ -134,5 +163,6 @@ def dashboard(s,currency,horizon=30):
             'outgoing7':money(sum(r.amount for r in approved if max(start,r.due_date)<start+timedelta(days=7))),
             'fact_in':money(sum(t.amount for t in period if t.kind=='in')),'fact_out':money(sum(t.amount for t in period if t.kind=='out')),
             'overdue_count':sum(r.due_date<start for r in approved)+sum(r.due_date<start for r in receipt),
-            'forecast':days,'forecast_has_events':bool(receipt or approved),
-            'note':'Прогноз: текущие остатки + зарегистрированные ожидаемые поступления − неоплаченные утверждённые заявки. Просрочка условно отнесена на сегодня. Модель и месячные бюджеты повторно не добавляются.'}
+            'forecast':days,'forecast_has_events':bool(receipt or approved or pending),
+            'scenario_note':'Сценарий «Все заявки» добавляет к утверждённым оплатам заявки на согласовании. Черновики, возвращённые, отменённые и отклонённые заявки исключены. Оба сценария включают ожидаемые поступления: они ещё не подтверждены банком. Только утверждённые заявки резервируют бюджет.',
+            'note':'Прогноз на конец дня: текущие остатки + ожидаемые поступления − утверждённые неоплаченные заявки. Проверяется также нехватка на каждом счёте; переводы между счетами автоматически не предполагаются. Отрицательный остаток требует проверки даже при разрешённом овердрафте: его лимит не задан. Просрочка отнесена на сегодня. Порядок платежей внутри дня не учитывается. Модель и бюджеты повторно не добавляются.'}

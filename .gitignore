@@ -1,4 +1,9 @@
 .venv/
+.venv-local/
+frontend/node_modules/
+*.log
+config.local.env
+local-postgres/
 __pycache__/
 *.pyc
 config.env
@@ -8,6 +13,16 @@ data/*
 backups/
 source/*.xlsx
 *.sqlite3*
+.runtime/
+.idea/
+.claude/
+PUBLIC_URL.txt
+design/
+CASHFLOW_REVIEW_*.md
+*.dump
+*.pem
+*.key
+*.p12
 .env
 !config.env.example
 !.env.server.example

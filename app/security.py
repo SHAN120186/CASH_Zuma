@@ -1,42 +1,70 @@
-import hashlib, hmac, secrets
+import hashlib, hmac, secrets, os, base64
+import bcrypt, jwt
+from datetime import datetime, timezone
 from datetime import timedelta
 from fastapi import HTTPException, Request
 from sqlalchemy import select, delete
-from .db import User, LoginSession, LoginAttempt, now
+from .db import User, LoginSession, LoginAttempt, now, DATA
 
-ROLES = {'admin':'Администратор', 'director':'Директор', 'finance':'Финансист',
-         'accountant':'Бухгалтер', 'employee':'Сотрудник'}
+ROLES = {'admin':'Администратор', 'director':'Директор', 'finance':'Казначей',
+         'accountant':'Бухгалтер', 'employee':'Инициатор', 'auditor':'Аудитор'}
 PERMS = {
- 'admin': {'view','write','approve','budget','import','users','schedule'},
- 'director': {'view','approve'},
- 'finance': {'view','write','budget','import','schedule'},
- 'accountant': {'view','write'},
- 'employee': set(),
+ 'admin': {'view','ledger','export','request','write','approve','budget','import','users','schedule','catalog','audit'},
+ 'director': {'view','ledger','export'},
+ 'finance': {'view','ledger','export','request','write','approve','budget','import','schedule'},
+ 'accountant': {'ledger'},
+ 'employee': {'request'},
+ 'auditor': {'view','ledger','export','audit'},
 }
+
+def jwt_key():
+    configured=os.getenv('JWT_SECRET','')
+    if configured:
+        if len(configured)<32:raise RuntimeError('JWT_SECRET must be at least 32 characters')
+        return configured
+    path=DATA/'jwt.secret'
+    if not path.exists():
+        try:
+            with path.open('x',encoding='ascii') as f:f.write(secrets.token_urlsafe(48))
+        except FileExistsError:pass
+    return path.read_text(encoding='ascii').strip()
+
+def issue_token(user_id):
+    stamp=datetime.now(timezone.utc)
+    return jwt.encode({'sub':str(user_id),'jti':secrets.token_urlsafe(24),'iat':stamp,'exp':stamp+timedelta(minutes=60),'iss':'zuma-treasury','aud':'zuma-api'},jwt_key(),algorithm='HS256')
 def digest(s): return hashlib.sha256(s.encode()).hexdigest()
 def hash_password(password):
     if not 12 <= len(password) <= 128:
         raise ValueError('Пароль должен содержать от 12 до 128 символов.')
     if password.lower() in {'password1234','123456789012','qwerty1234567'}:
         raise ValueError('Выберите более сложный пароль.')
-    salt=secrets.token_hex(16)
-    value=hashlib.pbkdf2_hmac('sha256', password.encode(), salt.encode(), 600000).hex()
-    return f'pbkdf2_sha256$600000${salt}${value}'
+    # SHA-256 prehash avoids bcrypt's 72-byte truncation for long/Unicode passwords.
+    value=base64.b64encode(hashlib.sha256(password.encode()).digest())
+    return 'bcrypt_sha256$'+bcrypt.hashpw(value,bcrypt.gensalt(rounds=12)).decode()
 def verify_password(password, encoded):
     try:
+        if encoded.startswith('bcrypt_sha256$'):
+            value=base64.b64encode(hashlib.sha256(password.encode()).digest())
+            return bcrypt.checkpw(value,encoded.split('$',1)[1].encode())
         method, n, salt, expected=encoded.split('$')
         actual=hashlib.pbkdf2_hmac('sha256', password.encode(), salt.encode(), int(n)).hex()
         return method=='pbkdf2_sha256' and hmac.compare_digest(actual,expected)
     except (ValueError, TypeError): return False
 
 def session_user(s, request: Request, permission=None):
-    token=request.cookies.get('zuma_session','')
+    bearer=request.headers.get('Authorization','')
+    token=bearer[7:] if bearer.startswith('Bearer ') else request.cookies.get('zuma_session','')
+    try:
+        claims=jwt.decode(token,jwt_key(),algorithms=['HS256'],issuer='zuma-treasury',audience='zuma-api',options={'require':['sub','exp','iat','jti']})
+    except jwt.PyJWTError:raise HTTPException(401,'Сессия завершена. Войдите снова.')
     session=s.get(LoginSession, digest(token)) if token else None
     if not session or session.expires_at <= now():
         raise HTTPException(401, 'Сессия завершена. Войдите снова.')
     user=s.get(User,session.user_id)
     if not user or not user.active: raise HTTPException(401,'Учётная запись отключена.')
-    if request.method not in ('GET','HEAD'):
+    if claims['sub']!=str(user.id):raise HTTPException(401,'Неверный токен.')
+    request.state.user_id=user.id
+    if not bearer.startswith('Bearer ') and request.method not in ('GET','HEAD'):
         if not hmac.compare_digest(request.headers.get('X-CSRF-Token',''), session.csrf):
             raise HTTPException(403, 'Защитный токен не совпадает. Обновите страницу.')
     if permission and permission not in PERMS.get(user.role,set()):

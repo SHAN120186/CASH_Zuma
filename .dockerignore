@@ -10,3 +10,14 @@ backups
 tests
 *.zip
 *.png
+
+.venv-local
+frontend/node_modules
+config.local.env
+local-postgres
+.runtime
+.idea
+.claude
+design
+PUBLIC_URL.txt
+*.log

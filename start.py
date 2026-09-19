@@ -12,8 +12,11 @@ def main():
     if args.lan:
         try:ips=socket.gethostbyname_ex(socket.gethostname())[2]
         except OSError:pass
+        lan_ip=next((ip for ip in ips if not ip.startswith('127.')),None)
         old=os.getenv('ALLOWED_HOSTS','127.0.0.1,localhost')
         os.environ['ALLOWED_HOSTS']=','.join(set(old.split(',')+ips))
+        if lan_ip and os.getenv('PUBLIC_ORIGIN','').startswith('http://127.0.0.1'):
+            os.environ['PUBLIC_ORIGIN']=f'http://{lan_ip}:{port}'
     from manage import init
     init()
     print('\n'+'='*55)

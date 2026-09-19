@@ -3,8 +3,9 @@ import os
 from pathlib import Path
 
 def load_config():
-    path=Path(__file__).resolve().parent/'config.env'
-    if path.exists():
+    root=Path(__file__).resolve().parent
+    for path in (root/'config.local.env',root/'config.env'):
+        if not path.exists():continue
         for line in path.read_text(encoding='utf-8-sig').splitlines():
             line=line.strip()
             if not line or line.startswith('#') or '=' not in line:continue

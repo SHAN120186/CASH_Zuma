@@ -1,7 +1,7 @@
 # Шаблон размещения; реальные Docker/PostgreSQL/HTTPS не запускались в среде сборки.
 services:
   db:
-    image: postgres:16
+    image: postgres:17
     restart: unless-stopped
     environment:
       POSTGRES_DB: zuma
@@ -24,9 +24,13 @@ services:
     environment:
       DATABASE_URL: postgresql+psycopg://zuma:${POSTGRES_PASSWORD}@db:5432/zuma
       DATA_DIR: /app/data
+      JWT_SECRET: ${JWT_SECRET:?Укажите случайный секрет JWT не короче 32 символов}
       COOKIE_SECURE: "1"
       ALLOWED_HOSTS: ${DOMAIN:?Укажите свой домен в .env},localhost,127.0.0.1
       PUBLIC_ORIGIN: https://${DOMAIN}
+      SMTP_HOST: ${SMTP_HOST:-}
+      SMTP_FROM: ${SMTP_FROM:-}
+      GOOGLE_SHEETS_TRANSACTIONS_ID: ${GOOGLE_SHEETS_TRANSACTIONS_ID:-}
     volumes:
       - model_data:/app/data
     networks:
@@ -42,6 +46,32 @@ services:
       interval: 30s
       timeout: 5s
       retries: 3
+  worker:
+    build: .
+    restart: unless-stopped
+    depends_on:
+      web:
+        condition: service_healthy
+    command: ["python", "worker.py"]
+    environment:
+      DATABASE_URL: postgresql+psycopg://zuma:${POSTGRES_PASSWORD}@db:5432/zuma
+      DATA_DIR: /app/data
+      BACKUP_DIR: /app/backups
+      JWT_SECRET: ${JWT_SECRET}
+      SMTP_HOST: ${SMTP_HOST:-}
+      SMTP_PORT: ${SMTP_PORT:-587}
+      SMTP_FROM: ${SMTP_FROM:-}
+      SMTP_USER: ${SMTP_USER:-}
+      SMTP_PASSWORD: ${SMTP_PASSWORD:-}
+      SMTP_TLS_MODE: ${SMTP_TLS_MODE:-starttls}
+    volumes:
+      - model_data:/app/data
+      - backup_data:/app/backups
+    networks: [frontend, database]
+    read_only: true
+    tmpfs: [/tmp]
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
   proxy:
     image: caddy:2
     restart: unless-stopped
@@ -69,3 +99,4 @@ volumes:
   model_data:
   caddy_data:
   caddy_config:
+  backup_data:

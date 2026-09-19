@@ -2,9 +2,9 @@
 import os,re
 from .model_import import MAX_SIZE
 
-def download_model():
+def download_model(file_id=None):
     credentials_file=os.getenv('GOOGLE_APPLICATION_CREDENTIALS','')
-    file_id=os.getenv('GOOGLE_DRIVE_FILE_ID','')
+    file_id=os.getenv('GOOGLE_DRIVE_FILE_ID','') if file_id is None else file_id
     if not credentials_file or not file_id:raise RuntimeError('Google Drive ещё не настроен. Укажите путь к серверному ключу и ID файла; не отправляйте ключ в чат.')
     if not re.fullmatch(r'[A-Za-z0-9_-]{10,200}',file_id):raise ValueError('Некорректный ID файла Google Drive.')
     try:

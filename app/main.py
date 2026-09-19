@@ -12,6 +12,7 @@ from fastapi.middleware.trustedhost import TrustedHostMiddleware
 from pydantic import BaseModel, Field, ConfigDict
 from sqlalchemy import select, delete, func
 from sqlalchemy.exc import IntegrityError, OperationalError
+from sqlalchemy.orm.exc import StaleDataError
 from .db import *
 from .security import *
 from .services import *
@@ -25,7 +26,7 @@ PUBLIC_ORIGIN=os.getenv('PUBLIC_ORIGIN','').rstrip('/')
 async def lifespan(app):
     initialize()
     yield
-app=FastAPI(title='ZUMA Cash Flow',version='1.0.0',docs_url=None,redoc_url=None,openapi_url=None,lifespan=lifespan)
+app=FastAPI(title='ZUMA Mini ERP Treasury',version='2.0.0',docs_url=None,redoc_url=None,openapi_url=None,lifespan=lifespan)
 app.add_middleware(TrustedHostMiddleware,allowed_hosts=ALLOWED)
 app.mount('/static',StaticFiles(directory=ROOT/'app'/'static'),name='static')
 
@@ -34,31 +35,42 @@ async def safety(request,call_next):
     if request.method not in ('GET','HEAD','OPTIONS'):
         try:length=int(request.headers.get('content-length','-1'))
         except ValueError:length=-1
-        limit=MAX_SIZE if request.url.path=='/api/model/upload' else 65536
+        limit=MAX_SIZE if request.url.path=='/api/model/upload' else 5*1024*1024 if request.url.path=='/api/import/preview' or request.url.path.endswith('/document') else 65536
         if length<0 or length>limit:return JSONResponse({'detail':'Неверный размер запроса.'},status_code=413)
         origin=request.headers.get('origin')
         expected=PUBLIC_ORIGIN or str(request.base_url).rstrip('/')
         if origin and origin!=expected:return JSONResponse({'detail':'Запрос с другого сайта запрещён.'},status_code=403)
     response=await call_next(request)
+    if request.url.path.startswith('/api'):
+        with unit(True) as audit_session:
+            audit_session.add(Audit(user_id=getattr(request.state,'user_id',None),action='API '+request.method,entity='http',detail=request.url.path+'; status='+str(response.status_code)))
     response.headers['X-Content-Type-Options']='nosniff'
     response.headers['X-Frame-Options']='DENY'
     response.headers['Referrer-Policy']='same-origin'
     response.headers['Content-Security-Policy']="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self'; object-src 'none'; base-uri 'self'; frame-ancestors 'none'; form-action 'self'"
     if SECURE:response.headers['Strict-Transport-Security']='max-age=31536000'
-    if request.url.path.startswith('/api') or request.url.path=='/':response.headers['Cache-Control']='no-store'
+    if request.url.path.startswith('/api') or request.url.path in ('/','/version.json'):response.headers['Cache-Control']='no-store'
     return response
 
 @app.exception_handler(IntegrityError)
 async def duplicate(request,exc):
     return JSONResponse({'detail':'Дубликат или связанная запись: такой документ/пользователь уже существует. Повторная оплата заблокирована.'},status_code=409)
+@app.exception_handler(StaleDataError)
+async def stale_document(request,exc):
+    return JSONResponse({'detail':'Документ изменён другим пользователем. Обновите данные и повторно проверьте действие.'},status_code=409)
 @app.exception_handler(OperationalError)
 async def busy(request,exc):
     logging.exception('Database operation failed')
     return JSONResponse({'detail':'База данных временно недоступна. Повторите запрос; не создавайте дубликат документа.'},status_code=503)
 @app.get('/')
-def index():return FileResponse(ROOT/'app'/'static'/'index.html')
+def index():return FileResponse(ROOT/'app'/'static'/'erp'/'index.html')
+@app.get('/legacy')
+def legacy():return FileResponse(ROOT/'app'/'static'/'index.html')
 @app.get('/health')
 def health():return {'status':'ok'}
+
+@app.get('/version.json')
+def release_version():return FileResponse(ROOT/'release.json',media_type='application/json')
 
 def visible_request(s,r,u):
     data=request_json(s,r)
@@ -75,10 +87,10 @@ class UserIn(Input):
     username:str=Field(pattern=r'^[a-zA-Z0-9_.-]{3,80}$')
     name:str=Field(min_length=2,max_length=160)
     password:str=Field(min_length=12,max_length=128)
-    role:Literal['admin','director','finance','accountant','employee']
+    role:Literal['admin','director','finance','accountant','employee','auditor']
 class UserEdit(Input):
     model_config=ConfigDict(extra='forbid',str_strip_whitespace=False)
-    role:Literal['admin','director','finance','accountant','employee']
+    role:Literal['admin','director','finance','accountant','employee','auditor']
     active:bool
     password:str=Field(default='',max_length=128)
 class PasswordIn(Input):
@@ -95,6 +107,9 @@ class AccountIn(Input):
 class CategoryIn(Input):
     name:str=Field(min_length=2,max_length=160)
     activity:Literal['operating','investing','financing']='operating'
+    type:Literal['income','outcome']='outcome'
+class AccountEdit(AccountIn):
+    reason:str=Field(min_length=10,max_length=1000)
 class BudgetIn(Input):
     category_id:int
     month:str=Field(pattern=r'^20\d{2}-(0[1-9]|1[0-2])$')
@@ -112,8 +127,13 @@ class RequestIn(Input):
     purpose:str=Field(min_length=5,max_length=3000)
     project:str=Field(default='',max_length=120)
     status:Literal['draft','pending']='pending'
+    priority:Literal['normal','high','urgent']='normal'
+class RequestEdit(RequestIn):
+    version:int=Field(ge=1)
+    reason:str=Field(min_length=10,max_length=1000)
 class DecisionIn(Input):
-    action:Literal['approve','reject','submit','reschedule']
+    action:Literal['approve','reject','submit','reschedule','return','cancel']
+    version:Optional[int]=Field(default=None,ge=1)
     note:str=Field(default='',max_length=2000)
     date:Optional[dt.date]=None
 class ReceiptIn(Input):
@@ -134,6 +154,7 @@ class LedgerIn(Input):
     reference:str=Field(min_length=2,max_length=160)
     note:str=Field(default='',max_length=3000)
     request_id:Optional[int]=None
+    request_version:Optional[int]=Field(default=None,ge=1)
     receipt_id:Optional[int]=None
 class ReverseIn(Input):
     reason:str=Field(min_length=10,max_length=1000)
@@ -158,12 +179,13 @@ def login(body:LoginIn,request:Request,response:Response):
             else:
                 s.execute(delete(LoginAttempt).where(LoginAttempt.key==keys[1]))
                 s.execute(delete(LoginSession).where(LoginSession.expires_at<now()))
-                token=secrets.token_urlsafe(40);csrf=secrets.token_urlsafe(32)
-                s.add(LoginSession(token_hash=digest(token),user_id=user.id,csrf=csrf,expires_at=now()+timedelta(hours=8)))
+                token=issue_token(user.id);csrf=secrets.token_urlsafe(32)
+                if not user.password_hash.startswith('bcrypt_sha256$'):user.password_hash=hash_password(body.password)
+                s.add(LoginSession(token_hash=digest(token),user_id=user.id,csrf=csrf,expires_at=now()+timedelta(hours=1)))
                 log(s,user,'Вход в систему','user',user.id)
-                result={'user':user_json(user),'csrf':csrf}
+                result={'user':user_json(user),'csrf':csrf,'access_token':token,'token_type':'bearer','expires_in':3600}
     if error:raise error
-    response.set_cookie('zuma_session',token,httponly=True,secure=SECURE,samesite='strict',max_age=8*3600,path='/')
+    response.set_cookie('zuma_session',token,httponly=True,secure=SECURE,samesite='strict',max_age=3600,path='/')
     return result
 
 @app.get('/api/me')
@@ -192,8 +214,15 @@ def bootstrap(request:Request):
     with unit() as s:
         user,session=session_user(s,request)
         a=[{'id':a.id,'name':a.name,'kind':a.kind,'currency':a.currency,'opening_date':str(a.opening_date)} for a in s.scalars(select(Account).order_by(Account.name))]
-        c=[{'id':c.id,'name':c.name,'activity':c.activity} for c in s.scalars(select(Category).order_by(Category.id))]
-        return {'accounts':a,'categories':c,'roles':ROLES,'today':str(today()),'user':user_json(user),'csrf':session.csrf}
+        c=[{'id':c.id,'name':c.name,'activity':c.activity,'type':c.type} for c in s.scalars(select(Category).order_by(Category.id))]
+        cp=[{'name':x.name,'inn':x.inn} for x in s.scalars(select(Counterparty).order_by(Counterparty.name).limit(1000))]
+        return {'accounts':a,'categories':c,'counterparties':cp,'roles':ROLES,'today':str(today()),'user':user_json(user),'csrf':session.csrf}
+
+def remember_counterparty(s,name):
+    """Справочник пополняется автоматически при вводе документов."""
+    name=(name or '').strip()
+    if len(name)<2 or len(name)>160:return
+    if not s.scalar(select(Counterparty.id).where(Counterparty.name==name)):s.add(Counterparty(name=name))
 
 @app.get('/api/dashboard')
 def get_dashboard(request:Request,currency:Literal['UZS','USD','EUR']='UZS',days:int=30):
@@ -216,10 +245,40 @@ def add_account(data:AccountIn,request:Request):
         a=Account(name=data.name,kind=data.kind,currency=data.currency,opening=amount(data.opening,True),opening_date=data.opening_date,allow_overdraft=data.allow_overdraft,created_by=u.id)
         s.add(a);s.flush();log(s,u,'Создан счёт / касса','account',a.id,f'{a.name}; {money(a.opening)} {a.currency}; начало дня {a.opening_date}')
         return {'id':a.id}
+@app.post('/api/accounts/{id}')
+def edit_account(id:int,data:AccountEdit,request:Request):
+    with unit(True) as s:
+        u,_=session_user(s,request,'write');a=get(s,Account,id)
+        if data.opening_date>today():raise HTTPException(422,'Начальный остаток не может быть задан будущей датой.')
+        if data.kind=='cash' and data.allow_overdraft:raise HTTPException(422,'Для кассы отрицательный остаток запрещён.')
+        entries=list(s.scalars(select(Ledger).where((Ledger.account_id==id)|(Ledger.to_account_id==id))))
+        requests=list(s.scalars(select(PaymentRequest).where(PaymentRequest.account_id==id)))
+        receipts=list(s.scalars(select(Receipt).where(Receipt.account_id==id)))
+        if data.currency!=a.currency and (entries or requests or receipts):
+            raise HTTPException(409,'Валюту нельзя менять после создания операций, заявок или ожидаемых поступлений. Создайте отдельный счёт в нужной валюте.')
+        dates=[t.date for t in entries]+[r.due_date for r in requests]+[r.due_date for r in receipts]
+        if dates and data.opening_date>min(dates):raise HTTPException(409,'Дата начала учёта не может быть позже существующих операций, заявок или поступлений.')
+        def snapshot():return {'name':a.name,'kind':a.kind,'currency':a.currency,'opening':money(a.opening),'opening_date':str(a.opening_date),'allow_overdraft':a.allow_overdraft}
+        before=snapshot()
+        a.name=data.name;a.kind=data.kind;a.currency=data.currency;a.opening=amount(data.opening,True)
+        a.opening_date=data.opening_date;a.allow_overdraft=data.allow_overdraft
+        s.flush();validate_running_balance(s,a)
+        log(s,u,'Изменён счёт / начальный остаток','account',id,json.dumps({'before':before,'after':snapshot(),'reason':data.reason},ensure_ascii=False))
+        return {'id':id,'balance':money(account_balance(s,a))}
+
 @app.post('/api/categories')
 def add_category(data:CategoryIn,request:Request):
     with unit(True) as s:
-        u,_=session_user(s,request,'budget');c=Category(**data.model_dump());s.add(c);s.flush();log(s,u,'Создана статья','category',c.id,c.name);return {'id':c.id}
+        u,_=session_user(s,request,'catalog');c=Category(**data.model_dump());s.add(c);s.flush();log(s,u,'Создана статья','category',c.id,c.name);return {'id':c.id}
+
+@app.put('/api/categories/{id}')
+def edit_category(id:int,data:CategoryIn,request:Request):
+    with unit(True) as s:
+        u,_=session_user(s,request,'catalog');c=get(s,Category,id)
+        old={'name':c.name,'activity':c.activity,'type':c.type}
+        c.name=data.name;c.activity=data.activity;c.type=data.type
+        log(s,u,'Изменена статья','category',id,json.dumps({'before':old,'after':data.model_dump()},ensure_ascii=False))
+        return {'id':id}
 
 @app.get('/api/budgets')
 def budgets(request:Request,month:str='',currency:Literal['UZS','USD','EUR']='UZS'):
@@ -249,43 +308,75 @@ def save_reserve(data:ReserveIn,request:Request):
 def requests_list(request:Request):
     with unit() as s:
         u,_=session_user(s,request)
+        if not ({'request','view'} & PERMS[u.role]):raise HTTPException(403,'Недостаточно прав для просмотра заявок.')
         q=select(PaymentRequest).order_by(PaymentRequest.id.desc()).limit(500)
         if u.role=='employee':q=q.where(PaymentRequest.creator_id==u.id)
         return [visible_request(s,r,u) for r in s.scalars(q)]
 @app.post('/api/requests')
 def add_request(data:RequestIn,request:Request):
     with unit(True) as s:
-        u,_=session_user(s,request);a=get(s,Account,data.account_id);get(s,Category,data.category_id)
+        u,_=session_user(s,request,'request');a=get(s,Account,data.account_id);get(s,Category,data.category_id)
         if data.date<a.opening_date:raise HTTPException(422,'Дата раньше начала учёта выбранного счёта.')
         n=amount(data.amount)
         if data.status=='pending':enforce_budget(s,data.category_id,data.date,a.currency,n,data.purpose)
-        r=PaymentRequest(creator_id=u.id,category_id=data.category_id,account_id=a.id,counterparty=data.counterparty,amount=n,due_date=data.date,purpose=data.purpose,project=data.project,status=data.status)
+        r=PaymentRequest(creator_id=u.id,last_editor_id=u.id,category_id=data.category_id,account_id=a.id,counterparty=data.counterparty,amount=n,due_date=data.date,purpose=data.purpose,project=data.project,status=data.status,priority=data.priority)
+        remember_counterparty(s,data.counterparty)
         s.add(r);s.flush();log(s,u,'Создана заявка','request',r.id,f'{data.status}; {money(n)} {a.currency}')
+        return visible_request(s,r,u)
+@app.put('/api/requests/{id}')
+def edit_request(id:int,data:RequestEdit,request:Request):
+    with unit(True) as s:
+        u,_=session_user(s,request,'request');r=get(s,PaymentRequest,id)
+        if r.creator_id!=u.id and u.role!='admin':raise HTTPException(403,'Редактировать может автор или администратор.')
+        check_request_version(r,data.version)
+        if r.status not in ('draft','pending','returned','rejected'):raise HTTPException(409,'Редактирование доступно до утверждения. Утверждённую заявку сначала верните на доработку.')
+        a=get(s,Account,data.account_id);get(s,Category,data.category_id);n=amount(data.amount)
+        if data.date<a.opening_date:raise HTTPException(422,'Дата раньше начала учёта выбранного счёта.')
+        if data.status=='pending':enforce_budget(s,data.category_id,data.date,a.currency,n,data.purpose,r.id)
+        before=visible_request(s,r,u)
+        for key in ('account_id','category_id','counterparty','purpose','project','priority','status'):setattr(r,key,getattr(data,key))
+        r.amount=n;r.due_date=data.date;r.approved_by=None;r.last_editor_id=u.id;r.decision_note=data.reason
+        remember_counterparty(s,data.counterparty);s.flush()
+        log(s,u,'Изменена заявка','request',r.id,json.dumps({'before':before,'after':visible_request(s,r,u),'reason':data.reason},ensure_ascii=False))
         return visible_request(s,r,u)
 @app.post('/api/requests/{id}/decision')
 def decide(id:int,data:DecisionIn,request:Request):
     with unit(True) as s:
-        u,_=session_user(s,request);r=get(s,PaymentRequest,id);a=get(s,Account,r.account_id)
+        u,_=session_user(s,request,'request');r=get(s,PaymentRequest,id);a=get(s,Account,r.account_id)
+        if u.role=='employee' and r.creator_id!=u.id:raise HTTPException(403,'Доступны только собственные заявки.')
+        check_request_version(r,data.version)
+        before={'status':r.status,'date':str(r.due_date),'version':r.version,'approved_by':r.approved_by}
         if data.action=='submit':
-            if r.status!='draft' or (r.creator_id!=u.id and u.role!='admin'):raise HTTPException(403,'Отправить можно только свой черновик.')
+            if r.status not in ('draft','returned') or (r.creator_id!=u.id and u.role!='admin'):raise HTTPException(403,'Отправить можно свой черновик или возвращённую заявку.')
             enforce_budget(s,r.category_id,r.due_date,a.currency,r.amount,r.purpose);r.status='pending'
+        elif data.action=='cancel':
+            if r.creator_id!=u.id and u.role not in ('admin','finance'):raise HTTPException(403,'Отмена недоступна.')
+            if r.status not in ('draft','pending','approved','returned','rejected'):raise HTTPException(409,'Оплаченную или отменённую заявку отменить нельзя.')
+            if len(data.note)<10:raise HTTPException(422,'Укажите причину отмены не короче 10 символов.')
+            r.status='cancelled';r.approved_by=None
+        elif data.action=='return':
+            if 'approve' not in PERMS[u.role]:raise HTTPException(403,'Недостаточно прав для возврата.')
+            if r.status not in ('pending','approved'):raise HTTPException(409,'Вернуть можно заявку на согласовании или утверждённую заявку.')
+            if len(data.note)<10:raise HTTPException(422,'Укажите причину возврата не короче 10 символов.')
+            r.status='returned';r.approved_by=None
         elif data.action=='reschedule':
-            if u.role not in ('admin','finance','director') or r.status not in ('pending','approved'):raise HTTPException(403,'Перенос недоступен.')
+            if u.role not in ('admin','finance') or r.status not in ('pending','approved'):raise HTTPException(403,'Перенос недоступен.')
             if not data.date or len(data.note)<10:raise HTTPException(422,'Нужны новая дата и причина не короче 10 символов.')
             if data.date<a.opening_date:raise HTTPException(422,'Дата раньше начала учёта счёта.')
-            r.due_date=data.date;r.status='pending';r.approved_by=None
+            r.due_date=data.date;r.status='pending';r.approved_by=None;r.last_editor_id=u.id
         else:
             if 'approve' not in PERMS[u.role]:raise HTTPException(403,'Недостаточно прав для согласования.')
             if r.status!='pending':raise HTTPException(409,'Заявка уже обработана или не отправлена на согласование.')
-            if r.creator_id==u.id and u.role!='admin':raise HTTPException(403,'Свою заявку должен согласовать другой руководитель.')
+            if u.id in (r.creator_id,r.last_editor_id):raise HTTPException(403,'Автор и последний редактор не могут согласовать свою заявку, включая администратора. Нужен другой согласующий.')
             if data.action=='approve':
                 enforce_budget(s,r.category_id,r.due_date,a.currency,r.amount,data.note,r.id)
                 r.status='approved';r.approved_by=u.id
             else:
                 if len(data.note)<5:raise HTTPException(422,'Укажите причину отклонения.')
-                r.status='rejected'
+                r.status='rejected';r.approved_by=None
         r.decision_note=data.note
-        log(s,u,'Действие по заявке: '+data.action,'request',r.id,data.note)
+        s.flush()
+        log(s,u,'Действие по заявке: '+data.action,'request',r.id,json.dumps({'before':before,'after':{'status':r.status,'date':str(r.due_date),'version':r.version,'approved_by':r.approved_by},'reason':data.note},ensure_ascii=False))
         return visible_request(s,r,u)
 
 @app.get('/api/receipts')
@@ -304,12 +395,13 @@ def add_receipt(data:ReceiptIn,request:Request):
         u,_=session_user(s,request,'schedule');a=get(s,Account,data.account_id);get(s,Category,data.category_id)
         if data.date<a.opening_date:raise HTTPException(422,'Дата раньше начала учёта счёта.')
         r=Receipt(account_id=a.id,category_id=data.category_id,counterparty=data.counterparty,amount=amount(data.amount),due_date=data.date,note=data.note,creator_id=u.id)
+        remember_counterparty(s,data.counterparty)
         s.add(r);s.flush();log(s,u,'План поступления','receipt',r.id,data.counterparty);return {'id':r.id}
 
 @app.get('/api/ledger')
 def ledger_list(request:Request):
     with unit() as s:
-        session_user(s,request,'view');acc={a.id:a for a in s.scalars(select(Account))};cats={c.id:c.name for c in s.scalars(select(Category))}
+        session_user(s,request,'ledger');acc={a.id:a for a in s.scalars(select(Account))};cats={c.id:c.name for c in s.scalars(select(Category))}
         reversed_ids={t.reversal_of for t in s.scalars(select(Ledger).where(Ledger.reversal_of!=None))}
         return [{'id':t.id,'date':str(t.date),'kind':t.kind,'account_id':t.account_id,'account':acc[t.account_id].name,
                  'to_account':acc[t.to_account_id].name if t.to_account_id else '', 'currency':acc[t.account_id].currency,
@@ -319,7 +411,7 @@ def ledger_list(request:Request):
 @app.post('/api/ledger')
 def add_ledger(data:LedgerIn,request:Request):
     with unit(True) as s:
-        u,_=session_user(s,request,'write');t=post_ledger(s,u,data);return {'id':t.id}
+        u,_=session_user(s,request,'write');t=post_ledger(s,u,data);remember_counterparty(s,data.counterparty);return {'id':t.id}
 @app.post('/api/ledger/{id}/reverse')
 def reverse(id:int,data:ReverseIn,request:Request):
     with unit(True) as s:
@@ -359,7 +451,7 @@ def operational_report(request:Request,year:int=2026,currency:Literal['UZS','USD
 @app.get('/api/export/ledger.csv')
 def export_ledger(request:Request):
     with unit() as s:
-        session_user(s,request,'view');out=io.StringIO();w=csv.writer(out,delimiter=';');w.writerow(['ID','Дата','Тип','Счёт','Валюта','Сумма','Контрагент','Документ','Комментарий'])
+        session_user(s,request,'export');out=io.StringIO();w=csv.writer(out,delimiter=';');w.writerow(['ID','Дата','Тип','Счёт','Валюта','Сумма','Контрагент','Документ','Комментарий'])
         def safe(x):
             v=str(x or '');return "'"+v if v[:1] in ('=','+','-','@','\t','\r') else v
         for t in s.scalars(select(Ledger).order_by(Ledger.date,Ledger.id)):
@@ -412,7 +504,7 @@ def add_user(data:UserIn,request:Request):
         admin,_=session_user(s,request,'users')
         try:pw=hash_password(data.password)
         except ValueError as e:raise HTTPException(422,str(e))
-        u=User(username=data.username.lower(),name=data.name,password_hash=pw,role=data.role);s.add(u);s.flush();log(s,admin,'Создан пользователь','user',u.id,u.role);return user_json(u)
+        u=User(username=data.username.lower(),name=data.name,password_hash=pw,role=data.role,role_id=s.scalar(select(Role.id).where(Role.name==data.role)));s.add(u);s.flush();log(s,admin,'Создан пользователь','user',u.id,u.role);return user_json(u)
 @app.post('/api/users/{id}')
 def edit_user(id:int,data:UserEdit,request:Request):
     with unit(True) as s:
@@ -421,7 +513,7 @@ def edit_user(id:int,data:UserEdit,request:Request):
         if u.role=='admin' and (not data.active or data.role!='admin'):
             count=s.scalar(select(func.count()).select_from(User).where(User.role=='admin',User.active==True))
             if count<=1:raise HTTPException(409,'В системе должен оставаться активный администратор.')
-        u.role=data.role;u.active=data.active
+        u.role=data.role;u.role_id=s.scalar(select(Role.id).where(Role.name==data.role));u.active=data.active
         if data.password:
             try:u.password_hash=hash_password(data.password)
             except ValueError as e:raise HTTPException(422,str(e))
@@ -431,8 +523,10 @@ def edit_user(id:int,data:UserEdit,request:Request):
 @app.get('/api/audit')
 def audit(request:Request):
     with unit() as s:
-        u,_=session_user(s,request,'view')
-        if u.role not in ('admin','director','finance'):raise HTTPException(403,'Журнал доступен руководителю и финансисту.')
+        u,_=session_user(s,request,'audit')
         names={u.id:u.name for u in s.scalars(select(User))}
         return [{'id':a.id,'date':str(a.created_at)+' UTC','user':names.get(a.user_id,'Система'),'action':a.action,
                 'entity':a.entity,'entity_id':a.entity_id,'detail':a.detail} for a in s.scalars(select(Audit).order_by(Audit.id.desc()).limit(200))]
+
+from .erp import router as erp_router
+app.include_router(erp_router)

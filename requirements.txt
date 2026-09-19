@@ -5,3 +5,8 @@ uvicorn==0.48.0
 SQLAlchemy==2.0.50
 pydantic==2.13.4
 defusedxml==0.7.1
+bcrypt==5.0.0
+PyJWT==2.14.0
+openpyxl==3.1.5
+reportlab==5.0.1
+psycopg[binary]==3.3.5
