@@ -136,7 +136,7 @@ def main():
             write_status(state)
             (ROOT/'PUBLIC_URL.txt').write_text(url+'\n', encoding='utf-8')
             print('PREVIEW_URL='+url, flush=True)
-            print('VERSION='+json.loads((directory/'release.json').read_text())['version'], flush=True)
+            print('VERSION='+json.loads((directory/'release.json').read_text(encoding='utf-8'))['version'], flush=True)
             while not STOP.exists():
                 if tunnel.poll() is not None or api.poll() is not None:raise RuntimeError('A preview process stopped. Restart START_WEB_SERVER.bat.')
                 if REQUEST.exists():
