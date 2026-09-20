@@ -70,7 +70,7 @@ def ensure_database():
         ctl = str(Path(binpath) / ('pg_ctl.exe' if os.name == 'nt' else 'pg_ctl'))
         status_flags = subprocess.CREATE_NO_WINDOW if os.name == 'nt' else 0
         start_flags = (
-            subprocess.DETACHED_PROCESS
+            subprocess.CREATE_NO_WINDOW
             | subprocess.CREATE_NEW_PROCESS_GROUP
             | subprocess.CREATE_BREAKAWAY_FROM_JOB
         ) if os.name == 'nt' else 0
