@@ -88,7 +88,7 @@ def request_json(s,r,accounts=None,categories=None,users=None):
             'account_id':a.id,'account':a.name,'currency':a.currency,'counterparty':r.counterparty,
             'amount':money(r.amount),'date':str(r.due_date),'status':r.status,'purpose':r.purpose,
             'version':r.version,'last_editor_id':r.last_editor_id,'priority':r.priority,
-            'created_at':str(r.created_at),'finance_approved_by':r.finance_approved_by,
+            'created_at':str(r.created_at),'finance_approved_by':r.finance_approved_by,'approved_by':r.approved_by,
             'approval_stage':('director' if r.finance_approved_by else 'finance') if r.status=='pending' else None,
             'project':r.project,'decision_note':r.decision_note,'overdue':r.due_date<today() and r.status in ('pending','approved'),
             'budget':budget_json(b)}
