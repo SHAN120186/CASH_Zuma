@@ -65,7 +65,11 @@ def ensure_database():
     if cluster and binpath:
         ctl = str(Path(binpath) / ('pg_ctl.exe' if os.name == 'nt' else 'pg_ctl'))
         status_flags = subprocess.CREATE_NO_WINDOW if os.name == 'nt' else 0
-        start_flags = (subprocess.DETACHED_PROCESS | subprocess.CREATE_NEW_PROCESS_GROUP) if os.name == 'nt' else 0
+        start_flags = (
+            subprocess.DETACHED_PROCESS
+            | subprocess.CREATE_NEW_PROCESS_GROUP
+            | subprocess.CREATE_BREAKAWAY_FROM_JOB
+        ) if os.name == 'nt' else 0
         status = subprocess.run([ctl, '-D', cluster, 'status'], capture_output=True,
                                 creationflags=status_flags, timeout=10)
         if status.returncode:
