@@ -131,7 +131,7 @@ def launcher_lock():
                 fcntl.flock(handle, fcntl.LOCK_UN)
 
 
-def ensure_site():
+def ensure_local_site():
     if not (ROOT / 'config.local.env').exists():
         raise RuntimeError('Не найдены настройки существующей базы. Запуск остановлен, чтобы не создать пустую базу.')
     load_config()
@@ -146,6 +146,11 @@ def ensure_site():
         process = launch('start_local.py', ('--no-browser',), env)
         await_ready(lambda: healthy(8001), process, 45,
                     'Локальный сайт не запустился. См. .runtime/start_local-launch.err.log.')
+    return 'http://127.0.0.1:8001'
+
+
+def ensure_site():
+    ensure_local_site()
     url = running_url()
     if url:
         return url
@@ -162,14 +167,19 @@ def ensure_site():
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--no-browser', action='store_true')
+    parser.add_argument('--local-only', action='store_true', help='Запустить только localhost без интернет-туннеля')
     args = parser.parse_args()
     RUNTIME.mkdir(exist_ok=True)
     try:
         with launcher_lock():
-            url = ensure_site()
-            (ROOT / 'PUBLIC_URL.txt').write_text(url + '\n', encoding='utf-8')
-            print('Сайт запущен. Текущая ссылка: ' + url, flush=True)
-            print('Компьютер должен оставаться включённым. Новая ссылка сохранена в PUBLIC_URL.txt.', flush=True)
+            url = ensure_local_site() if args.local_only else ensure_site()
+            if args.local_only:
+                print('Локальный сайт запущен: ' + url, flush=True)
+                print('Этот адрес открывается на данном ноутбуке и не меняется.', flush=True)
+            else:
+                (ROOT / 'PUBLIC_URL.txt').write_text(url + '\n', encoding='utf-8')
+                print('Сайт запущен. Текущая ссылка: ' + url, flush=True)
+                print('Компьютер должен оставаться включённым. Новая ссылка сохранена в PUBLIC_URL.txt.', flush=True)
             if not args.no_browser:
                 webbrowser.open(url)
         return 0
