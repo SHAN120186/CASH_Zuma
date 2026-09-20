@@ -64,14 +64,17 @@ def ensure_database():
     cluster, binpath = os.getenv('PG_CLUSTER'), os.getenv('PG_BIN')
     if cluster and binpath:
         ctl = str(Path(binpath) / ('pg_ctl.exe' if os.name == 'nt' else 'pg_ctl'))
-        flags = subprocess.CREATE_NO_WINDOW if os.name == 'nt' else 0
-        status = subprocess.run([ctl, '-D', cluster, 'status'], capture_output=True, creationflags=flags, timeout=10)
+        status_flags = subprocess.CREATE_NO_WINDOW if os.name == 'nt' else 0
+        start_flags = (subprocess.DETACHED_PROCESS | subprocess.CREATE_NEW_PROCESS_GROUP) if os.name == 'nt' else 0
+        status = subprocess.run([ctl, '-D', cluster, 'status'], capture_output=True,
+                                creationflags=status_flags, timeout=10)
         if status.returncode:
             print('Запускаю PostgreSQL…', flush=True)
             result = subprocess.run([ctl, '-D', cluster, '-l', str(Path(cluster).parent / 'postgres.log'),
-                                     'start', '-w', '-t', '30'], capture_output=True, creationflags=flags, timeout=40)
+                                     'start', '-w', '-t', '45'], stdout=subprocess.DEVNULL,
+                                    stderr=subprocess.DEVNULL, creationflags=start_flags, timeout=55)
             if result.returncode:
-                raise RuntimeError('PostgreSQL не запустился. Проверьте postgres.log рядом с каталогом базы.')
+                raise RuntimeError('PostgreSQL не запустился. Подробности записаны в postgres.log.')
     try:
         from app.db import engine
         with engine.connect() as connection:

@@ -12,7 +12,11 @@ DATA = Path(os.getenv('DATA_DIR', str(ROOT / 'data'))).resolve()
 DATA.mkdir(parents=True, exist_ok=True)
 DB_URL = os.getenv('DATABASE_URL', 'sqlite:///' + str(DATA / 'cashflow.sqlite3'))
 SQLITE = DB_URL.startswith('sqlite:')
-engine = create_engine(DB_URL, connect_args={'check_same_thread': False, 'timeout': 30} if SQLITE else {}, pool_pre_ping=True)
+engine = create_engine(
+    DB_URL,
+    connect_args={'check_same_thread': False, 'timeout': 30} if SQLITE else {'connect_timeout': 5},
+    pool_pre_ping=True,
+)
 if SQLITE:
     @event.listens_for(engine, 'connect')
     def configure_sqlite(connection, _):
