@@ -78,17 +78,44 @@ def ensure_database():
                                 creationflags=status_flags, timeout=10)
         if status.returncode:
             print('Запускаю PostgreSQL…', flush=True)
-            result = subprocess.run([ctl, '-D', cluster, '-l', str(Path(cluster).parent / 'postgres.log'),
-                                     'start', '-w', '-t', '45'], stdout=subprocess.DEVNULL,
-                                    stderr=subprocess.DEVNULL, creationflags=start_flags, timeout=55)
-            if result.returncode:
-                raise RuntimeError('PostgreSQL не запустился. Подробности записаны в postgres.log.')
-    try:
-        from app.db import engine
-        with engine.connect() as connection:
-            connection.exec_driver_sql('SELECT 1')
-    except Exception:
-        raise RuntimeError('Нет подключения к рабочей базе. Существующие данные не изменены.') from None
+            log_path = Path(cluster).parent / 'postgres.log'
+            if os.name == 'nt':
+                # pg_ctl starts postgres through cmd.exe on Windows. Closing the launch
+                # console then sends CTRL_CLOSE to the database. Start postgres directly
+                # so the localhost database survives after the launcher exits.
+                with log_path.open('ab') as log:
+                    process = subprocess.Popen(
+                        [str(Path(binpath) / 'postgres.exe'), '-D', cluster],
+                        stdin=subprocess.DEVNULL, stdout=log, stderr=subprocess.STDOUT,
+                        creationflags=start_flags, close_fds=True,
+                    )
+                until = time.monotonic() + 45
+                while time.monotonic() < until:
+                    if process.poll() is not None:
+                        raise RuntimeError('PostgreSQL не запустился. Подробности записаны в postgres.log.')
+                    if occupied(55432):
+                        break
+                    time.sleep(.5)
+                else:
+                    raise RuntimeError('PostgreSQL не открыл порт 55432. Подробности записаны в postgres.log.')
+            else:
+                result = subprocess.run([ctl, '-D', cluster, '-l', str(log_path),
+                                         'start', '-w', '-t', '45'], stdout=subprocess.DEVNULL,
+                                        stderr=subprocess.DEVNULL, creationflags=start_flags, timeout=55)
+                if result.returncode:
+                    raise RuntimeError('PostgreSQL не запустился. Подробности записаны в postgres.log.')
+    from app.db import engine
+    until = time.monotonic() + 20
+    while True:
+        try:
+            with engine.connect() as connection:
+                connection.exec_driver_sql('SELECT 1')
+            break
+        except Exception:
+            engine.dispose()
+            if time.monotonic() >= until:
+                raise RuntimeError('Нет подключения к рабочей базе. Существующие данные не изменены.') from None
+            time.sleep(.5)
 
 
 def await_ready(check, process, timeout, message):
