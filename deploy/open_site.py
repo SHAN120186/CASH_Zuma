@@ -50,7 +50,11 @@ def running_url():
 
 def launch(script, args=(), env=None):
     label = Path(script).stem
-    flags = (subprocess.CREATE_NO_WINDOW | subprocess.CREATE_NEW_PROCESS_GROUP) if os.name == 'nt' else 0
+    flags = (
+        subprocess.DETACHED_PROCESS
+        | subprocess.CREATE_NEW_PROCESS_GROUP
+        | subprocess.CREATE_BREAKAWAY_FROM_JOB
+    ) if os.name == 'nt' else 0
     with (RUNTIME / f'{label}-launch.out.log').open('ab') as out, (RUNTIME / f'{label}-launch.err.log').open('ab') as err:
         return subprocess.Popen(
             [sys.executable, str(ROOT / script), *args], cwd=ROOT,
