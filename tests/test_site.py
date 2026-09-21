@@ -651,4 +651,30 @@ class SiteTests(unittest.TestCase):
         self.assertEqual(result.status_code,200,result.text);self.assertTrue(result.json()['can_commit'],result.text)
         self.assertEqual(result.json()['rows'][0]['account_id'],self.acc)
 
+    def test_59_company_scenarios_notes_group_preview_and_file_dedup(self):
+        boot=self.client.get('/api/bootstrap').json();companies={c['code']:c['id'] for c in boot['companies']}
+        self.assertIn('UZGERMED',companies);self.assertIn('ZUMA',companies)
+        base=self.client.get(f"/api/report?year={self.date[:4]}&company_id={companies['UZGERMED']}&scenario=A").json()
+        items=[{'category_id':r['category_id'],'kind':r['kind'],'amount':'0'} for r in base['rows']]
+        next(r for r in items if r['category_id']==1)['amount']='100'
+        for scenario,value in [('A','100'),('B','200'),('V','300')]:
+            next(r for r in items if r['category_id']==1)['amount']=value
+            body={'company_id':companies['UZGERMED'],'scenario':scenario,'month':self.month,'currency':'UZS','version':0,'opening':'1000000','reason':'Утверждён отдельный сценарий','items':items}
+            self.assertEqual(self.post('/api/cash-plan',body).status_code,200)
+        plans=[self.client.get(f"/api/report?year={self.date[:4]}&company_id={companies['UZGERMED']}&scenario={s}").json() for s in ('A','B','V')]
+        self.assertEqual([p['plan_totals'][int(self.month[-2:])-1] for p in plans],['100.00','200.00','300.00'])
+        self.assertEqual(plans[0]['totals'],plans[1]['totals']);self.assertEqual(plans[1]['totals'],plans[2]['totals'])
+        self.assertEqual(self.post('/api/plan-note',{'company_id':companies['UZGERMED'],'scenario':'B','month':self.month,'currency':'UZS','indicator':'net','note':'Изоҳ: перенос оплаты'}).status_code,200)
+        noted=self.client.get(f"/api/report?year={self.date[:4]}&company_id={companies['UZGERMED']}&scenario=B").json()
+        self.assertEqual(noted['notes'][self.month+':net'],'Изоҳ: перенос оплаты')
+        preview=self.client.get(f"/api/group-report?company_id={companies['UZGERMED']}&currency=UZS&scenario=A&month={self.month}&day={self.date}")
+        self.assertEqual(preview.status_code,200,preview.text);self.assertIn('сценарий A',preview.json()['text'])
+        self.assertNotIn('send',preview.json())
+        template=self.client.get('/api/import/template.csv').content.decode('utf-8-sig')
+        raw=template+f'{self.date};Поступление;Test bank;;Поступления от покупателей;1.00;Покупатель;DIGEST-1;Проверка повторного файла\r\n'
+        first=self.client.post('/api/import/preview',content=raw.encode(),headers={**self.h,'X-Filename':'same.csv'});self.assertEqual(first.status_code,200,first.text)
+        self.assertEqual(self.post(f"/api/import/{first.json()['id']}/commit",{}).status_code,200)
+        again=self.client.post('/api/import/preview',content=raw.encode(),headers={**self.h,'X-Filename':'same.csv'})
+        self.assertEqual(again.status_code,409);self.assertIn('уже импортирован',again.text)
+
 if __name__=='__main__':unittest.main(verbosity=2)

@@ -2,17 +2,18 @@
 import json
 from datetime import date
 from sqlalchemy import select
-from .db import Account, Category, Ledger, CashPlan
+from .db import Account, Category, Ledger, CashPlan, PlanNote
 from .services import effective_cashflows, money
 
 ACTIVITIES = {'operating':'Операционная деятельность', 'investing':'Инвестиционная деятельность', 'financing':'Финансовая деятельность'}
 
-def report(s, year, currency):
-    accounts = list(s.scalars(select(Account).where(Account.currency == currency)))
+def report(s, year, currency, company_id, scenario='A'):
+    accounts = list(s.scalars(select(Account).where(Account.currency == currency, Account.company_id == company_id)))
     aids = {a.id for a in accounts}
     categories = list(s.scalars(select(Category).order_by(Category.id)))
     entries = [t for t in s.scalars(effective_cashflows(s).where(Ledger.date < date(year+1,1,1))) if t.account_id in aids and t.kind != 'transfer']
-    periods = {p.month: p for p in s.scalars(select(CashPlan).where(CashPlan.currency == currency, CashPlan.month >= f'{year}-01', CashPlan.month <= f'{year}-12'))}
+    periods = {p.month: p for p in s.scalars(select(CashPlan).where(CashPlan.company_id==company_id,CashPlan.scenario==scenario,CashPlan.currency == currency, CashPlan.month >= f'{year}-01', CashPlan.month <= f'{year}-12'))}
+    notes = {f'{n.month}:{n.indicator}':n.note for n in s.scalars(select(PlanNote).where(PlanNote.company_id==company_id,PlanNote.scenario==scenario,PlanNote.currency==currency,PlanNote.month>=f'{year}-01',PlanNote.month<=f'{year}-12'))}
     payloads = [json.loads(periods[f'{year}-{m:02}'].payload) if f'{year}-{m:02}' in periods else {} for m in range(1,13)]
     rows = []
     for c in categories:
@@ -45,7 +46,7 @@ def report(s, year, currency):
     def formatted(values):return [money(v) if v is not None else None for v in values]
     for r in rows+groups:
         r['values']=formatted(r['values']);r['plan']=formatted(r['plan'])
-    return {'year':year,'currency':currency,'rows':rows,'groups':groups,'totals':formatted(net),'plan_totals':formatted(plan_net),
+    return {'year':year,'currency':currency,'company_id':company_id,'scenario':scenario,'notes':notes,'rows':rows,'groups':groups,'totals':formatted(net),'plan_totals':formatted(plan_net),
             'opening':formatted(opening),'closing':formatted(closing),'opening_adjustments':formatted(adjustments),
             'plan_opening':formatted(plan_opening),'plan_closing':formatted(plan_closing),
             'plan_versions':[periods[f'{year}-{m:02}'].version if f'{year}-{m:02}' in periods else 0 for m in range(1,13)],

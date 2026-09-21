@@ -26,7 +26,7 @@ PUBLIC_ORIGIN=os.getenv('PUBLIC_ORIGIN','').rstrip('/')
 async def lifespan(app):
     initialize()
     yield
-app=FastAPI(title='UZGERMED Treasury',version='2.4.0',docs_url=None,redoc_url=None,openapi_url=None,lifespan=lifespan)
+app=FastAPI(title='UZGERMED Treasury',version='2.6.0',docs_url=None,redoc_url=None,openapi_url=None,lifespan=lifespan)
 app.add_middleware(TrustedHostMiddleware,allowed_hosts=ALLOWED)
 app.mount('/static',StaticFiles(directory=ROOT/'app'/'static'),name='static')
 
@@ -104,6 +104,7 @@ class AccountIn(Input):
     opening:str
     opening_date:date
     allow_overdraft:bool=False
+    company_id:Optional[int]=None
 class CategoryIn(Input):
     name:str=Field(min_length=2,max_length=160)
     activity:Literal['operating','investing','financing']='operating'
@@ -226,10 +227,11 @@ def change_password(data:PasswordIn,request:Request):
 def bootstrap(request:Request):
     with unit() as s:
         user,session=session_user(s,request)
-        a=[{'id':a.id,'name':a.name,'kind':a.kind,'currency':a.currency,'opening_date':str(a.opening_date)} for a in s.scalars(select(Account).where(Account.archived==False).order_by(Account.name))]
+        companies=[{'id':x.id,'code':x.code,'name':x.name} for x in s.scalars(select(Company).where(Company.active==True).order_by(Company.id))]
+        a=[{'id':a.id,'name':a.name,'kind':a.kind,'currency':a.currency,'company_id':a.company_id,'opening_date':str(a.opening_date)} for a in s.scalars(select(Account).where(Account.archived==False).order_by(Account.name))]
         c=[{'id':c.id,'name':c.name,'activity':c.activity,'type':c.type} for c in s.scalars(select(Category).order_by(Category.id))]
         cp=[{'name':x.name,'inn':x.inn} for x in s.scalars(select(Counterparty).order_by(Counterparty.name).limit(1000))]
-        return {'accounts':a,'categories':c,'counterparties':cp,'roles':ROLES,'today':str(today()),'user':user_json(user),'csrf':session.csrf}
+        return {'accounts':a,'companies':companies,'categories':c,'counterparties':cp,'roles':ROLES,'today':str(today()),'user':user_json(user),'csrf':session.csrf}
 
 def remember_counterparty(s,name):
     """Справочник пополняется автоматически при вводе документов."""
@@ -247,7 +249,7 @@ def get_dashboard(request:Request,currency:Literal['UZS','USD','EUR']='UZS',days
 def accounts(request:Request,archived:bool=False):
     with unit() as s:
         session_user(s,request,'view')
-        return [{'id':a.id,'name':a.name,'kind':a.kind,'currency':a.currency,'opening':money(a.opening),
+        return [{'id':a.id,'name':a.name,'kind':a.kind,'currency':a.currency,'company_id':a.company_id,'opening':money(a.opening),
                  'balance':money(account_balance(s,a)),'opening_date':str(a.opening_date),'allow_overdraft':a.allow_overdraft,'archived':a.archived} for a in s.scalars(select(Account).where(Account.archived==archived).order_by(Account.id))]
 
 @app.post('/api/accounts/{id}/archive')
@@ -290,7 +292,9 @@ def add_account(data:AccountIn,request:Request):
         if u.role=='cashier':raise HTTPException(403,'Счета создаёт финансист или администратор.')
         if data.opening_date>today():raise HTTPException(422,'Начальный остаток не может быть задан будущей датой.')
         if data.kind=='cash' and data.allow_overdraft:raise HTTPException(422,'Для кассы отрицательный остаток запрещён.')
-        a=Account(name=data.name,kind=data.kind,currency=data.currency,opening=amount(data.opening,True),opening_date=data.opening_date,allow_overdraft=data.allow_overdraft,created_by=u.id)
+        company_id=data.company_id or s.scalar(select(Company.id).where(Company.code=='UZGERMED'))
+        get(s,Company,company_id)
+        a=Account(name=data.name,kind=data.kind,currency=data.currency,company_id=company_id,opening=amount(data.opening,True),opening_date=data.opening_date,allow_overdraft=data.allow_overdraft,created_by=u.id)
         s.add(a);s.flush();log(s,u,'Создан счёт / касса','account',a.id,f'{a.name}; {money(a.opening)} {a.currency}; начало дня {a.opening_date}')
         return {'id':a.id}
 @app.post('/api/accounts/{id}')
@@ -310,6 +314,7 @@ def edit_account(id:int,data:AccountEdit,request:Request):
         if dates and data.opening_date>min(dates):raise HTTPException(409,'Дата начала учёта не может быть позже существующих операций, заявок или поступлений.')
         def snapshot():return {'name':a.name,'kind':a.kind,'currency':a.currency,'opening':money(a.opening),'opening_date':str(a.opening_date),'allow_overdraft':a.allow_overdraft}
         before=snapshot()
+        if data.company_id is not None:get(s,Company,data.company_id);a.company_id=data.company_id
         a.name=data.name;a.kind=data.kind;a.currency=data.currency;a.opening=amount(data.opening,True)
         a.opening_date=data.opening_date;a.allow_overdraft=data.allow_overdraft
         s.flush();validate_running_balance(s,a)
@@ -517,12 +522,36 @@ def reverse(id:int,data:ReverseIn,request:Request):
         return {'id':inv.id}
 
 @app.get('/api/report')
-def operational_report(request:Request,year:int=2026,currency:Literal['UZS','USD','EUR']='UZS'):
+def operational_report(request:Request,year:int=2026,currency:Literal['UZS','USD','EUR']='UZS',company_id:int|None=None,scenario:Literal['A','B','V']='A'):
     if not 2000<=year<=2100:raise HTTPException(422,'Некорректный год.')
     with unit() as s:
         session_user(s,request,'view')
+        company_id=company_id or s.scalar(select(Company.id).where(Company.code=='UZGERMED'))
+        get(s,Company,company_id)
         from .cash_report import report
-        return report(s,year,currency)
+        return report(s,year,currency,company_id,scenario)
+
+@app.get('/api/group-report')
+def group_report(request:Request,company_id:int,currency:Literal['UZS','USD','EUR']='UZS',scenario:Literal['A','B','V']='A',month:str=Query(pattern=r'^20\d{2}-(0[1-9]|1[0-2])$'),day:date|None=None):
+    """Read-only Telegram-ready preview. Sending is deliberately outside the product."""
+    with unit() as s:
+        session_user(s,request,'view');company=get(s,Company,company_id)
+        y,m=map(int,month.split('-'));start=date(y,m,1);end=date(y+1,1,1) if m==12 else date(y,m+1,1);day=day or today()
+        if not start<=day<end:raise HTTPException(422,'День должен входить в выбранный месяц.')
+        aids={a.id for a in s.scalars(select(Account).where(Account.company_id==company_id,Account.currency==currency))}
+        entries=[t for t in s.scalars(effective_cashflows(s).where(Ledger.date>=start,Ledger.date<end)) if t.account_id in aids and t.kind!='transfer']
+        plan=s.scalar(select(CashPlan).where(CashPlan.company_id==company_id,CashPlan.month==month,CashPlan.currency==currency,CashPlan.scenario==scenario))
+        payload=json.loads(plan.payload) if plan else {}
+        income_fact=sum(t.amount for t in entries if t.kind=='in');expense_day=sum(t.amount for t in entries if t.kind=='out' and t.date==day)
+        income_plan=sum(v for k,v in payload.items() if k.endswith(':in'))
+        expense_plan_day=abs(sum(v for k,v in payload.items() if k.endswith(':out')))//max(1,(end-start).days)
+        def line(label,plan_value,fact_value):
+            if plan_value==0:return f'{label}: факт {money(fact_value)} {currency}; план не задан' if fact_value else f'{label}: данных нет'
+            deviation=fact_value-plan_value
+            marker='выше' if deviation>0 else 'ниже' if deviation<0 else 'по плану'
+            return f'{label}: план {money(plan_value)}, факт {money(fact_value)}, отклонение {money(abs(deviation))} ({marker}) {currency}'
+        text='\n'.join([f'{company.name} · {month} · сценарий {scenario}',line('Поступления за месяц',income_plan,income_fact),line(f'Выплаты за {day.strftime("%d.%m.%Y")}',expense_plan_day,expense_day)])
+        return {'text':text,'company':company.name,'month':month,'day':str(day),'currency':currency,'scenario':scenario}
 
 @app.get('/api/export/ledger.csv')
 def export_ledger(request:Request):

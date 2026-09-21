@@ -94,7 +94,10 @@ def preview(s,u,raw,name):
                 message='Повторный документ или нарушенная связь.' if isinstance(exc,IntegrityError) else getattr(exc,'detail',str(exc))
                 errors.append({'line':line,'error':str(message)[:1000]})
     finally:transaction.rollback()
-    batch=ImportBatch(user_id=u.id,filename=name[:220],digest=hashlib.sha256(raw).hexdigest(),payload=json.dumps(valid,ensure_ascii=False),status='invalid' if errors else 'preview')
+    digest=hashlib.sha256(raw).hexdigest()
+    previous=s.scalar(select(ImportBatch).where(ImportBatch.digest==digest,ImportBatch.status=='committed').limit(1))
+    if previous:raise HTTPException(409,f'Этот файл уже импортирован (пакет №{previous.id}). Повторная загрузка заблокирована.')
+    batch=ImportBatch(user_id=u.id,filename=name[:220],digest=digest,payload=json.dumps(valid,ensure_ascii=False),status='invalid' if errors else 'preview')
     s.add(batch);s.flush();log(s,u,'Предпросмотр импорта','import',batch.id,f'{len(rows)} строк; ошибок: {len(errors)}')
     return {'id':batch.id,'rows':valid,'errors':errors,'count':len(rows),'can_commit':not errors}
 
@@ -170,17 +173,17 @@ def report_data(s,year,currency):
         totals=[a+b for a,b in zip(totals,values)]
     return rows, [money(v) for v in totals]
 
-def render_report(s,year,currency,format,mode='actual',start_month=1,end_month=12):
+def render_report(s,year,currency,format,mode='actual',start_month=1,end_month=12,company_id=None,scenario='A'):
     from .report_export import render
-    return render(s,year,currency,format,mode,start_month,end_month)
+    return render(s,year,currency,format,mode,start_month,end_month,company_id,scenario)
 
 @router.get('/api/export/report.{format}')
-def export_report(format:Literal['xlsx','pdf'],request:Request,year:int=2026,currency:Literal['UZS','USD','EUR']='UZS',mode:Literal['actual','plan']='actual',start_month:int=1,end_month:int=12):
+def export_report(format:Literal['xlsx','pdf'],request:Request,year:int=2026,currency:Literal['UZS','USD','EUR']='UZS',mode:Literal['actual','plan']='actual',start_month:int=1,end_month:int=12,company_id:int|None=None,scenario:Literal['A','B','V']='A'):
     if not 2000<=year<=2100:raise HTTPException(422,'Некорректный год.')
     with unit() as s:
         session_user(s,request,'export')
         if not 1<=start_month<=end_month<=12:raise HTTPException(422,'Некорректные месяцы.')
-        raw=render_report(s,year,currency,format,mode,start_month,end_month)
+        raw=render_report(s,year,currency,format,mode,start_month,end_month,company_id,scenario)
     mime='application/pdf' if format=='pdf' else 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
     return Response(raw,media_type=mime,headers={'Content-Disposition':f'attachment; filename="cashflow-{year}-{currency}.{format}"'})
 

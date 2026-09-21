@@ -68,15 +68,37 @@ class Category(Base):
     type = Column(String(12), nullable=False, default='outcome')
     cost_group = Column(String(12), nullable=False, default='other')
 
+class Company(Base):
+    __tablename__ = 'companies'
+    id = Column(Integer, primary_key=True)
+    code = Column(String(40), unique=True, nullable=False)
+    name = Column(String(160), unique=True, nullable=False)
+    active = Column(Boolean, nullable=False, default=True)
+
 class CashPlan(Base):
     __tablename__ = 'cash_plans'
     id = Column(Integer, primary_key=True)
     month = Column(String(7), nullable=False)
     currency = Column(String(3), nullable=False)
+    company_id = Column(Integer, ForeignKey('companies.id'), nullable=False)
+    scenario = Column(String(1), nullable=False, default='A')
     opening = Column(BigInteger, nullable=True)
     payload = Column(Text, nullable=False, default='{}')
     version = Column(Integer, nullable=False, default=1)
-    __table_args__ = (UniqueConstraint('month', 'currency'),)
+    __table_args__ = (UniqueConstraint('company_id','month','currency','scenario'),)
+
+class PlanNote(Base):
+    __tablename__ = 'plan_notes'
+    id = Column(Integer, primary_key=True)
+    company_id = Column(Integer, ForeignKey('companies.id'), nullable=False)
+    month = Column(String(7), nullable=False)
+    currency = Column(String(3), nullable=False)
+    scenario = Column(String(1), nullable=False)
+    indicator = Column(String(80), nullable=False)
+    note = Column(Text, nullable=False, default='')
+    updated_by = Column(Integer, ForeignKey('users.id'), nullable=False)
+    updated_at = Column(DateTime, nullable=False, default=now)
+    __table_args__ = (UniqueConstraint('company_id','month','currency','scenario','indicator'),)
 
 class Counterparty(Base):
     __tablename__ = 'counterparties'
@@ -91,12 +113,19 @@ class Account(Base):
     name = Column(String(160), unique=True, nullable=False)
     kind = Column(String(12), nullable=False) # bank / cash
     currency = Column(String(3), nullable=False)
+    company_id = Column(Integer, ForeignKey('companies.id'), nullable=False)
     opening = Column(BigInteger, nullable=False) # сотые доли валюты; не float
     opening_date = Column(Date, nullable=False) # начало дня
     allow_overdraft = Column(Boolean, nullable=False, default=False)
     created_by = Column(Integer, ForeignKey('users.id'), nullable=False)
 
     archived = Column(Boolean, nullable=False, default=False)
+
+@event.listens_for(Account,'before_insert')
+def default_account_company(mapper,connection,target):
+    # Compatibility for internal jobs; API always sends an explicit company.
+    if target.company_id is None:
+        target.company_id=connection.scalar(select(Company.id).where(Company.code=='UZGERMED'))
 
 class Budget(Base):
     __tablename__ = 'budgets'
@@ -258,6 +287,27 @@ def initialize():
         if 'finance_approved_by' not in columns:conn.execute(text('ALTER TABLE payment_requests ADD COLUMN finance_approved_by INTEGER REFERENCES users(id)'))
         if 'archived' not in {c['name'] for c in inspect(conn).get_columns('accounts')}:
             conn.execute(text('ALTER TABLE accounts ADD COLUMN archived BOOLEAN NOT NULL DEFAULT FALSE'))
+        # Company/scenario migration keeps every existing row under UZGERMED/A.
+        conn.execute(text("INSERT INTO companies (code,name,active) SELECT 'UNASSIGNED','Не распределено',TRUE WHERE NOT EXISTS (SELECT 1 FROM companies WHERE code='UNASSIGNED')"))
+        conn.execute(text("INSERT INTO companies (code,name,active) SELECT 'UZGERMED','UZGERMED',TRUE WHERE NOT EXISTS (SELECT 1 FROM companies WHERE code='UZGERMED')"))
+        conn.execute(text("INSERT INTO companies (code,name,active) SELECT 'ZUMA','Zuma',TRUE WHERE NOT EXISTS (SELECT 1 FROM companies WHERE code='ZUMA')"))
+        # Legacy rows are not attributed to a legal entity without evidence.
+        default_company=conn.execute(text("SELECT id FROM companies WHERE code='UNASSIGNED'")).scalar_one()
+        account_columns={c['name'] for c in inspect(conn).get_columns('accounts')}
+        if 'company_id' not in account_columns:
+            conn.execute(text('ALTER TABLE accounts ADD COLUMN company_id INTEGER REFERENCES companies(id)'))
+        conn.execute(text('UPDATE accounts SET company_id=:id WHERE company_id IS NULL'),{'id':default_company})
+        plan_columns={c['name'] for c in inspect(conn).get_columns('cash_plans')}
+        if 'company_id' not in plan_columns:
+            conn.execute(text('ALTER TABLE cash_plans ADD COLUMN company_id INTEGER REFERENCES companies(id)'))
+        if 'scenario' not in plan_columns:
+            conn.execute(text("ALTER TABLE cash_plans ADD COLUMN scenario VARCHAR(1) NOT NULL DEFAULT 'A'"))
+        conn.execute(text('UPDATE cash_plans SET company_id=:id WHERE company_id IS NULL'),{'id':default_company})
+        if not SQLITE:
+            conn.execute(text('ALTER TABLE accounts ALTER COLUMN company_id SET NOT NULL'))
+            conn.execute(text('ALTER TABLE cash_plans ALTER COLUMN company_id SET NOT NULL'))
+            conn.execute(text('ALTER TABLE cash_plans DROP CONSTRAINT IF EXISTS cash_plans_month_currency_key'))
+            conn.execute(text('CREATE UNIQUE INDEX IF NOT EXISTS ux_cash_plan_scope ON cash_plans(company_id,month,currency,scenario)'))
         for name,definition in [('version','INTEGER NOT NULL DEFAULT 1'),('last_editor_id','INTEGER REFERENCES users(id)'),('priority',"VARCHAR(12) NOT NULL DEFAULT 'normal'")]:
             if name not in columns:conn.execute(text(f'ALTER TABLE payment_requests ADD COLUMN {name} {definition}'))
     with Session(engine) as s:
