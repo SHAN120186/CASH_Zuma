@@ -26,7 +26,7 @@ PUBLIC_ORIGIN=os.getenv('PUBLIC_ORIGIN','').rstrip('/')
 async def lifespan(app):
     initialize()
     yield
-app=FastAPI(title='UZGERMED Treasury',version='2.6.0',docs_url=None,redoc_url=None,openapi_url=None,lifespan=lifespan)
+app=FastAPI(title='UZGERMED Treasury',version='2.7.0',docs_url=None,redoc_url=None,openapi_url=None,lifespan=lifespan)
 app.add_middleware(TrustedHostMiddleware,allowed_hosts=ALLOWED)
 app.mount('/static',StaticFiles(directory=ROOT/'app'/'static'),name='static')
 
@@ -444,9 +444,12 @@ def decide(id:int,data:DecisionIn,request:Request):
                 if r.finance_approved_by is None:
                     if u.role not in ('finance','admin'):raise HTTPException(403,'Сначала требуется проверка финансиста.')
                     r.finance_approved_by=u.id
-                    if not needs_director(s,r):r.status='approved';r.approved_by=u.id
+                    if not needs_director(s,r):
+                        enforce_available_funds(s,a,r.due_date,r.amount,r.id)
+                        r.status='approved';r.approved_by=u.id
                 else:
                     if u.role not in ('director','admin') or u.id==r.finance_approved_by:raise HTTPException(403,'Требуется отдельное подтверждение директора.')
+                    enforce_available_funds(s,a,r.due_date,r.amount,r.id)
                     r.status='approved';r.approved_by=u.id
             else:
                 if len(data.note)<5:raise HTTPException(422,'Укажите причину отклонения.')
@@ -522,14 +525,15 @@ def reverse(id:int,data:ReverseIn,request:Request):
         return {'id':inv.id}
 
 @app.get('/api/report')
-def operational_report(request:Request,year:int=2026,currency:Literal['UZS','USD','EUR']='UZS',company_id:int|None=None,scenario:Literal['A','B','V']='A'):
+def operational_report(request:Request,year:int=2026,currency:Literal['UZS','USD','EUR']='UZS',company_id:int|None=None,scenario:Literal['A','B','V']='A',as_of:date|None=None):
     if not 2000<=year<=2100:raise HTTPException(422,'Некорректный год.')
+    if as_of and (as_of.year!=year or as_of>today()):raise HTTPException(422,'Дата отчёта должна быть в выбранном году и не позже сегодня.')
     with unit() as s:
         session_user(s,request,'view')
         company_id=company_id or s.scalar(select(Company.id).where(Company.code=='UZGERMED'))
         get(s,Company,company_id)
         from .cash_report import report
-        return report(s,year,currency,company_id,scenario)
+        return report(s,year,currency,company_id,scenario,as_of)
 
 @app.get('/api/group-report')
 def group_report(request:Request,company_id:int,currency:Literal['UZS','USD','EUR']='UZS',scenario:Literal['A','B','V']='A',month:str=Query(pattern=r'^20\d{2}-(0[1-9]|1[0-2])$'),day:date|None=None):
@@ -537,21 +541,33 @@ def group_report(request:Request,company_id:int,currency:Literal['UZS','USD','EU
     with unit() as s:
         session_user(s,request,'view');company=get(s,Company,company_id)
         y,m=map(int,month.split('-'));start=date(y,m,1);end=date(y+1,1,1) if m==12 else date(y,m+1,1);day=day or today()
-        if not start<=day<end:raise HTTPException(422,'День должен входить в выбранный месяц.')
-        aids={a.id for a in s.scalars(select(Account).where(Account.company_id==company_id,Account.currency==currency))}
-        entries=[t for t in s.scalars(effective_cashflows(s).where(Ledger.date>=start,Ledger.date<end)) if t.account_id in aids and t.kind!='transfer']
+        if not start<=day<end or day>today():raise HTTPException(422,'День должен входить в выбранный месяц и быть не позже сегодня.')
+        accounts=list(s.scalars(select(Account).where(Account.company_id==company_id,Account.currency==currency)))
+        aids={a.id for a in accounts}
+        entries=[t for t in s.scalars(effective_cashflows(s).where(Ledger.date>=start,Ledger.date<=day)) if t.account_id in aids and t.kind!='transfer']
         plan=s.scalar(select(CashPlan).where(CashPlan.company_id==company_id,CashPlan.month==month,CashPlan.currency==currency,CashPlan.scenario==scenario))
         payload=json.loads(plan.payload) if plan else {}
-        income_fact=sum(t.amount for t in entries if t.kind=='in');expense_day=sum(t.amount for t in entries if t.kind=='out' and t.date==day)
-        income_plan=sum(v for k,v in payload.items() if k.endswith(':in'))
-        expense_plan_day=abs(sum(v for k,v in payload.items() if k.endswith(':out')))//max(1,(end-start).days)
-        def line(label,plan_value,fact_value):
-            if plan_value==0:return f'{label}: факт {money(fact_value)} {currency}; план не задан' if fact_value else f'{label}: данных нет'
-            deviation=fact_value-plan_value
-            marker='выше' if deviation>0 else 'ниже' if deviation<0 else 'по плану'
-            return f'{label}: план {money(plan_value)}, факт {money(fact_value)}, отклонение {money(abs(deviation))} ({marker}) {currency}'
-        text='\n'.join([f'{company.name} · {month} · сценарий {scenario}',line('Поступления за месяц',income_plan,income_fact),line(f'Выплаты за {day.strftime("%d.%m.%Y")}',expense_plan_day,expense_day)])
-        return {'text':text,'company':company.name,'month':month,'day':str(day),'currency':currency,'scenario':scenario}
+        bank_ids={a.id for a in accounts if a.kind=='bank'}
+        income_mtd=sum(t.amount for t in entries if t.kind=='in' and t.account_id in bank_ids)
+        last_income=max((t.date for t in entries if t.kind=='in' and t.account_id in bank_ids),default=None)
+        expense_plan=abs(sum(v for k,v in payload.items() if k.endswith(':out')))
+        opening=sum(account_balance(s,a,day-timedelta(days=1)) for a in accounts)
+        income_day=sum(t.amount for t in entries if t.kind=='in' and t.date==day)
+        expense_day=sum(t.amount for t in entries if t.kind=='out' and t.date==day)
+        closing=opening+income_day-expense_day
+        reserved=sum(funds_state(s,a,day)['reserved'] for a in accounts)
+        available=closing-reserved
+        if expense_plan:
+            remaining=max(0,expense_plan-income_mtd);coverage=income_mtd*100/expense_plan
+            plan_line=f'План расходов: {money(expense_plan)} {currency}; банковские поступления MTD: {money(income_mtd)}; до покрытия плана: {money(remaining)}; покрытие {coverage:.1f}%'
+        else:plan_line=f'План расходов: данных нет; банковские поступления MTD: {money(income_mtd)} {currency}'
+        last_line='нет' if last_income is None else last_income.strftime('%d.%m.%Y')
+        day_label=day.strftime('%d.%m.%Y')
+        text='\n'.join([f'{company.name} · {month} · сценарий {scenario}',plan_line,f'Последнее банковское поступление: {last_line}',
+            f'{day_label}: начало дня {money(opening)}; приход {money(income_day)}; расход {money(expense_day)}; конец дня {money(closing)}; резерв {money(reserved)}; доступно {money(available)} {currency}'])
+        return {'text':text,'company':company.name,'month':month,'day':str(day),'currency':currency,'scenario':scenario,
+            'expense_plan':money(expense_plan),'bank_income_mtd':money(income_mtd),'last_bank_income':str(last_income) if last_income else None,
+            'opening':money(opening),'income_day':money(income_day),'expense_day':money(expense_day),'closing':money(closing),'reserved':money(reserved),'available':money(available)}
 
 @app.get('/api/export/ledger.csv')
 def export_ledger(request:Request):
@@ -648,3 +664,6 @@ app.include_router(erp_router)
 
 from .review_api import router as review_router
 app.include_router(review_router)
+
+from .plan_import import router as plan_import_router
+app.include_router(plan_import_router)

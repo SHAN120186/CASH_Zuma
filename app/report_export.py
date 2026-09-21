@@ -7,9 +7,9 @@ from .cash_report import report, export_rows
 
 MONTHS=['Янв','Фев','Мар','Апр','Май','Июн','Июл','Авг','Сен','Окт','Ноя','Дек']
 
-def render(s,year,currency,format,mode='actual',start_month=1,end_month=12,company_id=None,scenario='A'):
+def render(s,year,currency,format,mode='actual',start_month=1,end_month=12,company_id=None,scenario='A',as_of=None):
     company_id=company_id or s.scalar(select(Company.id).where(Company.code=='UZGERMED'))
-    data=report(s,year,currency,company_id,scenario);lines=export_rows(data);stream=io.BytesIO()
+    data=report(s,year,currency,company_id,scenario,as_of);lines=export_rows(data);stream=io.BytesIO()
     indices=list(range(start_month-1,end_month))
     def values(fact,plan,m):
         f,p=fact[m],plan[m]

@@ -173,17 +173,18 @@ def report_data(s,year,currency):
         totals=[a+b for a,b in zip(totals,values)]
     return rows, [money(v) for v in totals]
 
-def render_report(s,year,currency,format,mode='actual',start_month=1,end_month=12,company_id=None,scenario='A'):
+def render_report(s,year,currency,format,mode='actual',start_month=1,end_month=12,company_id=None,scenario='A',as_of=None):
     from .report_export import render
-    return render(s,year,currency,format,mode,start_month,end_month,company_id,scenario)
+    return render(s,year,currency,format,mode,start_month,end_month,company_id,scenario,as_of)
 
 @router.get('/api/export/report.{format}')
-def export_report(format:Literal['xlsx','pdf'],request:Request,year:int=2026,currency:Literal['UZS','USD','EUR']='UZS',mode:Literal['actual','plan']='actual',start_month:int=1,end_month:int=12,company_id:int|None=None,scenario:Literal['A','B','V']='A'):
+def export_report(format:Literal['xlsx','pdf'],request:Request,year:int=2026,currency:Literal['UZS','USD','EUR']='UZS',mode:Literal['actual','plan']='actual',start_month:int=1,end_month:int=12,company_id:int|None=None,scenario:Literal['A','B','V']='A',as_of:date|None=None):
     if not 2000<=year<=2100:raise HTTPException(422,'Некорректный год.')
     with unit() as s:
         session_user(s,request,'export')
         if not 1<=start_month<=end_month<=12:raise HTTPException(422,'Некорректные месяцы.')
-        raw=render_report(s,year,currency,format,mode,start_month,end_month,company_id,scenario)
+        if as_of and (as_of.year!=year or as_of>today()):raise HTTPException(422,'Некорректная дата отчёта.')
+        raw=render_report(s,year,currency,format,mode,start_month,end_month,company_id,scenario,as_of)
     mime='application/pdf' if format=='pdf' else 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
     return Response(raw,media_type=mime,headers={'Content-Disposition':f'attachment; filename="cashflow-{year}-{currency}.{format}"'})
 

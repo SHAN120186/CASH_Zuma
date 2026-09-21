@@ -30,11 +30,41 @@ def get(s,cls,id):
 def log(s,user,action,entity,id='',detail=''):
     s.add(Audit(user_id=user.id if user else None,action=action,entity=entity,entity_id=str(id),detail=detail))
 def account_balance(s,a,upto=None):
-    upto=upto or today();balance=a.opening
+    upto=upto or today()
+    if upto<a.opening_date:return 0
+    balance=a.opening
     for t in s.scalars(select(Ledger).where(Ledger.date<=upto)):
         if t.account_id==a.id:balance += t.amount if t.kind=='in' else -t.amount
         if t.to_account_id==a.id:balance += t.amount
     return balance
+
+def funds_state(s, account, as_of, exclude_request=None):
+    """Actual account money less fully approved unpaid requests due by ``as_of``.
+
+    The caller runs inside ``unit(write=True)`` for approval/payment paths.  That
+    transaction serializes writers (Guard row on PostgreSQL, BEGIN IMMEDIATE on
+    SQLite), so two approvals cannot reserve the same money concurrently.
+    """
+    if as_of < account.opening_date:
+        raise HTTPException(422,'Дата раньше начала учёта выбранного счёта.')
+    actual=account_balance(s,account,as_of)
+    approved=s.scalars(select(PaymentRequest).where(
+        PaymentRequest.account_id==account.id,
+        PaymentRequest.status=='approved',
+        PaymentRequest.due_date<=as_of,
+    ))
+    reserved=sum(r.amount for r in approved if r.id!=exclude_request)
+    return {'actual':actual,'reserved':reserved,'available':actual-reserved,
+            'account_id':account.id,'currency':account.currency,'as_of':str(as_of)}
+
+def enforce_available_funds(s, account, as_of, required, exclude_request=None):
+    state=funds_state(s,account,as_of,exclude_request)
+    if state['available']<required:
+        raise HTTPException(409,
+            f'Недостаточно доступных средств на счёте «{account.name}» на {as_of}: '
+            f'{money(state["available"])} {account.currency}. Требуется {money(required)} {account.currency}. '
+            f'Фактический остаток {money(state["actual"])}; резерв утверждённых заявок {money(state["reserved"])}.')
+    return state
 
 def validate_running_balance(s,a):
     """Проверка на конец каждого дня, включая ввод задним числом."""
@@ -119,6 +149,7 @@ def post_ledger(s,u,data):
             raise HTTPException(409,'Поступление уже закрыто или сумма/счёт не совпадают.')
     if kind=='out':
         enforce_budget(s,data.category_id,data.date,a.currency,n,data.note,req.id if req else None)
+        enforce_available_funds(s,a,data.date,n,req.id if req else None)
         if not req and len(data.note.strip())<10:raise HTTPException(422,'Для расхода без заявки укажите основание не короче 10 символов.')
     t=Ledger(account_id=a.id,to_account_id=target.id if target else None,category_id=data.category_id if kind!='transfer' else None,
              kind=kind,amount=n,date=data.date,counterparty=data.counterparty,reference=data.reference.strip(),

@@ -242,6 +242,20 @@ class ImportBatch(Base):
     status = Column(String(20), default='preview', nullable=False)
     created_at = Column(DateTime, default=now, nullable=False)
 
+class PlanImportBatch(Base):
+    __tablename__ = 'plan_import_batches'
+    id = Column(Integer, primary_key=True)
+    user_id = Column(Integer, ForeignKey('users.id'), nullable=False)
+    company_id = Column(Integer, ForeignKey('companies.id'), nullable=False)
+    filename = Column(String(220), nullable=False)
+    digest = Column(String(64), nullable=False)
+    year = Column(Integer, nullable=False)
+    month_from = Column(Integer, nullable=False)
+    month_to = Column(Integer, nullable=False)
+    payload = Column(Text, nullable=False)
+    status = Column(String(20), default='preview', nullable=False)
+    created_at = Column(DateTime, default=now, nullable=False)
+
 class ReportSchedule(Base):
     __tablename__ = 'report_schedules'
     id = Column(Integer, primary_key=True)

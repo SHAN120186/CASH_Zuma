@@ -213,12 +213,11 @@ class SiteTests(unittest.TestCase):
     def test_21_forecast_detects_shortfall_on_individual_account(self):
         second=self.post('/api/accounts',{'name':'Empty bank','kind':'bank','currency':'UZS','opening':'0','opening_date':self.date}).json()['id']
         r=self.post('/api/requests',{'account_id':second,'category_id':self.cat,'counterparty':'Supplier','amount':'100','date':self.date,'purpose':'Оплата с отдельного пустого счёта'})
-        self.assertEqual(self.approve(r.json()['id']).status_code,200)
+        denied=self.approve(r.json()['id']);self.assertEqual(denied.status_code,409)
+        self.assertIn('Недостаточно доступных средств',denied.text)
         day=self.client.get('/api/dashboard').json()['forecast'][0]
-        self.assertEqual(day['balance'],'999900.00')
-        self.assertTrue(day['risk'])
-        self.assertEqual(day['account_shortfalls'][0]['account_id'],second)
-        self.assertEqual(day['account_shortfalls'][0]['balance'],'-100.00')
+        self.assertEqual(day['balance'],'1000000.00');self.assertFalse(day['risk'])
+        self.assertTrue(day['requested_risk']);self.assertEqual(day['requested_account_shortfalls'][0]['account_id'],second)
 
     def test_22_backdated_expense_checks_later_daily_balances(self):
         self.assertEqual(self.ledger('999950','out',reference='SPEND').status_code,200)
@@ -676,5 +675,87 @@ class SiteTests(unittest.TestCase):
         self.assertEqual(self.post(f"/api/import/{first.json()['id']}/commit",{}).status_code,200)
         again=self.client.post('/api/import/preview',content=raw.encode(),headers={**self.h,'X-Filename':'same.csv'})
         self.assertEqual(again.status_code,409);self.assertIn('уже импортирован',again.text)
+
+    def test_60_available_funds_reservations_release_and_payment_recheck(self):
+        self.post('/api/approval-policy',{'amount':'10000000'})
+        first=self.request('600000').json();self.assertEqual(self.approve(first['id']).status_code,200)
+        second=self.request('500000').json();denied=self.approve(second['id'])
+        self.assertEqual(denied.status_code,409);self.assertIn('резерв утверждённых заявок 600000.00',denied.text)
+        self.assertEqual(self.post(f"/api/requests/{first['id']}/decision",{'action':'cancel','note':'Платёж отменён поставщиком'}).status_code,200)
+        self.assertEqual(self.approve(second['id']).status_code,200)
+        # A manual payment cannot consume money reserved for another approved request.
+        self.assertEqual(self.ledger('600000','out',reference='UNRESERVED').status_code,409)
+        paid=self.ledger('500000','out',reference='PAY-SECOND',request_id=second['id'])
+        self.assertEqual(paid.status_code,200,paid.text)
+        self.assertEqual(self.client.get('/api/dashboard').json()['balance'],'500000.00')
+
+    def test_61_funds_are_isolated_by_account_company_and_currency(self):
+        companies={c['code']:c['id'] for c in self.client.get('/api/bootstrap').json()['companies']}
+        self.post('/api/accounts',{'name':'Zuma rich bank','company_id':companies['ZUMA'],'kind':'bank','currency':'UZS','opening':'9000000','opening_date':self.date})
+        empty=self.post('/api/accounts',{'name':'UZGERMED empty bank','company_id':companies['UZGERMED'],'kind':'bank','currency':'UZS','opening':'0','opening_date':self.date}).json()['id']
+        r=self.post('/api/requests',{'account_id':empty,'category_id':self.cat,'counterparty':'Supplier','amount':'1','date':self.date,'purpose':'Проверка изоляции денег'}).json()
+        denied=self.approve(r['id']);self.assertEqual(denied.status_code,409);self.assertIn('UZS',denied.text)
+
+    def test_62_group_report_bank_mtd_as_of_and_no_opening_or_transfer_double_count(self):
+        companies={c['code']:c['id'] for c in self.client.get('/api/bootstrap').json()['companies']}
+        cash=self.post('/api/accounts',{'name':'Test cash MTD','company_id':companies['UZGERMED'],'kind':'cash','currency':'UZS','opening':'0','opening_date':str(today()-timedelta(days=10))}).json()['id']
+        self.assertEqual(self.ledger('100','in',reference='BANK-MTD').status_code,200)
+        self.assertEqual(self.ledger('200','in',reference='CASH-MTD',account_id=cash).status_code,200)
+        self.assertEqual(self.ledger('50','transfer',reference='TRANSFER-MTD',to_account_id=cash).status_code,200)
+        r=self.client.get(f"/api/group-report?company_id={companies['UZGERMED']}&currency=UZS&scenario=A&month={self.month}&day={self.date}")
+        self.assertEqual(r.status_code,200,r.text);data=r.json()
+        self.assertEqual(data['bank_income_mtd'],'100.00')
+        self.assertEqual(data['income_day'],'300.00') # external bank + cash income; transfer excluded
+        self.assertEqual(data['opening'],'1000000.00')
+        self.assertEqual(data['closing'],'1000300.00')
+        future=(today()+timedelta(days=1)).isoformat()
+        self.assertEqual(self.client.get(f"/api/group-report?company_id={companies['UZGERMED']}&currency=UZS&scenario=A&month={future[:7]}&day={future}").status_code,422)
+
+    def test_63_plan_import_header_mapping_blanks_zero_details_and_dedup(self):
+        import io
+        from openpyxl import Workbook
+        companies={c['code']:c['id'] for c in self.client.get('/api/bootstrap').json()['companies']}
+        # Existing January A plan must survive a blank source cell.
+        body={'company_id':companies['UZGERMED'],'scenario':'A','month':'2026-01','currency':'UZS','version':0,'opening':None,
+              'reason':'Исходный план для проверки пустой ячейки','items':[{'category_id':self.cat,'kind':'out','amount':'99'}]}
+        self.assertEqual(self.post('/api/cash-plan',body).status_code,200)
+        wb=Workbook();ws=wb.active;ws.title='план на год';ws['H7']='Б';ws['I7']='А';ws['J7']='В'
+        ws.append([])
+        ws['A8']=date(2026,1,1);ws['E8']='Жами ҳаражатлар';ws['H8']=999999
+        ws['A9']=date(2026,1,1);ws['B9']=1;ws['C9']='61';ws['E9']='Закупка сырья';ws['H9']=20;ws['I9']=None;ws['J9']=30
+        # A coded expense remains a detail even when the optional sequence in B is blank.
+        ws['A10']=date(2026,1,1);ws['C10']='7';ws['E10']='Курсовые разницы';ws['J10']=0
+        ws['A11']=date(2026,1,1);ws['E11']='Жами тушум';ws['H11']=999999
+        ws['A12']=date(2026,1,1);ws['B12']=2;ws['C12']='IN';ws['E12']='Доход после итога';ws['H12']=777 # income detail, ignored
+        ws['A13']=date(2026,2,1);ws['E13']='Жами ҳаражатлар'
+        ws['A14']=date(2026,2,1);ws['B14']=1;ws['C14']='61';ws['E14']='Закупка сырья';ws['H14']=25;ws['I14']=0;ws['J14']=35
+        out=io.BytesIO();wb.save(out);wb.close();raw=out.getvalue()
+        url=f"/api/plan-import/preview?company_id={companies['UZGERMED']}&year=2026&month_from=1&month_to=2"
+        p=self.client.post(url,content=raw,headers={**self.h,'Content-Type':'application/octet-stream','X-Filename':'synthetic.xlsx'})
+        self.assertEqual(p.status_code,200,p.text);data=p.json();self.assertTrue(data['can_commit']);self.assertEqual(len(data['rows']),3)
+        self.assertEqual(data['rows'][0]['amounts'],{'A':None,'B':2000,'V':3000})
+        self.assertEqual(data['rows'][1]['amounts'],{'A':None,'B':None,'V':0})
+        mapping={data['rows'][0]['source_key']:str(self.cat),data['rows'][1]['source_key']:str(self.cat)}
+        committed=self.post(f"/api/plan-import/{data['id']}/commit",{'mappings':mapping,'reason':'Подтверждение синтетического плана'})
+        self.assertEqual(committed.status_code,200,committed.text)
+        jan={s:self.client.get(f"/api/report?year=2026&company_id={companies['UZGERMED']}&scenario={s}&as_of=2026-01-31").json() for s in ('A','B','V')}
+        idx=next(i for i,r in enumerate(jan['A']['rows']) if r['category_id']==self.cat and r['kind']=='out')
+        self.assertEqual(jan['A']['rows'][idx]['plan'][0],'-99.00')
+        self.assertEqual(jan['B']['rows'][idx]['plan'][0],'-20.00');self.assertEqual(jan['V']['rows'][idx]['plan'][0],'-30.00')
+        feb=self.client.get(f"/api/report?year=2026&company_id={companies['UZGERMED']}&scenario=A&as_of=2026-02-28").json()
+        self.assertEqual(feb['rows'][idx]['plan'][1],'0.00')
+        self.assertEqual(self.client.post(url,content=raw,headers={**self.h,'Content-Type':'application/octet-stream','X-Filename':'synthetic.xlsx'}).status_code,409)
+
+    def test_64_plan_import_reports_formula_without_cached_value(self):
+        import io
+        from openpyxl import Workbook
+        companies={c['code']:c['id'] for c in self.client.get('/api/bootstrap').json()['companies']}
+        wb=Workbook();ws=wb.active;ws.title='план на год';ws['H7']='Б';ws['I7']='А';ws['J7']='В'
+        ws['A8']=date(2026,1,1);ws['E8']='Жами ҳаражатлар'
+        ws['A9']=date(2026,1,1);ws['B9']=1;ws['C9']='61';ws['E9']='Закупка сырья';ws['H9']=20;ws['I9']=10;ws['J9']='=10+20'
+        out=io.BytesIO();wb.save(out);wb.close()
+        r=self.client.post(f"/api/plan-import/preview?company_id={companies['UZGERMED']}&year=2026&month_from=1&month_to=1",content=out.getvalue(),headers={**self.h,'Content-Type':'application/octet-stream','X-Filename':'formula.xlsx'})
+        self.assertEqual(r.status_code,200,r.text);self.assertFalse(r.json()['can_commit'])
+        self.assertIn('нет сохранённого числового результата',r.text)
 
 if __name__=='__main__':unittest.main(verbosity=2)

@@ -1,12 +1,13 @@
 <script setup>
 import {ref,computed,watch,nextTick} from 'vue';
 import AppIcon from './AppIcon.vue';
-const props=defineProps({report:Object,currency:String,year:[String,Number],api:Function,canPlan:Boolean,companies:Array,companyId:Number,scenario:String});
-const emit=defineEmits(['refresh','year','company','scenario']);
+const props=defineProps({report:Object,currency:String,year:[String,Number],api:Function,canPlan:Boolean,companies:Array,companyId:Number,scenario:String,asOf:String});
+const emit=defineEmits(['refresh','year','company','scenario','as-of']);
 const months=['Янв','Фев','Мар','Апр','Май','Июн','Июл','Авг','Сен','Окт','Ноя','Дек'];
 const monthNames=['Январь','Февраль','Март','Апрель','Май','Июнь','Июль','Август','Сентябрь','Октябрь','Ноябрь','Декабрь'];
 const mode=ref('actual'),start=ref(1),end=ref(12),per=ref('year'),unit=ref(props.currency==='UZS'?'m':'k'),collapsed=ref([]),editor=ref(false),editMonth=ref(1),draft=ref([]),opening=ref(''),reason=ref(''),error=ref(''),saving=ref(false),saved=ref(false);
-const note=ref(''),noteMonth=ref(1),groupOpen=ref(false),groupMonth=ref(`${props.year}-01`),groupDay=ref(`${props.year}-01-01`),groupText=ref('');
+const note=ref(''),noteMonth=ref(1),groupOpen=ref(false),groupMonth=ref(String(props.asOf).slice(0,7)),groupDay=ref(props.asOf),groupText=ref('');
+const comparison=ref([]);
 const units={m:{label:'Млн',div:1e8,digits:1},k:{label:'Тыс.',div:1e5,digits:1},x:{label:'Точно',div:100,digits:2}};
 const indices=computed(()=>Array.from({length:Number(end.value)-Number(start.value)+1},(_,i)=>i+Number(start.value)-1));
 const years=computed(()=>{const now=new Date().getFullYear(),y=Number(props.year)||now,set=new Set([y]);for(let k=now-3;k<=now+2;k++)set.add(k);return [...set].sort((a,b)=>a-b)});
@@ -64,13 +65,14 @@ const tiles=computed(()=>{
  ];
 });
 const periodLabel=computed(()=>per.value==='year'?`${props.year} год`:per.value==='custom'?`${months[Number(start.value)-1]}–${months[Number(end.value)-1]} ${props.year}`:`${per.value.slice(1)} квартал ${props.year}`);
-const exportUrl=ext=>`/api/export/report.${ext}?year=${props.year}&currency=${props.currency}&mode=${mode.value}&start_month=${start.value}&end_month=${end.value}&company_id=${props.companyId}&scenario=${props.scenario}`;
+const exportUrl=ext=>`/api/export/report.${ext}?year=${props.year}&currency=${props.currency}&mode=${mode.value}&start_month=${start.value}&end_month=${end.value}&company_id=${props.companyId}&scenario=${props.scenario}&as_of=${props.asOf}`;
 async function edit(){editMonth.value=Number(start.value);editor.value=true;saved.value=false;resetDraft();await nextTick();document.querySelector('.plan-editor')?.scrollIntoView({block:'start'})}
 function resetDraft(){const m=Number(editMonth.value)-1;draft.value=props.report.rows.map(r=>({category:r.category,category_id:r.category_id,kind:r.kind,amount:r.plan[m]==null?'':r.plan[m].replace('-','')}));opening.value=props.report.plan_opening_input[m]??'';reason.value='';error.value=''}
 async function save(){saving.value=true;error.value='';try{await props.api('/api/cash-plan',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({company_id:props.companyId,scenario:props.scenario,month:`${props.year}-${String(editMonth.value).padStart(2,'0')}`,currency:props.currency,version:props.report.plan_versions[Number(editMonth.value)-1],opening:opening.value===''?null:String(opening.value),reason:reason.value,items:draft.value.map(({category,...r})=>({...r,amount:r.amount===''?null:String(r.amount)}))})});editor.value=false;saved.value=true;emit('refresh')}catch(e){error.value=e.message}finally{saving.value=false}}
 function loadNote(){note.value=props.report.notes?.[`${props.year}-${String(noteMonth.value).padStart(2,'0')}:net`]||''}
 async function saveNote(){saving.value=true;error.value='';try{await props.api('/api/plan-note',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({company_id:props.companyId,scenario:props.scenario,month:`${props.year}-${String(noteMonth.value).padStart(2,'0')}`,currency:props.currency,indicator:'net',note:note.value})});saved.value=true;emit('refresh')}catch(e){error.value=e.message}finally{saving.value=false}}
 async function makeGroup(){error.value='';try{const q=new URLSearchParams({company_id:props.companyId,currency:props.currency,scenario:props.scenario,month:groupMonth.value,day:groupDay.value});groupText.value=(await props.api('/api/group-report?'+q)).text;groupOpen.value=true}catch(e){error.value=e.message}}
+async function compare(){error.value='';try{const month=String(props.asOf).slice(0,7),base={company_id:props.companyId,currency:props.currency,month,day:props.asOf};comparison.value=await Promise.all(['A','B','V'].map(async scenario=>({...await props.api('/api/group-report?'+new URLSearchParams({...base,scenario})),scenario})))}catch(e){error.value=e.message}}
 async function copyGroup(){await navigator.clipboard.writeText(groupText.value);saved.value=true}
 </script>
 <template>
@@ -79,9 +81,10 @@ async function copyGroup(){await navigator.clipboard.writeText(groupText.value);
    <label class="fld">Компания <select :value="companyId" @change="emit('company',Number($event.target.value))"><option v-for="c in companies" :key="c.id" :value="c.id">{{c.name}}</option></select></label>
    <div class="seg" role="group" aria-label="Сценарий плана"><button v-for="s in ['A','B','V']" :key="s" :class="{on:scenario===s}" @click="emit('scenario',s)">Сценарий {{s}}</button></div>
    <label class="fld">Год <select aria-label="Год отчёта" :value="year" @change="emit('year',$event.target.value)"><option v-for="y in years" :key="y" :value="y">{{y}}</option></select></label>
+   <label class="fld">Факт по дату <input type="date" :value="asOf" @change="emit('as-of',$event.target.value)"></label>
    <div class="seg" role="group" aria-label="Вид отчёта"><button :aria-pressed="mode==='actual'" :class="{on:mode==='actual'}" @click="mode='actual'">Факт</button><button :aria-pressed="mode==='plan'" :class="{on:mode==='plan'}" @click="mode='plan'">План-факт</button></div>
    <div class="seg" role="group" aria-label="Единицы измерения"><button v-for="(u,k) in units" :key="k" :aria-pressed="unit===k" :class="{on:unit===k}" @click="unit=k">{{u.label}}</button></div>
-   <div class="grow"><a class="button secondary tiny" :href="exportUrl('xlsx')"><AppIcon name="download"/> Excel</a><a class="button secondary tiny" :href="exportUrl('pdf')"><AppIcon name="file"/> PDF</a><button class="secondary tiny" @click="makeGroup">Для группы</button><button v-if="canPlan" class="tiny" @click="edit">Задать план</button></div>
+   <div class="grow"><a class="button secondary tiny" :href="exportUrl('xlsx')"><AppIcon name="download"/> Excel</a><a class="button secondary tiny" :href="exportUrl('pdf')"><AppIcon name="file"/> PDF</a><button class="secondary tiny" @click="compare">Сравнить А / Б / В</button><button class="secondary tiny" @click="makeGroup">Для группы</button><button v-if="canPlan" class="tiny" @click="edit">Задать план</button></div>
   </div>
   <div class="tl-row">
    <div class="chips" role="group" aria-label="Период"><button v-for="p in [['year','Год'],['q1','I кв.'],['q2','II кв.'],['q3','III кв.'],['q4','IV кв.'],['custom','Свой период']]" :key="p[0]" class="chip" :class="{on:per===p[0]}" :aria-pressed="per===p[0]" @click="setPer(p[0])">{{p[1]}}</button></div>
@@ -90,6 +93,7 @@ async function copyGroup(){await navigator.clipboard.writeText(groupText.value);
   </div>
  </div>
  <p v-if="saved" class="notice" role="status">План сохранён</p>
+ <section v-if="comparison.length" class="card plan-editor"><div class="section-head"><div><h2>Сравнение сценариев на {{asOf}}</h2><p class="sub">Выбор ручной. Фактические банковские поступления одинаковы для А, Б и В и не меняются при переключении.</p></div><button class="ghost" @click="comparison=[]">Закрыть</button></div><div class="sumrow"><button v-for="r in comparison" :key="r.scenario" class="card tile" :class="{selected:r.scenario===scenario}" @click="emit('scenario',r.scenario)"><div class="k">Сценарий {{r.scenario}}</div><div class="v num">{{display(r.expense_plan)}}<small>{{unitCaption}}</small></div><div class="d">Поступления с начала месяца {{display(r.bank_income_mtd)}} {{unitCaption}} · доступно {{display(r.available)}} {{unitCaption}}</div></button></div></section>
  <section v-if="groupOpen" class="card plan-editor"><div class="section-head"><h2>Сообщение для группы</h2><button class="ghost" @click="groupOpen=false">Закрыть</button></div><div class="filter-bar"><label>Месяц<input type="month" v-model="groupMonth"></label><label>День<input type="date" v-model="groupDay"></label><button type="button" class="secondary" @click="makeGroup">Обновить</button></div><textarea readonly rows="5" :value="groupText"></textarea><button type="button" @click="copyGroup">Копировать</button><p class="sub">Текст только копируется. Программа ничего не отправляет автоматически.</p></section>
  <div class="sumrow"><div v-for="t in tiles" :key="t.k" class="card tile"><div class="k"><span>{{t.k}}</span><span class="pill" :class="mode==='plan'?'plan':'fact'">{{mode==='plan'?'План-факт':'Факт'}}</span></div><div class="v num">{{t.v==null?'Не задан':display(t.v)}}<small v-if="t.v!=null">{{unitCaption}}</small></div><div class="d"><template v-if="mode==='plan'">План {{t.p==null?'не задан':display(t.p)}}<template v-if="t.p!=null&&t.v!=null"> · <span :class="devClass(difference(t.v,t.p))">{{display(difference(t.v,t.p),true)}}</span></template></template><template v-else>{{t.note||'Фактические операции'}}</template></div></div></div>
  <div class="cf-cap"><h3>Отчёт о движении денежных средств · {{periodLabel}}</h3><span class="sub">Прямой метод · {{unitCaption}}<template v-if="mode==='plan'"> · План / Факт / Отклонение</template></span></div>
