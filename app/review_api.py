@@ -30,7 +30,7 @@ class PlanInput(BaseModel):
 @router.post('/api/cash-plan')
 def save_plan(data:PlanInput,request:Request):
     with unit(True) as s:
-        u,_=session_user(s,request,'budget')
+        u,_=session_user(s,request,'plan')
         company_id=data.company_id or s.scalar(select(Company.id).where(Company.code=='UZGERMED'))
         get(s,Company,company_id)
         p=s.scalar(select(CashPlan).where(CashPlan.company_id==company_id,CashPlan.scenario==data.scenario,CashPlan.month==data.month,CashPlan.currency==data.currency))
@@ -60,7 +60,7 @@ class PlanNoteInput(BaseModel):
 @router.post('/api/plan-note')
 def save_plan_note(data:PlanNoteInput,request:Request):
     with unit(True) as s:
-        u,_=session_user(s,request,'budget');get(s,Company,data.company_id)
+        u,_=session_user(s,request,'plan');get(s,Company,data.company_id)
         n=s.scalar(select(PlanNote).where(PlanNote.company_id==data.company_id,PlanNote.month==data.month,PlanNote.currency==data.currency,PlanNote.scenario==data.scenario,PlanNote.indicator==data.indicator))
         if not n:
             n=PlanNote(company_id=data.company_id,month=data.month,currency=data.currency,scenario=data.scenario,indicator=data.indicator,updated_by=u.id);s.add(n)

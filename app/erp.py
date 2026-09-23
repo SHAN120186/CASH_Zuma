@@ -111,7 +111,9 @@ async def import_preview(request:Request):
     with unit() as s:u,_=session_user(s,request,'import');uid=u.id
     raw=await read_upload(request)
     name=Path(unquote(request.headers.get('X-Filename','transactions.csv'))).name
-    with unit(True) as s:return preview(s,get(s,User,uid),raw,name)
+    with unit(True) as s:
+        u,_=session_user(s,request,'import')
+        return preview(s,u,raw,name)
 
 @router.post('/api/import/{id}/commit')
 def commit_import(id:int,request:Request):
@@ -120,6 +122,8 @@ def commit_import(id:int,request:Request):
         u,_=session_user(s,request,'import');batch=get(s,ImportBatch,id)
         if batch.user_id!=u.id and u.role!='admin':raise HTTPException(403,'Импорт создан другим пользователем.')
         if batch.status!='preview':raise HTTPException(409,'Импорт уже выполнен либо содержит ошибки.')
+        if s.scalar(select(ImportBatch.id).where(ImportBatch.digest==batch.digest,ImportBatch.status=='committed').limit(1)):
+            raise HTTPException(409,'Этот файл уже импортирован. Повторная загрузка заблокирована.')
         count=0
         for data in json.loads(batch.payload):post_ledger(s,u,LedgerIn(**data));count+=1
         batch.status='committed';log(s,u,'Импорт операций подтверждён','import',id,str(count))
@@ -131,7 +135,9 @@ def google_preview(request:Request):
     from .drive import download_model
     try:raw,name,source=download_model(file_id=os.getenv('GOOGLE_SHEETS_TRANSACTIONS_ID',''))
     except (ValueError,RuntimeError) as exc:raise HTTPException(422,str(exc))
-    with unit(True) as s:return preview(s,get(s,User,uid),raw,name)
+    with unit(True) as s:
+        u,_=session_user(s,request,'import')
+        return preview(s,u,raw,name)
 
 @router.get('/api/documents')
 def documents(request:Request,ledger_id:int):
@@ -148,7 +154,7 @@ async def add_document(id:int,request:Request):
     allowed={'.pdf':('application/pdf',b'%PDF-'),'.png':('image/png',b'\x89PNG\r\n\x1a\n'),'.jpg':('image/jpeg',b'\xff\xd8\xff'),'.jpeg':('image/jpeg',b'\xff\xd8\xff')}
     if suffix not in allowed or not raw.startswith(allowed[suffix][1]):raise HTTPException(422,'Документ: PDF, PNG или JPEG, максимум 5 МБ.')
     with unit(True) as s:
-        u=get(s,User,uid);get(s,Ledger,id)
+        u,_=session_user(s,request,'write');get(s,Ledger,id)
         d=Document(ledger_id=id,filename=name[:220],mime=allowed[suffix][0],storage_key=secrets.token_hex(24),sha256=hashlib.sha256(raw).hexdigest(),content=raw,created_by=uid)
         s.add(d);s.flush();log(s,u,'Добавлен документ','document',d.id,f'ledger={id}')
         return {'id':d.id,'url':f'/api/documents/{d.id}'}

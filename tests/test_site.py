@@ -127,7 +127,9 @@ class SiteTests(unittest.TestCase):
         self.assertEqual(self.post(f"/api/requests/{r.json()['id']}/decision",{'action':'approve'},cl,h).status_code,403)
     def test_10_director_cannot_approve_own(self):
         cl,h=self.make_user('director','boss')
-        self.assertEqual(self.request('100',client=cl,headers=h).status_code,403)
+        own=self.request('100',client=cl,headers=h)
+        self.assertEqual(own.status_code,200,own.text)
+        self.assertEqual(self.post(f"/api/requests/{own.json()['id']}/decision",{'action':'approve'},cl,h).status_code,403)
         r=self.request('100')
         self.assertEqual(self.post(f"/api/requests/{r.json()['id']}/decision",{'action':'approve'},cl,h).status_code,403)
         self.assertEqual(cl.get('/api/dashboard').status_code,200)
@@ -321,7 +323,7 @@ class SiteTests(unittest.TestCase):
         cl.close()
         cl,h=self.make_user('director','reader')
         self.assertEqual(cl.get('/api/export/report.xlsx').status_code,200)
-        self.assertEqual(cl.get('/api/audit').status_code,403);cl.close()
+        self.assertEqual(cl.get('/api/audit').status_code,200);cl.close()
 
     def test_33_jwt_bearer_tamper_expiry_and_revocation(self):
         import jwt
@@ -757,5 +759,137 @@ class SiteTests(unittest.TestCase):
         r=self.client.post(f"/api/plan-import/preview?company_id={companies['UZGERMED']}&year=2026&month_from=1&month_to=1",content=out.getvalue(),headers={**self.h,'Content-Type':'application/octet-stream','X-Filename':'formula.xlsx'})
         self.assertEqual(r.status_code,200,r.text);self.assertFalse(r.json()['can_commit'])
         self.assertIn('нет сохранённого числового результата',r.text)
+
+    def plan_file(self,padded=False):
+        import io,zipfile
+        from openpyxl import Workbook
+        book=Workbook();sheet=book.active;sheet.title='план на год'
+        sheet['H7']='А';sheet['I7']='Б';sheet['J7']='В'
+        sheet['A8']=date(2026,1,1);sheet['E8']='Жами ҳаражатлар'
+        sheet['A9']=date(2026,1,1);sheet['C9']='61';sheet['E9']='Закупка сырья'
+        sheet['H9']=10;sheet['I9']=20;sheet['J9']=30
+        buf=io.BytesIO();book.save(buf);book.close()
+        if padded:
+            with zipfile.ZipFile(buf,'a') as z:z.writestr('test-padding.bin',b'x'*70000)
+        return buf.getvalue()
+
+    def preview_plan(self,raw=None,client=None,headers=None):
+        companies={c['code']:c['id'] for c in self.client.get('/api/bootstrap').json()['companies']}
+        url=f"/api/plan-import/preview?company_id={companies['UZGERMED']}&year=2026&month_from=1&month_to=1"
+        return (client or self.client).post(url,content=raw or self.plan_file(),headers={**(headers or self.h),'Content-Type':'application/octet-stream','X-Filename':'test-plan.xlsx'})
+
+    def test_65_operator_can_enter_plans_and_facts_but_not_approve_or_set_limits(self):
+        cl,h=self.make_user('operator','operator1')
+        try:
+            data={'month':self.month,'currency':'UZS','scenario':'B','opening':None,'version':0,'reason':'План введён оператором','items':[{'category_id':self.cat,'kind':'out','amount':'120'}]}
+            self.assertEqual(self.post('/api/cash-plan',data,cl,h).status_code,200)
+            account={'name':'Operator cash','kind':'cash','currency':'UZS','opening':'90','opening_date':self.date}
+            self.assertEqual(self.post('/api/accounts',account,cl,h).status_code,200)
+            fact={'account_id':self.acc,'category_id':self.cat,'amount':'10','kind':'in','date':self.date,'reference':'OP-FACT','note':'Ввод факта оператором'}
+            self.assertEqual(self.post('/api/ledger',fact,cl,h).status_code,200)
+            rid=self.request().json()['id']
+            self.assertEqual(self.post(f'/api/requests/{rid}/decision',{'action':'approve'},cl,h).status_code,403)
+            self.assertEqual(self.post('/api/approval-policy',{'amount':'1'},cl,h).status_code,403)
+            self.assertEqual(cl.get('/api/users').status_code,403)
+            self.assertEqual(self.post('/api/budgets',{'category_id':self.cat,'month':self.month,'currency':'UZS','amount':'1','reason':'Не разрешено оператору'},cl,h).status_code,403)
+            self.assertEqual(self.preview_plan(client=cl,headers=h).status_code,200)
+        finally:cl.close()
+
+    def test_66_investor_is_read_only_even_using_api_directly(self):
+        cl,h=self.make_user('investor','investor1')
+        try:
+            for path in ('/api/dashboard','/api/accounts','/api/ledger','/api/report','/api/budgets'):
+                self.assertEqual(cl.get(path).status_code,200,path)
+            self.assertEqual(self.request(client=cl,headers=h).status_code,403)
+            self.assertEqual(self.post('/api/accounts',{'name':'Denied','kind':'cash','currency':'UZS','opening':'0','opening_date':self.date},cl,h).status_code,403)
+            self.assertEqual(self.post('/api/cash-plan',{'month':self.month,'currency':'UZS','version':0,'reason':'Попытка инвестора','items':[]},cl,h).status_code,403)
+            self.assertEqual(self.post('/api/approval-policy',{'amount':'0'},cl,h).status_code,403)
+            self.assertEqual(self.preview_plan(client=cl,headers=h).status_code,403)
+            self.assertEqual(cl.get('/api/users').status_code,403)
+        finally:cl.close()
+
+    def test_67_director_controls_limits_and_editing_without_user_administration(self):
+        cl,h=self.make_user('director','director_edit')
+        try:
+            for currency in ('UZS','USD','EUR'):
+                self.assertEqual(self.post('/api/approval-policy',{'amount':'10','currency':currency},cl,h).status_code,200)
+            self.assertEqual(cl.get('/api/approval-policy').status_code,200)
+            self.assertEqual(cl.get('/api/users').status_code,403)
+            rid=self.request('100').json()['id']
+            self.assertEqual(self.approve(rid).status_code,200)
+            row=next(r for r in self.client.get('/api/requests').json() if r['id']==rid)
+            edited=cl.put(f'/api/requests/{rid}',json={'account_id':self.acc,'category_id':self.cat,'counterparty':'Supplier','amount':'90','date':self.date,'purpose':'Изменение директором','reason':'Изменены условия оплаты','version':row['version']},headers=h)
+            self.assertEqual(edited.status_code,200,edited.text)
+            self.assertEqual(self.approve(rid).status_code,200)
+            denied=self.post(f'/api/requests/{rid}/decision',{'action':'approve'},cl,h)
+            self.assertEqual(denied.status_code,403)
+            self.assertIn('редактор',denied.text)
+        finally:cl.close()
+
+    def test_68_large_plan_upload_and_duplicate_pending_commits(self):
+        raw=self.plan_file(padded=True);self.assertGreater(len(raw),65536)
+        one=self.preview_plan(raw);two=self.preview_plan(raw)
+        self.assertEqual(one.status_code,200,one.text);self.assertEqual(two.status_code,200,two.text)
+        data={'mappings':{one.json()['rows'][0]['source_key']:str(self.cat)},'reason':'Подтверждение тестового плана'}
+        self.assertEqual(self.post(f"/api/plan-import/{one.json()['id']}/commit",data).status_code,200)
+        denied=self.post(f"/api/plan-import/{two.json()['id']}/commit",data)
+        self.assertEqual(denied.status_code,409);self.assertIn('уже импортированы',denied.text)
+
+    def test_69_stale_plan_import_preserves_concurrent_edit(self):
+        p=self.preview_plan().json()
+        self.assertEqual(self.post('/api/cash-plan',{'month':'2026-01','currency':'UZS','scenario':'A','version':0,'reason':'Другой пользователь изменил план','items':[{'category_id':self.cat,'kind':'out','amount':'777'}]}).status_code,200)
+        denied=self.post(f"/api/plan-import/{p['id']}/commit",{'mappings':{p['rows'][0]['source_key']:str(self.cat)},'reason':'Подтверждение устаревшего плана'})
+        self.assertEqual(denied.status_code,409);self.assertIn('изменился',denied.text)
+        with unit() as s:
+            plan=s.scalar(select(CashPlan).where(CashPlan.month=='2026-01',CashPlan.scenario=='A'))
+            self.assertEqual(json.loads(plan.payload)[f'{self.cat}:out'],-77700)
+            self.assertEqual(s.get(PlanImportBatch,p['id']).status,'preview')
+
+    def test_70_readiness_and_database_outage_are_safe(self):
+        from unittest.mock import patch
+        from sqlalchemy.exc import OperationalError
+        self.assertEqual(self.client.get('/ready').status_code,200)
+        with patch('app.main.unit',side_effect=OperationalError('private SQL',{},Exception('secret connection'))):
+            for path in ('/ready','/api/me'):
+                r=self.client.get(path)
+                self.assertEqual(r.status_code,503,r.text)
+                self.assertNotIn('secret',r.text);self.assertNotIn('private SQL',r.text)
+                self.assertEqual(r.headers['X-Content-Type-Options'],'nosniff')
+        def technical_audit_unavailable(write=False):
+            if write:raise OperationalError('http audit',{},Exception('temporary failure'))
+            return unit()
+        with patch('app.main.unit',side_effect=technical_audit_unavailable):
+            self.assertEqual(self.client.get('/api/me').status_code,200)
+
+    def test_71_plan_xml_rejects_entities_and_absurd_row_numbers(self):
+        import io,zipfile
+        raw=self.plan_file()
+        for mode in ('entities','huge_row'):
+            target=io.BytesIO()
+            with zipfile.ZipFile(io.BytesIO(raw)) as original,zipfile.ZipFile(target,'w') as changed:
+                for entry in original.infolist():
+                    data=original.read(entry.filename)
+                    if entry.filename=='xl/worksheets/sheet1.xml':
+                        if mode=='entities':
+                            data=b'<!DOCTYPE worksheet [<!ENTITY test "ENTITY_VALUE">]>'+data.replace(b'\xd0\x90</t>',b'&test;</t>')
+                        else:data=data.replace(b'r="A9"',b'r="A9999999999"')
+                    changed.writestr(entry.filename,data)
+            self.assertEqual(self.preview_plan(target.getvalue()).status_code,422,mode)
+
+    def test_72_revoked_upload_permission_is_rechecked_before_write(self):
+        from unittest.mock import patch
+        import app.plan_import as importer
+        raw=self.plan_file()
+        cl,h=self.make_user('operator','revoked_upload')
+        async def revoke_during_upload(request):
+            with unit(True) as s:
+                u=s.scalar(select(User).where(User.username=='revoked_upload'))
+                u.role='investor'
+            return raw
+        try:
+            with patch.object(importer,'read_upload',side_effect=revoke_during_upload):
+                self.assertEqual(self.preview_plan(raw,cl,h).status_code,403)
+            with unit() as s:self.assertEqual(len(list(s.scalars(select(PlanImportBatch)))),0)
+        finally:cl.close()
 
 if __name__=='__main__':unittest.main(verbosity=2)

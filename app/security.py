@@ -7,15 +7,18 @@ from sqlalchemy import select, delete
 from .db import User, LoginSession, LoginAttempt, now, DATA
 
 ROLES = {'admin':'Администратор', 'director':'Директор', 'finance':'Финансист / казначей', 'cashier':'Кассир',
-         'accountant':'Бухгалтер', 'employee':'Инициатор', 'auditor':'Аудитор'}
+         'accountant':'Бухгалтер', 'employee':'Инициатор', 'auditor':'Аудитор',
+         'operator':'Сотрудник / оператор', 'investor':'Инвестор / управленец'}
 PERMS = {
- 'admin': {'view','ledger','export','request','write','approve','budget','import','users','schedule','catalog','audit'},
- 'director': {'view','ledger','export','approve'},
+ 'admin': {'view','ledger','export','request','write','approve','budget','plan','import','users','schedule','catalog','audit','approval_policy','request_edit'},
+ 'director': {'view','ledger','export','request','write','approve','budget','plan','import','schedule','catalog','audit','approval_policy','request_edit'},
  'cashier': {'request','ledger','write'},
- 'finance': {'view','ledger','export','request','write','approve','budget','import','schedule'},
+ 'finance': {'view','ledger','export','request','write','approve','budget','plan','import','schedule','request_edit'},
  'accountant': {'ledger'},
  'employee': {'request'},
  'auditor': {'view','ledger','export','audit'},
+ 'operator': {'view','ledger','export','request','write','plan','import','schedule'},
+ 'investor': {'view','ledger','export'},
 }
 
 def jwt_key():

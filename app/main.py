@@ -26,7 +26,7 @@ PUBLIC_ORIGIN=os.getenv('PUBLIC_ORIGIN','').rstrip('/')
 async def lifespan(app):
     initialize()
     yield
-app=FastAPI(title='UZGERMED Treasury',version='2.7.0',docs_url=None,redoc_url=None,openapi_url=None,lifespan=lifespan)
+app=FastAPI(title='UZGERMED Treasury',version='2.8.0',docs_url=None,redoc_url=None,openapi_url=None,lifespan=lifespan)
 app.add_middleware(TrustedHostMiddleware,allowed_hosts=ALLOWED)
 app.mount('/static',StaticFiles(directory=ROOT/'app'/'static'),name='static')
 
@@ -35,15 +35,20 @@ async def safety(request,call_next):
     if request.method not in ('GET','HEAD','OPTIONS'):
         try:length=int(request.headers.get('content-length','-1'))
         except ValueError:length=-1
-        limit=MAX_SIZE if request.url.path=='/api/model/upload' else 5*1024*1024 if request.url.path=='/api/import/preview' or request.url.path.endswith('/document') else 65536
+        limit=MAX_SIZE if request.url.path=='/api/model/upload' else 5*1024*1024 if request.url.path in ('/api/import/preview','/api/plan-import/preview') or request.url.path.endswith('/document') else 65536
         if length<0 or length>limit:return JSONResponse({'detail':'Неверный размер запроса.'},status_code=413)
         origin=request.headers.get('origin')
         expected=PUBLIC_ORIGIN or str(request.base_url).rstrip('/')
         if origin and origin!=expected:return JSONResponse({'detail':'Запрос с другого сайта запрещён.'},status_code=403)
     response=await call_next(request)
     if request.url.path.startswith('/api'):
-        with unit(True) as audit_session:
-            audit_session.add(Audit(user_id=getattr(request.state,'user_id',None),action='API '+request.method,entity='http',detail=request.url.path+'; status='+str(response.status_code)))
+        try:
+            with unit(True) as audit_session:
+                audit_session.add(Audit(user_id=getattr(request.state,'user_id',None),action='API '+request.method,entity='http',detail=request.url.path+'; status='+str(response.status_code)))
+        except OperationalError:
+            # Financial changes and their business audit are committed together.
+            # A failed secondary HTTP log must not disguise a completed payment.
+            logging.error('Could not persist HTTP audit: database unavailable')
     response.headers['X-Content-Type-Options']='nosniff'
     response.headers['X-Frame-Options']='DENY'
     response.headers['Referrer-Policy']='same-origin'
@@ -60,7 +65,7 @@ async def stale_document(request,exc):
     return JSONResponse({'detail':'Документ изменён другим пользователем. Обновите данные и повторно проверьте действие.'},status_code=409)
 @app.exception_handler(OperationalError)
 async def busy(request,exc):
-    logging.exception('Database operation failed')
+    logging.error('Database operation failed: %s',type(exc).__name__)
     return JSONResponse({'detail':'База данных временно недоступна. Повторите запрос; не создавайте дубликат документа.'},status_code=503)
 @app.get('/')
 def index():return FileResponse(ROOT/'app'/'static'/'erp'/'index.html')
@@ -68,6 +73,13 @@ def index():return FileResponse(ROOT/'app'/'static'/'erp'/'index.html')
 def legacy():return FileResponse(ROOT/'app'/'static'/'index.html')
 @app.get('/health')
 def health():return {'status':'ok'}
+
+@app.get('/ready')
+def ready():
+    with unit() as s:
+        if s.get(Guard,1) is None:
+            raise HTTPException(503,'База данных ещё не подготовлена.')
+    return {'status':'ok','database':'ok'}
 
 @app.get('/version.json')
 def release_version():return FileResponse(ROOT/'release.json',media_type='application/json')
@@ -87,10 +99,10 @@ class UserIn(Input):
     username:str=Field(pattern=r'^[a-zA-Z0-9_.-]{3,80}$')
     name:str=Field(min_length=2,max_length=160)
     password:str=Field(min_length=12,max_length=128)
-    role:Literal['admin','director','finance','accountant','employee','auditor','cashier']
+    role:Literal['admin','director','finance','accountant','employee','auditor','cashier','operator','investor']
 class UserEdit(Input):
     model_config=ConfigDict(extra='forbid',str_strip_whitespace=False)
-    role:Literal['admin','director','finance','accountant','employee','auditor','cashier']
+    role:Literal['admin','director','finance','accountant','employee','auditor','cashier','operator','investor']
     active:bool
     password:str=Field(default='',max_length=128)
 class PasswordIn(Input):
@@ -267,14 +279,14 @@ def archive_account(id:int,data:ArchiveIn,request:Request):
 @app.get('/api/approval-policy')
 def approval_policy(request:Request):
     with unit() as s:
-        session_user(s,request,'users');r=s.get(Setting,'approval_limit_UZS')
+        session_user(s,request,'approval_policy');r=s.get(Setting,'approval_limit_UZS')
         limits={c:money(int(v.value)) if (v:=s.get(Setting,'approval_limit_'+c)) else None for c in ('UZS','USD','EUR')}
         return {'amount':money(int(r.value)) if r else None,'currency':'UZS','limits':limits}
 
 @app.post('/api/approval-policy')
 def set_approval_policy(data:ApprovalLimitIn,request:Request):
     with unit(True) as s:
-        u,_=session_user(s,request,'users');key='approval_limit_'+data.currency
+        u,_=session_user(s,request,'approval_policy');key='approval_limit_'+data.currency
         r=s.get(Setting,key)
         if data.amount is None:
             if r:s.delete(r)
@@ -312,7 +324,7 @@ def edit_account(id:int,data:AccountEdit,request:Request):
             raise HTTPException(409,'Валюту нельзя менять после создания операций, заявок или ожидаемых поступлений. Создайте отдельный счёт в нужной валюте.')
         dates=[t.date for t in entries]+[r.due_date for r in requests]+[r.due_date for r in receipts]
         if dates and data.opening_date>min(dates):raise HTTPException(409,'Дата начала учёта не может быть позже существующих операций, заявок или поступлений.')
-        def snapshot():return {'name':a.name,'kind':a.kind,'currency':a.currency,'opening':money(a.opening),'opening_date':str(a.opening_date),'allow_overdraft':a.allow_overdraft}
+        def snapshot():return {'name':a.name,'kind':a.kind,'currency':a.currency,'company_id':a.company_id,'opening':money(a.opening),'opening_date':str(a.opening_date),'allow_overdraft':a.allow_overdraft}
         before=snapshot()
         if data.company_id is not None:get(s,Company,data.company_id);a.company_id=data.company_id
         a.name=data.name;a.kind=data.kind;a.currency=data.currency;a.opening=amount(data.opening,True)
@@ -396,7 +408,7 @@ def add_request(data:RequestIn,request:Request):
 def edit_request(id:int,data:RequestEdit,request:Request):
     with unit(True) as s:
         u,_=session_user(s,request,'request');r=get(s,PaymentRequest,id)
-        if r.creator_id!=u.id and u.role!='admin':raise HTTPException(403,'Редактировать может автор или администратор.')
+        if r.creator_id!=u.id and 'request_edit' not in PERMS[u.role]:raise HTTPException(403,'Редактировать может автор или финансовый руководитель.')
         check_request_version(r,data.version)
         if r.status not in ('draft','pending','returned','rejected'):raise HTTPException(409,'Редактирование доступно до утверждения. Утверждённую заявку сначала верните на доработку.')
         a=get(s,Account,data.account_id);get(s,Category,data.category_id);n=amount(data.amount)
@@ -418,10 +430,10 @@ def decide(id:int,data:DecisionIn,request:Request):
         check_request_version(r,data.version)
         before={'status':r.status,'date':str(r.due_date),'version':r.version,'approved_by':r.approved_by}
         if data.action=='submit':
-            if r.status not in ('draft','returned') or (r.creator_id!=u.id and u.role!='admin'):raise HTTPException(403,'Отправить можно свой черновик или возвращённую заявку.')
+            if r.status not in ('draft','returned') or (r.creator_id!=u.id and 'request_edit' not in PERMS[u.role]):raise HTTPException(403,'Отправить можно свой черновик или возвращённую заявку.')
             enforce_budget(s,r.category_id,r.due_date,a.currency,r.amount,r.purpose);r.status='pending'
         elif data.action=='cancel':
-            if r.creator_id!=u.id and u.role not in ('admin','finance'):raise HTTPException(403,'Отмена недоступна.')
+            if r.creator_id!=u.id and 'request_edit' not in PERMS[u.role]:raise HTTPException(403,'Отмена недоступна.')
             if r.status not in ('draft','pending','approved','returned','rejected'):raise HTTPException(409,'Оплаченную или отменённую заявку отменить нельзя.')
             if len(data.note)<10:raise HTTPException(422,'Укажите причину отмены не короче 10 символов.')
             r.status='cancelled';r.approved_by=None
@@ -431,7 +443,7 @@ def decide(id:int,data:DecisionIn,request:Request):
             if len(data.note)<10:raise HTTPException(422,'Укажите причину возврата не короче 10 символов.')
             r.status='returned';r.approved_by=None
         elif data.action=='reschedule':
-            if u.role not in ('admin','finance') or r.status not in ('pending','approved'):raise HTTPException(403,'Перенос недоступен.')
+            if 'request_edit' not in PERMS[u.role] or r.status not in ('pending','approved'):raise HTTPException(403,'Перенос недоступен.')
             if not data.date or len(data.note)<10:raise HTTPException(422,'Нужны новая дата и причина не короче 10 символов.')
             if data.date<a.opening_date:raise HTTPException(422,'Дата раньше начала учёта счёта.')
             r.due_date=data.date;r.status='pending';r.approved_by=None;r.last_editor_id=u.id
@@ -507,7 +519,7 @@ def add_ledger(data:LedgerIn,request:Request):
 def reverse(id:int,data:ReverseIn,request:Request):
     with unit(True) as s:
         u,_=session_user(s,request,'write')
-        if u.role not in ('admin','finance'):raise HTTPException(403,'Сторно выполняет финансист или администратор.')
+        if u.role not in ('admin','finance','director'):raise HTTPException(403,'Сторно выполняет финансовый руководитель или администратор.')
         t=get(s,Ledger,id)
         if t.reversal_of or s.scalar(select(Ledger.id).where(Ledger.reversal_of==id)):raise HTTPException(409,'Сторнирование уже выполнено или это запись сторно.')
         inv=Ledger(account_id=t.to_account_id if t.kind=='transfer' else t.account_id,to_account_id=t.account_id if t.kind=='transfer' else None,
@@ -602,6 +614,7 @@ async def model_upload(request:Request):
         if len(raw)>MAX_SIZE:raise HTTPException(413,'Файл больше 20 МБ.')
     try:
         with unit(True) as s:
+            session_user(s,request,'import')
             rec,created=import_snapshot(s,bytes(raw),filename,user_id=uid)
             return {'id':rec.id,'created':created}
     except ValueError as e:raise HTTPException(422,str(e))
@@ -612,6 +625,7 @@ def model_drive_sync(request:Request):
         from .drive import download_model
         raw,name,source=download_model()
         with unit(True) as s:
+            session_user(s,request,'import')
             rec,created=import_snapshot(s,raw,name,source,uid);return {'id':rec.id,'created':created}
     except (ValueError,RuntimeError) as e:raise HTTPException(422,str(e))
 

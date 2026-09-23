@@ -325,7 +325,8 @@ def initialize():
         for name,definition in [('version','INTEGER NOT NULL DEFAULT 1'),('last_editor_id','INTEGER REFERENCES users(id)'),('priority',"VARCHAR(12) NOT NULL DEFAULT 'normal'")]:
             if name not in columns:conn.execute(text(f'ALTER TABLE payment_requests ADD COLUMN {name} {definition}'))
     with Session(engine) as s:
-        for name in ('admin','director','finance','accountant','employee','auditor','cashier'):
+        from .security import ROLES
+        for name in ROLES:
             if not s.scalar(select(Role).where(Role.name==name)):s.add(Role(name=name))
         s.flush()
         roles={r.name:r.id for r in s.scalars(select(Role))}

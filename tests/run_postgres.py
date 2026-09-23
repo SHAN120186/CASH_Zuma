@@ -9,7 +9,7 @@ import psycopg
 from psycopg import sql
 url=make_url(os.environ['DATABASE_URL'])
 name='zuma_test_'+uuid.uuid4().hex[:12]
-with psycopg.connect(host=url.host,port=url.port,user=url.username,password=url.password,dbname='postgres',autocommit=True) as admin:
+with psycopg.connect(host=url.host,port=url.port,user=url.username,password=url.password,dbname='postgres',autocommit=True,connect_timeout=10) as admin:
     admin.execute(sql.SQL('CREATE DATABASE {}').format(sql.Identifier(name)))
     try:
         env={**os.environ,'TEST_DATABASE_URL':url.set(database=name).render_as_string(hide_password=False)}

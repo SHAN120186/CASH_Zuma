@@ -6,7 +6,7 @@ where the source cell is blank.
 """
 from __future__ import annotations
 import hashlib, io, json, re, zipfile, posixpath
-import xml.etree.ElementTree as ET
+from defusedxml import ElementTree as ET
 from datetime import date, datetime
 from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
 from pathlib import Path
@@ -85,6 +85,7 @@ def parse_plan_workbook(raw,year,month_from,month_to):
             if set(columns)!={'A','B','V'}:raise ValueError('Не удалось сопоставить все сценарии А, Б и В по заголовкам.')
             rows=[];issues=[];seen=set();expense_blocks={}
             max_row=max((int(re.search(r'\d+',ref).group()) for ref in cells),default=7)
+            if max_row>50000:raise ValueError('Лист планов содержит больше 50 000 строк.')
             for row in range(8,max_row+1):
                 y,m=month_value(cv(f'A{row}')[0],epoch)
                 name=clean(cv(f'E{row}')[0]);name_key=norm(name)
@@ -120,8 +121,10 @@ def preview(s,u,raw,name,company_id,year,month_from,month_to):
     categories=list(s.scalars(select(Category)))
     by_name={norm(c.name):c.id for c in categories}
     suggestions={r['source_key']:by_name.get(norm(r['source_name'])) for r in rows}
-    plans={(p.month,p.scenario):json.loads(p.payload) for p in s.scalars(select(CashPlan).where(
-        CashPlan.company_id==company_id,CashPlan.currency=='UZS',CashPlan.month>=f'{year}-{month_from:02}',CashPlan.month<=f'{year}-{month_to:02}'))}
+    existing_plans=list(s.scalars(select(CashPlan).where(
+        CashPlan.company_id==company_id,CashPlan.currency=='UZS',CashPlan.month>=f'{year}-{month_from:02}',CashPlan.month<=f'{year}-{month_to:02}')))
+    plans={(p.month,p.scenario):json.loads(p.payload) for p in existing_plans}
+    versions={f'{p.month}:{p.scenario}':p.version for p in existing_plans}
     for row in rows:
         category_id=suggestions[row['source_key']];month=f'{year}-{row["month"]:02}';row['effects']={}
         for scenario,value in row['amounts'].items():
@@ -136,7 +139,7 @@ def preview(s,u,raw,name,company_id,year,month_from,month_to):
     previous=s.scalar(select(PlanImportBatch).where(PlanImportBatch.digest==digest,PlanImportBatch.status=='committed').limit(1))
     if previous:raise HTTPException(409,f'Этот файл и период уже импортированы (пакет №{previous.id}).')
     batch=PlanImportBatch(user_id=u.id,company_id=company_id,filename=name[:220],digest=digest,year=year,
-        month_from=month_from,month_to=month_to,payload=json.dumps({'rows':rows,'issues':issues},ensure_ascii=False),status='preview')
+        month_from=month_from,month_to=month_to,payload=json.dumps({'rows':rows,'issues':issues,'versions':versions},ensure_ascii=False),status='preview')
     s.add(batch);s.flush();log(s,u,'Предпросмотр импорта планов','plan_import',batch.id,f'{len(rows)} строк; замечаний: {len(issues)}')
     return {'id':batch.id,'rows':rows,'issues':issues,'suggestions':suggestions,
         'categories':[{'id':c.id,'name':c.name} for c in categories],
@@ -149,7 +152,9 @@ async def plan_import_preview(request:Request,company_id:int,year:int=Query(ge=2
     raw=await read_upload(request)
     name=Path(unquote(request.headers.get('X-Filename','cash-flow-plan.xlsx'))).name
     if not name.lower().endswith('.xlsx'):raise HTTPException(422,'Для планов поддерживается только XLSX.')
-    with unit(True) as s:return preview(s,get(s,User,uid),raw,name,company_id,year,month_from,month_to)
+    with unit(True) as s:
+        u,_=session_user(s,request,'import')
+        return preview(s,u,raw,name,company_id,year,month_from,month_to)
 
 class CommitPlanImport(BaseModel):
     model_config=ConfigDict(extra='forbid',str_strip_whitespace=True)
@@ -162,7 +167,10 @@ def commit_plan_import(id:int,data:CommitPlanImport,request:Request):
         u,_=session_user(s,request,'import');batch=get(s,PlanImportBatch,id)
         if batch.user_id!=u.id and u.role!='admin':raise HTTPException(403,'Импорт создан другим пользователем.')
         if batch.status!='preview':raise HTTPException(409,'Импорт уже выполнен или недоступен.')
+        if s.scalar(select(PlanImportBatch.id).where(PlanImportBatch.digest==batch.digest,PlanImportBatch.status=='committed').limit(1)):
+            raise HTTPException(409,'Этот файл и период уже импортированы. Обновите предпросмотр.')
         document=json.loads(batch.payload)
+        if 'versions' not in document:raise HTTPException(409,'Предпросмотр устарел. Загрузите файл повторно.')
         if document['issues']:raise HTTPException(409,'Исправьте ошибки предпросмотра перед подтверждением.')
         rows=document['rows'];category_cache={};created=[]
         for row in rows:
@@ -190,6 +198,8 @@ def commit_plan_import(id:int,data:CommitPlanImport,request:Request):
             scope=(month,scenario)
             if scope not in plan_objects:
                 p=s.scalar(select(CashPlan).where(CashPlan.company_id==batch.company_id,CashPlan.month==month,CashPlan.currency=='UZS',CashPlan.scenario==scenario))
+                if (p.version if p else 0)!=document['versions'].get(f'{month}:{scenario}',0):
+                    raise HTTPException(409,'План изменился после предпросмотра. Загрузите файл повторно и проверьте новые суммы.')
                 if not p:p=CashPlan(company_id=batch.company_id,month=month,currency='UZS',scenario=scenario,payload='{}',version=0);s.add(p);s.flush()
                 plan_objects[scope]=p
             p=plan_objects[scope];payload=json.loads(p.payload);payload[f'{category_id}:out']=-value;p.payload=json.dumps(payload);updated+=1

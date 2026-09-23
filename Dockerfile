@@ -18,6 +18,7 @@ COPY --chown=zuma:zuma app ./app
 COPY --from=frontend --chown=zuma:zuma /app/static/erp ./app/static/erp
 COPY --chown=zuma:zuma manage.py settings_loader.py worker.py release.json ./
 COPY --chown=zuma:zuma deploy/entrypoint.sh ./entrypoint.sh
+COPY --chown=zuma:zuma deploy/render_start.py ./deploy/render_start.py
 RUN mkdir -p /app/data /app/backups && chown -R zuma:zuma /app/data /app/backups && chmod 755 entrypoint.sh
 USER zuma
 EXPOSE 8000
