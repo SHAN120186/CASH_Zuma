@@ -16,7 +16,7 @@ with connect('postgres') as admin:
         env={**worker.pg_environment(),'PGDATABASE':name}
         subprocess.run([worker.pg_tool('pg_restore'),'--no-owner','--exit-on-error','--dbname',name,str(dump)],env=env,check=True,capture_output=True)
         with connect(url.database) as source,connect(name) as restored:
-            for table in ('users','accounts','ledger','categories','budgets','payment_requests','expected_receipts','model_versions','documents','companies','cash_plans','plan_notes','plan_import_batches','import_batches','settings'):
+            for table in ('users','company_users','accounts','ledger','categories','budgets','payment_requests','expected_receipts','model_versions','documents','companies','cash_plans','plan_notes','plan_import_batches','import_batches','settings'):
                 query=sql.SQL('SELECT count(*) FROM {}').format(sql.Identifier(table))
                 assert source.execute(query).fetchone()==restored.execute(query).fetchone(),table
             def documents_digest(connection):

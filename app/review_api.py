@@ -31,7 +31,7 @@ class PlanInput(BaseModel):
 def save_plan(data:PlanInput,request:Request):
     with unit(True) as s:
         u,_=session_user(s,request,'plan')
-        company_id=data.company_id or s.scalar(select(Company.id).where(Company.code=='UZGERMED'))
+        company_id=data.company_id or s.info['company_id']
         get(s,Company,company_id)
         p=s.scalar(select(CashPlan).where(CashPlan.company_id==company_id,CashPlan.scenario==data.scenario,CashPlan.month==data.month,CashPlan.currency==data.currency))
         if data.version!=(p.version if p else 0):raise HTTPException(409,'План уже изменён. Обновите отчёт.')

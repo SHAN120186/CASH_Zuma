@@ -21,7 +21,8 @@ def render(s,year,currency,format,mode='actual',start_month=1,end_month=12,compa
             selected=[series[m] for m in indices]
             return None if any(v is None for v in selected) else format_amount(sum(Decimal(v) for v in selected))
         return values([aggregate(fact)],[aggregate(plan)],0)
-    title=f'UZGERMED · Cash Flow {year} · {currency}'
+    company=s.get(Company,company_id)
+    title=f'{company.name} · Cash Flow {year} · {currency}'
     if format=='xlsx':
         from openpyxl import Workbook
         from openpyxl.styles import Font,PatternFill,Alignment

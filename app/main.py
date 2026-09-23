@@ -16,6 +16,7 @@ from sqlalchemy.orm.exc import StaleDataError
 from .db import *
 from .security import *
 from .services import *
+from .company_scope import available_companies, setting_key, get_setting
 from .model_import import import_snapshot, MAX_SIZE
 
 SECURE=os.getenv('COOKIE_SECURE','0')=='1'
@@ -26,14 +27,14 @@ PUBLIC_ORIGIN=os.getenv('PUBLIC_ORIGIN','').rstrip('/')
 async def lifespan(app):
     initialize()
     yield
-app=FastAPI(title='UZGERMED Treasury',version='2.8.0',docs_url=None,redoc_url=None,openapi_url=None,lifespan=lifespan)
+app=FastAPI(title='UZGERMED Treasury',version='2.9.0',docs_url=None,redoc_url=None,openapi_url=None,lifespan=lifespan)
 app.add_middleware(TrustedHostMiddleware,allowed_hosts=ALLOWED)
 app.mount('/static',StaticFiles(directory=ROOT/'app'/'static'),name='static')
 
 @app.middleware('http')
 async def safety(request,call_next):
     if request.method not in ('GET','HEAD','OPTIONS'):
-        try:length=int(request.headers.get('content-length','-1'))
+        try:length=int(request.headers.get('content-length','0' if request.method=='DELETE' else '-1'))
         except ValueError:length=-1
         limit=MAX_SIZE if request.url.path=='/api/model/upload' else 5*1024*1024 if request.url.path in ('/api/import/preview','/api/plan-import/preview') or request.url.path.endswith('/document') else 65536
         if length<0 or length>limit:return JSONResponse({'detail':'Неверный размер запроса.'},status_code=413)
@@ -44,7 +45,7 @@ async def safety(request,call_next):
     if request.url.path.startswith('/api'):
         try:
             with unit(True) as audit_session:
-                audit_session.add(Audit(user_id=getattr(request.state,'user_id',None),action='API '+request.method,entity='http',detail=request.url.path+'; status='+str(response.status_code)))
+                audit_session.add(Audit(company_id=getattr(request.state,'company_id',None),user_id=getattr(request.state,'user_id',None),action='API '+request.method,entity='http',detail=request.url.path+'; status='+str(response.status_code)))
         except OperationalError:
             # Financial changes and their business audit are committed together.
             # A failed secondary HTTP log must not disguise a completed payment.
@@ -235,11 +236,17 @@ def change_password(data:PasswordIn,request:Request):
         log(s,user,'Изменён пароль; сессии отозваны','user',user.id)
     return {'ok':True}
 
+@app.get('/api/companies')
+def company_choices(request:Request):
+    with unit() as s:
+        user,session=session_user(s,request)
+        return {'companies':[{'id':c.id,'code':c.code,'name':c.name} for c in available_companies(s,user)],'user':user_json(user),'csrf':session.csrf}
+
 @app.get('/api/bootstrap')
 def bootstrap(request:Request):
     with unit() as s:
         user,session=session_user(s,request)
-        companies=[{'id':x.id,'code':x.code,'name':x.name} for x in s.scalars(select(Company).where(Company.active==True).order_by(Company.id))]
+        companies=[{'id':x.id,'code':x.code,'name':x.name} for x in available_companies(s,user)]
         a=[{'id':a.id,'name':a.name,'kind':a.kind,'currency':a.currency,'company_id':a.company_id,'opening_date':str(a.opening_date)} for a in s.scalars(select(Account).where(Account.archived==False).order_by(Account.name))]
         c=[{'id':c.id,'name':c.name,'activity':c.activity,'type':c.type} for c in s.scalars(select(Category).order_by(Category.id))]
         cp=[{'name':x.name,'inn':x.inn} for x in s.scalars(select(Counterparty).order_by(Counterparty.name).limit(1000))]
@@ -279,14 +286,14 @@ def archive_account(id:int,data:ArchiveIn,request:Request):
 @app.get('/api/approval-policy')
 def approval_policy(request:Request):
     with unit() as s:
-        session_user(s,request,'approval_policy');r=s.get(Setting,'approval_limit_UZS')
-        limits={c:money(int(v.value)) if (v:=s.get(Setting,'approval_limit_'+c)) else None for c in ('UZS','USD','EUR')}
+        session_user(s,request,'approval_policy');r=get_setting(s,'approval_limit_UZS')
+        limits={c:money(int(v.value)) if (v:=get_setting(s,'approval_limit_'+c)) else None for c in ('UZS','USD','EUR')}
         return {'amount':money(int(r.value)) if r else None,'currency':'UZS','limits':limits}
 
 @app.post('/api/approval-policy')
 def set_approval_policy(data:ApprovalLimitIn,request:Request):
     with unit(True) as s:
-        u,_=session_user(s,request,'approval_policy');key='approval_limit_'+data.currency
+        u,_=session_user(s,request,'approval_policy');key=setting_key(s,'approval_limit_'+data.currency)
         r=s.get(Setting,key)
         if data.amount is None:
             if r:s.delete(r)
@@ -304,7 +311,7 @@ def add_account(data:AccountIn,request:Request):
         if u.role=='cashier':raise HTTPException(403,'Счета создаёт финансист или администратор.')
         if data.opening_date>today():raise HTTPException(422,'Начальный остаток не может быть задан будущей датой.')
         if data.kind=='cash' and data.allow_overdraft:raise HTTPException(422,'Для кассы отрицательный остаток запрещён.')
-        company_id=data.company_id or s.scalar(select(Company.id).where(Company.code=='UZGERMED'))
+        company_id=data.company_id or s.info['company_id']
         get(s,Company,company_id)
         a=Account(name=data.name,kind=data.kind,currency=data.currency,company_id=company_id,opening=amount(data.opening,True),opening_date=data.opening_date,allow_overdraft=data.allow_overdraft,created_by=u.id)
         s.add(a);s.flush();log(s,u,'Создан счёт / касса','account',a.id,f'{a.name}; {money(a.opening)} {a.currency}; начало дня {a.opening_date}')
@@ -370,7 +377,7 @@ def save_budget(data:BudgetIn,request:Request):
 @app.post('/api/reserve')
 def save_reserve(data:ReserveIn,request:Request):
     with unit(True) as s:
-        u,_=session_user(s,request,'budget');n=amount(data.amount,True);key='reserve_'+data.currency
+        u,_=session_user(s,request,'budget');n=amount(data.amount,True);key=setting_key(s,'reserve_'+data.currency)
         row=s.get(Setting,key)
         if not row:row=Setting(key=key);s.add(row)
         row.value=str(n);log(s,u,'Изменён минимальный резерв','setting',key,money(n));return {'ok':True}
@@ -542,7 +549,7 @@ def operational_report(request:Request,year:int=2026,currency:Literal['UZS','USD
     if as_of and (as_of.year!=year or as_of>today()):raise HTTPException(422,'Дата отчёта должна быть в выбранном году и не позже сегодня.')
     with unit() as s:
         session_user(s,request,'view')
-        company_id=company_id or s.scalar(select(Company.id).where(Company.code=='UZGERMED'))
+        company_id=company_id or s.info['company_id']
         get(s,Company,company_id)
         from .cash_report import report
         return report(s,year,currency,company_id,scenario,as_of)
@@ -633,13 +640,38 @@ def model_drive_sync(request:Request):
 def users(request:Request):
     with unit() as s:
         session_user(s,request,'users');return [user_json(u) for u in s.scalars(select(User).order_by(User.id))]
+
+class CompanyUserIn(Input):
+    username:str=Field(min_length=3,max_length=80)
+
+@app.post('/api/company-users')
+def grant_company_access(data:CompanyUserIn,request:Request):
+    with unit(True) as s:
+        admin,_=session_user(s,request,'users')
+        u=s.scalar(select(User).where(User.username==data.username.strip().lower()).execution_options(company_unscoped=True))
+        if not u:raise HTTPException(404,'Логин не найден. Создайте нового пользователя.')
+        cid=s.info['company_id']
+        if not s.get(CompanyUser,(cid,u.id)):s.add(CompanyUser(company_id=cid,user_id=u.id))
+        log(s,admin,'Предоставлен доступ к компании','user',u.id)
+        return {'ok':True}
+
+@app.delete('/api/company-users/{id}')
+def revoke_company_access(id:int,request:Request):
+    with unit(True) as s:
+        admin,_=session_user(s,request,'users');u=get(s,User,id)
+        if u.role=='admin':raise HTTPException(409,'Администратор управляет всеми компаниями.')
+        membership=s.get(CompanyUser,(s.info['company_id'],id))
+        if membership:s.delete(membership)
+        log(s,admin,'Отозван доступ к компании','user',id)
+        return {'ok':True}
+
 @app.post('/api/users')
 def add_user(data:UserIn,request:Request):
     with unit(True) as s:
         admin,_=session_user(s,request,'users')
         try:pw=hash_password(data.password)
         except ValueError as e:raise HTTPException(422,str(e))
-        u=User(username=data.username.lower(),name=data.name,password_hash=pw,role=data.role,role_id=s.scalar(select(Role.id).where(Role.name==data.role)));s.add(u);s.flush();log(s,admin,'Создан пользователь','user',u.id,u.role);return user_json(u)
+        u=User(username=data.username.lower(),name=data.name,password_hash=pw,role=data.role,role_id=s.scalar(select(Role.id).where(Role.name==data.role)));s.add(u);s.flush();s.add(CompanyUser(company_id=s.info['company_id'],user_id=u.id));log(s,admin,'Создан пользователь','user',u.id,u.role);return user_json(u)
 @app.post('/api/users/{id}')
 def edit_user(id:int,data:UserEdit,request:Request):
     with unit(True) as s:

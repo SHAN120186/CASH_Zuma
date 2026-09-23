@@ -10,7 +10,7 @@ ACTIVITIES = {'operating':'Операционная деятельность', '
 def report(s, year, currency, company_id, scenario='A', as_of=None):
     accounts = list(s.scalars(select(Account).where(Account.currency == currency, Account.company_id == company_id)))
     aids = {a.id for a in accounts}
-    categories = list(s.scalars(select(Category).order_by(Category.id)))
+    categories = list(s.scalars(select(Category).where(Category.company_id == company_id).order_by(Category.id)))
     cutoff=min(as_of,date(year,12,31)) if as_of else date(year,12,31)
     entries = [t for t in s.scalars(effective_cashflows(s).where(Ledger.date <= cutoff)) if t.account_id in aids and t.kind != 'transfer']
     periods = {p.month: p for p in s.scalars(select(CashPlan).where(CashPlan.company_id==company_id,CashPlan.scenario==scenario,CashPlan.currency == currency, CashPlan.month >= f'{year}-01', CashPlan.month <= f'{year}-12'))}

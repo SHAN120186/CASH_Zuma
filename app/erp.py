@@ -190,6 +190,8 @@ def export_report(format:Literal['xlsx','pdf'],request:Request,year:int=2026,cur
         session_user(s,request,'export')
         if not 1<=start_month<=end_month<=12:raise HTTPException(422,'Некорректные месяцы.')
         if as_of and (as_of.year!=year or as_of>today()):raise HTTPException(422,'Некорректная дата отчёта.')
+        company_id=company_id or s.info['company_id']
+        get(s,Company,company_id)
         raw=render_report(s,year,currency,format,mode,start_month,end_month,company_id,scenario,as_of)
     mime='application/pdf' if format=='pdf' else 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
     return Response(raw,media_type=mime,headers={'Content-Disposition':f'attachment; filename="cashflow-{year}-{currency}.{format}"'})

@@ -4,6 +4,7 @@ from decimal import Decimal, InvalidOperation
 from datetime import date, datetime, timedelta, timezone
 from sqlalchemy import select
 from fastapi import HTTPException
+from .company_scope import get_setting
 from .db import Account, Category, Budget, PaymentRequest, Receipt, Ledger, Audit, Setting
 
 def today():return datetime.now(timezone(timedelta(hours=5))).date()
@@ -25,6 +26,8 @@ def effective_cashflows(s):
 def get(s,cls,id):
     value=s.get(cls,id)
     if not value:raise HTTPException(404,'Запись не найдена.')
+    from .company_scope import check_object
+    check_object(s, value)
     return value
 
 def log(s,user,action,entity,id='',detail=''):
@@ -108,7 +111,7 @@ def check_request_version(r,version):
 
 def needs_director(s,r):
     a=get(s,Account,r.account_id)
-    threshold=s.get(Setting,'approval_limit_'+a.currency)
+    threshold=get_setting(s,'approval_limit_'+a.currency,a.company_id)
     return threshold is None or r.amount>int(threshold.value)
 
 def request_json(s,r,accounts=None,categories=None,users=None):
@@ -134,6 +137,7 @@ def post_ledger(s,u,data):
     if kind=='transfer':
         target=get(s,Account,data.to_account_id)
         if target.archived:raise HTTPException(409,'Счёт-получатель в архиве.')
+        if target.company_id!=a.company_id:raise HTTPException(422,'Переводы между компаниями оформляются отдельными поступлением и выплатой.')
         if target.id==a.id or target.currency!=a.currency:raise HTTPException(422,'Для перевода нужны разные счета одной валюты. Конвертация в этой версии не поддерживается.')
         if data.date<target.opening_date:raise HTTPException(422,'Дата перевода раньше начального остатка счёта-получателя.')
     else:get(s,Category,data.category_id)
@@ -171,7 +175,7 @@ def dashboard(s,currency,horizon=30):
     receipt=[r for r in s.scalars(select(Receipt)) if r.account_id in ids and r.status=='expected']
     approved=[r for r in req if r.status=='approved']
     pending=[r for r in req if r.status=='pending']
-    reserve=s.get(Setting,'reserve_'+currency);reserve=int(reserve.value) if reserve else 0
+    reserve=get_setting(s,'reserve_'+currency);reserve=int(reserve.value) if reserve else 0
     days=[];bal=current;requested_bal=current;requested_accounts=account_balances.copy()
     for i in range(horizon):
         day=start+timedelta(days=i)

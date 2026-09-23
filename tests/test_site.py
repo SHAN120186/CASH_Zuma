@@ -35,7 +35,7 @@ class SiteTests(unittest.TestCase):
         r=self.client.post('/api/login',json={'username':'admin','password':PASSWORD});self.assertEqual(r.status_code,200,r.text)
         self.h={'X-CSRF-Token':r.json()['csrf']}
         self.date=str(today());self.month=self.date[:7]
-        b=self.client.get('/api/bootstrap').json();self.cat=b['categories'][1]['id']
+        b=self.client.get('/api/bootstrap').json();self.cat=b['categories'][1]['id'];self.company=next(c['id'] for c in b['companies'] if c['code']=='UZGERMED')
         r=self.post('/api/accounts',{'name':'Test bank','kind':'bank','currency':'UZS','opening':'1000000.00','opening_date':str(today()-timedelta(days=10))})
         self.acc=r.json()['id']
         # Most legacy budget tests exercise the one-financier path below the limit.
@@ -519,7 +519,7 @@ class SiteTests(unittest.TestCase):
         finally:cashier.close();director.close()
 
     def test_50_missing_limit_and_edit_reset(self):
-        with unit(True) as s:s.delete(s.get(Setting,'approval_limit_UZS'))
+        with unit(True) as s:s.delete(s.get(Setting,f'company:{self.company}:approval_limit_UZS'))
         r=self.request('1').json();first=self.approve(r['id']).json()
         self.assertEqual(first['status'],'pending')
         ret=self.post(f"/api/requests/{r['id']}/decision",{'action':'return','note':'Возвращаем на уточнение'})
@@ -624,8 +624,8 @@ class SiteTests(unittest.TestCase):
 
     def test_56_audit_tashkent_range_and_history(self):
         with unit(True) as ss:
-            ss.add(Audit(user_id=1,action='Особое событие',entity='account',created_at=datetime(2025,1,1,20,30)))
-            for i in range(205):ss.add(Audit(user_id=1,action='API GET',entity='api',created_at=datetime(2025,1,3)))
+            ss.add(Audit(company_id=self.company,user_id=1,action='Особое событие',entity='account',created_at=datetime(2025,1,1,20,30)))
+            for i in range(205):ss.add(Audit(company_id=self.company,user_id=1,action='API GET',entity='api',created_at=datetime(2025,1,3)))
         r=self.client.get('/api/audit/history?date_from=2025-01-02&date_to=2025-01-02').json()
         self.assertEqual(r['total'],1);self.assertEqual(r['items'][0]['date'],'02.01.2025 01:30')
         r=self.client.get('/api/audit/history?date_from=2025-01-03&date_to=2025-01-03&technical=true&page=2').json()
@@ -693,7 +693,7 @@ class SiteTests(unittest.TestCase):
 
     def test_61_funds_are_isolated_by_account_company_and_currency(self):
         companies={c['code']:c['id'] for c in self.client.get('/api/bootstrap').json()['companies']}
-        self.post('/api/accounts',{'name':'Zuma rich bank','company_id':companies['ZUMA'],'kind':'bank','currency':'UZS','opening':'9000000','opening_date':self.date})
+        r=self.post('/api/accounts',{'name':'Zuma rich bank','company_id':companies['ZUMA'],'kind':'bank','currency':'UZS','opening':'9000000','opening_date':self.date},headers={**self.h,'X-Company-ID':str(companies['ZUMA'])});self.assertEqual(r.status_code,200,r.text)
         empty=self.post('/api/accounts',{'name':'UZGERMED empty bank','company_id':companies['UZGERMED'],'kind':'bank','currency':'UZS','opening':'0','opening_date':self.date}).json()['id']
         r=self.post('/api/requests',{'account_id':empty,'category_id':self.cat,'counterparty':'Supplier','amount':'1','date':self.date,'purpose':'Проверка изоляции денег'}).json()
         denied=self.approve(r['id']);self.assertEqual(denied.status_code,409);self.assertIn('UZS',denied.text)
@@ -891,5 +891,99 @@ class SiteTests(unittest.TestCase):
                 self.assertEqual(self.preview_plan(raw,cl,h).status_code,403)
             with unit() as s:self.assertEqual(len(list(s.scalars(select(PlanImportBatch)))),0)
         finally:cl.close()
+
+    def second_company(self):
+        cid=next(c['id'] for c in self.client.get('/api/companies').json()['companies'] if c['code']=='ZUMA')
+        h={**self.h,'X-Company-ID':str(cid)}
+        cats=self.client.get('/api/bootstrap',headers=h).json()['categories']
+        cat=next(c['id'] for c in cats if c['name']=='Закупка сырья')
+        r=self.post('/api/accounts',{'name':'Test bank','kind':'bank','currency':'UZS','opening':'2000','opening_date':self.date},headers=h)
+        self.assertEqual(r.status_code,200,r.text)
+        return cid,h,cat,r.json()['id']
+
+    def test_73_company_isolation_across_sections_exports_and_direct_ids(self):
+        import io
+        from openpyxl import load_workbook
+        cid,h,cat,acc=self.second_company()
+        self.assertNotEqual(cat,self.cat)
+        self.assertEqual(self.client.get('/api/dashboard',headers=h).json()['balance'],'2000.00')
+        self.assertEqual(self.client.get('/api/dashboard').json()['balance'],'1000000.00')
+        ledger=self.ledger(reference='PRIVATE-UZGERMED').json()['id']
+        req=self.request().json()['id']
+        for path in ('/api/ledger','/api/requests','/api/receipts'):
+            self.assertEqual(self.client.get(path,headers=h).json(),[],path)
+        self.assertEqual(self.client.get('/api/ledger?paginated=true',headers=h).json()['total'],0)
+        self.assertEqual(self.client.get('/api/requests?paginated=true',headers=h).json()['total'],0)
+        self.assertNotIn('PRIVATE-UZGERMED',self.client.get('/api/export/ledger.csv',headers=h).text)
+        self.assertEqual(self.post(f'/api/ledger/{ledger}/reverse',{'reason':'Cross company reversal'},headers=h).status_code,404)
+        self.assertEqual(self.post(f'/api/requests/{req}/decision',{'action':'cancel','version':1,'note':'Cross company cancel'},headers=h).status_code,404)
+        self.assertEqual(self.post(f'/api/accounts/{self.acc}/archive',{'archived':True,'reason':'Cross company account'},headers=h).status_code,404)
+        self.assertEqual(self.client.get(f'/api/documents?ledger_id={ledger}',headers=h).status_code,404)
+        upload=self.client.post(f'/api/ledger/{ledger}/document',content=b'%PDF-1.4\nsynthetic',headers={**self.h,'Content-Type':'application/pdf','X-Filename':'test.pdf'})
+        self.assertEqual(upload.status_code,200,upload.text)
+        self.assertEqual(self.client.get(f"/api/documents/{upload.json()['id']}",headers=h).status_code,404)
+        r=self.ledger(kind='transfer',reference='CROSS',to_account_id=acc)
+        self.assertEqual(r.status_code,404,r.text)
+        body={'account_id':acc,'category_id':self.cat,'kind':'in','amount':'1','date':self.date,'reference':'FOREIGN-CATEGORY'}
+        self.assertEqual(self.post('/api/ledger',body,headers=h).status_code,404)
+        self.assertEqual(self.client.get('/api/report?company_id='+str(self.company),headers=h).status_code,409)
+        exported=self.client.get('/api/export/report.xlsx?year='+self.date[:4],headers=h)
+        self.assertEqual(exported.status_code,200,exported.text[:200] if exported.status_code!=200 else '')
+        wb=load_workbook(io.BytesIO(exported.content));self.assertIn('Zuma',wb.active['A1'].value);wb.close()
+        history=self.client.get('/api/audit/history',headers=h).json()
+        self.assertFalse(any('PRIVATE-UZGERMED' in x['detail'] for x in history['items']))
+
+    def test_74_company_membership_grant_revoke_and_forged_context(self):
+        cid,h,cat,acc=self.second_company()
+        cl,uh=self.make_user('operator','only_uzgermed')
+        try:
+            self.assertEqual([c['id'] for c in cl.get('/api/companies').json()['companies']],[self.company])
+            self.assertEqual(cl.get('/api/accounts',headers={'X-Company-ID':str(cid)}).status_code,403)
+            self.assertEqual(cl.get('/api/export/ledger.csv?company_id='+str(cid)).status_code,403)
+            self.assertEqual(cl.get('/api/companies').status_code,200)
+            self.assertFalse(any(u['username']=='only_uzgermed' for u in self.client.get('/api/users',headers=h).json()))
+            self.assertEqual(self.post('/api/company-users',{'username':'only_uzgermed'},headers=h).status_code,200)
+            users=self.client.get('/api/users',headers=h).json();uid=next(u['id'] for u in users if u['username']=='only_uzgermed')
+            self.assertEqual(len(cl.get('/api/companies').json()['companies']),2)
+            self.assertEqual(cl.get('/api/accounts',headers={'X-Company-ID':str(cid)}).json()[0]['id'],acc)
+            self.assertEqual(self.client.delete('/api/company-users/'+str(uid),headers=h).status_code,200)
+            self.assertEqual(cl.get('/api/accounts',headers={'X-Company-ID':str(cid)}).status_code,403)
+            self.assertEqual(cl.get('/api/accounts').status_code,200)
+            self.assertEqual(cl.post('/api/company-users',json={'username':'admin'},headers=uh).status_code,403)
+        finally:cl.close()
+
+    def test_75_company_catalog_budgets_policies_and_plan_payload(self):
+        cid,h,cat,acc=self.second_company()
+        self.budget('500','hard')
+        self.assertTrue(all(b['limit'] is None for b in self.client.get('/api/budgets',headers=h).json()))
+        self.assertIsNone(self.client.get('/api/approval-policy',headers=h).json()['limits']['UZS'])
+        self.post('/api/reserve',{'currency':'UZS','amount':'500'})
+        self.assertEqual(self.client.get('/api/dashboard',headers=h).json()['reserve'],'0.00')
+        payload={'name':'Сырьё только ZUMA','type':'outcome','activity':'operating'}
+        self.assertEqual(self.client.put('/api/categories/'+str(cat),json=payload,headers=h).status_code,200)
+        self.assertEqual(self.client.put('/api/categories/'+str(self.cat),json=payload,headers=h).status_code,404)
+        self.assertNotIn('Сырьё только ZUMA',[c['name'] for c in self.client.get('/api/bootstrap').json()['categories']])
+        plan={'company_id':cid,'month':self.month,'currency':'UZS','scenario':'A','version':0,'items':[{'category_id':cat,'kind':'out','amount':'500'}],'reason':'План только этой компании'}
+        self.assertEqual(self.post('/api/cash-plan',plan,headers=h).status_code,200)
+        self.assertEqual(self.post('/api/cash-plan',plan).status_code,404)
+        plan['version']=1;plan['items'][0]['category_id']=self.cat
+        self.assertEqual(self.post('/api/cash-plan',plan,headers=h).status_code,404)
+        plan_rows=self.client.get('/api/report?year='+self.date[:4],headers=h).json()['rows']
+        self.assertTrue(all(r['category_id']!=self.cat for r in plan_rows))
+        account={'name':'Moved','kind':'bank','currency':'UZS','opening':'0','opening_date':self.date,'company_id':cid,'reason':'Cross company reassignment'}
+        self.assertEqual(self.post('/api/accounts/'+str(self.acc),account).status_code,404)
+        self.assertEqual(self.client.get('/api/accounts').json()[0]['company_id'],self.company)
+
+    def test_76_company_import_and_count_filters(self):
+        cid,h,cat,acc=self.second_company()
+        text='date;kind;account_id;to_account_id;category_id;amount;counterparty;reference;note\n'+f'{self.date};in;{self.acc};;{self.cat};10;Client;IMPORT-SCOPED;test\n'
+        r=self.client.post('/api/import/preview',content=text.encode(),headers={**self.h,'Content-Type':'text/csv','X-Filename':'scope.csv'})
+        self.assertEqual(r.status_code,200,r.text);batch=r.json()['id']
+        self.assertEqual(self.post(f'/api/import/{batch}/commit',{},headers=h).status_code,404)
+        wrong=self.client.post('/api/import/preview',content=text.encode(),headers={**h,'Content-Type':'text/csv','X-Filename':'scope.csv'})
+        self.assertEqual(wrong.status_code,200,wrong.text);self.assertFalse(wrong.json()['can_commit'])
+        self.assertEqual(self.post(f'/api/import/{batch}/commit',{}).status_code,200)
+        self.assertEqual(self.client.get('/api/ledger?paginated=true',headers=h).json()['total'],0)
+        self.assertEqual(self.client.get('/api/ledger?paginated=true').json()['total'],1)
 
 if __name__=='__main__':unittest.main(verbosity=2)

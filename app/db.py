@@ -47,6 +47,11 @@ class User(Base):
     active = Column(Boolean, nullable=False, default=True)
     created_at = Column(DateTime, default=now, nullable=False)
 
+class CompanyUser(Base):
+    __tablename__ = 'company_users'
+    company_id = Column(Integer, ForeignKey('companies.id'), primary_key=True)
+    user_id = Column(Integer, ForeignKey('users.id'), primary_key=True)
+
 class LoginSession(Base):
     __tablename__ = 'sessions'
     token_hash = Column(String(64), primary_key=True)
@@ -62,8 +67,10 @@ class LoginAttempt(Base):
 
 class Category(Base):
     __tablename__ = 'categories'
+    company_id = Column(Integer, ForeignKey('companies.id'), nullable=True)
     id = Column(Integer, primary_key=True)
-    name = Column(String(160), unique=True, nullable=False)
+    name = Column(String(160), nullable=False)
+    __table_args__ = (UniqueConstraint('company_id','name'),)
     activity = Column(String(20), nullable=False, default='operating')
     type = Column(String(12), nullable=False, default='outcome')
     cost_group = Column(String(12), nullable=False, default='other')
@@ -102,15 +109,18 @@ class PlanNote(Base):
 
 class Counterparty(Base):
     __tablename__ = 'counterparties'
+    company_id = Column(Integer, ForeignKey('companies.id'), nullable=True)
     id = Column(Integer, primary_key=True)
-    name = Column(String(160), unique=True, nullable=False)
+    name = Column(String(160), nullable=False)
+    __table_args__ = (UniqueConstraint('company_id','name'),)
     inn = Column(String(20), nullable=False, default='')
     note = Column(String(240), nullable=False, default='')
 
 class Account(Base):
     __tablename__ = 'accounts'
     id = Column(Integer, primary_key=True)
-    name = Column(String(160), unique=True, nullable=False)
+    name = Column(String(160), nullable=False)
+    __table_args__ = (UniqueConstraint('company_id','name'),)
     kind = Column(String(12), nullable=False) # bank / cash
     currency = Column(String(3), nullable=False)
     company_id = Column(Integer, ForeignKey('companies.id'), nullable=False)
@@ -192,6 +202,7 @@ class Ledger(Base):
 
 class ModelVersion(Base):
     __tablename__ = 'model_versions'
+    company_id = Column(Integer, ForeignKey('companies.id'), nullable=True)
     id = Column(Integer, primary_key=True)
     sha256 = Column(String(64), nullable=False, unique=True)
     filename = Column(String(220), nullable=False)
@@ -201,6 +212,7 @@ class ModelVersion(Base):
 
 class Audit(Base):
     __tablename__ = 'audit_log'
+    company_id = Column(Integer, ForeignKey('companies.id'), nullable=True)
     id = Column(Integer, primary_key=True)
     user_id = Column(Integer, ForeignKey('users.id'), nullable=True)
     action = Column(String(80), nullable=False)
@@ -234,6 +246,7 @@ class Document(Base):
 
 class ImportBatch(Base):
     __tablename__ = 'import_batches'
+    company_id = Column(Integer, ForeignKey('companies.id'), nullable=True)
     id = Column(Integer, primary_key=True)
     user_id = Column(Integer, ForeignKey('users.id'), nullable=False)
     filename = Column(String(220), nullable=False)
@@ -258,6 +271,7 @@ class PlanImportBatch(Base):
 
 class ReportSchedule(Base):
     __tablename__ = 'report_schedules'
+    company_id = Column(Integer, ForeignKey('companies.id'), nullable=True)
     id = Column(Integer, primary_key=True)
     recipient = Column(String(254), nullable=False)
     currency = Column(String(3), nullable=False)
@@ -324,6 +338,8 @@ def initialize():
             conn.execute(text('CREATE UNIQUE INDEX IF NOT EXISTS ux_cash_plan_scope ON cash_plans(company_id,month,currency,scenario)'))
         for name,definition in [('version','INTEGER NOT NULL DEFAULT 1'),('last_editor_id','INTEGER REFERENCES users(id)'),('priority',"VARCHAR(12) NOT NULL DEFAULT 'normal'")]:
             if name not in columns:conn.execute(text(f'ALTER TABLE payment_requests ADD COLUMN {name} {definition}'))
+    from .company_scope import migrate_columns, migrate_data
+    migrate_columns(engine)
     with Session(engine) as s:
         from .security import ROLES
         for name in ROLES:
@@ -340,5 +356,7 @@ def initialize():
                 ('Прочие операционные расходы','operating'),('Оборудование','investing'),
                 ('Получение кредита','financing'),('Погашение основного долга','financing'),
                 ('Проценты по кредитам','financing'),('Дивиденды','financing')]:
-                s.add(Category(name=name, activity=activity,type='income' if name in ('Поступления от покупателей','Получение кредита') else 'outcome'))
+                s.add(Category(company_id=s.scalar(select(Company.id).where(Company.code=='UZGERMED')), name=name, activity=activity,type='income' if name in ('Поступления от покупателей','Получение кредита') else 'outcome'))
         s.commit()
+
+    migrate_data(engine)

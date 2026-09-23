@@ -2,10 +2,11 @@
 import {ref,computed,watch,nextTick} from 'vue';
 import AppIcon from './AppIcon.vue';
 const props=defineProps({report:Object,currency:String,year:[String,Number],api:Function,canPlan:Boolean,companies:Array,companyId:Number,scenario:String,asOf:String});
-const emit=defineEmits(['refresh','year','company','scenario','as-of']);
+const emit=defineEmits(['refresh','year','company','scenario','as-of','editing']);
 const months=['Янв','Фев','Мар','Апр','Май','Июн','Июл','Авг','Сен','Окт','Ноя','Дек'];
 const monthNames=['Январь','Февраль','Март','Апрель','Май','Июнь','Июль','Август','Сентябрь','Октябрь','Ноябрь','Декабрь'];
 const mode=ref('actual'),start=ref(1),end=ref(12),per=ref('year'),unit=ref(props.currency==='UZS'?'m':'k'),collapsed=ref([]),editor=ref(false),editMonth=ref(1),draft=ref([]),opening=ref(''),reason=ref(''),error=ref(''),saving=ref(false),saved=ref(false);
+watch(editor,value=>emit('editing',value));
 const note=ref(''),noteMonth=ref(1),groupOpen=ref(false),groupMonth=ref(String(props.asOf).slice(0,7)),groupDay=ref(props.asOf),groupText=ref('');
 const comparison=ref([]);
 const units={m:{label:'Млн',div:1e8,digits:1},k:{label:'Тыс.',div:1e5,digits:1},x:{label:'Точно',div:100,digits:2}};
@@ -78,7 +79,7 @@ async function copyGroup(){await navigator.clipboard.writeText(groupText.value);
 <template>
  <div class="card tools">
   <div class="tl-row">
-   <label class="fld">Компания <select :value="companyId" @change="emit('company',Number($event.target.value))"><option v-for="c in companies" :key="c.id" :value="c.id">{{c.name}}</option></select></label>
+   <span class="pill good">{{companies?.find(c=>c.id===companyId)?.name}}</span>
    <div class="seg" role="group" aria-label="Сценарий плана"><button v-for="s in ['A','B','V']" :key="s" :class="{on:scenario===s}" :aria-pressed="scenario===s" @click="emit('scenario',s)">Сценарий {{{A:'А',B:'Б',V:'В'}[s]}}</button></div>
    <label class="fld">Год <select aria-label="Год отчёта" :value="year" @change="emit('year',$event.target.value)"><option v-for="y in years" :key="y" :value="y">{{y}}</option></select></label>
    <label class="fld">Факт по дату <input type="date" :value="asOf" @change="emit('as-of',$event.target.value)"></label>

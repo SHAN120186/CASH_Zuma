@@ -73,6 +73,8 @@ def session_user(s, request: Request, permission=None):
             raise HTTPException(403, 'Защитный токен не совпадает. Обновите страницу.')
     if permission and permission not in PERMS.get(user.role,set()):
         raise HTTPException(403,'У вашей роли нет прав на это действие.')
+    from .company_scope import activate
+    activate(s, request, user)
     return user,session
 
 def login_keys(request, username):

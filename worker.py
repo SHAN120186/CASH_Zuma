@@ -60,7 +60,7 @@ def report_tick():
             recipient,currency=r.recipient,r.currency
         try:
             with unit() as s:
-                attachments=[(f'cashflow-{day.year}-{currency}.xlsx',render_report(s,day.year,currency,'xlsx'),'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'),(f'cashflow-{day.year}-{currency}.pdf',render_report(s,day.year,currency,'pdf'),'application/pdf')]
+                attachments=[(f'cashflow-{day.year}-{currency}.xlsx',render_report(s,day.year,currency,'xlsx',company_id=r.company_id),'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'),(f'cashflow-{day.year}-{currency}.pdf',render_report(s,day.year,currency,'pdf',company_id=r.company_id),'application/pdf')]
             send_report(recipient,attachments)
             with unit(True) as s:
                 r=s.get(ReportSchedule,id)
