@@ -4,6 +4,7 @@ import CashFlowReport from './CashFlowReport.vue';
 import AuditHistory from './AuditHistory.vue';
 import PeriodFilter from './PeriodFilter.vue';
 import AppIcon from './AppIcon.vue';
+import CompanyCard from './CompanyCard.vue';
 import {loadRecentLogins,rememberLogin,matchingLogins,offerPasswordSave} from './loginPreferences.js';
 import release from '../../release.json';
 const availableRelease=ref(null),showRelease=ref(false);
@@ -266,9 +267,10 @@ onMounted(async()=>{try{const r=await api('/api/me');user.value=r.user;csrf.valu
   <header><div class="brand"><span class="mark" aria-hidden="true">CF</span><h1 class="bname">Cash Flow</h1></div><button class="secondary" @click="logout">Выйти</button></header>
   <main aria-label="Выбор компании">
    <p v-if="error" class="error" role="alert">{{error}}</p><p v-if="busy" role="status">Открываем компанию…</p>
-   <div class="company-grid"><button v-for="c in selectableCompanies" :key="c.id" class="company-card" :aria-label="'Открыть компанию '+c.name" :disabled="busy" @click="selectCompany(c.id)"><span class="company-symbol" aria-hidden="true">{{c.code.charAt(0)}}</span><b>{{c.code==='ZUMA'?'ZUMA':c.name}}</b><AppIcon name="arrow"/></button></div>
+   <div class="company-grid"><CompanyCard v-for="c in selectableCompanies" :key="c.id" :company="c" :disabled="busy" @select="selectCompany"/></div>
    <p v-if="!busy&&!selectableCompanies.length" class="sub">Нет доступных компаний. Обратитесь к администратору.</p>
   </main>
+  <footer class="company-credit">Разработка и собственность компании <strong>«Анонимус»</strong></footer>
  </section>
  <div v-else class="app" :class="{'menu-open':menuOpen}">
   <div v-if="menuOpen" class="scrim" @click="menuOpen=false"></div>

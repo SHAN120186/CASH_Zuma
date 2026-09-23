@@ -433,13 +433,29 @@ table.cf{border-collapse:separate;border-spacing:0;min-width:100%;font-size:13px
 .company-choice>main{width:min(660px,100%);margin:0 auto;padding:64px 0;flex:1;display:flex;flex-direction:column;justify-content:center;gap:24px}
 .company-choice .sub{font-size:16px}
 .company-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:28px}
-.company-card{position:relative;min-width:0;aspect-ratio:1;white-space:normal;text-align:center;flex-direction:column;gap:26px;padding:32px;background:linear-gradient(155deg,#fff,#f8fcfa);color:var(--ink);border:1px solid var(--line);border-radius:28px;box-shadow:0 16px 40px -24px #054a3c55;transition:background .18s,border-color .18s,box-shadow .18s}
-.company-card:hover:not(:disabled){background:var(--emx);color:var(--emd);border-color:var(--em);box-shadow:0 20px 44px -24px #054a3c77}
+.company-card-shell{min-width:0;perspective:1000px}
+.company-card{position:relative;isolation:isolate;overflow:hidden;width:100%;min-width:0;aspect-ratio:1;white-space:normal;text-align:center;flex-direction:column;gap:26px;padding:32px;background:linear-gradient(155deg,#fff,#f5faf7);color:var(--ink);border:1px solid #d7e6df;border-radius:28px;box-shadow:0 2px 4px #054a3c05,0 16px 40px -24px #054a3c55;transition:transform .25s ease,background .25s,border-color .25s,box-shadow .25s}
+.company-card::before{content:"";position:absolute;inset:0;z-index:-1;pointer-events:none;background:radial-gradient(240px circle at var(--spot-x,50%) var(--spot-y,35%),#83dabc70,transparent 75%);opacity:0;transition:opacity .25s}
+.company-card::after{content:"";position:absolute;z-index:-1;width:90%;aspect-ratio:1;right:-28%;top:-35%;border:1px solid #086a5610;border-radius:50%;box-shadow:0 0 0 24px #086a5604,0 0 0 48px #086a5603;pointer-events:none}
+.company-card:hover:not(:disabled){background:var(--emx);color:var(--ink);border-color:#d7e6df}
 .company-card:focus-visible{outline:3px solid var(--focus);outline-offset:5px}
+.company-card:focus-visible:not(:disabled){background:var(--emx);border-color:var(--em);box-shadow:0 20px 44px -24px #054a3c77}
+.company-card:focus-visible::before{opacity:1}
 .company-card b{display:block;font-size:26px;font-weight:800;letter-spacing:.02em;overflow-wrap:anywhere}
-.company-card>.app-icon{position:absolute;right:24px;bottom:24px;color:var(--em)}
-.company-symbol{flex-shrink:0;display:grid;place-items:center;width:80px;height:80px;background:linear-gradient(140deg,var(--em2),var(--emd));color:#fff;border-radius:24px;font-size:36px;font-weight:800;box-shadow:0 8px 18px #086a5626}
+.company-enter{position:absolute;right:22px;bottom:22px;display:grid;place-items:center;width:36px;height:36px;border:1px solid #d4e8dd;border-radius:50%;color:var(--em);background:#ffffffa6;transition:background .25s,color .25s,border-color .25s}
+.company-enter .app-icon{transition:transform .25s}
+.company-symbol{flex-shrink:0;display:grid;place-items:center;width:80px;height:80px;background:linear-gradient(140deg,var(--em2),var(--emd));color:#fff;border-radius:24px;font-size:36px;font-weight:800;box-shadow:inset 0 1px 1px #ffffff50,0 8px 18px #086a5626;transition:transform .25s,box-shadow .25s}
+.company-credit{text-align:center;color:var(--mut);font-size:12px;line-height:1.7;padding:12px 0 0;text-wrap:balance}
+.company-credit strong{font-weight:700;color:var(--emd);white-space:nowrap}
+@media(hover:hover) and (pointer:fine){
+ .company-card:hover:not(:disabled){background:var(--emx);color:var(--emd);border-color:#6ab79e;box-shadow:0 24px 48px -24px #054a3c66;transform:translateY(-6px) rotateX(var(--tilt-x,0deg)) rotateY(var(--tilt-y,0deg))}
+ .company-card:hover:not(:disabled)::before{opacity:1}
+ .company-card:hover:not(:disabled) .company-symbol{transform:translateY(-3px);box-shadow:inset 0 1px 1px #ffffff50,0 14px 24px #086a5633}
+ .company-card:hover:not(:disabled) .company-enter{background:var(--em);border-color:var(--em);color:#fff}
+ .company-card:hover:not(:disabled) .company-enter .app-icon{transform:translateX(2px)}
+}
+.company-card:active:not(:disabled){transform:scale(.985)}
 .company-switch{width:100%;margin:0 0 12px;font-size:12px}.side .brand .bname{white-space:normal;overflow-wrap:anywhere;font-size:16px}
-@media(max-width:600px){.company-choice{padding:24px 20px}.company-grid{gap:16px}.company-card{padding:20px 12px;gap:18px;border-radius:22px}.company-card b{font-size:clamp(15px,3.4vw,21px)}.company-symbol{width:56px;height:56px;border-radius:18px;font-size:28px}.company-card>.app-icon{right:14px;bottom:14px;width:14px;height:14px}}
+@media(max-width:600px){.company-choice{padding:24px 20px}.company-grid{gap:16px}.company-card{padding:20px 12px;gap:18px;border-radius:22px}.company-card b{font-size:clamp(15px,3.4vw,21px)}.company-symbol{width:56px;height:56px;border-radius:18px;font-size:28px}.company-enter{right:12px;bottom:12px;width:24px;height:24px}.company-enter .app-icon{width:14px;height:14px}.company-credit{font-size:11px}}
 @media(max-width:360px){.company-grid{grid-template-columns:1fr;max-width:240px;width:100%;align-self:center}.company-card b{font-size:22px}.company-choice .brand{gap:8px}.company-choice .mark{width:40px;height:40px;font-size:20px}.company-choice .bname{font-size:25px}}
-@media(prefers-reduced-motion:reduce){.company-card{transition:none}}
+@media(prefers-reduced-motion:reduce){.company-card,.company-card::before,.company-symbol,.company-enter,.company-enter .app-icon{transition:none!important;transform:none!important}}
