@@ -25,6 +25,7 @@ let companyEpoch=0;const pendingCalls=new Set();
 const companyUrl=url=>url+(url.includes('?')?'&':'?')+'company_id='+companyId.value;
 const reportAsOf=ref(new Date().toLocaleDateString('en-CA',{timeZone:'Asia/Tashkent'}));
 const boot=ref({accounts:[],companies:[],categories:[],roles:{}}),rows=ref([]),dash=ref(null),report=ref(null),preview=ref(null),search=ref(''),modal=ref(null),form=ref({}),formError=ref(''),saving=ref(false),documents=ref(null);
+const selectableCompanies=computed(()=>boot.value.companies.filter(c=>c.code!=='UNASSIGNED'));
 const importMode=ref('operations'),planMonthFrom=ref(1),planMonthTo=ref(12),planMappings=ref({}),planReason=ref('Загрузка планов расходов из проверенной книги Cash Flow');
 const allNav=[['home','◈','Обзор','view'],['report','▥','Cash Flow','export'],['accounts','▣','Банк и касса','view'],['ledger','⇄','Операции','ledger'],['requests','✓','Заявки','requests-view'],['calendar','▦','Календарь','view'],['budgets','◷','Бюджеты','view'],['import','↥','Импорт','import'],['categories','≡','Справочники','catalog'],['approval','✓','Согласование','approval_policy'],['users','♙','Пользователи','users'],['audit','⊞','Журнал','audit'],['profile','⚙','Профиль','']];
 const has=p=>p==='requests-view'?(user.value?.permissions.includes('request')||user.value?.permissions.includes('view')):user.value?.permissions.includes(p), nav=computed(()=>allNav.filter(n=>!n[3]||has(n[3]))), title=computed(()=>allNav.find(n=>n[0]===page.value)?.[2]||'Казначейство');
@@ -262,11 +263,11 @@ onMounted(async()=>{try{const r=await api('/api/me');user.value=r.user;csrf.valu
 
  <!-- Рабочее пространство -->
  <section v-else-if="!companyReady" class="company-choice">
-  <header><div class="brand"><span class="mark">CF</span><span class="bname">Cash Flow</span></div><button class="secondary" @click="logout">Выйти</button></header>
-  <main><p class="eyebrow">РАБОЧЕЕ ПРОСТРАНСТВО</p><h1>Выберите компанию</h1><p class="sub">Счета, операции, заявки и отчёты выбранной компании.</p>
+  <header><div class="brand"><span class="mark" aria-hidden="true">CF</span><h1 class="bname">Cash Flow</h1></div><button class="secondary" @click="logout">Выйти</button></header>
+  <main aria-label="Выбор компании">
    <p v-if="error" class="error" role="alert">{{error}}</p><p v-if="busy" role="status">Открываем компанию…</p>
-   <div class="company-grid"><button v-for="c in boot.companies" :key="c.id" class="company-card" :class="{'unassigned':c.code==='UNASSIGNED'}" :disabled="busy" @click="selectCompany(c.id)"><span class="company-symbol">{{c.code==='UNASSIGNED'?'?':c.code.charAt(0)}}</span><span><b>{{c.code==='ZUMA'?'ZUMA':c.name}}</b><small>{{c.code==='UNASSIGNED'?'Записи без указанной компании':'Открыть рабочее пространство'}}</small></span><AppIcon name="arrow"/></button></div>
-   <p v-if="!busy&&!boot.companies.length" class="sub">Нет доступных компаний. Обратитесь к администратору.</p>
+   <div class="company-grid"><button v-for="c in selectableCompanies" :key="c.id" class="company-card" :aria-label="'Открыть компанию '+c.name" :disabled="busy" @click="selectCompany(c.id)"><span class="company-symbol" aria-hidden="true">{{c.code.charAt(0)}}</span><b>{{c.code==='ZUMA'?'ZUMA':c.name}}</b><AppIcon name="arrow"/></button></div>
+   <p v-if="!busy&&!selectableCompanies.length" class="sub">Нет доступных компаний. Обратитесь к администратору.</p>
   </main>
  </section>
  <div v-else class="app" :class="{'menu-open':menuOpen}">
