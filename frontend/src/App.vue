@@ -243,7 +243,7 @@ onMounted(async()=>{try{const r=await api('/api/me');user.value=r.user;csrf.valu
 
  <!-- Вход -->
  <div v-if="!user" class="login-layout">
-  <section class="login-art"><div class="brand"><span class="mark">U</span><span class="bname">UZGERMED</span></div><div><h1>Деньги под контролем.<br><em>Решения — вовремя.</em></h1><p>Счета, платежи и бюджеты.<br>Одно пространство для финансовой команды.</p><div class="login-lines"><span>БАНК</span><span>КАССА</span><span>CASH FLOW</span><svg viewBox="0 0 500 130" aria-hidden="true"><polyline points="0,120 60,100 110,108 170,62 220,80 280,40 340,55 400,10 450,28 500,4" fill="none" stroke="#8adbc5" stroke-width="3"/></svg></div></div><small>Закрытая корпоративная система</small></section>
+  <section class="login-art"><div class="brand"><span class="mark">U</span><span class="bname">UZGERMED</span></div><div><h1>Деньги под контролем.<br><em>Решения — вовремя.</em></h1><p>Счета, платежи и бюджеты.<br>Одно пространство для финансовой команды.</p><div class="login-lines"><span>БАНК</span><span>КАССА</span><span>CASH FLOW</span><svg viewBox="0 0 500 130" aria-hidden="true"><polyline points="0,120 60,100 110,108 170,62 220,80 280,40 340,55 400,10 450,28 500,4" fill="none" stroke="var(--eml)" stroke-width="3"/></svg></div></div><small>Закрытая корпоративная система</small></section>
   <form id="login-form" class="login-form" method="post" action="/api/login" autocomplete="on" @submit.prevent="signIn">
    <p class="eyebrow">UZGERMED TREASURY</p><h2>Добро пожаловать</h2><p>Войдите в финансовое пространство компании.</p>
    <label for="username">Логин
@@ -346,13 +346,13 @@ onMounted(async()=>{try{const r=await api('/api/me');user.value=r.user;csrf.valu
        <div class="card-h"><div><h3>Прогноз остатка</h3><p class="sub" style="margin-top:2px">{{forecastSummary}}</p></div><div class="seg" role="group" aria-label="Горизонт прогноза"><button v-for="d in [7,30,90]" :key="d" :class="{on:days===d}" :aria-pressed="days===d" @click="days=d;load()">{{d}} дн.</button></div></div>
        <div v-if="chart" class="chart-box" @pointerleave="hover=null">
         <svg :viewBox="`0 0 ${chartBox.w} ${chartBox.h}`" role="img" aria-label="Прогноз денежных средств" @pointermove="chartMove">
-         <g v-for="t in chart.ticks" :key="t.y"><line :x1="chartBox.l" :x2="chartBox.w-chartBox.r" :y1="t.y" :y2="t.y" stroke="#e4ece9"/><text :x="chartBox.l-8" :y="t.y+4" text-anchor="end" font-size="11" fill="#84978f" font-weight="700">{{t.label}}</text></g>
-         <line v-if="chart.reserveY!=null" :x1="chartBox.l" :x2="chartBox.w-chartBox.r" :y1="chart.reserveY" :y2="chart.reserveY" stroke="#b23a32" stroke-width="1.6" stroke-dasharray="2 5" stroke-linecap="round"/>
-         <text v-if="chart.reserveY!=null" :x="chartBox.w-chartBox.r" :y="chart.reserveY-6" text-anchor="end" font-size="11" fill="#b23a32" font-weight="800">Мин. резерв {{compact(Number(dash.reserve))}}</text>
-         <path :d="chart.path" fill="none" stroke="#3a6ea8" stroke-width="2.6" stroke-dasharray="7 6" stroke-linejoin="round" stroke-linecap="round"/>
-         <circle :cx="chart.pts[0][0]" :cy="chart.pts[0][1]" r="5.5" fill="#086a56" stroke="#fff" stroke-width="2"/>
-         <text v-for="l in chart.labels" :key="l.x" :x="l.x" :y="chartBox.h-8" :text-anchor="l.anchor" font-size="11" fill="#56695f" font-weight="700">{{l.text}}</text>
-         <g v-if="hover"><line :x1="chart.pts[hover.i][0]" :x2="chart.pts[hover.i][0]" :y1="chartBox.t" :y2="chartBox.h-chartBox.b" stroke="#10231e" stroke-opacity=".35"/><circle :cx="chart.pts[hover.i][0]" :cy="chart.pts[hover.i][1]" r="5" fill="#fff" stroke="#10231e" stroke-width="2.5"/></g>
+         <g v-for="t in chart.ticks" :key="t.y"><line :x1="chartBox.l" :x2="chartBox.w-chartBox.r" :y1="t.y" :y2="t.y" stroke="var(--line2)"/><text :x="chartBox.l-8" :y="t.y+4" text-anchor="end" font-size="11" fill="var(--mut2)" font-weight="700">{{t.label}}</text></g>
+         <line v-if="chart.reserveY!=null" :x1="chartBox.l" :x2="chartBox.w-chartBox.r" :y1="chart.reserveY" :y2="chart.reserveY" stroke="var(--bad)" stroke-width="1.6" stroke-dasharray="2 5" stroke-linecap="round"/>
+         <text v-if="chart.reserveY!=null" :x="chartBox.w-chartBox.r" :y="chart.reserveY-6" text-anchor="end" font-size="11" fill="var(--bad)" font-weight="800">Мин. резерв {{compact(Number(dash.reserve))}}</text>
+         <path :d="chart.path" fill="none" stroke="var(--plan)" stroke-width="2.6" stroke-dasharray="7 6" stroke-linejoin="round" stroke-linecap="round"/>
+         <circle :cx="chart.pts[0][0]" :cy="chart.pts[0][1]" r="5.5" fill="var(--em)" stroke="var(--surface)" stroke-width="2"/>
+         <text v-for="l in chart.labels" :key="l.x" :x="l.x" :y="chartBox.h-8" :text-anchor="l.anchor" font-size="11" fill="var(--mut)" font-weight="700">{{l.text}}</text>
+         <g v-if="hover"><line :x1="chart.pts[hover.i][0]" :x2="chart.pts[hover.i][0]" :y1="chartBox.t" :y2="chartBox.h-chartBox.b" stroke="var(--ink)" stroke-opacity=".35"/><circle :cx="chart.pts[hover.i][0]" :cy="chart.pts[hover.i][1]" r="5" fill="var(--surface)" stroke="var(--ink)" stroke-width="2.5"/></g>
         </svg>
         <div v-if="hover" class="tip" :style="{left:hover.left+'px',top:hover.top+'px'}">{{dash.forecast[hover.i].date}}<br><em>{{hover.i===0?'Сегодня · факт':'План (прогноз)'}}</em> · {{money(dash.forecast[hover.i].balance)}} {{currency}}</div>
        </div>

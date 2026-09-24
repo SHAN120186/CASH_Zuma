@@ -19,8 +19,8 @@ function followPointer(event){
  const y=Math.max(0,Math.min(1,(event.clientY-box.top)/box.height));
  card.style.setProperty('--spot-x',`${(x*100).toFixed(1)}%`);
  card.style.setProperty('--spot-y',`${(y*100).toFixed(1)}%`);
- card.style.setProperty('--tilt-x',`${((.5-y)*6).toFixed(2)}deg`);
- card.style.setProperty('--tilt-y',`${((x-.5)*6).toFixed(2)}deg`);
+ card.style.setProperty('--tilt-x',`${((.5-y)*5).toFixed(2)}deg`);
+ card.style.setProperty('--tilt-y',`${((x-.5)*5).toFixed(2)}deg`);
 }
 </script>
 
