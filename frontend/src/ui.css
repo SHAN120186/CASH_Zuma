@@ -459,3 +459,7 @@ table.cf{border-collapse:separate;border-spacing:0;min-width:100%;font-size:13px
 @media(max-width:600px){.company-choice{padding:24px 20px}.company-grid{gap:16px}.company-card{padding:20px 12px;gap:18px;border-radius:22px}.company-card b{font-size:clamp(15px,3.4vw,21px)}.company-symbol{width:56px;height:56px;border-radius:18px;font-size:28px}.company-enter{right:12px;bottom:12px;width:24px;height:24px}.company-enter .app-icon{width:14px;height:14px}.company-credit{font-size:11px}}
 @media(max-width:360px){.company-grid{grid-template-columns:1fr;max-width:240px;width:100%;align-self:center}.company-card b{font-size:22px}.company-choice .brand{gap:8px}.company-choice .mark{width:40px;height:40px;font-size:20px}.company-choice .bname{font-size:25px}}
 @media(prefers-reduced-motion:reduce){.company-card,.company-card::before,.company-symbol,.company-enter,.company-enter .app-icon{transition:none!important;transform:none!important}}
+
+.request-documents-placeholder{margin-top:18px;padding:16px;border:1px dashed var(--line,#c8d7d2);border-radius:14px;background:var(--bg,#f2eee5)}
+.request-documents-placeholder p{margin:8px 0;font-size:13px;line-height:1.5}
+.request-documents-placeholder button{max-width:100%;white-space:normal}
