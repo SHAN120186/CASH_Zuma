@@ -14,7 +14,7 @@ PERMS = {
  'director': {'view','ledger','export','request','write','approve','budget','plan','import','schedule','catalog','audit','approval_policy','request_edit'},
  'cashier': {'request','ledger','write'},
  'finance': {'view','ledger','export','request','write','approve','budget','plan','import','schedule','request_edit'},
- 'accountant': {'ledger'},
+ 'accountant': {'ledger','pay'},
  'employee': {'request'},
  'auditor': {'view','ledger','export','audit'},
  'operator': {'view','ledger','export','request','write','plan','import','schedule'},

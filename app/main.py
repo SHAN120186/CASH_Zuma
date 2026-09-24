@@ -87,7 +87,7 @@ def release_version():return FileResponse(ROOT/'release.json',media_type='applic
 
 def visible_request(s,r,u):
     data=request_json(s,r)
-    if u.role in ('employee','cashier'):data['budget']={'limit':None,'hidden':True,'over':data['budget']['over'],'mode':data['budget']['mode']}
+    if u.role in ('employee','cashier') or 'pay' in PERMS[u.role]:data['budget']={'limit':None,'hidden':True,'over':data['budget']['over'],'mode':data['budget']['mode']}
     return data
 
 class Input(BaseModel):model_config=ConfigDict(extra='forbid',str_strip_whitespace=True)
@@ -386,10 +386,12 @@ def save_reserve(data:ReserveIn,request:Request):
 def requests_list(request:Request,date_from:Optional[date]=None,date_to:Optional[date]=None,currency:Optional[Literal['UZS','USD','EUR']]=None,q:str='',state:str='',page:int=Query(1,ge=1),page_size:int=Query(10,ge=1,le=100),paginated:bool=False):
     with unit() as s:
         u,_=session_user(s,request)
-        if not ({'request','view'} & PERMS[u.role]):raise HTTPException(403,'Недостаточно прав для просмотра заявок.')
+        if not ({'request','view','pay'} & PERMS[u.role]):raise HTTPException(403,'Недостаточно прав для просмотра заявок.')
+        payer_only=not ({'request','view'} & PERMS[u.role])
         if date_from and date_to and date_from>date_to:raise HTTPException(422,'Начало периода позже окончания.')
         query=select(PaymentRequest).join(Account,Account.id==PaymentRequest.account_id)
         if u.role in ('employee','cashier'):query=query.where(PaymentRequest.creator_id==u.id)
+        if payer_only:query=query.where(PaymentRequest.status.in_(['approved','paid']))
         if currency:query=query.where(Account.currency==currency)
         if date_from:query=query.where(PaymentRequest.due_date>=date_from)
         if date_to:query=query.where(PaymentRequest.due_date<=date_to)
@@ -521,7 +523,9 @@ def ledger_list(request:Request,date_from:Optional[date]=None,date_to:Optional[d
 @app.post('/api/ledger')
 def add_ledger(data:LedgerIn,request:Request):
     with unit(True) as s:
-        u,_=session_user(s,request,'write');t=post_ledger(s,u,data);remember_counterparty(s,data.counterparty);return {'id':t.id}
+        u,_=session_user(s,request)
+        if not ({'write','pay'} & PERMS[u.role]):raise HTTPException(403,'У вашей роли нет прав на это действие.')
+        t=post_ledger(s,u,data);remember_counterparty(s,data.counterparty);return {'id':t.id}
 @app.post('/api/ledger/{id}/reverse')
 def reverse(id:int,data:ReverseIn,request:Request):
     with unit(True) as s:

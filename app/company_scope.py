@@ -18,9 +18,17 @@ DIRECT = (Account, Category, Counterparty, CashPlan, PlanNote, PlanImportBatch,
           ImportBatch, Audit, ModelVersion, ReportSchedule)
 
 
+SERVICE_CODE = 'UNASSIGNED'
+
+
 def available_companies(s, user):
+    """Единственный источник допустимых компаний: список, заголовок и параметр запроса."""
     q = select(Company).where(Company.active.is_(True))
     if user.role != 'admin':
+        # Служебное пространство хранит исторические записи без подтверждённого владельца.
+        # Интерфейс его скрывает; сервер тоже не принимает его как контекст сотрудника,
+        # даже если прежняя связь CompanyUser сохранилась после миграции.
+        q = q.where(Company.code != SERVICE_CODE)
         q = q.where(Company.id.in_(select(CompanyUser.company_id).where(CompanyUser.user_id == user.id)))
     return list(s.scalars(q.order_by(Company.code == 'UNASSIGNED', Company.name)))
 

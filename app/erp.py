@@ -10,7 +10,7 @@ from fastapi.responses import Response
 from pydantic import BaseModel, Field, ConfigDict
 from sqlalchemy import select
 from .db import *
-from .security import session_user
+from .security import session_user, PERMS
 from .services import post_ledger, money, get, log, today
 
 router=APIRouter()
@@ -145,16 +145,29 @@ def documents(request:Request,ledger_id:int):
         session_user(s,request,'ledger');get(s,Ledger,ledger_id)
         return [{'id':d.id,'filename':d.filename,'url':f'/api/documents/{d.id}'} for d in s.scalars(select(Document).where(Document.ledger_id==ledger_id))]
 
+def writable_ledger(s,u,id):
+    """Документ прикладывается к проводке выбранной компании.
+
+    Право pay не открывает посторонние операции на запись: исполнитель платежа
+    прикладывает документ только к собственной оплате по заявке.
+    """
+    entry=get(s,Ledger,id)
+    if 'write' in PERMS[u.role]:return entry
+    if 'pay' not in PERMS[u.role]:raise HTTPException(403,'У вашей роли нет прав на это действие.')
+    if entry.creator_id!=u.id or entry.request_id is None:
+        raise HTTPException(403,'Документ прикладывается только к собственной оплате по утверждённой заявке.')
+    return entry
+
 @router.post('/api/ledger/{id}/document')
 async def add_document(id:int,request:Request):
-    with unit() as s:u,_=session_user(s,request,'write');uid=u.id;get(s,Ledger,id)
+    with unit() as s:u,_=session_user(s,request);uid=u.id;writable_ledger(s,u,id)
     raw=await read_upload(request)
     name=Path(unquote(request.headers.get('X-Filename','document'))).name
     suffix=Path(name).suffix.lower()
     allowed={'.pdf':('application/pdf',b'%PDF-'),'.png':('image/png',b'\x89PNG\r\n\x1a\n'),'.jpg':('image/jpeg',b'\xff\xd8\xff'),'.jpeg':('image/jpeg',b'\xff\xd8\xff')}
     if suffix not in allowed or not raw.startswith(allowed[suffix][1]):raise HTTPException(422,'Документ: PDF, PNG или JPEG, максимум 5 МБ.')
     with unit(True) as s:
-        u,_=session_user(s,request,'write');get(s,Ledger,id)
+        u,_=session_user(s,request);writable_ledger(s,u,id)
         d=Document(ledger_id=id,filename=name[:220],mime=allowed[suffix][0],storage_key=secrets.token_hex(24),sha256=hashlib.sha256(raw).hexdigest(),content=raw,created_by=uid)
         s.add(d);s.flush();log(s,u,'Добавлен документ','document',d.id,f'ledger={id}')
         return {'id':d.id,'url':f'/api/documents/{d.id}'}

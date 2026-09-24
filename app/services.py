@@ -5,6 +5,7 @@ from datetime import date, datetime, timedelta, timezone
 from sqlalchemy import select
 from fastapi import HTTPException
 from .company_scope import get_setting
+from .security import PERMS
 from .db import Account, Category, Budget, PaymentRequest, Receipt, Ledger, Audit, Setting
 
 def today():return datetime.now(timezone(timedelta(hours=5))).date()
@@ -130,6 +131,8 @@ def post_ledger(s,u,data):
     a=get(s,Account,data.account_id)
     if a.archived:raise HTTPException(409,'Счёт в архиве. Сначала восстановите его.')
     if u.role=='cashier' and (data.kind!='out' or not data.request_id):raise HTTPException(403,'Кассир фиксирует оплату только утверждённой заявки.')
+    if 'write' not in PERMS[u.role] and (data.kind!='out' or not data.request_id):
+        raise HTTPException(403,'Бухгалтер фиксирует только оплату утверждённой заявки: поступления, переводы и расход без заявки недоступны.')
     if data.date>today():raise HTTPException(422,'Будущий платёж — это заявка или ожидаемое поступление, а не факт.')
     if data.date<a.opening_date:raise HTTPException(422,'Операция раньше даты начального остатка счёта.')
     n=amount(data.amount);kind=data.kind
