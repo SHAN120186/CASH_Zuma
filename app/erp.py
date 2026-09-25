@@ -10,7 +10,7 @@ from fastapi.responses import Response
 from pydantic import BaseModel, Field, ConfigDict
 from sqlalchemy import select
 from .db import *
-from .security import session_user, PERMS
+from .security import session_user, PERMS, can_attach_document
 from .services import post_ledger, money, get, log, today
 
 router=APIRouter()
@@ -152,11 +152,9 @@ def writable_ledger(s,u,id):
     прикладывает документ только к собственной оплате по заявке.
     """
     entry=get(s,Ledger,id)
-    if 'write' in PERMS[u.role]:return entry
+    if can_attach_document(u,entry):return entry
     if 'pay' not in PERMS[u.role]:raise HTTPException(403,'У вашей роли нет прав на это действие.')
-    if entry.creator_id!=u.id or entry.request_id is None:
-        raise HTTPException(403,'Документ прикладывается только к собственной оплате по утверждённой заявке.')
-    return entry
+    raise HTTPException(403,'Документ прикладывается только к собственной оплате по утверждённой заявке.')
 
 @router.post('/api/ledger/{id}/document')
 async def add_document(id:int,request:Request):

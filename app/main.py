@@ -504,7 +504,7 @@ def add_receipt(data:ReceiptIn,request:Request):
 @app.get('/api/ledger')
 def ledger_list(request:Request,date_from:Optional[date]=None,date_to:Optional[date]=None,currency:Optional[Literal['UZS','USD','EUR']]=None,q:str='',page:int=Query(1,ge=1),page_size:int=Query(10,ge=1,le=100),paginated:bool=False):
     with unit() as s:
-        session_user(s,request,'ledger');acc={a.id:a for a in s.scalars(select(Account))};cats={c.id:c.name for c in s.scalars(select(Category))}
+        u,_=session_user(s,request,'ledger');acc={a.id:a for a in s.scalars(select(Account))};cats={c.id:c.name for c in s.scalars(select(Category))}
         reversed_ids={t.reversal_of for t in s.scalars(select(Ledger).where(Ledger.reversal_of!=None))}
         if date_from and date_to and date_from>date_to:raise HTTPException(422,'Начало периода позже окончания.')
         query=select(Ledger).join(Account,Account.id==Ledger.account_id).outerjoin(Category,Category.id==Ledger.category_id)
@@ -518,6 +518,7 @@ def ledger_list(request:Request,date_from:Optional[date]=None,date_to:Optional[d
                  'to_account':acc[t.to_account_id].name if t.to_account_id else '', 'currency':acc[t.account_id].currency,
                  'category':cats.get(t.category_id,'Внутренний перевод'),'amount':money(t.amount),'counterparty':t.counterparty,
                  'reference':t.reference,'note':t.note,'request_id':t.request_id,'receipt_id':t.receipt_id,
+                 'can_attach_document':can_attach_document(u,t),
                  'reversal_of':t.reversal_of,'reversed':t.id in reversed_ids} for t in s.scalars(query.offset((page-1)*page_size).limit(page_size) if paginated else query.limit(500))]
         return {'items':items,'total':total,'page':page,'page_size':page_size} if paginated else items
 @app.post('/api/ledger')

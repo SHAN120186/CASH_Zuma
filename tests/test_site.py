@@ -1079,6 +1079,16 @@ class SiteTests(unittest.TestCase):
         alien=book[0].post(f'/api/ledger/{foreign}/document',content=b'%PDF-1.4\nsynthetic',
             headers={**book[1],'Content-Type':'application/pdf','X-Filename':'alien.pdf'})
         self.assertEqual(alien.status_code,403,alien.text)
+        entries={x['id']:x for x in book[0].get('/api/ledger',headers=book[1]).json()}
+        self.assertTrue(entries[pay.json()['id']]['can_attach_document'])
+        self.assertFalse(entries[foreign]['can_attach_document'])
+        other_book=self.make_user('accountant','pay_other_book')
+        entries=other_book[0].get('/api/ledger?paginated=true',headers=other_book[1]).json()['items']
+        self.assertTrue(entries)
+        self.assertTrue(all(not x['can_attach_document'] for x in entries))
+        viewer=self.make_user('auditor','pay_doc_viewer')
+        self.assertTrue(all(not x['can_attach_document'] for x in viewer[0].get('/api/ledger',headers=viewer[1]).json()))
+        self.assertTrue(all(x['can_attach_document'] for x in self.client.get('/api/ledger').json()))
         for body in ({'kind':'out','amount':'10','reference':'BOOK-FREE','note':'Расход без заявки от бухгалтера'},
                      {'kind':'in','amount':'10','reference':'BOOK-IN','note':'Поступление от бухгалтера'}):
             denied=self.post('/api/ledger',{'account_id':self.acc,'category_id':self.cat,'date':self.date,**body},*book)

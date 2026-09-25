@@ -21,6 +21,13 @@ PERMS = {
  'investor': {'view','ledger','export'},
 }
 
+def can_attach_document(user, entry):
+    """Call only after the entry has been restricted to the selected company."""
+    permissions = PERMS.get(user.role, set())
+    return 'write' in permissions or (
+        'pay' in permissions and entry.creator_id == user.id and entry.request_id is not None
+    )
+
 def jwt_key():
     configured=os.getenv('JWT_SECRET','')
     if configured:
