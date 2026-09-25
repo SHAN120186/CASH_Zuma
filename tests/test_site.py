@@ -1166,5 +1166,40 @@ class SiteTests(unittest.TestCase):
         approved=[x for x in self.client.get('/api/requests').json() if x['id'] in ids and x['status']=='approved']
         self.assertEqual(len(approved),1,approved)
 
+    def test_84_accountant_cannot_pay_foreign_company_or_stale_version(self):
+        book=self.make_user('accountant','scope_book')
+        author=self.make_user('employee','scope_author')
+        cid,h,cat,acc=self.second_company()
+        self.post('/api/approval-policy',{'amount':'1000'},headers=h)
+        other=self.make_user('finance','scope_finance')
+        self.assertEqual(self.post('/api/company-users',{'username':'scope_finance'},headers=h).status_code,200)
+        foreign=self.post('/api/requests',{'account_id':acc,'category_id':cat,'counterparty':'Supplier',
+            'amount':'100','date':self.date,'purpose':'Заявка другой компании'},headers=h)
+        self.assertEqual(foreign.status_code,200,foreign.text)
+        fid=foreign.json()['id']
+        approved=self.post(f'/api/requests/{fid}/decision',{'action':'approve','version':1,
+            'note':'Согласование в другой компании'},other[0],{**other[1],'X-Company-ID':str(cid)})
+        self.assertEqual(approved.status_code,200,approved.text)
+        self.assertEqual(approved.json()['status'],'approved')
+        blind=self.post('/api/ledger',{'account_id':acc,'category_id':cat,'kind':'out','amount':'100',
+            'date':self.date,'reference':'SCOPE-FOREIGN','note':'Оплата чужой компании','request_id':fid,
+            'request_version':2},*book)
+        self.assertEqual(blind.status_code,404,blind.text)
+        forged=book[0].post('/api/ledger',json={'account_id':acc,'category_id':cat,'kind':'out','amount':'100',
+            'date':self.date,'reference':'SCOPE-FORGED','note':'Оплата с чужим контекстом','request_id':fid,
+            'request_version':2},headers={**book[1],'X-Company-ID':str(cid)})
+        self.assertEqual(forged.status_code,403,forged.text)
+        self.assertFalse(any(x['id']==fid for x in book[0].get('/api/requests',headers=book[1]).json()))
+        rid=self.request('600',client=author[0],headers=author[1]).json()['id']
+        current=self.request('600',client=author[0],headers=author[1]).json()['version']
+        self.assertEqual(self.approve(rid).status_code,200)
+        stale=self.post('/api/ledger',{'account_id':self.acc,'category_id':self.cat,'kind':'out','amount':'600',
+            'date':self.date,'reference':'SCOPE-STALE','note':'Оплата по устаревшей версии','request_id':rid,
+            'request_version':current},*book)
+        self.assertEqual(stale.status_code,409,stale.text)
+        fresh=self.post('/api/ledger',{'account_id':self.acc,'category_id':self.cat,'kind':'out','amount':'600',
+            'date':self.date,'reference':'SCOPE-FRESH','note':'Оплата по актуальной версии','request_id':rid},*book)
+        self.assertEqual(fresh.status_code,200,fresh.text)
+
 
 if __name__=='__main__':unittest.main(verbosity=2)
