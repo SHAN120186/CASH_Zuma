@@ -13,7 +13,9 @@ RUN python3 -m venv /opt/venv
 ENV PATH=/opt/venv/bin:$PATH PYTHONUNBUFFERED=1 PYTHONDONTWRITEBYTECODE=1 PYTHONUTF8=1 DATA_DIR=/app/data BACKUP_DIR=/app/backups
 WORKDIR /app
 COPY requirements*.txt ./
-RUN pip install --no-cache-dir -r requirements-server.txt && useradd --uid 10001 --create-home zuma
+RUN python -m pip install --no-cache-dir --upgrade pip==26.2.1 \
+    && python -m pip install --no-cache-dir -r requirements-server.txt \
+    && useradd --uid 10001 --create-home zuma
 COPY --chown=zuma:zuma app ./app
 COPY --from=frontend --chown=zuma:zuma /app/static/erp ./app/static/erp
 COPY --chown=zuma:zuma manage.py settings_loader.py worker.py release.json ./
