@@ -8,6 +8,17 @@ from urllib.parse import urlsplit
 from sqlalchemy.engine import make_url
 
 
+def cloud_mode(env):
+    """Same rule as deploy/entrypoint.sh, kept here so tests can assert it.
+
+    UZGERMED_HOSTING is the explicit switch from render.yaml. RENDER and
+    RENDER_SERVICE_ID are documented platform variables present in every Render
+    service, so a manually created service is recognised as well.
+    """
+    return env.get('UZGERMED_HOSTING') == 'render' or (
+        env.get('RENDER') == 'true' and bool(env.get('RENDER_SERVICE_ID')))
+
+
 def configure(env):
     raw = env.get('DATABASE_URL', '')
     try:
@@ -58,7 +69,10 @@ def main():
             if not session.scalar(select(User.id).where(User.active == True, User.role == 'admin').limit(1)):
                 raise ValueError('Restore the existing database with its administrator before publishing. No default user is created.')
     except ValueError as exc:
-        print(str(exc), file=sys.stderr)
+        # The message never carries the connection string or the session key.
+        print('Render start aborted: ' + str(exc), file=sys.stderr)
+        print('Set the variables on the existing service (Settings -> Environment). '
+              'Do not create a second service. See deploy/FREE_HOSTING_RU.md.', file=sys.stderr)
         return 1
     except Exception:
         print('Database initialization failed. Check Neon availability and DATABASE_URL in Render settings.', file=sys.stderr)
