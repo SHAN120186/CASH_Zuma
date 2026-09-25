@@ -1,31 +1,19 @@
 """Daily PostgreSQL backups and explicitly enabled email reports. Run as a service."""
-import os,sys,time,subprocess,smtplib,ssl,json
+import os,sys,time,smtplib,ssl,json
 from datetime import datetime,timedelta,timezone
-from pathlib import Path
 from email.message import EmailMessage
 from settings_loader import load_config
 if __name__=='__main__':load_config()
 from app.db import engine,SQLITE,ROOT,DATA,ReportSchedule,Audit,User,unit,initialize,select
 from app.erp import render_report
-
-def pg_tool(name):
-    return str(Path(os.environ['PG_BIN'])/(name+('.exe' if os.name=='nt' else ''))) if os.getenv('PG_BIN') else name
+from deploy.postgres_backup import create_dump, pg_tool, pg_environment as backup_environment
 
 def pg_environment():
-    url=engine.url
-    return {**os.environ,'PGHOST':url.host or 'localhost','PGPORT':str(url.port or 5432),'PGUSER':url.username or '', 'PGPASSWORD':url.password or '', 'PGDATABASE':url.database or ''}
+    return backup_environment(engine.url)
 
 def backup_postgres():
     if SQLITE:raise RuntimeError('PostgreSQL backup requires DATABASE_URL for PostgreSQL')
-    folder=Path(os.getenv('BACKUP_DIR',str(ROOT/'backups')));folder.mkdir(parents=True,exist_ok=True)
-    stamp=datetime.now(timezone.utc).strftime('%Y%m%d-%H%M%S')
-    target=folder/f'zuma-{stamp}.dump';pending=target.with_suffix('.partial')
-    try:
-        subprocess.run([pg_tool('pg_dump'),'--format=custom','--no-owner','--file',str(pending)],env=pg_environment(),check=True,capture_output=True,timeout=300)
-        subprocess.run([pg_tool('pg_restore'),'--list',str(pending)],check=True,capture_output=True,timeout=30)
-        pending.replace(target)
-    except Exception:
-        pending.unlink(missing_ok=True);raise
+    target=create_dump(engine.url, os.getenv('BACKUP_DIR',str(ROOT/'backups')))
     # Keep files until an administrator chooses retention; never delete backups implicitly.
     with unit(True) as s:s.add(Audit(action='Резервная копия PostgreSQL',entity='backup',detail=target.name))
     return target
