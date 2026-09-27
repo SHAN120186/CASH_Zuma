@@ -21,3 +21,14 @@ services:
         value: "1"
       - key: TZ
         value: Asia/Tashkent
+      # Telegram bot API (Cash_Zuma_Bot). Without both values the bot API answers 503.
+      - key: BOT_CLIENT_ID
+        sync: false
+      # At least 32 random characters; the bot uses the same value as CASH_ZUMA_BOT_CLIENT_SECRET.
+      - key: BOT_CLIENT_SECRET
+        sync: false
+      # "-1001234567890:UZGERMED,ZUMA" — groups allowed to receive the morning summary.
+      - key: BOT_REPORT_GROUPS
+        sync: false
+      - key: TELEGRAM_BOT_USERNAME
+        sync: false

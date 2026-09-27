@@ -18,6 +18,7 @@ from .security import *
 from .services import *
 from .company_scope import available_companies, setting_key, get_setting
 from .model_import import import_snapshot, MAX_SIZE
+from .bot_api import revoke_telegram
 
 SECURE=os.getenv('COOKIE_SECURE','0')=='1'
 ALLOWED=[x.strip() for x in os.getenv('ALLOWED_HOSTS','127.0.0.1,localhost,testserver').split(',') if x.strip()]
@@ -27,7 +28,7 @@ PUBLIC_ORIGIN=os.getenv('PUBLIC_ORIGIN','').rstrip('/')
 async def lifespan(app):
     initialize()
     yield
-app=FastAPI(title='UZGERMED Treasury',version='2.12.1',docs_url=None,redoc_url=None,openapi_url=None,lifespan=lifespan)
+app=FastAPI(title='UZGERMED Treasury',version='2.12.2',docs_url=None,redoc_url=None,openapi_url=None,lifespan=lifespan)
 app.add_middleware(TrustedHostMiddleware,allowed_hosts=ALLOWED)
 app.mount('/static',StaticFiles(directory=ROOT/'app'/'static'),name='static')
 
@@ -233,7 +234,7 @@ def change_password(data:PasswordIn,request:Request):
         if not verify_password(data.old_password,user.password_hash):raise HTTPException(403,'Текущий пароль неверен.')
         try:user.password_hash=hash_password(data.new_password)
         except ValueError as e:raise HTTPException(422,str(e))
-        s.execute(delete(LoginSession).where(LoginSession.user_id==user.id))
+        s.execute(delete(LoginSession).where(LoginSession.user_id==user.id));revoke_telegram(s,user.id)
         log(s,user,'Изменён пароль; сессии отозваны','user',user.id)
     return {'ok':True}
 
@@ -335,6 +336,9 @@ def edit_account(id:int,data:AccountEdit,request:Request):
         a.name=data.name;a.kind=data.kind;a.currency=data.currency;a.opening=amount(data.opening,True)
         a.opening_date=data.opening_date;a.allow_overdraft=data.allow_overdraft
         s.flush();validate_running_balance(s,a)
+        if (a.kind,a.company_id)!=(before['kind'],before['company_id']):
+            for r in requests:
+                if r.status in ('pending','approved'):log(s,u,'Изменён счёт заявки','request',r.id,f'{before["kind"]} → {a.kind}')
         log(s,u,'Изменён счёт / начальный остаток','account',id,json.dumps({'before':before,'after':snapshot(),'reason':data.reason},ensure_ascii=False))
         return {'id':id,'balance':money(account_balance(s,a))}
 
@@ -558,6 +562,7 @@ def reverse(id:int,data:ReverseIn,request:Request):
         u,_=session_user(s,request,'write')
         if company_role(u) not in ('finance','director'):raise HTTPException(403,'Сторно выполняет финансовый директор или директор компании.')
         t=get(s,Ledger,id)
+        if any(get(s,Account,x).archived for x in (t.account_id,t.to_account_id) if x):raise HTTPException(409,'Счёт в архиве. Сначала восстановите его.')
         if t.reversal_of or s.scalar(select(Ledger.id).where(Ledger.reversal_of==id)):raise HTTPException(409,'Сторнирование уже выполнено или это запись сторно.')
         inv=Ledger(account_id=t.to_account_id if t.kind=='transfer' else t.account_id,to_account_id=t.account_id if t.kind=='transfer' else None,
                    kind={'in':'out','out':'in','transfer':'transfer'}[t.kind],amount=t.amount,date=t.date,
@@ -744,7 +749,7 @@ def edit_user(id:int,data:UserEdit,request:Request):
         if data.password:
             try:u.password_hash=hash_password(data.password)
             except ValueError as e:raise HTTPException(422,str(e))
-        s.execute(delete(LoginSession).where(LoginSession.user_id==u.id))
+        s.execute(delete(LoginSession).where(LoginSession.user_id==u.id));revoke_telegram(s,u.id)
         log(s,admin,'Изменены права / пароль пользователя','user',id,f'{data.role}; active={data.active}; сессии отозваны')
         m=s.get(CompanyUser,(cid,u.id))
         return member_json(u,m.role if m else None)
@@ -755,7 +760,7 @@ def reset_user_password(id:int,data:ResetPasswordIn,request:Request):
         admin,_=session_user(s,request,'users');u=get(s,User,id)
         try:u.password_hash=hash_password(data.password)
         except ValueError as e:raise HTTPException(422,str(e))
-        s.execute(delete(LoginSession).where(LoginSession.user_id==id))
+        s.execute(delete(LoginSession).where(LoginSession.user_id==id));revoke_telegram(s,id)
         log(s,admin,'Сброшен пароль; сессии отозваны','user',id)
         return {'ok':True}
 @app.get('/api/audit')
@@ -774,3 +779,6 @@ app.include_router(review_router)
 
 from .plan_import import router as plan_import_router
 app.include_router(plan_import_router)
+
+from .bot_api import router as bot_router
+app.include_router(bot_router)

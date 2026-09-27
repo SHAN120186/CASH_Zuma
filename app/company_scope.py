@@ -36,7 +36,8 @@ def available_companies(s, user):
 
 
 def activate(s, request, user):
-    if request.url.path in ('/api/me', '/api/logout', '/api/password', '/api/companies'):
+    if request.url.path in ('/api/me', '/api/logout', '/api/password', '/api/companies',
+                            '/api/telegram', '/api/telegram/code'):
         return
     header = request.headers.get('X-Company-ID')
     query = request.query_params.get('company_id')

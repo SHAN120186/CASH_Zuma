@@ -280,6 +280,14 @@ tr.risk td{background:#fff8ee!important}
 .prof{display:grid;grid-template-columns:340px 1fr;gap:18px;align-items:start}
 .prof .who-l{display:flex;gap:14px;align-items:center;margin-bottom:12px}
 .prof .who-l .ava{width:56px;height:56px;font-size:19px}
+.prof>.card:first-child{grid-row:span 2}
+.tg-card .card-b{display:grid;gap:12px}
+.tg-card .card-b>*{min-width:0}
+.tg-state{font-weight:700}
+.tg-link{display:grid;gap:8px;padding:14px;border:1px dashed var(--line);border-radius:14px;background:var(--bg)}
+.tg-link p{overflow-wrap:anywhere}
+.tg-code{width:100%;min-height:54px;font:700 clamp(20px,6vw,26px)/1.2 ui-monospace,SFMono-Regular,Consolas,'Liberation Mono',monospace;letter-spacing:.14em;text-align:center}
+.tg-link code{font-family:ui-monospace,SFMono-Regular,Consolas,'Liberation Mono',monospace;font-weight:700;background:var(--surface);border:1px solid var(--line2);border-radius:6px;padding:1px 6px}
 
 /* Cash Flow */
 .tools{padding:14px 16px;margin-bottom:16px;display:flex;flex-direction:column;gap:12px}
@@ -388,6 +396,7 @@ table.cf{border-collapse:separate;border-spacing:0;min-width:100%;font-size:13px
   .topbar{padding:0 14px}
   .page{padding:18px 14px 36px}
   .prof,.approval-grid,.thr-grid{grid-template-columns:1fr}
+  .prof>.card:first-child{grid-row:auto}
   .login-layout{grid-template-columns:1fr}
   .login-art{display:none}
   .login-form{padding:40px 0}
