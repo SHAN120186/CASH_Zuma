@@ -271,7 +271,7 @@ onMounted(async()=>{try{const r=await api('/api/me');user.value=r.user;csrf.valu
    <div class="company-grid"><CompanyCard v-for="c in selectableCompanies" :key="c.id" :company="c" :disabled="busy" @select="selectCompany"/></div>
    <p v-if="!busy&&!selectableCompanies.length" class="sub">Нет доступных компаний. Обратитесь к администратору.</p>
   </main>
-  <footer class="company-credit">Разработка и собственность компании <strong>«Анонимус»</strong></footer>
+  <footer class="company-credit">Разработка и собственность компании <strong>Sh.A.</strong></footer>
  </section>
  <div v-else class="app" :class="{'menu-open':menuOpen}">
   <div v-if="menuOpen" class="scrim" @click="menuOpen=false"></div>
