@@ -11,7 +11,7 @@ from sqlalchemy.orm import Session, with_loader_criteria
 from sqlalchemy.schema import CreateTable
 from .db import (Company, CompanyUser, User, Account, Category, Counterparty,
                  CashPlan, PlanNote, PaymentRequest, Receipt, Ledger, Budget,
-                 Document, ImportBatch, PlanImportBatch, Audit, ModelVersion,
+                 Document, RequestDocument, ImportBatch, PlanImportBatch, Audit, ModelVersion,
                  ReportSchedule, Setting)
 
 DIRECT = (Account, Category, Counterparty, CashPlan, PlanNote, PlanImportBatch,
@@ -58,12 +58,14 @@ def criteria(cid):
     c = Category.__table__.c
     aids = select(a.id).where(a.company_id == cid)
     lids = select(l.id).where(l.account_id.in_(aids))
+    rids = select(PaymentRequest.id).where(PaymentRequest.account_id.in_(aids))
     cats = select(c.id).where(c.company_id == cid)
     return [(cls, cls.company_id == cid) for cls in DIRECT] + [
         (PaymentRequest, PaymentRequest.account_id.in_(aids)),
         (Receipt, Receipt.account_id.in_(aids)),
         (Ledger, Ledger.account_id.in_(aids)),
         (Document, Document.ledger_id.in_(lids)),
+        (RequestDocument, RequestDocument.request_id.in_(rids)),
         (Budget, Budget.category_id.in_(cats)),
         (User, or_(User.role == 'admin', User.id.in_(select(CompanyUser.user_id).where(CompanyUser.company_id == cid)))),
     ]
@@ -98,6 +100,8 @@ def check_object(s, obj):
         refs.append((Category, obj.category_id))
     if isinstance(obj, Document):
         refs.append((Ledger, obj.ledger_id))
+    if isinstance(obj, RequestDocument):
+        refs.append((PaymentRequest, obj.request_id))
     for cls, id in refs:
         value = s.get(cls, id)
         if value is None:

@@ -27,7 +27,7 @@ PUBLIC_ORIGIN=os.getenv('PUBLIC_ORIGIN','').rstrip('/')
 async def lifespan(app):
     initialize()
     yield
-app=FastAPI(title='UZGERMED Treasury',version='2.9.0',docs_url=None,redoc_url=None,openapi_url=None,lifespan=lifespan)
+app=FastAPI(title='UZGERMED Treasury',version='2.9.8',docs_url=None,redoc_url=None,openapi_url=None,lifespan=lifespan)
 app.add_middleware(TrustedHostMiddleware,allowed_hosts=ALLOWED)
 app.mount('/static',StaticFiles(directory=ROOT/'app'/'static'),name='static')
 
@@ -36,7 +36,7 @@ async def safety(request,call_next):
     if request.method not in ('GET','HEAD','OPTIONS'):
         try:length=int(request.headers.get('content-length','0' if request.method=='DELETE' else '-1'))
         except ValueError:length=-1
-        limit=MAX_SIZE if request.url.path=='/api/model/upload' else 5*1024*1024 if request.url.path in ('/api/import/preview','/api/plan-import/preview') or request.url.path.endswith('/document') else 65536
+        limit=MAX_SIZE if request.url.path=='/api/model/upload' else 5*1024*1024 if request.url.path in ('/api/import/preview','/api/plan-import/preview') or request.url.path.endswith('/document') or '/documents' in request.url.path else 65536
         if length<0 or length>limit:return JSONResponse({'detail':'Неверный размер запроса.'},status_code=413)
         origin=request.headers.get('origin')
         expected=PUBLIC_ORIGIN or str(request.base_url).rstrip('/')
@@ -405,6 +405,7 @@ def requests_list(request:Request,date_from:Optional[date]=None,date_to:Optional
 def add_request(data:RequestIn,request:Request):
     with unit(True) as s:
         u,_=session_user(s,request,'request');a=get(s,Account,data.account_id);get(s,Category,data.category_id)
+        if data.status=='pending':raise HTTPException(422,'Сначала сохраните черновик и прикрепите внутреннюю заявку и договор / счёт.')
         if a.archived:raise HTTPException(409,'Счёт в архиве.')
         if data.date<a.opening_date:raise HTTPException(422,'Дата раньше начала учёта выбранного счёта.')
         n=amount(data.amount)
@@ -423,7 +424,10 @@ def edit_request(id:int,data:RequestEdit,request:Request):
         a=get(s,Account,data.account_id);get(s,Category,data.category_id);n=amount(data.amount)
         if a.archived:raise HTTPException(409,'Счёт в архиве.')
         if data.date<a.opening_date:raise HTTPException(422,'Дата раньше начала учёта выбранного счёта.')
-        if data.status=='pending':enforce_budget(s,data.category_id,data.date,a.currency,n,data.purpose,r.id)
+        if data.status=='pending':
+            kinds=set(s.scalars(select(RequestDocument.kind).where(RequestDocument.request_id==r.id,RequestDocument.active==True)))
+            if not {'internal','contract'}.issubset(kinds):raise HTTPException(409,'Перед отправкой прикрепите внутреннюю заявку и договор / счёт.')
+            enforce_budget(s,data.category_id,data.date,a.currency,n,data.purpose,r.id)
         before=visible_request(s,r,u)
         for key in ('account_id','category_id','counterparty','purpose','project','priority','status'):setattr(r,key,getattr(data,key))
         r.amount=n;r.due_date=data.date;r.approved_by=None;r.finance_approved_by=None;r.last_editor_id=u.id;r.decision_note=data.reason
@@ -440,6 +444,9 @@ def decide(id:int,data:DecisionIn,request:Request):
         before={'status':r.status,'date':str(r.due_date),'version':r.version,'approved_by':r.approved_by}
         if data.action=='submit':
             if r.status not in ('draft','returned') or (r.creator_id!=u.id and 'request_edit' not in PERMS[u.role]):raise HTTPException(403,'Отправить можно свой черновик или возвращённую заявку.')
+            kinds=set(s.scalars(select(RequestDocument.kind).where(RequestDocument.request_id==r.id,RequestDocument.active==True)))
+            missing=[label for kind,label in [('internal','Внутренняя заявка / Индент'),('contract','Договор / Счёт на оплату')] if kind not in kinds]
+            if missing:raise HTTPException(409,'Перед отправкой прикрепите: '+', '.join(missing)+'.')
             enforce_budget(s,r.category_id,r.due_date,a.currency,r.amount,r.purpose);r.status='pending'
         elif data.action=='cancel':
             if r.creator_id!=u.id and 'request_edit' not in PERMS[u.role]:raise HTTPException(403,'Отмена недоступна.')

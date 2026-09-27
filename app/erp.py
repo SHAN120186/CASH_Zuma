@@ -3,7 +3,7 @@ import csv, io, json, hashlib, secrets, re, os, zipfile
 from datetime import date, datetime
 from decimal import Decimal
 from pathlib import Path
-from urllib.parse import unquote
+from urllib.parse import unquote, quote
 from typing import Literal
 from fastapi import APIRouter, Request, HTTPException
 from fastapi.responses import Response
@@ -172,10 +172,69 @@ async def add_document(id:int,request:Request):
 
 @router.get('/api/documents/{id}')
 def download_document(id:int,request:Request):
-    from urllib.parse import quote
     with unit() as s:
         session_user(s,request,'ledger');d=get(s,Document,id)
         return Response(d.content,media_type=d.mime,headers={'Content-Disposition':"attachment; filename*=UTF-8''"+quote(d.filename),'Cache-Control':'no-store'})
+
+REQUEST_DOCUMENT_KINDS={'internal':'Внутренняя заявка / Индент','contract':'Договор / Счёт на оплату','other':'Прочие документы'}
+
+def request_document_access(user,payment,write=False):
+    permissions=PERMS.get(user.role,set())
+    if write:
+        if payment.status not in ('draft','returned'):
+            raise HTTPException(409,'Документы можно менять только в черновике или после возврата на доработку.')
+        if payment.creator_id!=user.id and 'request_edit' not in permissions:
+            raise HTTPException(403,'Документы изменяет автор или финансовый руководитель.')
+    elif payment.creator_id!=user.id and not ({'view','approve','request_edit','pay','write'} & permissions):
+        raise HTTPException(403,'Нет доступа к документам этой заявки.')
+
+def request_document_json(d):
+    return {'id':d.id,'kind':d.kind,'label':REQUEST_DOCUMENT_KINDS[d.kind],'filename':d.filename,
+            'version':d.version,'created_at':str(d.created_at),'url':f'/api/request-documents/{d.id}'}
+
+@router.get('/api/requests/{id}/documents')
+def request_documents(id:int,request:Request):
+    with unit() as s:
+        user,_=session_user(s,request);payment=get(s,PaymentRequest,id);request_document_access(user,payment)
+        rows=s.scalars(select(RequestDocument).where(RequestDocument.request_id==id,RequestDocument.active==True).order_by(RequestDocument.kind,RequestDocument.id))
+        return [request_document_json(d) for d in rows]
+
+@router.post('/api/requests/{id}/documents')
+async def add_request_document(id:int,kind:Literal['internal','contract','other'],request:Request):
+    with unit() as s:
+        user,_=session_user(s,request);payment=get(s,PaymentRequest,id);request_document_access(user,payment,True);uid=user.id
+    raw=await read_upload(request)
+    name=Path(unquote(request.headers.get('X-Filename','document'))).name
+    suffix=Path(name).suffix.lower()
+    allowed={'.pdf':('application/pdf',b'%PDF-'),'.png':('image/png',b'\x89PNG\r\n\x1a\n'),'.jpg':('image/jpeg',b'\xff\xd8\xff'),'.jpeg':('image/jpeg',b'\xff\xd8\xff')}
+    if suffix not in allowed or not raw.startswith(allowed[suffix][1]):raise HTTPException(422,'Документ: PDF, PNG или JPEG, максимум 5 МБ.')
+    with unit(True) as s:
+        user,_=session_user(s,request);payment=get(s,PaymentRequest,id);request_document_access(user,payment,True)
+        previous=list(s.scalars(select(RequestDocument).where(RequestDocument.request_id==id,RequestDocument.kind==kind).order_by(RequestDocument.version.desc())))
+        version=(previous[0].version+1) if previous else 1
+        if kind!='other':
+            for old in previous:old.active=False
+        doc=RequestDocument(request_id=id,kind=kind,filename=name[:220],mime=allowed[suffix][0],storage_key=secrets.token_hex(24),
+                            sha256=hashlib.sha256(raw).hexdigest(),content=raw,version=version,active=True,created_by=uid)
+        s.add(doc);s.flush();log(s,user,'Добавлен документ к заявке','request_document',doc.id,f'request={id}; kind={kind}; version={version}')
+        return request_document_json(doc)
+
+@router.delete('/api/request-documents/{id}')
+def delete_request_document(id:int,request:Request):
+    with unit(True) as s:
+        user,_=session_user(s,request);doc=s.get(RequestDocument,id)
+        if not doc or not doc.active:raise HTTPException(404,'Документ не найден.')
+        payment=get(s,PaymentRequest,doc.request_id);request_document_access(user,payment,True)
+        doc.active=False;log(s,user,'Удалён документ из черновика заявки','request_document',doc.id,f'request={payment.id}; kind={doc.kind}')
+        return {'ok':True}
+
+@router.get('/api/request-documents/{id}')
+def download_request_document(id:int,request:Request):
+    with unit() as s:
+        user,_=session_user(s,request);doc=s.get(RequestDocument,id)
+        if not doc or not doc.active:raise HTTPException(404,'Документ не найден.')
+        payment=get(s,PaymentRequest,doc.request_id);request_document_access(user,payment)
+        return Response(doc.content,media_type=doc.mime,headers={'Content-Disposition':"attachment; filename*=UTF-8''"+quote(doc.filename),'Cache-Control':'no-store'})
 
 def report_data(s,year,currency):
     from .services import effective_cashflows

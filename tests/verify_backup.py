@@ -16,15 +16,17 @@ with connect('postgres') as admin:
         env={**worker.pg_environment(),'PGDATABASE':name}
         subprocess.run([worker.pg_tool('pg_restore'),'--no-owner','--exit-on-error','--dbname',name,str(dump)],env=env,check=True,capture_output=True)
         with connect(url.database) as source,connect(name) as restored:
-            for table in ('users','company_users','accounts','ledger','categories','budgets','payment_requests','expected_receipts','model_versions','documents','companies','cash_plans','plan_notes','plan_import_batches','import_batches','settings'):
+            for table in ('users','company_users','accounts','ledger','categories','budgets','payment_requests','expected_receipts','model_versions','documents','request_documents','companies','cash_plans','plan_notes','plan_import_batches','import_batches','settings'):
                 query=sql.SQL('SELECT count(*) FROM {}').format(sql.Identifier(table))
                 assert source.execute(query).fetchone()==restored.execute(query).fetchone(),table
-            def documents_digest(connection):
+            def documents_digest(connection,table):
                 checksum=hashlib.sha256()
-                for ident,content in connection.execute('SELECT id,content FROM documents ORDER BY id'):
+                query=sql.SQL('SELECT id,content FROM {} ORDER BY id').format(sql.Identifier(table))
+                for ident,content in connection.execute(query):
                     checksum.update(str(ident).encode());checksum.update(content)
                 return checksum.hexdigest()
-            assert documents_digest(source)==documents_digest(restored),'document contents'
+            for table in ('documents','request_documents'):
+                assert documents_digest(source,table)==documents_digest(restored),table+' contents'
             for table in ('cash_plans','plan_notes'):
                 query=sql.SQL('SELECT to_jsonb(t) FROM {} t ORDER BY id').format(sql.Identifier(table))
                 assert source.execute(query).fetchall()==restored.execute(query).fetchall(),table

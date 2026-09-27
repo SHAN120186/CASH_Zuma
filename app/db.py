@@ -244,6 +244,21 @@ class Document(Base):
     created_by = Column(Integer, ForeignKey('users.id'), nullable=False)
     created_at = Column(DateTime, default=now, nullable=False)
 
+class RequestDocument(Base):
+    __tablename__ = 'request_documents'
+    id = Column(Integer, primary_key=True)
+    request_id = Column(Integer, ForeignKey('payment_requests.id'), nullable=False)
+    kind = Column(String(20), nullable=False)  # internal / contract / other
+    filename = Column(String(220), nullable=False)
+    mime = Column(String(100), nullable=False)
+    storage_key = Column(String(80), unique=True, nullable=False)
+    sha256 = Column(String(64), nullable=False)
+    content = Column(LargeBinary, nullable=False)
+    version = Column(Integer, nullable=False, default=1)
+    active = Column(Boolean, nullable=False, default=True)
+    created_by = Column(Integer, ForeignKey('users.id'), nullable=False)
+    created_at = Column(DateTime, default=now, nullable=False)
+
 class ImportBatch(Base):
     __tablename__ = 'import_batches'
     company_id = Column(Integer, ForeignKey('companies.id'), nullable=True)

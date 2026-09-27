@@ -463,3 +463,9 @@ table.cf{border-collapse:separate;border-spacing:0;min-width:100%;font-size:13px
 .request-documents-placeholder{margin-top:18px;padding:16px;border:1px dashed var(--line,#c8d7d2);border-radius:14px;background:var(--bg,#f2eee5)}
 .request-documents-placeholder p{margin:8px 0;font-size:13px;line-height:1.5}
 .request-documents-placeholder button{max-width:100%;white-space:normal}
+.request-document-grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:12px;margin-top:12px}
+.request-document-slot{display:flex;flex-direction:column;align-items:flex-start;gap:8px;padding:12px;border:1px solid var(--line,#c8d7d2);border-radius:12px;background:var(--surface,#fff)}
+.request-document-slot a,.pending-file{max-width:100%;overflow-wrap:anywhere;font-size:12px}
+.pending-file{display:flex;align-items:center;gap:6px;color:var(--ink,#17342d)}
+.required-mark{color:var(--bad,#b33b35)}
+@media(max-width:720px){.request-document-grid{grid-template-columns:1fr}}

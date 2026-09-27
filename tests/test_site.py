@@ -54,8 +54,17 @@ class SiteTests(unittest.TestCase):
     def budget(self,limit='1000',mode='soft'):
         r=self.post('/api/budgets',{'category_id':self.cat,'month':self.month,'currency':'UZS','amount':limit,'mode':mode,'reason':'Подтверждено для тестирования','source':'test'})
         self.assertEqual(r.status_code,200,r.text)
+    def documented_request(self,data,client=None,headers=None):
+        cl=client or self.client;h=headers or self.h;payload=dict(data);desired=payload.pop('status','pending');payload['status']='draft'
+        created=cl.post('/api/requests',json=payload,headers=h)
+        if created.status_code!=200:return created
+        rid=created.json()['id'];raw=b'%PDF-1.4\nsynthetic request document'
+        for kind,name in [('internal','request.pdf'),('contract','contract.pdf')]:
+            uploaded=cl.post(f'/api/requests/{rid}/documents',params={'kind':kind},content=raw,headers={**h,'Content-Type':'application/pdf','X-Filename':name})
+            if uploaded.status_code!=200:return uploaded
+        return self.post(f'/api/requests/{rid}/decision',{'action':'submit','version':created.json()['version']},client,headers) if desired=='pending' else created
     def request(self,n='600',purpose='Тестовая заявка на оплату',client=None,headers=None):
-        return self.post('/api/requests',{'account_id':self.acc,'category_id':self.cat,'counterparty':'Supplier','amount':n,'date':self.date,'purpose':purpose},client,headers)
+        return self.documented_request({'account_id':self.acc,'category_id':self.cat,'counterparty':'Supplier','amount':n,'date':self.date,'purpose':purpose},client,headers)
     def approve(self,id,note='Подтверждаю необходимость расхода'):
         if not hasattr(self,'approver'):self.approver=self.make_user('finance','reviewer')
         return self.post(f'/api/requests/{id}/decision',{'action':'approve','note':note},*self.approver)
@@ -214,7 +223,7 @@ class SiteTests(unittest.TestCase):
 
     def test_21_forecast_detects_shortfall_on_individual_account(self):
         second=self.post('/api/accounts',{'name':'Empty bank','kind':'bank','currency':'UZS','opening':'0','opening_date':self.date}).json()['id']
-        r=self.post('/api/requests',{'account_id':second,'category_id':self.cat,'counterparty':'Supplier','amount':'100','date':self.date,'purpose':'Оплата с отдельного пустого счёта'})
+        r=self.documented_request({'account_id':second,'category_id':self.cat,'counterparty':'Supplier','amount':'100','date':self.date,'purpose':'Оплата с отдельного пустого счёта'})
         denied=self.approve(r.json()['id']);self.assertEqual(denied.status_code,409)
         self.assertIn('Недостаточно доступных средств',denied.text)
         day=self.client.get('/api/dashboard').json()['forecast'][0]
@@ -228,7 +237,7 @@ class SiteTests(unittest.TestCase):
 
     def test_23_payment_in_another_month_moves_budget(self):
         next_month=(today().replace(day=28)+timedelta(days=4)).replace(day=1)
-        r=self.post('/api/requests',{'account_id':self.acc,'category_id':self.cat,'counterparty':'Supplier','amount':'100','date':str(next_month),'purpose':'Ранняя оплата заявки следующего месяца'})
+        r=self.documented_request({'account_id':self.acc,'category_id':self.cat,'counterparty':'Supplier','amount':'100','date':str(next_month),'purpose':'Ранняя оплата заявки следующего месяца'})
         rid=r.json()['id'];self.assertEqual(self.approve(rid).status_code,200)
         self.assertEqual(self.ledger('100','out',request_id=rid).status_code,200)
         current=next(b for b in self.client.get('/api/budgets').json() if b['category_id']==self.cat)
@@ -349,6 +358,26 @@ class SiteTests(unittest.TestCase):
         r=self.client.post(f'/api/ledger/{id}/document',content=b'<script>bad</script>',headers={**self.h,'X-Filename':'bad.html'})
         self.assertEqual(r.status_code,422)
 
+    def test_34b_request_documents_required_versioned_and_protected(self):
+        payload={'account_id':self.acc,'category_id':self.cat,'counterparty':'Supplier','amount':'100','date':self.date,'purpose':'Заявка с обязательными документами'}
+        self.assertEqual(self.client.post('/api/requests',json=payload,headers=self.h).status_code,422)
+        created=self.client.post('/api/requests',json={**payload,'status':'draft'},headers=self.h);self.assertEqual(created.status_code,200,created.text)
+        rid=created.json()['id']
+        missing=self.post(f'/api/requests/{rid}/decision',{'action':'submit'});self.assertEqual(missing.status_code,409);self.assertIn('Внутренняя',missing.text)
+        bad=self.client.post(f'/api/requests/{rid}/documents',params={'kind':'internal'},content=b'<script>bad</script>',headers={**self.h,'X-Filename':'bad.html'})
+        self.assertEqual(bad.status_code,422)
+        raw=b'%PDF-1.4\nrequest document'
+        first=self.client.post(f'/api/requests/{rid}/documents',params={'kind':'internal'},content=raw,headers={**self.h,'X-Filename':'request-v1.pdf'});self.assertEqual(first.status_code,200,first.text)
+        second=self.client.post(f'/api/requests/{rid}/documents',params={'kind':'internal'},content=raw+b' v2',headers={**self.h,'X-Filename':'request-v2.pdf'});self.assertEqual(second.status_code,200,second.text);self.assertEqual(second.json()['version'],2)
+        contract=self.client.post(f'/api/requests/{rid}/documents',params={'kind':'contract'},content=raw,headers={**self.h,'X-Filename':'contract.pdf'});self.assertEqual(contract.status_code,200,contract.text)
+        for name in ('other-1.pdf','other-2.pdf'):
+            self.assertEqual(self.client.post(f'/api/requests/{rid}/documents',params={'kind':'other'},content=raw,headers={**self.h,'X-Filename':name}).status_code,200)
+        docs=self.client.get(f'/api/requests/{rid}/documents').json();self.assertEqual(len(docs),4);self.assertEqual(len([d for d in docs if d['kind']=='internal']),1)
+        with TestClient(app) as anonymous:self.assertEqual(anonymous.get(docs[0]['url']).status_code,401)
+        internal=next(d for d in docs if d['kind']=='internal');self.assertEqual(self.client.get(internal['url']).content,raw+b' v2')
+        submitted=self.post(f'/api/requests/{rid}/decision',{'action':'submit'});self.assertEqual(submitted.status_code,200,submitted.text)
+        denied=self.client.post(f'/api/requests/{rid}/documents',params={'kind':'other'},content=raw,headers={**self.h,'X-Filename':'late.pdf'});self.assertEqual(denied.status_code,409)
+
     def test_35_export_xlsx_pdf_and_formula_safety(self):
         from openpyxl import load_workbook
         import io
@@ -443,7 +472,7 @@ class SiteTests(unittest.TestCase):
         from random import Random
         rng=Random(51019)
         for i in range(12):
-            r=self.post('/api/requests',{'account_id':self.acc,'category_id':self.cat,'counterparty':f'Supplier {i}','amount':str(rng.randrange(1,100000)),'date':str(today()+timedelta(days=rng.randrange(-3,7))),'purpose':'Проверка прогноза денежных средств','priority':'high','status':'draft' if i==0 else 'pending'}).json()
+            r=self.documented_request({'account_id':self.acc,'category_id':self.cat,'counterparty':f'Supplier {i}','amount':str(rng.randrange(1,100000)),'date':str(today()+timedelta(days=rng.randrange(-3,7))),'purpose':'Проверка прогноза денежных средств','priority':'high','status':'draft' if i==0 else 'pending'}).json()
             if i%2 and i!=0:self.assertEqual(self.approve(r['id']).status_code,200)
         self.post('/api/receipts',{'account_id':self.acc,'category_id':self.cat,'counterparty':'Buyer','amount':'50.01','date':self.date})
         days=self.client.get('/api/dashboard?days=7').json()['forecast']
@@ -475,7 +504,7 @@ class SiteTests(unittest.TestCase):
 
     def test_46_requested_forecast_account_shortfall(self):
         aid=self.post('/api/accounts',{'name':'Second empty','kind':'bank','currency':'UZS','opening':'0','opening_date':self.date}).json()['id']
-        self.post('/api/requests',{'account_id':aid,'category_id':self.cat,'counterparty':'Supplier','amount':'10','date':self.date,'purpose':'Проверка сценария всех заявок'})
+        self.documented_request({'account_id':aid,'category_id':self.cat,'counterparty':'Supplier','amount':'10','date':self.date,'purpose':'Проверка сценария всех заявок'})
         d=self.client.get('/api/dashboard').json()['forecast'][0]
         self.assertFalse(d['risk']);self.assertTrue(d['requested_risk']);self.assertEqual(d['requested_account_shortfalls'][0]['account_id'],aid)
 
@@ -695,7 +724,7 @@ class SiteTests(unittest.TestCase):
         companies={c['code']:c['id'] for c in self.client.get('/api/bootstrap').json()['companies']}
         r=self.post('/api/accounts',{'name':'Zuma rich bank','company_id':companies['ZUMA'],'kind':'bank','currency':'UZS','opening':'9000000','opening_date':self.date},headers={**self.h,'X-Company-ID':str(companies['ZUMA'])});self.assertEqual(r.status_code,200,r.text)
         empty=self.post('/api/accounts',{'name':'UZGERMED empty bank','company_id':companies['UZGERMED'],'kind':'bank','currency':'UZS','opening':'0','opening_date':self.date}).json()['id']
-        r=self.post('/api/requests',{'account_id':empty,'category_id':self.cat,'counterparty':'Supplier','amount':'1','date':self.date,'purpose':'Проверка изоляции денег'}).json()
+        r=self.documented_request({'account_id':empty,'category_id':self.cat,'counterparty':'Supplier','amount':'1','date':self.date,'purpose':'Проверка изоляции денег'}).json()
         denied=self.approve(r['id']);self.assertEqual(denied.status_code,409);self.assertIn('UZS',denied.text)
 
     def test_62_group_report_bank_mtd_as_of_and_no_opening_or_transfer_double_count(self):
@@ -991,7 +1020,7 @@ class SiteTests(unittest.TestCase):
         book=self.make_user('accountant','cycle_book')
         self.post('/api/approval-policy',{'amount':'1000'})
         row=lambda:next(x for x in self.client.get('/api/requests').json() if x['id']==rid)
-        r=self.post('/api/requests',{'account_id':self.acc,'category_id':self.cat,'counterparty':'Supplier',
+        r=self.documented_request({'account_id':self.acc,'category_id':self.cat,'counterparty':'Supplier',
             'amount':'5000','date':self.date,'purpose':'Полный цикл заявки на оплату','status':'draft'},*author)
         self.assertEqual(r.status_code,200,r.text);rid=r.json()['id']
         self.assertEqual(r.json()['status'],'draft')
@@ -1159,13 +1188,14 @@ class SiteTests(unittest.TestCase):
         # Два согласования, конкурирующих за один остаток на одну дату.
         small=self.post('/api/accounts',{'name':'Гонка остатка','kind':'bank','currency':'UZS','opening':'1000',
             'opening_date':self.date}).json()['id']
-        ids=[self.post('/api/requests',{'account_id':small,'category_id':self.cat,'counterparty':'Supplier',
+        ids=[self.documented_request({'account_id':small,'category_id':self.cat,'counterparty':'Supplier',
             'amount':'600','date':self.date,'purpose':'Заявка на один и тот же остаток'},*author).json()['id'] for _ in range(2)]
+        versions={x['id']:x['version'] for x in self.client.get('/api/requests').json() if x['id'] in ids}
         approvers=[self.make_user('finance','race_fin1'),self.make_user('finance','race_fin2')]
         gate=threading.Barrier(2);codes=[]
         def decide(index):
             client,headers=approvers[index]
-            body={'action':'approve','note':'Одновременное согласование заявки','version':1}
+            body={'action':'approve','note':'Одновременное согласование заявки','version':versions[ids[index]]}
             gate.wait()
             codes.append(client.post(f'/api/requests/{ids[index]}/decision',json=body,headers=headers).status_code)
         threads=[threading.Thread(target=decide,args=(i,)) for i in range(2)]
@@ -1183,11 +1213,11 @@ class SiteTests(unittest.TestCase):
         self.post('/api/approval-policy',{'amount':'1000'},headers=h)
         other=self.make_user('finance','scope_finance')
         self.assertEqual(self.post('/api/company-users',{'username':'scope_finance'},headers=h).status_code,200)
-        foreign=self.post('/api/requests',{'account_id':acc,'category_id':cat,'counterparty':'Supplier',
+        foreign=self.documented_request({'account_id':acc,'category_id':cat,'counterparty':'Supplier',
             'amount':'100','date':self.date,'purpose':'Заявка другой компании'},headers=h)
         self.assertEqual(foreign.status_code,200,foreign.text)
         fid=foreign.json()['id']
-        approved=self.post(f'/api/requests/{fid}/decision',{'action':'approve','version':1,
+        approved=self.post(f'/api/requests/{fid}/decision',{'action':'approve','version':foreign.json()['version'],
             'note':'Согласование в другой компании'},other[0],{**other[1],'X-Company-ID':str(cid)})
         self.assertEqual(approved.status_code,200,approved.text)
         self.assertEqual(approved.json()['status'],'approved')
