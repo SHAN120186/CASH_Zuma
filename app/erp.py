@@ -10,7 +10,7 @@ from fastapi.responses import Response
 from pydantic import BaseModel, Field, ConfigDict
 from sqlalchemy import select
 from .db import *
-from .security import session_user, PERMS, can_attach_document, payment_channels, perms_of, perms_of
+from .security import session_user, PERMS, can_attach_document, payment_channels, perms_of, act_with_right, pay_right
 from .services import post_ledger, money, get, log, today
 
 router=APIRouter()
@@ -165,7 +165,9 @@ async def add_document(id:int,request:Request):
     allowed={'.pdf':('application/pdf',b'%PDF-'),'.png':('image/png',b'\x89PNG\r\n\x1a\n'),'.jpg':('image/jpeg',b'\xff\xd8\xff'),'.jpeg':('image/jpeg',b'\xff\xd8\xff')}
     if suffix not in allowed or not raw.startswith(allowed[suffix][1]):raise HTTPException(422,'Документ: PDF, PNG или JPEG, максимум 5 МБ.')
     with unit(True) as s:
-        u,_=session_user(s,request);writable_ledger(s,u,id)
+        u,_=session_user(s,request);entry=writable_ledger(s,u,id)
+        # Роль, давшая право приложить документ: запись операций или оплата своего канала (в том числе ВрИО).
+        act_with_right(u,'write' if 'write' in perms_of(u) else pay_right(get(s,Account,entry.account_id)))
         d=Document(ledger_id=id,filename=name[:220],mime=allowed[suffix][0],storage_key=secrets.token_hex(24),sha256=hashlib.sha256(raw).hexdigest(),content=raw,created_by=uid)
         s.add(d);s.flush();log(s,u,'Добавлен документ','document',d.id,f'ledger={id}')
         return {'id':d.id,'url':f'/api/documents/{d.id}'}

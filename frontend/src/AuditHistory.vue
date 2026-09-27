@@ -2,7 +2,7 @@
 import {ref,onMounted,watch} from 'vue';
 const props=defineProps({api:Function,refresh:Number});
 const kind=ref('month'),month=ref(''),from=ref(''),to=ref(''),person=ref(''),action=ref(''),technical=ref(false),users=ref([]),actions=ref([]),items=ref([]),total=ref(0),page=ref(1),shown=ref(false),busy=ref(false),error=ref(''),opened=ref({});
-const types={account:'Счёт',ledger:'Операция',request:'Заявка',category:'Статья',budget:'Бюджет',cash_plan:'План Cash Flow',user:'Пользователь',receipt:'Поступление',setting:'Настройка',import:'Импорт'};
+const types={account:'Счёт',ledger:'Операция',request:'Заявка',category:'Статья',budget:'Бюджет',cash_plan:'План Cash Flow',user:'Пользователь',receipt:'Поступление',setting:'Настройка',import:'Импорт',delegation:'ВрИО',calendar:'Календарь',document:'Документ'};
 const initials=n=>String(n||'').split(/\s+/).filter(Boolean).map(x=>x[0]).join('').slice(0,2).toUpperCase();
 function chooseMonth(){if(!month.value)return;from.value=month.value+'-01';const [y,m]=month.value.split('-').map(Number);to.value=month.value+'-'+new Date(y,m,0).getDate();shown.value=false}
 function invalidate(){shown.value=false}
@@ -24,7 +24,7 @@ onMounted(async()=>{try{const d=await props.api('/api/audit/history?page_size=1'
 <section v-if="!shown" class="empty-state card"><div class="empty-icon" aria-hidden="true">⊞</div><h2>Выберите период и нажмите «Показать»</h2><p>Затем здесь появится список действий сотрудников.</p></section>
 <template v-else>
  <p class="sumline"><span>Найдено событий <b>{{total}}</b></span><span>Время Ташкента</span></p>
- <div v-if="items.length" class="card"><ul class="lg-list"><li v-for="r in items" :key="r.id" class="lg-e"><span class="ava">{{initials(r.user)}}</span><div class="w"><b>{{r.user}}</b> · {{r.action}}<em v-if="types[r.entity]"> {{types[r.entity]}} {{r.entity_id}}</em><small>{{r.date}}</small><div v-if="opened[r.id]" class="det">{{r.detail}}</div></div><button v-if="r.detail" class="secondary tiny" :aria-expanded="!!opened[r.id]" @click="opened[r.id]=!opened[r.id]">{{opened[r.id]?'Скрыть':'Подробности'}}</button></li></ul></div>
+ <div v-if="items.length" class="card"><ul class="lg-list"><li v-for="r in items" :key="r.id" class="lg-e"><span class="ava">{{initials(r.user)}}</span><div class="w"><b>{{r.user}}</b> · {{r.action}}<em v-if="types[r.entity]"> {{types[r.entity]}} {{r.entity_id}}</em><small>{{r.date}}<template v-if="r.role"> · {{r.role}}</template><template v-if="r.acting_for"> · ВрИО за {{r.acting_for}}</template><template v-if="r.ip"> · IP {{r.ip}}</template></small><div v-if="opened[r.id]" class="det">{{r.detail}}</div></div><button v-if="r.detail" class="secondary tiny" :aria-expanded="!!opened[r.id]" @click="opened[r.id]=!opened[r.id]">{{opened[r.id]?'Скрыть':'Подробности'}}</button></li></ul></div>
  <p v-else class="empty card">За выбранный период событий нет.</p>
  <div v-if="total>20" class="pagination"><span>Страница {{page}} из {{Math.max(1,Math.ceil(total/20))}}</span><div class="actions"><button class="secondary tiny" :disabled="page<=1||busy" @click="load(page-1)">← Назад</button><button class="secondary tiny" :disabled="page*20>=total||busy" @click="load(page+1)">Далее →</button></div></div>
 </template>

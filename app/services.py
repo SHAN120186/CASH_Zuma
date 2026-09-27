@@ -5,10 +5,11 @@ from datetime import date, datetime, timedelta, timezone
 from sqlalchemy import select, func
 from fastapi import HTTPException
 from .company_scope import get_setting
-from .security import PERMS, pay_right, perms_of, company_role
-from .db import Account, Category, Budget, PaymentRequest, Receipt, Ledger, Audit, Setting
+from .security import PERMS, pay_right, perms_of, company_role, has_role, act_with_right
+from .db import Account, Category, Budget, PaymentRequest, Receipt, Ledger, Audit, Setting, RequestDocument, now
+from . import clock
 
-def today():return datetime.now(timezone(timedelta(hours=5))).date()
+def today():return clock.today()
 def amount(value, allow_zero=False):
     try:
         n=Decimal(str(value))
@@ -32,7 +33,12 @@ def get(s,cls,id):
     return value
 
 def log(s,user,action,entity,id='',detail=''):
-    s.add(Audit(user_id=user.id if user else None,action=action,entity=entity,entity_id=str(id),detail=detail))
+    """Запись журнала: пользователь, роль в компании, заменяемый при ВрИО, IP и серверное время."""
+    acted=getattr(user,'_acted',None) if user else None
+    role=acted[0] if acted else (company_role(user) or (user.role if user else None)) if user else None
+    s.add(Audit(user_id=user.id if user else None,action=action,entity=entity,entity_id=str(id),detail=detail,
+                ip=getattr(user,'_ip',None) if user else None,forwarded_for=getattr(user,'_forwarded',None) if user else None,
+                role=role,acting_for_id=acted[1] if acted else None))
 def account_balance(s,a,upto=None):
     upto=upto or today()
     if upto<a.opening_date:return 0
@@ -117,20 +123,93 @@ def check_request_version(r,version):
     if version is None:raise HTTPException(428,'Обновите список заявок: для действия нужна версия документа.')
     if r.version!=version:raise HTTPException(409,'Заявка уже изменена другим пользователем. Обновите список и проверьте изменения.')
 
-def needs_director(s,r):
-    """Решение владельца (Q03): директор утверждает каждую заявку, порог этап не пропускает."""
-    return True
+THRESHOLD_FIELDS={'UZS':'director_threshold_uzs','USD':'director_threshold_usd','EUR':'director_threshold_eur'}
+REQUIRED_DOCUMENTS=('indent','contract')
+DOCUMENT_KINDS={'indent':'Внутренняя заявка / Индент','contract':'Договор / Счёт на оплату','other':'Прочие подтверждающие документы'}
+
+def category_policy(c,currency):
+    """Действующая политика статьи для валюты. Нет политики или порога валюты — директор всегда."""
+    policy=c.director_policy or 'always'
+    if policy=='skip' and not c.skip_allowed:policy='always'
+    threshold=getattr(c,THRESHOLD_FIELDS[currency]) if policy=='threshold' else None
+    if policy=='threshold' and threshold is None:policy='always'
+    return policy,threshold
+
+def snapshot_route(s,r,currency):
+    """Снимок политики статьи при отправке: поздние правки справочника маршрут не меняют."""
+    c=s.get(Category,r.category_id)
+    r.route_policy,r.route_threshold=category_policy(c,currency)
+    r.route_at=now()
+
+def requires_director(r):
+    """Нужен ли директор по снимку. Заявки без снимка (до 2.13) — директор обязателен."""
+    if r.route_policy is None or r.route_policy=='always':return True
+    if r.route_policy=='skip':return False
+    return r.route_threshold is None or r.amount>r.route_threshold
+
+def needs_director(s,r):return requires_director(r)
+
+def approval_stage(r):
+    if r.status!='pending':return None
+    if r.checked_by is None:return 'check'
+    if r.finance_approved_by is None:return 'finance'
+    return 'director'
+
+def current_documents(s,request_id):
+    return list(s.scalars(select(RequestDocument).where(RequestDocument.request_id==request_id,RequestDocument.is_current.is_(True),
+                                                        RequestDocument.removed.is_(False)).order_by(RequestDocument.id)))
+
+def missing_documents(s,r):
+    kinds={d.kind for d in current_documents(s,r.id)}
+    return [k for k in REQUIRED_DOCUMENTS if k not in kinds]
+
+def enforce_documents(s,r):
+    missing=missing_documents(s,r)
+    if missing:
+        raise HTTPException(422,'Перед отправкой приложите: '+', '.join('«'+DOCUMENT_KINDS[k]+'»' for k in missing)+'. Черновик можно сохранить без файлов.')
+
+def budget_card(s,category,month,currency,n=0,exclude_request=None):
+    """Бюджет выбранной статьи на период: лимит, оплачено, резерв утверждённых заявок, доступно и остаток после заявки."""
+    b=budget_state(s,category,month,currency,0,exclude_request)
+    if b['limit'] is None:
+        return {'period':month,'currency':currency,'budget_set':False,'status':'no_budget','limit':None,'used':money(b['spent']),
+                'reserved':money(b['reserved']),'available':None,'after':None,'mode':b['mode']}
+    available=b['limit']-b['used'];after=available-n
+    return {'period':month,'currency':currency,'budget_set':True,'limit':money(b['limit']),'used':money(b['spent']),
+            'reserved':money(b['reserved']),'available':money(available),'after':money(after),
+            'status':'ok' if after>=0 else b['mode'],'mode':b['mode']}
 
 def overrun(b):
     """Превышение мягкого бюджета после учёта суммы, в копейках/тийинах."""
     return max(0,b['after']-b['limit']) if b['limit'] is not None else 0
 
-def clear_approval(r):
-    """Любой возврат или правка снимает утверждение целиком."""
+def clear_approval(r,keep_check=False):
+    """Любой возврат или правка снимает утверждение целиком, включая проверку бухгалтера."""
     r.approved_by=None;r.finance_approved_by=None;r.approved_at=None;r.approved_overrun=None
+    if not keep_check:r.checked_by=None;r.checked_at=None
 
 def local_date(moment):
-    return moment.replace(tzinfo=timezone.utc).astimezone(timezone(timedelta(hours=5))).date()
+    return moment.replace(tzinfo=timezone.utc).astimezone(clock.LOCAL_TZ).date()
+
+def participants(r):
+    return {x for x in (r.creator_id,r.last_editor_id,r.checked_by,r.finance_approved_by,r.approved_by) if x}
+
+# Действия, после которых сотрудник считается участником заявки навсегда, даже если
+# возврат или замена файла сняли согласования текущего круга.
+PARTICIPANT_ACTIONS=('Создана заявка','Изменена заявка','Действие по заявке: submit','Действие по заявке: check',
+                     'Действие по заявке: approve','Действие по заявке: reschedule','Добавлен документ заявки',
+                     'Новая версия документа заявки','Убран документ заявки')
+
+def all_participants(s,r):
+    """Автор, редакторы, проверявшие и согласующие заявки во всех кругах согласования."""
+    past=s.scalars(select(Audit.user_id).where(Audit.entity=='request',Audit.entity_id==str(r.id),Audit.user_id.is_not(None),
+                                              Audit.action.in_(PARTICIPANT_ACTIONS)))
+    return participants(r)|set(past)
+
+def route_complete(r):
+    """Все нужные этапы пройдены: проверка (для заявок со снимком), финансовый директор и директор по снимку."""
+    if r.finance_approved_by is None or (r.route_policy is not None and r.checked_by is None):return False
+    return not requires_director(r) or (r.approved_by is not None and r.approved_by!=r.finance_approved_by)
 
 def check_payer(s,u,req):
     """Кто может провести оплату заявки: отдельное право канала и не участник заявки."""
@@ -138,8 +217,11 @@ def check_payer(s,u,req):
     right=pay_right(account)
     if right not in perms_of(u):
         raise HTTPException(403,'Оплату кассовой заявки проводит кассир.' if account.kind=='cash' else 'Оплату банковской заявки проводит расчётный бухгалтер.')
-    if u.id in {req.creator_id,req.last_editor_id,req.finance_approved_by,req.approved_by}:
-        raise HTTPException(403,'Автор, последний редактор и согласующие заявки не могут провести её оплату.')
+    if req.checked_by is not None and u.id==req.checked_by:
+        raise HTTPException(403,'Бухгалтер, проверявший реквизиты и комплектность заявки, не проводит её оплату: нужен другой бухгалтер.')
+    if u.id in all_participants(s,req):
+        raise HTTPException(403,'Автор, редакторы, проверявшие и согласующие заявки (в том числе в прежних кругах согласования) не проводят её оплату.')
+    act_with_right(u,right)
     return account
 
 RETURN_HINT='Оплата не проведена. Верните заявку финансовому директору с комментарием.'
@@ -182,18 +264,36 @@ def enforce_payment_budget(s,req,account,paid_on):
         raise HTTPException(409,f'{detail} {RETURN_HINT}')
     return b
 
+def amount_label(n):
+    """Сумма для текста: 5 000 000 или 5 000 000,50."""
+    whole,cents=money(n).split('.')
+    return f'{int(whole):,}'.replace(',',' ')+('' if cents=='00' else ','+cents)
+
+def route_json(r,currency):
+    """Маршрут по снимку: участвует ли директор и почему."""
+    required=requires_director(r)
+    if r.route_policy is None:reason='Директор утверждает заявку.'
+    elif r.route_policy=='always':reason='Политика статьи: директор утверждает любую сумму.'
+    elif r.route_policy=='skip':reason='Политика статьи: после финансового директора заявка готова к исполнению.'
+    elif required:reason=f'Сумма выше порога статьи {amount_label(r.route_threshold)} {currency}: нужен директор.'
+    else:reason=f'Сумма не выше порога статьи {amount_label(r.route_threshold)} {currency}: директор не участвует.'
+    return {'policy':r.route_policy,'threshold':money(r.route_threshold) if r.route_threshold is not None else None,
+            'at':str(r.route_at) if r.route_at else None,'director_required':required,'reason':reason}
+
 def request_json(s,r,accounts=None,categories=None,users=None):
     a=get(s,Account,r.account_id);c=get(s,Category,r.category_id)
     b=budget_state(s,c.id,str(r.due_date)[:7],a.currency,r.amount if r.status in ('pending','draft') else 0)
+    docs=current_documents(s,r.id)
     return {'id':r.id,'number':f'CF-{r.id:05d}','creator_id':r.creator_id,'category_id':c.id,'category':c.name,
-            'account_id':a.id,'account':a.name,'account_kind':a.kind,'currency':a.currency,'counterparty':r.counterparty,
-            'amount':money(r.amount),'date':str(r.due_date),'status':r.status,'purpose':r.purpose,
+            'account_id':a.id,'account':a.name,'account_kind':a.kind,'channel':a.kind,'currency':a.currency,'company_id':a.company_id,
+            'counterparty':r.counterparty,'amount':money(r.amount),'date':str(r.due_date),'status':r.status,'purpose':r.purpose,
             'version':r.version,'last_editor_id':r.last_editor_id,'priority':r.priority,
-            'created_at':str(r.created_at),'finance_approved_by':r.finance_approved_by,'approved_by':r.approved_by,
+            'created_at':str(r.created_at),'checked_by':r.checked_by,'finance_approved_by':r.finance_approved_by,'approved_by':r.approved_by,
             'approved_on':str(local_date(r.approved_at)) if r.approved_at else None,
-            'approval_stage':('director' if r.finance_approved_by else 'finance') if r.status=='pending' else None,
+            'approval_stage':approval_stage(r),'route':route_json(r,a.currency),
+            'documents':{k:sum(d.kind==k for d in docs) for k in DOCUMENT_KINDS},'missing_documents':missing_documents(s,r),
             'project':r.project,'decision_note':r.decision_note,'overdue':r.due_date<today() and r.status in ('pending','approved'),
-            'budget':budget_json(b)}
+            'budget':budget_json(b),'budget_card':budget_card(s,c.id,str(r.due_date)[:7],a.currency,0 if r.status=='paid' else r.amount,r.id)}
 
 def post_ledger(s,u,data):
     a=get(s,Account,data.account_id)
@@ -225,8 +325,11 @@ def post_ledger(s,u,data):
             raise HTTPException(409,'Оплата проводится ровно по утверждённой заявке: её счёт, валюта, статья и сумма целиком. Изменить их при оплате нельзя.')
         if data.counterparty and data.counterparty!=req.counterparty:
             raise HTTPException(409,'Получатель платежа берётся из утверждённой заявки и не может быть заменён.')
-        # Утверждение по прежнему порогу, без отдельного директора, к оплате не допускается (Q03).
-        if req.approved_by is None or req.finance_approved_by is None or req.approved_by==req.finance_approved_by:
+        # Маршрут проверяется по снимку политики статьи. Заявки без снимка (утверждённые до 2.13)
+        # оплачиваются только с отдельным подтверждением директора, как раньше.
+        if req.finance_approved_by is None or (req.route_policy is not None and req.checked_by is None):
+            raise HTTPException(409,f'Заявка не прошла все этапы согласования. {RETURN_HINT}')
+        if requires_director(req) and (req.approved_by is None or req.approved_by==req.finance_approved_by):
             raise HTTPException(409,f'Заявка утверждена без отдельного подтверждения директора. {RETURN_HINT} После проверки её утвердит директор.')
         earliest=local_date(req.approved_at or req.created_at)
         if data.date<earliest:raise HTTPException(422,f'Дата оплаты не может быть раньше утверждения заявки ({earliest}).')

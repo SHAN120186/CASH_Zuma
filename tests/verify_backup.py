@@ -16,7 +16,8 @@ with connect('postgres') as admin:
         env={**worker.pg_environment(),'PGDATABASE':name}
         subprocess.run([worker.pg_tool('pg_restore'),'--no-owner','--exit-on-error','--dbname',name,str(dump)],env=env,check=True,capture_output=True)
         with connect(url.database) as source,connect(name) as restored:
-            for table in ('users','company_users','accounts','ledger','categories','budgets','payment_requests','expected_receipts','model_versions','documents','companies','cash_plans','plan_notes','plan_import_batches','import_batches','settings'):
+            for table in ('users','company_users','accounts','ledger','categories','budgets','payment_requests','expected_receipts','model_versions','documents','companies','cash_plans','plan_notes','plan_import_batches','import_batches','settings',
+                          'request_documents','calendar_days','delegations','audit_log'):
                 query=sql.SQL('SELECT count(*) FROM {}').format(sql.Identifier(table))
                 assert source.execute(query).fetchone()==restored.execute(query).fetchone(),table
             def documents_digest(connection):
@@ -25,6 +26,8 @@ with connect('postgres') as admin:
                     checksum.update(str(ident).encode());checksum.update(content)
                 return checksum.hexdigest()
             assert documents_digest(source)==documents_digest(restored),'document contents'
+            request_files=lambda c:c.execute('SELECT id,sha256 FROM request_documents ORDER BY id').fetchall()
+            assert request_files(source)==request_files(restored),'request document contents'
             for table in ('cash_plans','plan_notes'):
                 query=sql.SQL('SELECT to_jsonb(t) FROM {} t ORDER BY id').format(sql.Identifier(table))
                 assert source.execute(query).fetchall()==restored.execute(query).fetchall(),table

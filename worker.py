@@ -5,6 +5,7 @@ from email.message import EmailMessage
 from settings_loader import load_config
 if __name__=='__main__':load_config()
 from app.db import engine,SQLITE,ROOT,DATA,ReportSchedule,Audit,User,unit,initialize,select
+from app import clock
 from app.erp import render_report
 from deploy.postgres_backup import create_dump, pg_tool, pg_environment as backup_environment
 
@@ -35,7 +36,7 @@ def send_report(recipient,attachments):
         client.send_message(msg)
 
 def report_tick():
-    current=datetime.now(timezone(timedelta(hours=5)));day=current.date()
+    current=datetime.now(clock.LOCAL_TZ);day=clock.today()
     with unit() as s:ids=list(s.scalars(select(ReportSchedule.id).where(ReportSchedule.enabled==True)))
     for id in ids:
         with unit(True) as s:

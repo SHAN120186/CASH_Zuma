@@ -238,7 +238,8 @@ const pendingPreview = computed(() => [...(s.value.pendingAll || [])].sort(byDue
 const byDue = (a, b) => a.date.localeCompare(b.date) || a.id - b.id;
 const payments = computed(() => (s.value.approved || []).filter(r => r.date <= props.today).sort(byDue));
 const decisions = computed(() => [...(s.value.pending || [])].sort(byDue));
-const approver = computed(() => props.has('approve'));
+// Решения по заявкам принимают согласующие и расчётный бухгалтер (проверка реквизитов).
+const approver = computed(() => props.has('approve') || props.has('request_check'));
 // Paying a request needs a payment right; the general right to write never pays.
 const canPay = computed(() => canPayAny(props.has));
 
@@ -319,7 +320,7 @@ function scrollTo(id) {
   el.scrollIntoView({behavior: reduce ? 'auto' : 'smooth', block: 'start'});
   el.focus({preventScroll: true});
 }
-const stage = r => (r.approval_stage === 'director' ? 'Решение директора' : 'Финансовая проверка');
+const stage = r => ({check: 'Проверка бухгалтера', finance: 'Финансовая проверка', director: 'Решение директора'}[r.approval_stage] || 'Согласование');
 const signedLedger = t => (t.kind === 'out' ? -1 : t.kind === 'in' ? 1 : 0) * (toCents(t.amount) ?? 0);
 </script>
 

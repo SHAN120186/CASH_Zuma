@@ -8,9 +8,9 @@ export const payRight = r => (r.account_kind === 'cash' ? 'pay_cash' : 'pay_bank
 
 export const canPayAny = has => PAY_RIGHTS.some(right => has(right));
 
-// The author, last editor and both approvers of a request never pay it.
+// The author, last editor, checking accountant and both approvers of a request never pay it.
 export function canPayRequest(r, userId, has) {
   return r.status === 'approved'
     && has(payRight(r))
-    && ![r.creator_id, r.last_editor_id, r.finance_approved_by, r.approved_by].includes(userId);
+    && ![r.creator_id, r.last_editor_id, r.checked_by, r.finance_approved_by, r.approved_by].filter(x => x != null).includes(userId);
 }
