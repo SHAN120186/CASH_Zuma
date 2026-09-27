@@ -463,3 +463,88 @@ table.cf{border-collapse:separate;border-spacing:0;min-width:100%;font-size:13px
 .request-documents-placeholder{margin-top:18px;padding:16px;border:1px dashed var(--line,#c8d7d2);border-radius:14px;background:var(--bg,#f2eee5)}
 .request-documents-placeholder p{margin:8px 0;font-size:13px;line-height:1.5}
 .request-documents-placeholder button{max-width:100%;white-space:normal}
+
+/* ==========================================================================
+   Treasury Command Center 2026 · токены и оболочка.
+   Цвета бренда — для заливок и графиков; варианты *-ink — для текста,
+   они проходят WCAG AA на белом, молочном фоне и бледных плашках.
+   Прежние токены переназначены, поэтому разделы наследуют новую палитру.
+   ========================================================================== */
+:root{
+ --bg:#F5F3ED;--surface:#FFFFFF;--sidebar:#102D2B;--primary:#0F766E;--primary-hover:#0B5F59;
+ --chart-line:#2E9C80; /* изумруд графика: 3,4:1 на белом, как графический объект проходит 3:1 */
+ --text:#172B2A;--muted:#5A6664;--line:#DDE4E1;--line-strong:#779387;
+ --income:#16865B;--expense:#D95C4B;--plan:#4169A1;--warning:#B7791F;
+ --income-ink:#147B54;--expense-ink:#C13B29;--warning-ink:#966319;
+ --primary-soft:#E2F1EE;--income-soft:#E6F4EC;--expense-soft:#FBECE9;--warning-soft:#FBF2E0;--plan-soft:#E9EFF8;
+ --radius-card:18px;--radius-hero:24px;
+ --shadow-1:0 1px 2px rgba(16,45,43,.05),0 10px 26px -18px rgba(16,45,43,.22);
+ --shadow-2:0 2px 4px rgba(16,45,43,.06),0 22px 44px -22px rgba(16,45,43,.30);
+ --ease:cubic-bezier(.2,.7,.2,1);--dur-1:160ms;--dur-2:200ms;--dur-3:240ms;
+ --side-text:rgba(232,241,239,.78);--side-dim:rgba(232,241,239,.55);--side-accent:#5FD0B8;
+ /* прежние имена */
+ --em:var(--primary);--em2:#138078;--emd:var(--primary-hover);--eml:var(--primary-soft);--emx:#F2F7F5;
+ --ink:var(--text);--mut:var(--muted);--mut2:var(--muted);--line2:#EAEFED;
+ --side:var(--sidebar);--surface-muted:#F0EEE8;--row-hover:#F7F9F8;--on-accent:#FFFFFF;
+ --planl:var(--plan-soft);--warn:var(--warning-ink);--warnl:var(--warning-soft);
+ --bad:var(--expense-ink);--badl:var(--expense-soft);--good:var(--income-ink);--goodl:var(--income-soft);
+ --focus:var(--primary);--card-radius:var(--radius-card);
+}
+input,select,textarea{border-color:var(--line-strong)}
+.card{box-shadow:var(--shadow-1);border-color:rgba(23,43,42,.07)}
+
+/* микровзаимодействия: быстро, без смещения соседних блоков */
+button,.button{transition:background-color var(--dur-1) var(--ease),border-color var(--dur-1) var(--ease),color var(--dur-1) var(--ease),box-shadow var(--dur-1) var(--ease),transform 120ms var(--ease)}
+button:active:not(:disabled),.button:active{transform:translateY(1px)}
+.notice{animation:noticeIn var(--dur-2) var(--ease) both}
+.error{animation:noticeIn var(--dur-2) var(--ease) both}
+@keyframes noticeIn{from{opacity:0;transform:translateY(-3px)}to{opacity:1;transform:none}}
+/* смена раздела: только прозрачность, крупные блоки не сдвигаются */
+.page{animation:pageIn 180ms var(--ease) both}
+@keyframes pageIn{from{opacity:0}to{opacity:1}}
+
+/* сайдбар: тёмный, компактный, спокойный */
+@media (min-width:921px){.app{grid-template-columns:236px minmax(0,1fr)}}
+.side{background:var(--sidebar);border-right:0;padding:18px 12px;color:var(--side-text)}
+.side .brand{color:#fff}
+.side .mark{background:#1C4E4A;color:#fff;box-shadow:inset 0 0 0 1px rgba(255,255,255,.08)}
+.side .company-switch{background:rgba(255,255,255,.06);border-color:rgba(255,255,255,.12);color:var(--side-text)}
+.side .company-switch:hover:not(:disabled){background:rgba(255,255,255,.1);border-color:rgba(255,255,255,.2);color:#fff}
+.nav-l{color:var(--side-dim);margin:14px 12px 6px}
+.nav-i{position:relative;min-height:38px;color:var(--side-text);font-weight:600}
+.nav-i:hover:not(:disabled){background:rgba(255,255,255,.06);color:#fff}
+.nav-i.on:hover:not(:disabled){background:#CDE9E2;color:#0B3B37}
+.nav-i.on{background:#D8EFE9;color:#0B3B37;font-weight:700}
+.nav-i.on::before{content:"";position:absolute;left:-12px;top:8px;bottom:8px;width:3px;border-radius:0 3px 3px 0;background:var(--side-accent)}
+.tag{background:rgba(255,255,255,.1);color:var(--side-text)}
+.on .tag{background:rgba(11,59,55,.1);color:#0B3B37}
+.side-foot{border-top:1px solid rgba(255,255,255,.08)}
+.side .ava{background:rgba(255,255,255,.1);color:#fff}
+.side .nav-i.on .ava{background:rgba(11,59,55,.12);color:#0B3B37}
+.who b{color:#fff}.who small{color:var(--side-dim)}
+.side-foot .nav-i{min-width:0}.side-foot .who{flex:1 1 auto;min-width:0;overflow:hidden}
+.side-foot .who b,.side-foot .who small{display:block;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.nav-i.on .who b{color:#0B3B37}.nav-i.on .who small{color:#2F5E59}
+.logout{color:var(--side-dim)}
+.logout:hover:not(:disabled){background:rgba(255,255,255,.06);color:#fff}
+.side :focus-visible{outline-color:var(--side-accent)}
+.cf tr.r-close{--bgc:var(--primary-hover)}
+
+/* верхняя панель: стекло и постоянный переключатель компании */
+.topbar{height:60px;background:rgba(245,243,237,.78);-webkit-backdrop-filter:saturate(160%) blur(14px);backdrop-filter:saturate(160%) blur(14px);border-bottom:1px solid rgba(23,43,42,.07)}
+@supports not ((backdrop-filter:blur(1px)) or (-webkit-backdrop-filter:blur(1px))){.topbar{background:var(--bg)}}
+.co-switch{gap:8px;min-height:38px;padding:0 10px 0 6px;border-radius:12px;background:var(--surface);border:1px solid var(--line);color:var(--text);font-weight:700;max-width:min(52vw,340px)}
+.co-switch:hover:not(:disabled){background:var(--surface);border-color:var(--primary);color:var(--primary-hover);box-shadow:0 6px 16px -10px rgba(15,118,110,.45)}
+.co-mark{flex:none;width:26px;height:26px;border-radius:8px;background:var(--primary);color:#fff;display:grid;place-items:center;font-size:13px;font-weight:800}
+.co-name{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;min-width:0}
+.co-switch .app-icon{flex:none;color:var(--muted)}
+@media (max-width:700px){
+ .crumb .co-switch span{display:inline-block}.crumb .co-switch .co-mark{display:grid}
+ .crumb>b{display:none}
+}
+@media (max-width:920px){.side{width:264px}}
+
+/* доступность движения */
+@media (prefers-reduced-motion:reduce){
+ *,*::before,*::after{animation-duration:.01ms!important;animation-iteration-count:1!important;transition-duration:.01ms!important;scroll-behavior:auto!important}
+}

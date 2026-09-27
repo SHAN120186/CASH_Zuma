@@ -5,6 +5,7 @@ import AuditHistory from './AuditHistory.vue';
 import PeriodFilter from './PeriodFilter.vue';
 import AppIcon from './AppIcon.vue';
 import CompanyCard from './CompanyCard.vue';
+import OverviewPage from './overview/OverviewPage.vue';
 import {loadRecentLogins,rememberLogin,matchingLogins,offerPasswordSave} from './loginPreferences.js';
 import release from '../../release.json';
 const availableRelease=ref(null),showRelease=ref(false);
@@ -34,8 +35,8 @@ watch(()=>[company.value?.name,title.value],([name,section])=>{document.title=na
 const status={pending:'На согласовании',approved:'Утверждена',paid:'Оплачена',draft:'Черновик',rejected:'Отклонена',returned:'На доработке',cancelled:'Отменена',expected:'Ожидается',received:'Получено'};
 const money=v=>{if(v==null)return '—';let s=String(v);if(currency.value==='UZS')s=s.replace(/\.00$/,'');const [a,b]=s.split('.');return a.replace(/\B(?=(\d{3})+(?!\d))/g,' ')+(b!==undefined?'.'+b:'')};
 const costGroups={fixed:'Постоянные затраты',variable:'Переменные затраты',other:'Прочие затраты'};
-const auditRefresh=ref(0);
-const menuOpen=ref(false),helpOpen=ref(false),homeAccounts=ref([]),homeRequests=ref([]),hover=ref(null);
+const auditRefresh=ref(0),homeRefresh=ref(0);
+const menuOpen=ref(false),helpOpen=ref(false);
 const initials=n=>String(n||'').split(/\s+/).filter(Boolean).map(x=>x[0]).join('').slice(0,2).toUpperCase();
 const showCurrency=computed(()=>!['approval','users','audit','categories','import','profile'].includes(page.value));
 const navGroups=[['Работа',['home','report','accounts','ledger','requests','calendar']],['Планирование',['budgets','import','approval']],['Администрирование',['categories','users','audit']]];
@@ -53,39 +54,6 @@ function trkSteps(r){
  return [{c:a,l:'Заявитель'},{c:f,l:'Финансист'},{c:d,l:dl}];
 }
 const MS=['янв','фев','мар','апр','май','июн','июл','авг','сен','окт','ноя','дек'];
-const dayOf=s=>Number(String(s).slice(8,10)),monOf=s=>MS[Number(String(s).slice(5,7))-1];
-const shortDate=s=>`${dayOf(s)} ${monOf(s)}`;
-const compact=v=>{const a=Math.abs(v),s=v<0?'−':'';if(a>=1e9)return s+(a/1e9).toFixed(1).replace('.0','')+' млрд';if(a>=1e6)return s+(a/1e6).toFixed(1).replace('.0','')+' млн';if(a>=1e3)return s+(a/1e3).toFixed(1).replace('.0','')+' тыс.';return s+Math.round(a)};
-const chartBox={w:820,h:260,l:64,r:16,t:16,b:30};
-const chart=computed(()=>{
- const f=dash.value?.forecast||[];if(!f.length||dash.value?.balance==null)return null;
- const vals=f.map(d=>Number(d.balance)),res=Number(dash.value.reserve||0);
- let hi=Math.max(...vals,res),lo=Math.min(...vals,res);if(hi===lo){hi+=1;lo-=1}
- const floor=Math.min(...vals,res)>=0,pad=(hi-lo)*.08;hi+=pad;lo=floor?Math.max(0,lo-pad):lo-pad;
- const {w,h,l,r,t,b}=chartBox,x=i=>f.length===1?l:l+i*(w-l-r)/(f.length-1),y=v=>t+(hi-v)*(h-t-b)/(hi-lo);
- const idx=[0,Math.floor((f.length-1)/2),f.length-1].filter((v,i,a)=>a.indexOf(v)===i);
- return {pts:vals.map((v,i)=>[x(i),y(v)]),path:vals.map((v,i)=>(i?'L':'M')+x(i).toFixed(1)+' '+y(v).toFixed(1)).join(''),reserveY:res?y(res):null,
-  ticks:[0,1,2,3,4].map(k=>{const v=lo+(hi-lo)*k/4;return {y:y(v),label:compact(v)}}),
-  labels:idx.map((i,k)=>({x:x(i),text:shortDate(f[i].date),anchor:k===0?'start':k===idx.length-1?'end':'middle'}))};
-});
-function chartMove(e){
- const c=chart.value;if(!c)return;
- const box=e.currentTarget.getBoundingClientRect(),px=(e.clientX-box.left)/box.width*chartBox.w;
- let best=0;c.pts.forEach((p,i)=>{if(Math.abs(p[0]-px)<Math.abs(c.pts[best][0]-px))best=i});
- hover.value={i:best,left:c.pts[best][0]/chartBox.w*box.width+8,top:c.pts[best][1]/chartBox.h*box.height+6};
-}
-const forecastSummary=computed(()=>{
- const f=dash.value?.forecast||[],bad=f.find(d=>d.risk);
- if(bad)return `Проверьте ликвидность: ${bad.date}`;
- if(!dash.value?.forecast_has_events)return 'Будущие события пока не зарегистрированы';
- return `Минимум ${money(Math.min(...f.map(d=>Number(d.balance))).toFixed(2))} ${currency.value} — выше резерва`;
-});
-const upcoming=computed(()=>{const out=[];for(const d of dash.value?.forecast||[]){for(const e of d.events||[])if(e.kind==='out')out.push({date:d.date,name:e.name,amount:e.amount,overdue:e.overdue});if(out.length>=5)break}return out.slice(0,5)});
-async function loadHome(){
- const epoch=companyEpoch;
- try{homeAccounts.value=await api('/api/accounts')}catch{if(epoch===companyEpoch)homeAccounts.value=[]}
- try{const q=new URLSearchParams({paginated:'true',page:'1',currency:currency.value,q:'',state:'pending'});homeRequests.value=(await api('/api/requests?'+q)).items.slice(0,4)}catch{if(epoch===companyEpoch)homeRequests.value=[]}
-}
 const calTiles=computed(()=>{
  const f=forecastRows.value;if(!f.length)return null;
  const n=v=>Number(v||0);
@@ -95,7 +63,7 @@ const budgetCounts=computed(()=>({'':rows.value.length,...Object.fromEntries(Obj
 const usage=r=>r.limit==null||Number(r.limit)===0?0:(Number(r.spent)+Number(r.reserved))/Number(r.limit);
 const importStep=computed(()=>preview.value?2:1);
 const helpSections=computed(()=>({
- home:[['Факт и план','Метка «Факт» — подтверждённые операции по счетам. Метка «План» — утверждённые платежи и ожидаемые поступления ближайших дней. Значения «План · 7 дней» и «Факт · месяц» относятся к разным периодам и не вычитаются друг из друга.'],['Минимальный резерв','Красная пунктирная линия на графике — резерв ликвидности. Если прогнозный остаток опускается ниже него или счёт уходит в минус, показывается предупреждение с датой.'],['Как считается прогноз',dash.value?.note||'Прогноз на конец дня: текущие остатки + ожидаемые поступления − утверждённые неоплаченные заявки.'],['Заявки на согласовании','Для каждой заявки видны этапы: заявитель → финансист → директор. Директор подключается, если сумма выше его порога для валюты заявки.']],
+ home:[['Факт и план','«Факт» — подтверждённые операции и остатки на счетах: доступный остаток, график за 30 дней, доходы и расходы месяца, блок «Где находятся деньги». «План» — утверждённые платежи и ожидаемые поступления: прогноз остатка, ближайшие выплаты, план на 7 дней. Периоды разные, поэтому факт и план не вычитаются друг из друга.'],['Доступный остаток','Остаток на счетах минус утверждённые и ещё не оплаченные заявки со сроком по сегодня. Процент — изменение к тому же дню прошлого месяца. График показывает остаток на счетах на конец каждого из последних 30 дней: наведите курсор или выберите день стрелками, чтобы увидеть приход и расход.'],['Прогноз и минимальный резерв','«Прогноз остатка» строится на 7, 30 или 90 дней; горизонт общий с разделом «Календарь». Красная пунктирная линия — минимальный резерв; он указан внизу блока «Риски», изменить его может роль с правом на бюджеты. Если прогнозный остаток опускается ниже резерва или счёт уходит в минус, в «Рисках» появляется предупреждение с датой.'],['Как считается прогноз','Прогноз на конец дня: текущие остатки + ожидаемые поступления − утверждённые неоплаченные заявки. Проверяется также нехватка на каждом счёте; переводы между счетами автоматически не предполагаются. Отрицательный остаток требует проверки даже при разрешённом овердрафте: его лимит не задан. Просрочка отнесена на сегодня. Порядок платежей внутри дня не учитывается. Модель и бюджеты повторно не добавляются.'],['Заявки на согласовании','Согласующий видит блок «Ждут вашего решения» — заявки выбранной валюты, которые можно решить сейчас, и общую сумму на согласовании. Остальные роли видят сводку и ближайшие заявки. У каждой заявки показаны этапы: заявитель → финансист → директор. Директор подключается, если сумма выше его порога для валюты заявки.']],
  report:[['Форма отчёта','Управленческая форма по прямому методу и структуре IAS 7: остаток на начало, операционная, инвестиционная и финансовая деятельность, чистое изменение, остаток на конец. Это управленческий отчёт, а не заявление о полном соответствии МСФО.'],['Режимы','«Факт» — только фактические операции. «План-факт» — для каждого месяца План, Факт и Отклонение. Отклонение = Факт − План: зелёное улучшает денежный поток, красное ухудшает.'],['Остатки не суммируются','В колонке «За период» остаток на начало берётся на начало периода, остаток на конец — на его конец. Потоки суммируются.'],['Единицы и выгрузка','Суммы можно показывать в миллионах, тысячах или точно. Excel и PDF формирует сервер по выбранным году, периоду и режиму.'],['«Не задан»','План не введён. Пока не заполнены все статьи, итог плана не определён. Введите ноль для статей без планируемых движений.'],['План платежей и бюджеты','План платежей задаётся отдельно от лимитов бюджета и не равен автоматически лимиту расходов. Виды деятельности Cash Flow не совпадают с группами затрат бюджета (постоянные, переменные, прочие).'],['Что не входит','Счета учитываются в своей валюте, внутренние переводы исключены. Ввод начальных остатков после начала года показан отдельно от денежного потока.']],
  accounts:[['Начальный остаток','Остаток на начало дня. Исправления вносятся с указанием причины и попадают в журнал. Валюта счёта с историей защищена от изменения.'],['Валюты','Каждый счёт ведётся в своей валюте. Суммы разных валют не складываются.'],['Архив','В архив можно убрать счёт с нулевым остатком и без незавершённых заявок. История сохраняется, счёт можно восстановить.']],
  ledger:[['Что вносить','Записывайте только фактически совершённые операции. Для расхода без заявки основание — от 10 символов.'],['Период','Выберите месяц или диапазон дат и нажмите «Применить». Панель раскрывается в потоке страницы и сдвигает таблицу, ничего не перекрывая. Esc закрывает панель.'],['Сторно','Ошибка исправляется сторно: оно отменяет влияние операции, история остаётся в журнале.'],['CSV','Выгрузка CSV содержит полный реестр во всех валютах.']],
@@ -139,8 +107,6 @@ const priorities={normal:'Обычный',high:'Высокий',urgent:'Сроч
 const scenario=ref('approved');
 const forecastRows=computed(()=>(dash.value?.forecast||[]).map(d=>scenario.value==='all'?{...d,opening:d.requested_opening,outgoing:d.requested_outgoing,balance:d.requested_balance,risk:d.requested_risk,account_shortfalls:d.requested_account_shortfalls,events:[...d.events,...d.pending_events]}:d));
 const canEditRequest=r=>has('request')&&['draft','pending','returned','rejected'].includes(r.status)&&(r.creator_id===user.value.id||has('request_edit'));
-const risk=computed(()=>dash.value?.forecast.find(d=>d.risk));
-const chartPoints=computed(()=>{let a=dash.value?.forecast.map(d=>Number(d.balance))||[];let lo=Math.min(...a,0),hi=Math.max(...a,1);return a.map((v,i)=>`${20+i*860/(a.length-1||1)},${190-(v-lo)*160/(hi-lo||1)}`).join(' ')});
 async function api(url,opts={}){const epoch=companyEpoch,controller=new AbortController();pendingCalls.add(controller);try{const r=await fetch(url,{credentials:'same-origin',...opts,signal:controller.signal,headers:{'X-CSRF-Token':csrf.value,...(companyId.value?{'X-Company-ID':String(companyId.value)}:{}),...opts.headers}});let data;try{data=await r.json()}catch{throw Error('Некорректный ответ сервера')}if(epoch!==companyEpoch)throw new DOMException('Компания изменена','AbortError');if(!r.ok){if(r.status===401)user.value=null;throw Error(Array.isArray(data.detail)?data.detail.map(x=>`${x.loc?.slice(1).join('.')}: ${x.msg}`).join('; '):data.detail||'Ошибка запроса')}return data}finally{pendingCalls.delete(controller)}}
 const post=(url,data={})=>api(url,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(data)});
 function flash(text){notice.value=text;setTimeout(()=>notice.value='',5500)}
@@ -150,7 +116,7 @@ async function selectCompany(id){
  if(saving.value||modal.value||documents.value){flash('Закройте текущую форму перед сменой компании.');return}
  companyEpoch++;for(const call of pendingCalls)call.abort();pendingCalls.clear();clearTimeout(searchTimer);
  companyReady.value=false;companyId.value=Number(id);busy.value=true;error.value='';notice.value='';
- rows.value=[];dash.value=null;report.value=null;preview.value=null;homeAccounts.value=[];homeRequests.value=[];receipts.value=[];policy.value=null;expandedRequest.value=null;
+ rows.value=[];dash.value=null;report.value=null;preview.value=null;receipts.value=[];policy.value=null;expandedRequest.value=null;
  search.value='';dateFrom.value='';dateTo.value='';requestStatus.value='';listPage.value=1;listTotal.value=0;showArchive.value=false;receiptsOpen.value=false;planMappings.value={};helpOpen.value=false;menuOpen.value=false;
  boot.value={...boot.value,accounts:[],categories:[],counterparties:[]};
  try{await bootstrap();companyReady.value=true;if(!nav.value.some(n=>n[0]===page.value))page.value=nav.value[0][0];await load()}catch(e){error.value=e.message}finally{busy.value=false}
@@ -174,10 +140,12 @@ async function signIn(event){
  }catch(e){error.value=e.message}finally{busy.value=false}
 }
 async function logout(){try{await post('/api/logout')}finally{user.value=null;csrf.value=''}}
+async function goWith(name,opts={}){menuOpen.value=false;helpOpen.value=false;reportEditing.value=false;page.value=name;location.hash=name;search.value='';dateFrom.value=opts.from||'';dateTo.value=opts.to||'';requestStatus.value=opts.status||'';listPage.value=1;expandedRequest.value=null;receiptsOpen.value=false;rows.value=[];await load()}
+const canDecide=r=>requestActions(r).some(o=>o[0]==='approve');
 async function go(name){menuOpen.value=false;helpOpen.value=false;reportEditing.value=false;page.value=name;location.hash=name;search.value='';dateFrom.value='';dateTo.value='';requestStatus.value='';listPage.value=1;expandedRequest.value=null;receiptsOpen.value=false;rows.value=[];await load()}
 async function load(){if(!companyReady.value)return;const epoch=companyEpoch;busy.value=true;error.value='';try{
- if(['home','calendar'].includes(page.value))dash.value=await api(`/api/dashboard?currency=${currency.value}&days=${days.value}`);
- if(page.value==='home')await loadHome();
+ if(page.value==='home')homeRefresh.value++;
+ if(page.value==='calendar')dash.value=await api(`/api/dashboard?currency=${currency.value}&days=${days.value}`);
  if(page.value==='accounts')rows.value=await api('/api/accounts?archived='+showArchive.value);
  if(['ledger','requests'].includes(page.value)){const requestId=++listRequestId;const requestedPage=page.value;const params=new URLSearchParams({paginated:'true',page:String(listPage.value),currency:currency.value,q:search.value});if(dateFrom.value)params.set('date_from',dateFrom.value);if(dateTo.value)params.set('date_to',dateTo.value);if(page.value==='requests'&&requestStatus.value)params.set('state',requestStatus.value);const data=await api(`/api/${page.value}?${params}`);if(requestId===listRequestId&&page.value===requestedPage){rows.value=data.items;listTotal.value=data.total;}}
  if(page.value==='calendar'&&receiptsOpen.value)await loadReceipts();
@@ -233,7 +201,7 @@ async function commit(){busy.value=true;try{const r=await post(`/api/import/${pr
 async function commitPlan(){busy.value=true;error.value='';try{const r=await post(`/api/plan-import/${preview.value.id}/commit`,{mappings:planMappings.value,reason:planReason.value});preview.value=null;flash(`Обновлено плановых значений: ${r.updated}`);await bootstrap()}catch(e){error.value=e.message}finally{busy.value=false}}
 async function docs(r){try{documents.value={ledger:r,rows:await api(`/api/documents?ledger_id=${r.id}`)}}catch(e){error.value=e.message}}
 async function attach(event){const file=event.target.files[0];if(!file)return;saving.value=true;try{await api(`/api/ledger/${documents.value.ledger.id}/document`,{method:'POST',headers:{'Content-Type':'application/octet-stream','X-Filename':encodeURIComponent(file.name)},body:file});await docs(documents.value.ledger)}catch(e){error.value=e.message}finally{saving.value=false;event.target.value=''}}
-async function reserve(){open('Минимальный резерв',[field('amount','Сумма резерва','number',{min:0})],{amount:dash.value?.reserve||'0'},d=>post('/api/reserve',{amount:String(d.amount),currency:currency.value}))}
+async function reserve(amount){open('Минимальный резерв',[field('amount','Сумма резерва','number',{min:0})],{amount:typeof amount==='string'?amount:dash.value?.reserve||'0'},d=>post('/api/reserve',{amount:String(d.amount),currency:currency.value}))}
 window.addEventListener('hashchange',()=>{const target=location.hash.slice(1);if(user.value&&companyReady.value&&target!==page.value&&nav.value.some(n=>n[0]===target)){page.value=target;load()}});
 onMounted(async()=>{try{const r=await api('/api/me');user.value=r.user;csrf.value=r.csrf;await enter()}catch{user.value=null}});
 </script>
@@ -276,7 +244,7 @@ onMounted(async()=>{try{const r=await api('/api/me');user.value=r.user;csrf.valu
  <div v-else class="app" :class="{'menu-open':menuOpen}">
   <div v-if="menuOpen" class="scrim" @click="menuOpen=false"></div>
   <aside class="side" aria-label="Основное меню">
-   <a class="brand" href="#home" @click.prevent="go('home')"><span class="mark">{{company?.code.charAt(0)}}</span><span class="bname">{{company?.code==='ZUMA'?'ZUMA':company?.name}}</span></a>
+   <a class="brand" :href="'#'+(nav[0]?.[0]||'home')" @click.prevent="go(nav[0]?.[0]||'home')"><span class="mark">{{company?.code.charAt(0)}}</span><span class="bname">{{company?.code==='ZUMA'?'ZUMA':company?.name}}</span></a>
    <button class="company-switch secondary" :disabled="busy||saving" @click="chooseCompany"><AppIcon name="accounts"/> Сменить компанию</button>
    <nav aria-label="Разделы">
     <template v-for="g in navSections" :key="g.label">
@@ -293,10 +261,10 @@ onMounted(async()=>{try{const r=await api('/api/me');user.value=r.user;csrf.valu
   <div class="workspace">
    <header class="topbar">
     <button class="icon-btn burger" aria-label="Открыть меню" @click="menuOpen=true"><AppIcon name="menu"/></button>
-    <nav class="crumb" aria-label="Путь"><button class="ghost tiny" :disabled="busy||saving" @click="chooseCompany">{{company?.name}}</button><i>/</i><b>{{title}}</b></nav>
+    <nav class="crumb" aria-label="Путь"><button class="co-switch" :disabled="busy||saving" :aria-label="'Компания '+company?.name+'. Сменить компанию'" @click="chooseCompany"><span class="co-mark" aria-hidden="true">{{company?.code.charAt(0)}}</span><span class="co-name">{{company?.name}}</span><AppIcon name="chev"/></button><i aria-hidden="true">/</i><b>{{title}}</b></nav>
     <div class="topbar-r"><button class="icon-btn" aria-label="Справка" @click="helpOpen=true"><AppIcon name="help"/></button></div>
    </header>
-   <main class="page">
+   <main class="page" :key="page">
     <div class="pg-head">
      <div><h1>{{title}}</h1><p v-if="subtitles[page]" class="sub">{{subtitles[page]}}</p></div>
      <div class="pg-act">
@@ -310,70 +278,7 @@ onMounted(async()=>{try{const r=await api('/api/me');user.value=r.user;csrf.valu
     <div v-if="busy" class="loading">Загрузка данных…</div>
 
     <!-- Обзор -->
-    <template v-if="page==='home'&&dash">
-     <section v-if="risk" class="warning"><b>Проверьте ликвидность на {{risk.date}}</b><p v-if="risk.reserve_risk">Общий остаток ниже резерва: {{money(risk.balance)}} {{currency}}</p><p v-for="a in risk.account_shortfalls" :key="a.account_id">{{a.account}}: {{money(a.balance)}} {{currency}}</p></section>
-     <div class="gA">
-      <section class="card hero s5">
-       <div class="lbl"><AppIcon name="accounts"/> Фактический остаток · {{dash.account_count}} {{dash.account_count===1?'счёт':'счетов'}}</div>
-       <div class="big num"><template v-if="dash.balance===null">Счета не настроены</template><template v-else>{{money(dash.balance)}}<small>{{currency}}</small></template></div>
-       <span class="dl">на {{dash.as_of}}</span>
-       <div class="hero-foot"><span>Минимальный резерв: <b>{{money(dash.reserve)}} {{currency}}</b></span><button v-if="has('budget')" class="ghost tiny" @click="reserve">Изменить</button></div>
-      </section>
-      <section class="card kpi s3">
-       <div class="card-b"><div class="k">На согласовании</div><div class="v num">{{dash.pending_count}}<small>{{dash.pending_count===1?'заявка':'заявок'}}</small></div><p class="sub">на сумму <b class="num">{{money(dash.pending_amount)}}</b> {{currency}}</p><button v-if="has('request')" class="secondary" @click="go('requests')">Открыть заявки <AppIcon name="arrow"/></button></div>
-      </section>
-      <section class="card s4">
-       <div class="card-h"><h3>Поступления и выплаты</h3></div>
-       <div class="card-b pf">
-        <div class="pf-h" style="margin-top:0">Поступления</div>
-        <div class="pf-row"><span class="pill plan">План · 7 дней</span><b class="num">{{money(dash.incoming7)}}</b></div>
-        <div class="pf-row"><span class="pill fact">Факт · месяц</span><b class="num">{{money(dash.fact_in)}}</b></div>
-        <div class="pf-h">Выплаты</div>
-        <div class="pf-row"><span class="pill plan">План · 7 дней</span><b class="num">{{money(dash.outgoing7)}}</b></div>
-        <div class="pf-row"><span class="pill fact">Факт · месяц</span><b class="num">{{money(dash.fact_out)}}</b></div>
-       </div>
-      </section>
-
-      <section v-if="!dash.account_count" class="card s12">
-       <div class="card-h"><div><h3>С чего начать</h3><p class="sub" style="margin-top:2px">Три шага, чтобы прогноз и отчёты заработали</p></div></div>
-       <div class="card-b"><ol class="steps-list">
-        <li><span class="n">1</span><div><b>Добавьте счёт или кассу</b><small>Укажите валюту и подтверждённый остаток на начало учёта.</small><button v-if="has('write')" class="tiny" style="margin-top:8px" @click="go('accounts')">К счетам</button></div></li>
-        <li><span class="n">2</span><div><b>Задайте минимальный резерв</b><small>Ниже этого остатка прогноз покажет предупреждение.</small></div></li>
-        <li><span class="n">3</span><div><b>Загрузите операции или создайте заявки</b><small>Банковскую выписку можно загрузить в разделе «Импорт».</small></div></li>
-       </ol></div>
-      </section>
-
-      <section v-else class="card s8">
-       <div class="card-h"><div><h3>Прогноз остатка</h3><p class="sub" style="margin-top:2px">{{forecastSummary}}</p></div><div class="seg" role="group" aria-label="Горизонт прогноза"><button v-for="d in [7,30,90]" :key="d" :class="{on:days===d}" :aria-pressed="days===d" @click="days=d;load()">{{d}} дн.</button></div></div>
-       <div v-if="chart" class="chart-box" @pointerleave="hover=null">
-        <svg :viewBox="`0 0 ${chartBox.w} ${chartBox.h}`" role="img" aria-label="Прогноз денежных средств" @pointermove="chartMove">
-         <g v-for="t in chart.ticks" :key="t.y"><line :x1="chartBox.l" :x2="chartBox.w-chartBox.r" :y1="t.y" :y2="t.y" stroke="var(--line2)"/><text :x="chartBox.l-8" :y="t.y+4" text-anchor="end" font-size="11" fill="var(--mut2)" font-weight="700">{{t.label}}</text></g>
-         <line v-if="chart.reserveY!=null" :x1="chartBox.l" :x2="chartBox.w-chartBox.r" :y1="chart.reserveY" :y2="chart.reserveY" stroke="var(--bad)" stroke-width="1.6" stroke-dasharray="2 5" stroke-linecap="round"/>
-         <text v-if="chart.reserveY!=null" :x="chartBox.w-chartBox.r" :y="chart.reserveY-6" text-anchor="end" font-size="11" fill="var(--bad)" font-weight="800">Мин. резерв {{compact(Number(dash.reserve))}}</text>
-         <path :d="chart.path" fill="none" stroke="var(--plan)" stroke-width="2.6" stroke-dasharray="7 6" stroke-linejoin="round" stroke-linecap="round"/>
-         <circle :cx="chart.pts[0][0]" :cy="chart.pts[0][1]" r="5.5" fill="var(--em)" stroke="var(--surface)" stroke-width="2"/>
-         <text v-for="l in chart.labels" :key="l.x" :x="l.x" :y="chartBox.h-8" :text-anchor="l.anchor" font-size="11" fill="var(--mut)" font-weight="700">{{l.text}}</text>
-         <g v-if="hover"><line :x1="chart.pts[hover.i][0]" :x2="chart.pts[hover.i][0]" :y1="chartBox.t" :y2="chartBox.h-chartBox.b" stroke="var(--ink)" stroke-opacity=".35"/><circle :cx="chart.pts[hover.i][0]" :cy="chart.pts[hover.i][1]" r="5" fill="var(--surface)" stroke="var(--ink)" stroke-width="2.5"/></g>
-        </svg>
-        <div v-if="hover" class="tip" :style="{left:hover.left+'px',top:hover.top+'px'}">{{dash.forecast[hover.i].date}}<br><em>{{hover.i===0?'Сегодня · факт':'План (прогноз)'}}</em> · {{money(dash.forecast[hover.i].balance)}} {{currency}}</div>
-       </div>
-       <div class="legend"><span><i></i>Факт на сегодня</span><span><i class="pl"></i>План / прогноз</span><span><i class="rs"></i>Минимальный резерв</span></div>
-      </section>
-
-      <section class="card s4">
-       <div class="card-h"><h3>Где находятся деньги</h3><span class="pill fact">Факт</span></div>
-       <div class="card-b"><template v-if="homeAccounts.length"><div v-for="a in homeAccounts.filter(x=>x.currency===currency)" :key="a.id" class="list-row"><span class="ic"><AppIcon :name="a.kind==='bank'?'accounts':'cash'"/></span><div><b>{{a.name}}</b><small>{{a.kind==='bank'?'Банковский счёт':'Касса'}}</small></div><div class="amt num">{{money(a.balance)}}<small>{{a.currency}}</small></div></div><p v-if="!homeAccounts.some(x=>x.currency===currency)" class="empty" style="padding:18px 0">Нет счетов в {{currency}}</p></template><p v-else class="empty" style="padding:18px 0">Счета пока не добавлены.</p></div>
-      </section>
-      <section class="card s7">
-       <div class="card-h"><h3>Заявки на согласовании</h3><button v-if="has('request')" class="secondary tiny" @click="go('requests')">Все заявки <AppIcon name="arrow"/></button></div>
-       <div class="card-b"><template v-if="homeRequests.length"><div v-for="r in homeRequests" :key="r.id" class="list-row" style="display:block"><div style="display:flex;justify-content:space-between;gap:12px"><div><b>{{r.number}} · {{r.counterparty}}</b><small>{{r.purpose}} · до {{r.date}}</small></div><div class="amt num" style="font-weight:800;white-space:nowrap">{{money(r.amount)}}<small>{{r.currency}}</small></div></div><div class="trk"><template v-for="(s,i) in trkSteps(r)" :key="i"><span v-if="i" class="ln"></span><span class="st" :class="s.c==='skip'?'':s.c"><u>{{MK[s.c]}}</u>{{s.l}}</span></template></div></div></template><p v-else class="empty" style="padding:18px 0">Заявок на согласовании нет.</p></div>
-      </section>
-      <section class="card s5">
-       <div class="card-h"><h3>Ближайшие выплаты</h3><span class="pill plan">План</span></div>
-       <div class="card-b"><template v-if="upcoming.length"><div v-for="(p,i) in upcoming" :key="i" class="list-row"><div class="dt"><div>{{dayOf(p.date)}}<small>{{monOf(p.date)}}</small></div></div><div><b>{{p.name}}</b><small>Утверждено{{p.overdue?' · просрочено':''}}</small></div><div class="amt num">{{money(p.amount)}}<small>{{currency}}</small></div></div></template><p v-else class="empty" style="padding:18px 0">Нет утверждённых выплат на выбранный период.</p></div>
-      </section>
-     </div>
-    </template>
+    <OverviewPage v-if="page==='home'&&has('view')" :key="companyId" :api="api" :company-id="companyId" :company="company" :currency="currency" :today="boot.today" :refresh="homeRefresh" :has="has" :can-decide="canDecide" :days="days" :track="trkSteps" :marks="MK" @update:days="d=>days=d" @go="goWith" @edit-reserve="v=>reserve(v)"/>
 
     <!-- Банк и касса -->
     <template v-if="page==='accounts'">
