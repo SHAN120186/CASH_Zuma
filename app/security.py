@@ -12,20 +12,35 @@ ROLES = {'admin':'Администратор', 'director':'Директор', 'f
 PERMS = {
  'admin': {'view','ledger','export','request','write','approve','budget','plan','import','users','schedule','catalog','audit','approval_policy','request_edit'},
  'director': {'view','ledger','export','request','write','approve','budget','plan','import','schedule','catalog','audit','approval_policy','request_edit'},
- 'cashier': {'request','ledger','write'},
+ 'cashier': {'request','ledger','pay_cash'},
  'finance': {'view','ledger','export','request','write','approve','budget','plan','import','schedule','request_edit'},
- 'accountant': {'ledger','pay'},
+ 'accountant': {'ledger','pay_bank'},
  'employee': {'request'},
  'auditor': {'view','ledger','export','audit'},
  'operator': {'view','ledger','export','request','write','plan','import','schedule'},
  'investor': {'view','ledger','export'},
 }
 
+# Paying an approved request is a separate right per channel: the bank account
+# is paid by the settlement accountant, the cash desk by the cashier. The
+# general right to write never pays a request.
+PAY_RIGHTS = {'bank': 'pay_bank', 'cash': 'pay_cash'}
+
+
+def pay_right(account):
+    return PAY_RIGHTS['cash' if account.kind == 'cash' else 'bank']
+
+
+def payment_channels(permissions):
+    """Account kinds the permissions can pay."""
+    return {kind for kind, right in PAY_RIGHTS.items() if right in permissions}
+
+
 def can_attach_document(user, entry):
     """Call only after the entry has been restricted to the selected company."""
     permissions = PERMS.get(user.role, set())
     return 'write' in permissions or (
-        'pay' in permissions and entry.creator_id == user.id and entry.request_id is not None
+        bool(payment_channels(permissions)) and entry.creator_id == user.id and entry.request_id is not None
     )
 
 def jwt_key():

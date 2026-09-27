@@ -31,6 +31,9 @@ def fingerprint(conn):
             if row.get('category_id') is not None:
                 row['category']=cats[row.pop('category_id')]
             if table=='payment_requests':row.pop('version')  # Category IDs can invalidate an open edit form.
+            if table=='payment_requests':
+                # Additive nullable columns of the payment safeguard (approval time, accepted overrun).
+                for key in ('approved_at','approved_overrun'):row.pop(key,None)
             if table=='cash_plans':
                 row['payload']={cats[int(k.split(':')[0])]+':'+k.split(':')[1]:v for k,v in json.loads(row['payload']).items()}
         result[table]=records
