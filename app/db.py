@@ -282,6 +282,20 @@ class ReportSchedule(Base):
     last_error = Column(String(300), nullable=False, default='')
     created_by = Column(Integer, ForeignKey('users.id'), nullable=False)
 
+class TelegramLink(Base):
+    """Telegram account that receives this user's personal reminders."""
+    __tablename__ = 'telegram_links'
+    user_id = Column(Integer, ForeignKey('users.id'), primary_key=True)
+    telegram_user_id = Column(BigInteger, unique=True, nullable=False)
+    linked_at = Column(DateTime, nullable=False, default=now)
+
+class TelegramLinkCode(Base):
+    """One-time link code; only its hash is stored and a user holds at most one."""
+    __tablename__ = 'telegram_link_codes'
+    code_hash = Column(String(64), primary_key=True)
+    user_id = Column(Integer, ForeignKey('users.id'), nullable=False, unique=True)
+    expires_at = Column(DateTime, nullable=False)
+
 @contextmanager
 def unit(write=False):
     """Сериализация записей: лимит/остаток проверяются и меняются атомарно."""
