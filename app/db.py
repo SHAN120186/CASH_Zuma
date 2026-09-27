@@ -167,6 +167,10 @@ class PaymentRequest(Base):
     last_editor_id = Column(Integer, ForeignKey('users.id'), nullable=True)
     priority = Column(String(12), nullable=False, default='normal')
     created_at = Column(DateTime, nullable=False, default=now)
+    # Final approval: its time bounds the payment date, and the soft-budget
+    # overrun the approvers accepted (minor units) is all a payer may pay into.
+    approved_at = Column(DateTime, nullable=True)
+    approved_overrun = Column(BigInteger, nullable=True)
     __mapper_args__ = {'version_id_col': version}
 
 class Receipt(Base):
@@ -336,7 +340,8 @@ def initialize():
             conn.execute(text('ALTER TABLE cash_plans ALTER COLUMN company_id SET NOT NULL'))
             conn.execute(text('ALTER TABLE cash_plans DROP CONSTRAINT IF EXISTS cash_plans_month_currency_key'))
             conn.execute(text('CREATE UNIQUE INDEX IF NOT EXISTS ux_cash_plan_scope ON cash_plans(company_id,month,currency,scenario)'))
-        for name,definition in [('version','INTEGER NOT NULL DEFAULT 1'),('last_editor_id','INTEGER REFERENCES users(id)'),('priority',"VARCHAR(12) NOT NULL DEFAULT 'normal'")]:
+        for name,definition in [('version','INTEGER NOT NULL DEFAULT 1'),('last_editor_id','INTEGER REFERENCES users(id)'),('priority',"VARCHAR(12) NOT NULL DEFAULT 'normal'"),
+                                ('approved_at','TIMESTAMP'),('approved_overrun','BIGINT')]:
             if name not in columns:conn.execute(text(f'ALTER TABLE payment_requests ADD COLUMN {name} {definition}'))
     from .company_scope import migrate_columns, migrate_data
     migrate_columns(engine)

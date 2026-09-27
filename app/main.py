@@ -10,7 +10,7 @@ from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.middleware.trustedhost import TrustedHostMiddleware
 from pydantic import BaseModel, Field, ConfigDict
-from sqlalchemy import select, delete, func, or_
+from sqlalchemy import select, delete, func, or_, and_
 from sqlalchemy.exc import IntegrityError, OperationalError
 from sqlalchemy.orm.exc import StaleDataError
 from .db import *
@@ -87,7 +87,7 @@ def release_version():return FileResponse(ROOT/'release.json',media_type='applic
 
 def visible_request(s,r,u):
     data=request_json(s,r)
-    if u.role in ('employee','cashier') or 'pay' in PERMS[u.role]:data['budget']={'limit':None,'hidden':True,'over':data['budget']['over'],'mode':data['budget']['mode']}
+    if u.role in ('employee','cashier') or payment_channels(PERMS[u.role]):data['budget']={'limit':None,'hidden':True,'over':data['budget']['over'],'mode':data['budget']['mode']}
     return data
 
 class Input(BaseModel):model_config=ConfigDict(extra='forbid',str_strip_whitespace=True)
@@ -147,7 +147,8 @@ class RequestEdit(RequestIn):
     version:int=Field(ge=1)
     reason:str=Field(min_length=10,max_length=1000)
 class DecisionIn(Input):
-    action:Literal['approve','reject','submit','reschedule','return','cancel']
+    # 'reject' остаётся в схеме только чтобы старые клиенты получили понятный ответ.
+    action:Literal['approve','reject','submit','reschedule','return','return_finance','cancel']
     version:Optional[int]=Field(default=None,ge=1)
     note:str=Field(default='',max_length=2000)
     date:Optional[dt.date]=None
@@ -288,22 +289,15 @@ def approval_policy(request:Request):
     with unit() as s:
         session_user(s,request,'approval_policy');r=get_setting(s,'approval_limit_UZS')
         limits={c:money(int(v.value)) if (v:=get_setting(s,'approval_limit_'+c)) else None for c in ('UZS','USD','EUR')}
-        return {'amount':money(int(r.value)) if r else None,'currency':'UZS','limits':limits}
+        return {'amount':money(int(r.value)) if r else None,'currency':'UZS','limits':limits,'director_always':True,
+                'rule':'Директор согласует каждую заявку независимо от суммы и валюты. Сохранённые пороги этап директора не пропускают.'}
 
 @app.post('/api/approval-policy')
 def set_approval_policy(data:ApprovalLimitIn,request:Request):
     with unit(True) as s:
-        u,_=session_user(s,request,'approval_policy');key=setting_key(s,'approval_limit_'+data.currency)
-        r=s.get(Setting,key)
-        if data.amount is None:
-            if r:s.delete(r)
-            detail='Не настроен; все суммы требуют директора'
-        else:
-            n=amount(data.amount,True)
-            if not r:r=Setting(key=key);s.add(r)
-            r.value=str(n);detail=money(n)+' '+data.currency
-        log(s,u,'Изменён порог согласования','setting',key,detail)
-        return {'ok':True}
+        session_user(s,request,'approval_policy')
+        # Q03: порог больше не пропускает директора, поэтому и не настраивается.
+        raise HTTPException(409,'Порог больше не настраивается: директор согласует каждую заявку независимо от суммы и валюты.')
 @app.post('/api/accounts')
 def add_account(data:AccountIn,request:Request):
     with unit(True) as s:
@@ -329,6 +323,8 @@ def edit_account(id:int,data:AccountEdit,request:Request):
         receipts=list(s.scalars(select(Receipt).where(Receipt.account_id==id)))
         if data.currency!=a.currency and (entries or requests or receipts):
             raise HTTPException(409,'Валюту нельзя менять после создания операций, заявок или ожидаемых поступлений. Создайте отдельный счёт в нужной валюте.')
+        if data.kind!=a.kind and (entries or requests or receipts):
+            raise HTTPException(409,'Тип счёта (банк или касса) нельзя менять после создания операций, заявок или поступлений: от него зависит, кто проводит оплату.')
         dates=[t.date for t in entries]+[r.due_date for r in requests]+[r.due_date for r in receipts]
         if dates and data.opening_date>min(dates):raise HTTPException(409,'Дата начала учёта не может быть позже существующих операций, заявок или поступлений.')
         def snapshot():return {'name':a.name,'kind':a.kind,'currency':a.currency,'company_id':a.company_id,'opening':money(a.opening),'opening_date':str(a.opening_date),'allow_overdraft':a.allow_overdraft}
@@ -386,12 +382,15 @@ def save_reserve(data:ReserveIn,request:Request):
 def requests_list(request:Request,date_from:Optional[date]=None,date_to:Optional[date]=None,currency:Optional[Literal['UZS','USD','EUR']]=None,q:str='',state:str='',page:int=Query(1,ge=1),page_size:int=Query(10,ge=1,le=100),paginated:bool=False):
     with unit() as s:
         u,_=session_user(s,request)
-        if not ({'request','view','pay'} & PERMS[u.role]):raise HTTPException(403,'Недостаточно прав для просмотра заявок.')
+        channels=payment_channels(PERMS[u.role])
+        if not ({'request','view'} & PERMS[u.role] or channels):raise HTTPException(403,'Недостаточно прав для просмотра заявок.')
         payer_only=not ({'request','view'} & PERMS[u.role])
         if date_from and date_to and date_from>date_to:raise HTTPException(422,'Начало периода позже окончания.')
         query=select(PaymentRequest).join(Account,Account.id==PaymentRequest.account_id)
-        if u.role in ('employee','cashier'):query=query.where(PaymentRequest.creator_id==u.id)
-        if payer_only:query=query.where(PaymentRequest.status.in_(['approved','paid']))
+        payable=and_(PaymentRequest.status.in_(['approved','paid']),Account.kind.in_(sorted(channels)))
+        # Кассир видит свои заявки и кассовые заявки к оплате; инициатор — только свои.
+        if u.role in ('employee','cashier'):query=query.where(or_(PaymentRequest.creator_id==u.id,payable) if channels else PaymentRequest.creator_id==u.id)
+        if payer_only:query=query.where(payable)
         if currency:query=query.where(Account.currency==currency)
         if date_from:query=query.where(PaymentRequest.due_date>=date_from)
         if date_to:query=query.where(PaymentRequest.due_date<=date_to)
@@ -419,14 +418,15 @@ def edit_request(id:int,data:RequestEdit,request:Request):
         u,_=session_user(s,request,'request');r=get(s,PaymentRequest,id)
         if r.creator_id!=u.id and 'request_edit' not in PERMS[u.role]:raise HTTPException(403,'Редактировать может автор или финансовый руководитель.')
         check_request_version(r,data.version)
-        if r.status not in ('draft','pending','returned','rejected'):raise HTTPException(409,'Редактирование доступно до утверждения. Утверждённую заявку сначала верните на доработку.')
+        if r.status=='rejected':raise HTTPException(409,'Отклонённая заявка хранится только для чтения. Создайте новую заявку.')
+        if r.status not in ('draft','pending','returned'):raise HTTPException(409,'Редактирование доступно до утверждения. Утверждённую заявку сначала верните на доработку.')
         a=get(s,Account,data.account_id);get(s,Category,data.category_id);n=amount(data.amount)
         if a.archived:raise HTTPException(409,'Счёт в архиве.')
         if data.date<a.opening_date:raise HTTPException(422,'Дата раньше начала учёта выбранного счёта.')
         if data.status=='pending':enforce_budget(s,data.category_id,data.date,a.currency,n,data.purpose,r.id)
         before=visible_request(s,r,u)
         for key in ('account_id','category_id','counterparty','purpose','project','priority','status'):setattr(r,key,getattr(data,key))
-        r.amount=n;r.due_date=data.date;r.approved_by=None;r.finance_approved_by=None;r.last_editor_id=u.id;r.decision_note=data.reason
+        r.amount=n;r.due_date=data.date;clear_approval(r);r.last_editor_id=u.id;r.decision_note=data.reason
         remember_counterparty(s,data.counterparty);s.flush()
         log(s,u,'Изменена заявка','request',r.id,json.dumps({'before':before,'after':visible_request(s,r,u),'reason':data.reason},ensure_ascii=False))
         return visible_request(s,r,u)
@@ -434,8 +434,13 @@ def edit_request(id:int,data:RequestEdit,request:Request):
 def decide(id:int,data:DecisionIn,request:Request):
     with unit(True) as s:
         u,_=session_user(s,request);r=get(s,PaymentRequest,id);a=get(s,Account,r.account_id)
-        if not ({'request','approve'} & PERMS[u.role]):raise HTTPException(403,'Недостаточно прав.')
-        if u.role in ('employee','cashier') and r.creator_id!=u.id:raise HTTPException(403,'Доступны только собственные заявки.')
+        if data.action=='reject':raise HTTPException(422,'Отклонение больше не используется. Верните заявку на доработку с комментарием.')
+        if data.action=='return_finance':
+            # Плательщик канала, которому не хватило денег или бюджета при оплате.
+            if pay_right(a) not in PERMS[u.role]:raise HTTPException(403,'Вернуть финансовому директору может плательщик этой заявки.')
+        else:
+            if not ({'request','approve'} & PERMS[u.role]):raise HTTPException(403,'Недостаточно прав.')
+            if u.role in ('employee','cashier') and r.creator_id!=u.id:raise HTTPException(403,'Доступны только собственные заявки.')
         check_request_version(r,data.version)
         before={'status':r.status,'date':str(r.due_date),'version':r.version,'approved_by':r.approved_by}
         if data.action=='submit':
@@ -443,39 +448,38 @@ def decide(id:int,data:DecisionIn,request:Request):
             enforce_budget(s,r.category_id,r.due_date,a.currency,r.amount,r.purpose);r.status='pending'
         elif data.action=='cancel':
             if r.creator_id!=u.id and 'request_edit' not in PERMS[u.role]:raise HTTPException(403,'Отмена недоступна.')
-            if r.status not in ('draft','pending','approved','returned','rejected'):raise HTTPException(409,'Оплаченную или отменённую заявку отменить нельзя.')
+            if r.status=='rejected':raise HTTPException(409,'Отклонённая заявка хранится только для чтения.')
+            if r.status not in ('draft','pending','approved','returned'):raise HTTPException(409,'Оплаченную или отменённую заявку отменить нельзя.')
             if len(data.note)<10:raise HTTPException(422,'Укажите причину отмены не короче 10 символов.')
-            r.status='cancelled';r.approved_by=None
+            r.status='cancelled';clear_approval(r)
         elif data.action=='return':
             if 'approve' not in PERMS[u.role]:raise HTTPException(403,'Недостаточно прав для возврата.')
             if r.status not in ('pending','approved'):raise HTTPException(409,'Вернуть можно заявку на согласовании или утверждённую заявку.')
             if len(data.note)<10:raise HTTPException(422,'Укажите причину возврата не короче 10 символов.')
-            r.status='returned';r.approved_by=None
+            r.status='returned';clear_approval(r)
+        elif data.action=='return_finance':
+            if r.status!='approved':raise HTTPException(409,'Вернуть финансовому директору можно только утверждённую неоплаченную заявку.')
+            if len(data.note)<10:raise HTTPException(422,'Укажите причину возврата не короче 10 символов: чего не хватает для оплаты.')
+            r.status='pending';clear_approval(r)
         elif data.action=='reschedule':
             if 'request_edit' not in PERMS[u.role] or r.status not in ('pending','approved'):raise HTTPException(403,'Перенос недоступен.')
             if not data.date or len(data.note)<10:raise HTTPException(422,'Нужны новая дата и причина не короче 10 символов.')
             if data.date<a.opening_date:raise HTTPException(422,'Дата раньше начала учёта счёта.')
-            r.due_date=data.date;r.status='pending';r.approved_by=None;r.last_editor_id=u.id
+            r.due_date=data.date;r.status='pending';clear_approval(r);r.last_editor_id=u.id
         else:
             if 'approve' not in PERMS[u.role]:raise HTTPException(403,'Недостаточно прав для согласования.')
             if r.status!='pending':raise HTTPException(409,'Заявка уже обработана или не отправлена на согласование.')
             if u.id in (r.creator_id,r.last_editor_id):raise HTTPException(403,'Автор и последний редактор не могут согласовать свою заявку, включая администратора. Нужен другой согласующий.')
-            if data.action=='approve':
-                enforce_budget(s,r.category_id,r.due_date,a.currency,r.amount,data.note,r.id)
-                if r.finance_approved_by is None:
-                    if u.role not in ('finance','admin'):raise HTTPException(403,'Сначала требуется проверка финансиста.')
-                    r.finance_approved_by=u.id
-                    if not needs_director(s,r):
-                        enforce_available_funds(s,a,r.due_date,r.amount,r.id)
-                        r.status='approved';r.approved_by=u.id
-                else:
-                    if u.role not in ('director','admin') or u.id==r.finance_approved_by:raise HTTPException(403,'Требуется отдельное подтверждение директора.')
-                    enforce_available_funds(s,a,r.due_date,r.amount,r.id)
-                    r.status='approved';r.approved_by=u.id
+            b=enforce_budget(s,r.category_id,r.due_date,a.currency,r.amount,data.note,r.id)
+            if r.finance_approved_by is None:
+                if u.role not in ('finance','admin'):raise HTTPException(403,'Сначала требуется проверка финансиста.')
+                # Этап директора следует всегда (Q03): финансовое согласование не завершает заявку.
+                r.finance_approved_by=u.id
             else:
-                if len(data.note)<5:raise HTTPException(422,'Укажите причину отклонения.')
-                r.status='rejected';r.approved_by=None
-        if data.action in ('submit','cancel','return','reschedule','reject'):r.finance_approved_by=None
+                if u.role not in ('director','admin') or u.id==r.finance_approved_by:raise HTTPException(403,'Требуется отдельное подтверждение директора.')
+                enforce_available_funds(s,a,r.due_date,r.amount,r.id)
+                r.status='approved';r.approved_by=u.id;r.approved_at=now();r.approved_overrun=overrun(b)
+        if data.action in ('submit','cancel','return','reschedule','return_finance'):r.finance_approved_by=None
         r.decision_note=data.note
         s.flush()
         log(s,u,'Действие по заявке: '+data.action,'request',r.id,json.dumps({'before':before,'after':{'status':r.status,'date':str(r.due_date),'version':r.version,'approved_by':r.approved_by},'reason':data.note},ensure_ascii=False))
@@ -525,7 +529,7 @@ def ledger_list(request:Request,date_from:Optional[date]=None,date_to:Optional[d
 def add_ledger(data:LedgerIn,request:Request):
     with unit(True) as s:
         u,_=session_user(s,request)
-        if not ({'write','pay'} & PERMS[u.role]):raise HTTPException(403,'У вашей роли нет прав на это действие.')
+        if not ('write' in PERMS[u.role] or payment_channels(PERMS[u.role])):raise HTTPException(403,'У вашей роли нет прав на это действие.')
         t=post_ledger(s,u,data);remember_counterparty(s,data.counterparty);return {'id':t.id}
 @app.post('/api/ledger/{id}/reverse')
 def reverse(id:int,data:ReverseIn,request:Request):

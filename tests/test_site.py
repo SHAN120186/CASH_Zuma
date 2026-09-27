@@ -38,10 +38,9 @@ class SiteTests(unittest.TestCase):
         b=self.client.get('/api/bootstrap').json();self.cat=b['categories'][1]['id'];self.company=next(c['id'] for c in b['companies'] if c['code']=='UZGERMED')
         r=self.post('/api/accounts',{'name':'Test bank','kind':'bank','currency':'UZS','opening':'1000000.00','opening_date':str(today()-timedelta(days=10))})
         self.acc=r.json()['id']
-        # Most legacy budget tests exercise the one-financier path below the limit.
-        self.post('/api/approval-policy',{'amount':'1000000'})
     def tearDown(self):
-        if hasattr(self,'approver'):self.approver[0].close()
+        for name in ('approver','director','payer'):
+            if hasattr(self,name):getattr(self,name)[0].close()
         self.client.close()
     def post(self,path,data,client=None,headers=None):
         data=dict(data)
@@ -56,12 +55,24 @@ class SiteTests(unittest.TestCase):
         self.assertEqual(r.status_code,200,r.text)
     def request(self,n='600',purpose='Тестовая заявка на оплату',client=None,headers=None):
         return self.post('/api/requests',{'account_id':self.acc,'category_id':self.cat,'counterparty':'Supplier','amount':n,'date':self.date,'purpose':purpose},client,headers)
-    def approve(self,id,note='Подтверждаю необходимость расхода'):
+    def finance_approve(self,id,note='Подтверждаю необходимость расхода'):
         if not hasattr(self,'approver'):self.approver=self.make_user('finance','reviewer')
         return self.post(f'/api/requests/{id}/decision',{'action':'approve','note':note},*self.approver)
-    def ledger(self,amount='100',kind='in',reference='DOC1',**extra):
+    def approve(self,id,note='Подтверждаю необходимость расхода'):
+        """Финансист, затем директор: директор утверждает каждую заявку (Q03)."""
+        row=next((x for x in self.client.get('/api/requests').json() if x['id']==id),None)
+        if not row or row['approval_stage']!='director':
+            r=self.finance_approve(id,note)
+            if r.status_code!=200:return r
+        if not hasattr(self,'director'):self.director=self.make_user('director','chief')
+        return self.post(f'/api/requests/{id}/decision',{'action':'approve','note':note},*self.director)
+    def ledger(self,amount='100',kind='in',reference='DOC1',client=None,**extra):
         data={'account_id':self.acc,'category_id':self.cat,'amount':amount,'kind':kind,'date':self.date,'reference':reference,'note':'Подтверждённая тестовая операция'};data.update(extra)
-        return self.post('/api/ledger',data)
+        if client is None and data.get('request_id'):
+            # Оплату заявки проводит расчётный бухгалтер, а не автор или согласующий.
+            if not hasattr(self,'payer'):self.payer=self.make_user('accountant','payer')
+            client=self.payer
+        return self.post('/api/ledger',data,*(client or ()))
     def make_user(self,role='employee',name='worker'):
         r=self.post('/api/users',{'username':name,'name':name,'password':PASSWORD,'role':role});self.assertEqual(r.status_code,200,r.text)
         cl=TestClient(app);r=cl.post('/api/login',json={'username':name,'password':PASSWORD});self.assertEqual(r.status_code,200,r.text)
@@ -493,7 +504,10 @@ class SiteTests(unittest.TestCase):
         from concurrent.futures import ThreadPoolExecutor
         self.budget('1000','hard')
         rs=[self.request('600').json() for _ in range(2)]
-        cl,h=self.make_user('finance','parallel_reviewer')
+        for r in rs:self.assertEqual(self.finance_approve(r['id']).status_code,200)
+        rows={x['id']:x for x in self.client.get('/api/requests').json()}
+        rs=[rows[r['id']] for r in rs]
+        cl,h=self.make_user('director','parallel_director')
         def approve(r):return cl.post(f"/api/requests/{r['id']}/decision",json={'version':r['version'],'action':'approve','note':'Параллельная проверка лимита'},headers=h).status_code
         with ThreadPoolExecutor(max_workers=2) as pool:codes=list(pool.map(approve,rs))
         self.assertEqual(sorted(codes),[200,409])
@@ -501,26 +515,27 @@ class SiteTests(unittest.TestCase):
         self.assertEqual(b['reserved'],'600.00');cl.close()
 
     def test_49_two_stage_approval_and_payment_gate(self):
-        self.post('/api/approval-policy',{'amount':'100'})
+        # A threshold stored before the owner's decision no longer skips the director.
+        with unit(True) as s:s.add(Setting(key=f'company:{self.company}:approval_limit_UZS',value='100000000'))
         cashier,ch=self.make_user('cashier','cashier')
         director,dh=self.make_user('director','director2')
         try:
             r=self.request('101',client=cashier,headers=ch).json();rid=r['id']
             self.assertEqual(self.post(f'/api/requests/{rid}/decision',{'action':'approve'},director,dh).status_code,403)
-            first=self.approve(rid).json()
+            first=self.finance_approve(rid).json()
             self.assertEqual(first['status'],'pending');self.assertEqual(first['approval_stage'],'director')
-            self.assertEqual(self.approve(rid).status_code,403)
+            self.assertEqual(self.finance_approve(rid).status_code,403)
             self.assertEqual(self.ledger('101','out',request_id=rid).status_code,409)
             approved=self.post(f'/api/requests/{rid}/decision',{'action':'approve'},director,dh)
             self.assertEqual(approved.status_code,200,approved.text);self.assertEqual(approved.json()['status'],'approved')
             self.assertEqual(self.ledger('101','out',request_id=rid).status_code,200)
-            low=self.request('100').json();self.assertEqual(self.approve(low['id']).json()['status'],'approved')
+            low=self.request('1').json();first=self.finance_approve(low['id']).json()
+            self.assertEqual(first['status'],'pending');self.assertEqual(first['approval_stage'],'director')
             self.assertEqual(self.post('/api/ledger',{'account_id':self.acc,'category_id':self.cat,'amount':'1','kind':'out','date':self.date,'reference':'BYPASS','note':'Без утверждения платежа'},cashier,ch).status_code,403)
         finally:cashier.close();director.close()
 
     def test_50_missing_limit_and_edit_reset(self):
-        with unit(True) as s:s.delete(s.get(Setting,f'company:{self.company}:approval_limit_UZS'))
-        r=self.request('1').json();first=self.approve(r['id']).json()
+        r=self.request('1').json();first=self.finance_approve(r['id']).json()
         self.assertEqual(first['status'],'pending')
         ret=self.post(f"/api/requests/{r['id']}/decision",{'action':'return','note':'Возвращаем на уточнение'})
         self.assertIsNone(ret.json()['finance_approved_by'])
@@ -568,19 +583,16 @@ class SiteTests(unittest.TestCase):
         finally:cl.close()
 
 
-    def test_54_multicurrency_approval_limits(self):
+    def test_54_director_for_every_amount_in_every_currency(self):
         from app.services import needs_director
-        for curr in ('USD','EUR'):
+        for curr in ('UZS','USD','EUR'):
             a=self.post('/api/accounts',{'name':'Currency '+curr,'kind':'bank','currency':curr,'opening':'0','opening_date':self.date}).json()['id']
-            with unit() as ss:self.assertTrue(needs_director(ss,PaymentRequest(account_id=a,amount=100)))
-            self.assertEqual(self.post('/api/approval-policy',{'currency':curr,'amount':'100'}).status_code,200)
+            refused=self.post('/api/approval-policy',{'currency':curr,'amount':'100'})
+            self.assertEqual(refused.status_code,409);self.assertIn('директор',refused.text)
             with unit() as ss:
-                self.assertFalse(needs_director(ss,PaymentRequest(account_id=a,amount=10000)))
-                self.assertTrue(needs_director(ss,PaymentRequest(account_id=a,amount=10001)))
-        limits=self.client.get('/api/approval-policy').json()['limits']
-        self.assertEqual(limits,{'UZS':'1000000.00','USD':'100.00','EUR':'100.00'})
-        self.post('/api/approval-policy',{'currency':'USD','amount':None})
-        self.assertIsNone(self.client.get('/api/approval-policy').json()['limits']['USD'])
+                for n in (1,10000,10001):self.assertTrue(needs_director(ss,PaymentRequest(account_id=a,amount=n)))
+        policy=self.client.get('/api/approval-policy').json()
+        self.assertTrue(policy['director_always']);self.assertEqual(policy['limits'],{'UZS':None,'USD':None,'EUR':None})
 
     def test_55_cashflow_reconciles_balances_and_plan(self):
         import io
@@ -679,7 +691,6 @@ class SiteTests(unittest.TestCase):
         self.assertEqual(again.status_code,409);self.assertIn('уже импортирован',again.text)
 
     def test_60_available_funds_reservations_release_and_payment_recheck(self):
-        self.post('/api/approval-policy',{'amount':'10000000'})
         first=self.request('600000').json();self.assertEqual(self.approve(first['id']).status_code,200)
         second=self.request('500000').json();denied=self.approve(second['id'])
         self.assertEqual(denied.status_code,409);self.assertIn('резерв утверждённых заявок 600000.00',denied.text)
@@ -812,15 +823,15 @@ class SiteTests(unittest.TestCase):
         cl,h=self.make_user('director','director_edit')
         try:
             for currency in ('UZS','USD','EUR'):
-                self.assertEqual(self.post('/api/approval-policy',{'amount':'10','currency':currency},cl,h).status_code,200)
-            self.assertEqual(cl.get('/api/approval-policy').status_code,200)
+                self.assertEqual(self.post('/api/approval-policy',{'amount':'10','currency':currency},cl,h).status_code,409)
+            self.assertTrue(cl.get('/api/approval-policy').json()['director_always'])
             self.assertEqual(cl.get('/api/users').status_code,403)
             rid=self.request('100').json()['id']
-            self.assertEqual(self.approve(rid).status_code,200)
+            self.assertEqual(self.finance_approve(rid).status_code,200)
             row=next(r for r in self.client.get('/api/requests').json() if r['id']==rid)
             edited=cl.put(f'/api/requests/{rid}',json={'account_id':self.acc,'category_id':self.cat,'counterparty':'Supplier','amount':'90','date':self.date,'purpose':'Изменение директором','reason':'Изменены условия оплаты','version':row['version']},headers=h)
             self.assertEqual(edited.status_code,200,edited.text)
-            self.assertEqual(self.approve(rid).status_code,200)
+            self.assertEqual(self.finance_approve(rid).status_code,200)
             denied=self.post(f'/api/requests/{rid}/decision',{'action':'approve'},cl,h)
             self.assertEqual(denied.status_code,403)
             self.assertIn('редактор',denied.text)
@@ -989,7 +1000,6 @@ class SiteTests(unittest.TestCase):
         author=self.make_user('employee','cycle_author')
         director=self.make_user('director','cycle_director')
         book=self.make_user('accountant','cycle_book')
-        self.post('/api/approval-policy',{'amount':'1000'})
         row=lambda:next(x for x in self.client.get('/api/requests').json() if x['id']==rid)
         r=self.post('/api/requests',{'account_id':self.acc,'category_id':self.cat,'counterparty':'Supplier',
             'amount':'5000','date':self.date,'purpose':'Полный цикл заявки на оплату','status':'draft'},*author)
@@ -1006,9 +1016,9 @@ class SiteTests(unittest.TestCase):
             'version':row()['version'],'reason':'Сумма уточнена по договору'},headers=author[1])
         self.assertEqual(edit.status_code,200,edit.text)
         self.assertEqual(row()['status'],'pending');self.assertIsNone(row()['finance_approved_by'])
-        self.assertEqual(self.approve(rid).status_code,200)
+        self.assertEqual(self.finance_approve(rid).status_code,200)
         self.assertEqual(row()['status'],'pending');self.assertEqual(row()['approval_stage'],'director')
-        self.assertEqual(self.approve(rid).status_code,403)
+        self.assertEqual(self.finance_approve(rid).status_code,403)
         ok=self.post(f'/api/requests/{rid}/decision',{'action':'approve','note':'Подтверждаю оплату по договору'},*director)
         self.assertEqual(ok.status_code,200,ok.text);self.assertEqual(row()['status'],'approved')
         part=self.post('/api/ledger',{'account_id':self.acc,'category_id':self.cat,'kind':'out','amount':'1000',
@@ -1021,23 +1031,25 @@ class SiteTests(unittest.TestCase):
             'date':self.date,'reference':'CYCLE-PAY-2','note':'Повторная оплата заявки','request_id':rid},*book)
         self.assertEqual(again.status_code,409,again.text)
         actions=' | '.join(a['action'] for a in self.client.get('/api/audit').json())
-        for expected in ('Создана заявка','Изменена заявка','Действие по заявке: return','Фактическая операция'):
+        for expected in ('Создана заявка','Изменена заявка','Действие по заявке: return','Фактическая операция','Оплата заявки'):
             self.assertIn(expected,actions)
 
     def test_78_rejected_returned_and_cancelled_requests_are_never_paid(self):
         author=self.make_user('employee','stop_author')
         director=self.make_user('director','stop_director')
         book=self.make_user('accountant','stop_book')
-        self.post('/api/approval-policy',{'amount':'1000'})
         def pay(rid,reference):
             return self.post('/api/ledger',{'account_id':self.acc,'category_id':self.cat,'kind':'out','amount':'5000',
                 'date':self.date,'reference':reference,'note':'Оплата по заявке','request_id':rid},*book)
         state=lambda i:next(x for x in self.client.get('/api/requests').json() if x['id']==i)
         rid=self.request('5000',client=author[0],headers=author[1]).json()['id']
-        self.assertEqual(self.approve(rid).status_code,200)
+        self.assertEqual(self.finance_approve(rid).status_code,200)
         rej=self.post(f'/api/requests/{rid}/decision',{'action':'reject','note':'Нет договора с поставщиком'},*director)
-        self.assertEqual(rej.status_code,200,rej.text)
-        self.assertEqual(state(rid)['status'],'rejected');self.assertIsNone(state(rid)['finance_approved_by'])
+        self.assertEqual(rej.status_code,422,rej.text);self.assertIn('Верните заявку на доработку',rej.text)
+        self.assertEqual(state(rid)['status'],'pending')
+        # A record rejected before the change stays readable and cannot be paid or revived.
+        with unit(True) as s:
+            legacy=s.get(PaymentRequest,rid);legacy.status='rejected';legacy.finance_approved_by=None
         self.assertEqual(pay(rid,'STOP-REJECTED').status_code,409)
         self.assertEqual(self.post(f'/api/requests/{rid}/decision',{'action':'approve','note':'Попытка согласовать отклонённую'},*director).status_code,409)
         returned=self.request('5000',client=author[0],headers=author[1]).json()['id']
@@ -1161,11 +1173,13 @@ class SiteTests(unittest.TestCase):
             'opening_date':self.date}).json()['id']
         ids=[self.post('/api/requests',{'account_id':small,'category_id':self.cat,'counterparty':'Supplier',
             'amount':'600','date':self.date,'purpose':'Заявка на один и тот же остаток'},*author).json()['id'] for _ in range(2)]
-        approvers=[self.make_user('finance','race_fin1'),self.make_user('finance','race_fin2')]
+        for i in ids:self.assertEqual(self.finance_approve(i).status_code,200)
+        versions={x['id']:x['version'] for x in self.client.get('/api/requests').json()}
+        approvers=[self.make_user('director','race_dir1'),self.make_user('director','race_dir2')]
         gate=threading.Barrier(2);codes=[]
         def decide(index):
             client,headers=approvers[index]
-            body={'action':'approve','note':'Одновременное согласование заявки','version':1}
+            body={'action':'approve','note':'Одновременное согласование заявки','version':versions[ids[index]]}
             gate.wait()
             codes.append(client.post(f'/api/requests/{ids[index]}/decision',json=body,headers=headers).status_code)
         threads=[threading.Thread(target=decide,args=(i,)) for i in range(2)]
@@ -1180,15 +1194,19 @@ class SiteTests(unittest.TestCase):
         book=self.make_user('accountant','scope_book')
         author=self.make_user('employee','scope_author')
         cid,h,cat,acc=self.second_company()
-        self.post('/api/approval-policy',{'amount':'1000'},headers=h)
         other=self.make_user('finance','scope_finance')
         self.assertEqual(self.post('/api/company-users',{'username':'scope_finance'},headers=h).status_code,200)
+        boss=self.make_user('director','scope_director')
+        self.assertEqual(self.post('/api/company-users',{'username':'scope_director'},headers=h).status_code,200)
         foreign=self.post('/api/requests',{'account_id':acc,'category_id':cat,'counterparty':'Supplier',
             'amount':'100','date':self.date,'purpose':'Заявка другой компании'},headers=h)
         self.assertEqual(foreign.status_code,200,foreign.text)
         fid=foreign.json()['id']
-        approved=self.post(f'/api/requests/{fid}/decision',{'action':'approve','version':1,
+        checked=self.post(f'/api/requests/{fid}/decision',{'action':'approve','version':1,
             'note':'Согласование в другой компании'},other[0],{**other[1],'X-Company-ID':str(cid)})
+        self.assertEqual(checked.status_code,200,checked.text)
+        approved=self.post(f'/api/requests/{fid}/decision',{'action':'approve','version':checked.json()['version'],
+            'note':'Утверждение директором компании'},boss[0],{**boss[1],'X-Company-ID':str(cid)})
         self.assertEqual(approved.status_code,200,approved.text)
         self.assertEqual(approved.json()['status'],'approved')
         blind=self.post('/api/ledger',{'account_id':acc,'category_id':cat,'kind':'out','amount':'100',
@@ -1211,5 +1229,280 @@ class SiteTests(unittest.TestCase):
             'date':self.date,'reference':'SCOPE-FRESH','note':'Оплата по актуальной версии','request_id':rid},*book)
         self.assertEqual(fresh.status_code,200,fresh.text)
 
+    # ---- Защитный PR: права оплаты, разделение обязанностей, неизменность заявки при оплате.
+    def pay_body(self,rid,**extra):
+        body={'account_id':self.acc,'category_id':self.cat,'kind':'out','amount':'600','date':self.date,
+              'reference':'PAY-'+str(rid)+'-'+str(len(extra)),'note':'Оплата утверждённой заявки','request_id':rid}
+        body.update(extra);return body
+    def cash_account(self,opening='500000'):
+        r=self.post('/api/accounts',{'name':'Касса офиса','kind':'cash','currency':'UZS','opening':opening,'opening_date':str(today()-timedelta(days=10))})
+        self.assertEqual(r.status_code,200,r.text);return r.json()['id']
+
+    def test_85_only_the_channel_payer_outside_the_request_can_pay(self):
+        from app import security
+        author=self.make_user('employee','sod_author');cashier=self.make_user('cashier','sod_cashier')
+        operator=self.make_user('operator','sod_operator');book=self.make_user('accountant','sod_book')
+        rid=self.request('600',client=author[0],headers=author[1]).json()['id']
+        self.assertEqual(self.approve(rid).status_code,200)
+        # Author, admin, finance approver, director approver and a 'write' operator have no payment right.
+        for who in (author,(self.client,self.h),self.approver,self.director,operator):
+            r=self.post('/api/ledger',self.pay_body(rid),*who);self.assertEqual(r.status_code,403,r.text)
+        # The cashier cannot pay from a bank account.
+        r=self.post('/api/ledger',self.pay_body(rid),*cashier);self.assertEqual(r.status_code,403,r.text)
+        self.assertIn('расчётный бухгалтер',r.text)
+        # Even with a payment right, participants of the request are refused.
+        saved={role:set(security.PERMS[role]) for role in ('finance','director','admin')}
+        try:
+            for role in saved:security.PERMS[role].add('pay_bank')
+            for who in (self.approver,self.director):
+                r=self.post('/api/ledger',self.pay_body(rid),*who);self.assertEqual(r.status_code,403,r.text)
+                self.assertIn('согласующие',r.text)
+            edited=self.request('700',client=author[0],headers=author[1]).json()
+            data={k:edited[k] for k in ('account_id','category_id','counterparty','amount','date','purpose','version')}
+            data.update(status='pending',reason='Правка администратором перед оплатой')
+            self.assertEqual(self.client.put(f"/api/requests/{edited['id']}",json=data,headers=self.h).status_code,200)
+            self.assertEqual(self.approve(edited['id']).status_code,200)
+            r=self.post('/api/ledger',self.pay_body(edited['id'],amount='700'));self.assertEqual(r.status_code,403,r.text)
+        finally:
+            for role,perms in saved.items():security.PERMS[role].clear();security.PERMS[role].update(perms)
+        self.assertEqual(self.post('/api/ledger',self.pay_body(rid),*book).status_code,200)
+
+    def test_86_cash_requests_are_paid_by_a_cashier_who_is_not_their_author(self):
+        till=self.cash_account()
+        author=self.make_user('employee','cash_author');cashier=self.make_user('cashier','cash_payer')
+        book=self.make_user('accountant','cash_book')
+        rid=self.post('/api/requests',{'account_id':till,'category_id':self.cat,'counterparty':'Курьер','amount':'300',
+            'date':self.date,'purpose':'Выдача наличных курьеру'},*author).json()['id']
+        own=self.post('/api/requests',{'account_id':till,'category_id':self.cat,'counterparty':'Курьер','amount':'200',
+            'date':self.date,'purpose':'Собственная кассовая заявка'},*cashier).json()['id']
+        for i in (rid,own):self.assertEqual(self.approve(i).status_code,200)
+        listed=[x['id'] for x in cashier[0].get('/api/requests',headers=cashier[1]).json()]
+        self.assertIn(rid,listed);self.assertIn(own,listed)
+        self.assertNotIn(rid,[x['id'] for x in book[0].get('/api/requests',headers=book[1]).json()])
+        body=lambda i,n:{'account_id':till,'category_id':self.cat,'kind':'out','amount':n,'date':self.date,
+                         'reference':f'CASH-{i}','note':'Выдача из кассы','request_id':i}
+        r=self.post('/api/ledger',body(rid,'300'),*book);self.assertEqual(r.status_code,403,r.text);self.assertIn('кассир',r.text)
+        r=self.post('/api/ledger',body(own,'200'),*cashier);self.assertEqual(r.status_code,403,r.text)
+        r=self.post('/api/ledger',body(rid,'300'),*cashier);self.assertEqual(r.status_code,200,r.text)
+        entry=next(x for x in self.client.get('/api/ledger').json() if x['request_id']==rid)
+        self.assertEqual(entry['counterparty'],'Курьер')
+        # The cashier still cannot record anything but a request payment.
+        free={'account_id':till,'category_id':self.cat,'kind':'out','amount':'1','date':self.date,'reference':'CASH-FREE','note':'Выдача без заявки из кассы'}
+        self.assertEqual(self.post('/api/ledger',free,*cashier).status_code,403)
+
+    def test_87_payment_takes_every_value_from_the_approved_request(self):
+        book=self.make_user('accountant','exact_book')
+        other=self.post('/api/accounts',{'name':'Другой банк','kind':'bank','currency':'UZS','opening':'1000000','opening_date':str(today()-timedelta(days=10))}).json()['id']
+        usd=self.post('/api/accounts',{'name':'Банк USD','kind':'bank','currency':'USD','opening':'1000000','opening_date':str(today()-timedelta(days=10))}).json()['id']
+        other_cat=next(c['id'] for c in self.client.get('/api/bootstrap').json()['categories'] if c['id']!=self.cat and c['type']=='outcome')
+        rid=self.request('600').json()['id'];self.assertEqual(self.approve(rid).status_code,200)
+        for change in ({'counterparty':'Совсем другой получатель'},{'amount':'500'},{'amount':'700'},{'account_id':other},
+                       {'account_id':usd},{'category_id':other_cat},{'to_account_id':other}):
+            r=self.post('/api/ledger',self.pay_body(rid,**change),*book);self.assertEqual(r.status_code,409,(change,r.text))
+        self.assertIn(self.post('/api/ledger',self.pay_body(rid,kind='in'),*book).status_code,(403,409))
+        yesterday=str(today()-timedelta(days=1))
+        r=self.post('/api/ledger',self.pay_body(rid,date=yesterday),*book);self.assertEqual(r.status_code,422,r.text)
+        self.assertIn('раньше утверждения',r.text)
+        self.assertEqual(self.post('/api/ledger',self.pay_body(rid,counterparty='Supplier'),*book).status_code,200)
+        entry=next(x for x in self.client.get('/api/ledger').json() if x['request_id']==rid)
+        self.assertEqual((entry['counterparty'],entry['amount'],entry['account_id']),('Supplier','600.00',self.acc))
+        audit=[a for a in self.client.get('/api/audit').json() if a['action']=='Оплата заявки']
+        self.assertTrue(audit)
+
+    def test_88_budget_or_funds_short_after_approval_go_back_to_finance(self):
+        book=self.make_user('accountant','short_book')
+        state=lambda i:next(x for x in self.client.get('/api/requests').json() if x['id']==i)
+        self.budget('1000','soft');rid=self.request('600').json()['id'];self.assertEqual(self.approve(rid).status_code,200)
+        self.budget('500','soft')
+        long_note='Очень подробное обоснование от плательщика, чтобы обойти лимит'
+        r=self.post('/api/ledger',self.pay_body(rid,note=long_note),*book)
+        self.assertEqual(r.status_code,409,r.text);self.assertIn('финансовому директору',r.text)
+        self.assertEqual(state(rid)['status'],'approved')
+        # Finance cannot use the payer's action; the payer returns the request with a reason.
+        self.assertEqual(self.post(f'/api/requests/{rid}/decision',{'action':'return_finance','note':'Лимит статьи снижен после утверждения'},*self.approver).status_code,403)
+        self.assertEqual(self.post(f'/api/requests/{rid}/decision',{'action':'return_finance','note':'коротко'},*book).status_code,422)
+        back=self.post(f'/api/requests/{rid}/decision',{'action':'return_finance','note':'Лимит статьи снижен после утверждения'},*book)
+        self.assertEqual(back.status_code,200,back.text)
+        row=state(rid);self.assertEqual((row['status'],row['approval_stage']),('pending','finance'))
+        self.assertIsNone(row['approved_by']);self.assertIsNone(row['approved_on'])
+        b=next(b for b in self.client.get('/api/budgets').json() if b['category_id']==self.cat);self.assertEqual(b['reserved'],'0.00')
+        # Approvers accept the soft overrun explicitly; the payer may pay exactly within it.
+        self.assertEqual(self.approve(rid,note='').status_code,409)
+        self.assertEqual(self.approve(rid).status_code,200)
+        self.assertEqual(self.post('/api/ledger',self.pay_body(rid),*book).status_code,200)
+        # A hard budget lowered after approval blocks payment whatever the comment.
+        hard=self.post('/api/categories',{'name':'Жёсткая статья','type':'outcome','activity':'operating'})
+        cat=hard.json()['id'] if hard.status_code==200 else self.cat
+        self.post('/api/budgets',{'category_id':cat,'month':self.month,'currency':'UZS','amount':'1000','mode':'hard','reason':'Жёсткий лимит для проверки','source':'test'})
+        second=self.post('/api/requests',{'account_id':self.acc,'category_id':cat,'counterparty':'Supplier','amount':'400','date':self.date,'purpose':'Заявка под жёсткий лимит'}).json()['id']
+        self.assertEqual(self.approve(second).status_code,200)
+        self.post('/api/budgets',{'category_id':cat,'month':self.month,'currency':'UZS','amount':'100','mode':'hard','reason':'Лимит снижен после утверждения','source':'test'})
+        r=self.post('/api/ledger',self.pay_body(second,category_id=cat,amount='400',note=long_note),*book)
+        self.assertEqual(r.status_code,409,r.text)
+        # Money that disappeared after approval also stops the payment with the same hint.
+        small=self.post('/api/accounts',{'name':'Малый счёт','kind':'bank','currency':'UZS','opening':'1000','opening_date':str(today()-timedelta(days=10))}).json()['id']
+        third=self.post('/api/requests',{'account_id':small,'category_id':self.cat,'counterparty':'Supplier','amount':'800','date':self.date,'purpose':'Заявка на малый остаток'}).json()['id']
+        self.assertEqual(self.approve(third).status_code,200)
+        edit={'name':'Малый счёт','kind':'bank','currency':'UZS','opening':'700','opening_date':str(today()-timedelta(days=10)),'allow_overdraft':False,'reason':'Уточнён начальный остаток'}
+        self.assertEqual(self.post(f'/api/accounts/{small}',edit).status_code,200)
+        r=self.post('/api/ledger',self.pay_body(third,account_id=small,amount='800',note=long_note),*book)
+        self.assertEqual(r.status_code,409,r.text);self.assertIn('Недостаточно доступных средств',r.text);self.assertIn('финансовому директору',r.text)
+
+    def test_89_reject_is_gone_and_old_rejected_requests_are_read_only(self):
+        rid=self.request('600').json()['id'];self.assertEqual(self.finance_approve(rid).status_code,200)
+        if not hasattr(self,'director'):self.director=self.make_user('director','chief')
+        for who in (self.approver,self.director):
+            r=self.post(f'/api/requests/{rid}/decision',{'action':'reject','note':'Нет договора с поставщиком'},*who)
+            self.assertEqual(r.status_code,422,r.text)
+        with unit(True) as s:
+            old=s.get(PaymentRequest,rid);old.status='rejected';old.finance_approved_by=None
+        listed=self.client.get('/api/requests?state=rejected').json()
+        self.assertEqual([x['id'] for x in listed],[rid])
+        row=listed[0]
+        data={k:row[k] for k in ('account_id','category_id','counterparty','amount','date','purpose','version')}
+        data.update(status='pending',reason='Попытка вернуть отклонённую заявку')
+        self.assertEqual(self.client.put(f'/api/requests/{rid}',json=data,headers=self.h).status_code,409)
+        for action in ('cancel','submit','approve','return_finance'):
+            r=self.post(f'/api/requests/{rid}/decision',{'action':action,'note':'Действие над отклонённой заявкой'})
+            self.assertIn(r.status_code,(403,409),(action,r.text))
+        self.assertEqual(self.ledger('600','out',request_id=rid).status_code,409)
+        self.assertEqual(self.client.get('/api/requests?state=rejected').json()[0]['status'],'rejected')
+        self.assertEqual(self.client.get('/api/dashboard').status_code,200)
+        self.assertEqual(self.client.get(f'/api/report?year={self.date[:4]}').status_code,200)
+
+    def test_90_account_type_is_frozen_once_used(self):
+        self.request('10')
+        r=self.edit_account(kind='cash');self.assertEqual(r.status_code,409,r.text);self.assertIn('Тип счёта',r.text)
+        fresh=self.post('/api/accounts',{'name':'Новый счёт','kind':'bank','currency':'UZS','opening':'0','opening_date':self.date}).json()['id']
+        edit={'name':'Новая касса','kind':'cash','currency':'UZS','opening':'0','opening_date':self.date,'allow_overdraft':False,'reason':'Ошибка при создании счёта'}
+        self.assertEqual(self.post(f'/api/accounts/{fresh}',edit).status_code,200)
+
+    def test_91_payment_columns_are_added_to_an_existing_database(self):
+        from sqlalchemy import inspect as sa_inspect,text
+        rid=self.request('600').json()['id'];self.assertEqual(self.approve(rid).status_code,200)
+        with engine.begin() as conn:
+            for column in ('approved_at','approved_overrun'):conn.execute(text(f'ALTER TABLE payment_requests DROP COLUMN {column}'))
+        initialize();initialize()
+        with engine.connect() as conn:
+            columns={c['name'] for c in sa_inspect(conn).get_columns('payment_requests')}
+        self.assertTrue({'approved_at','approved_overrun'}<=columns)
+        row=next(x for x in self.client.get('/api/requests').json() if x['id']==rid)
+        self.assertEqual((row['status'],row['amount']),('approved','600.00'));self.assertIsNone(row['approved_on'])
+        # An approval without a recorded time falls back to the request's creation date.
+        self.assertEqual(self.ledger('600','out',request_id=rid).status_code,200)
+
+    def test_92_return_to_finance_is_the_payers_action_for_their_channel(self):
+        till=self.cash_account();cashier=self.make_user('cashier','ret_cashier');book=self.make_user('accountant','ret_book')
+        bank=self.request('100').json()['id']
+        cash=self.post('/api/requests',{'account_id':till,'category_id':self.cat,'counterparty':'Курьер','amount':'100','date':self.date,'purpose':'Кассовая заявка на возврат'}).json()['id']
+        for i in (bank,cash):self.assertEqual(self.approve(i).status_code,200)
+        note={'action':'return_finance','note':'Не хватает денег на дату оплаты'}
+        self.assertEqual(self.post(f'/api/requests/{bank}/decision',note,*cashier).status_code,403)
+        self.assertEqual(self.post(f'/api/requests/{cash}/decision',note,*book).status_code,403)
+        self.assertEqual(self.post(f'/api/requests/{cash}/decision',note,*cashier).status_code,200)
+        self.assertEqual(self.post(f'/api/requests/{bank}/decision',note,*book).status_code,200)
+        actions=[a['action'] for a in self.client.get('/api/audit').json()]
+        self.assertIn('Действие по заявке: return_finance',actions)
+
+    def test_93_backdated_payment_cannot_take_money_reserved_for_a_due_request(self):
+        book=self.make_user('accountant','late_book')
+        acc=self.post('/api/accounts',{'name':'Счёт с резервом','kind':'bank','currency':'UZS','opening':'1000','opening_date':str(today()-timedelta(days=20))}).json()['id']
+        body=lambda n,d,p:{'account_id':acc,'category_id':self.cat,'counterparty':'Supplier','amount':n,'date':d,'purpose':p}
+        x=self.post('/api/requests',body('400',str(today()-timedelta(days=5)),'Просроченная утверждённая заявка')).json()['id']
+        y=self.post('/api/requests',body('600',self.date,'Заявка на сегодня')).json()['id']
+        for i in (x,y):self.assertEqual(self.approve(i).status_code,200)
+        with unit(True) as s:
+            for i in (x,y):s.get(PaymentRequest,i).approved_at=now()-timedelta(days=10)
+        # A manual expense can no longer take the reservation, so the shortfall comes from a corrected opening balance.
+        spend={'account_id':acc,'category_id':self.cat,'kind':'out','amount':'400','date':str(today()-timedelta(days=1)),'reference':'LATE-OUT','note':'Расход без заявки задним числом'}
+        self.assertEqual(self.post('/api/ledger',spend).status_code,409)
+        edit={'name':'Счёт с резервом','kind':'bank','currency':'UZS','opening':'600','opening_date':str(today()-timedelta(days=20)),'allow_overdraft':False,'reason':'Уточнён начальный остаток счёта'}
+        self.assertEqual(self.post(f'/api/accounts/{acc}',edit).status_code,200)
+        pay=lambda d,ref:self.post('/api/ledger',{'account_id':acc,'category_id':self.cat,'kind':'out','amount':'600','date':d,'reference':ref,'request_id':y},*book)
+        self.assertEqual(pay(self.date,'LATE-TODAY').status_code,409)
+        r=pay(str(today()-timedelta(days=6)),'LATE-BACK');self.assertEqual(r.status_code,409,r.text);self.assertIn('финансовому директору',r.text)
+
+    def test_94_finance_only_approvals_from_the_old_threshold_are_not_payable(self):
+        book=self.make_user('accountant','legacy_book')
+        rid=self.request('600').json()['id'];self.assertEqual(self.finance_approve(rid).status_code,200)
+        with unit(True) as s:
+            legacy=s.get(PaymentRequest,rid);legacy.status='approved';legacy.approved_by=legacy.finance_approved_by;legacy.approved_at=None
+        r=self.post('/api/ledger',self.pay_body(rid),*book);self.assertEqual(r.status_code,409,r.text);self.assertIn('директора',r.text)
+        self.assertEqual(self.post(f'/api/requests/{rid}/decision',{'action':'return_finance','note':'Нужно утверждение директора'},*book).status_code,200)
+        self.assertEqual(self.approve(rid).status_code,200)
+        self.assertEqual(self.post('/api/ledger',self.pay_body(rid),*book).status_code,200)
+
+    def test_95_soft_overrun_accepted_for_the_month_keeps_earlier_approvals_payable(self):
+        book=self.make_user('accountant','overrun_book')
+        self.budget('1000','soft')
+        a=self.request('500').json()['id'];self.assertEqual(self.approve(a).status_code,200)
+        b=self.request('700').json()['id'];self.assertEqual(self.approve(b).status_code,200)
+        self.assertEqual(self.post('/api/ledger',self.pay_body(a,amount='500'),*book).status_code,200)
+        self.assertEqual(self.post('/api/ledger',self.pay_body(b,amount='700'),*book).status_code,200)
+        # A further cut of the limit is beyond what the approvers accepted.
+        c=self.request('100').json()['id'];self.assertEqual(self.approve(c).status_code,200)
+        self.budget('900','soft')
+        r=self.post('/api/ledger',self.pay_body(c,amount='100'),*book);self.assertEqual(r.status_code,409,r.text)
+
+    def test_96_overdue_request_paid_in_a_later_month_is_rescheduled_not_looped(self):
+        book=self.make_user('accountant','month_book')
+        acc=self.post('/api/accounts',{'name':'Долгий счёт','kind':'bank','currency':'UZS','opening':'100000','opening_date':str(today()-timedelta(days=62))}).json()['id']
+        due=today().replace(day=1)-timedelta(days=5)
+        rid=self.post('/api/requests',{'account_id':acc,'category_id':self.cat,'counterparty':'Supplier','amount':'100','date':str(due),'purpose':'Заявка прошлого месяца'}).json()['id']
+        self.assertEqual(self.approve(rid).status_code,200)
+        self.budget('50','soft')
+        body=lambda ref:{'account_id':acc,'category_id':self.cat,'kind':'out','amount':'100','date':self.date,'reference':ref,'request_id':rid}
+        r=self.post('/api/ledger',body('MONTH-1'),*book);self.assertEqual(r.status_code,409,r.text);self.assertIn('перенести срок',r.text)
+        self.assertEqual(self.post(f'/api/requests/{rid}/decision',{'action':'return_finance','note':'Бюджет месяца оплаты превышен'},*book).status_code,200)
+        moved=self.post(f'/api/requests/{rid}/decision',{'action':'reschedule','date':self.date,'note':'Срок переносится на месяц оплаты'})
+        self.assertEqual(moved.status_code,200,moved.text)
+        self.assertEqual(self.approve(rid).status_code,200)
+        self.assertEqual(self.post('/api/ledger',body('MONTH-2'),*book).status_code,200)
+
+    def test_97_early_payment_cannot_take_money_reserved_for_an_earlier_due_request(self):
+        book=self.make_user('accountant','early_book')
+        acc=self.post('/api/accounts',{'name':'Счёт очередности','kind':'bank','currency':'UZS','opening':'150','opening_date':str(today()-timedelta(days=5))}).json()['id']
+        body=lambda n,d,p:{'account_id':acc,'category_id':self.cat,'counterparty':'Supplier','amount':n,'date':d,'purpose':p}
+        late=self.post('/api/requests',body('100',str(today()+timedelta(days=10)),'Заявка с поздним сроком')).json()['id']
+        soon=self.post('/api/requests',body('100',str(today()+timedelta(days=5)),'Заявка с ранним сроком')).json()['id']
+        for i in (late,soon):self.assertEqual(self.approve(i).status_code,200)
+        pay=lambda rid,ref:self.post('/api/ledger',{'account_id':acc,'category_id':self.cat,'kind':'out','amount':'100','date':self.date,'reference':ref,'request_id':rid},*book)
+        r=pay(late,'EARLY-LATE');self.assertEqual(r.status_code,409,r.text);self.assertIn('финансовому директору',r.text)
+        self.assertEqual(pay(soon,'EARLY-SOON').status_code,200)
+
+    def test_98_another_months_accepted_overrun_is_not_borrowed(self):
+        book=self.make_user('accountant','borrow_book')
+        acc=self.post('/api/accounts',{'name':'Счёт двух месяцев','kind':'bank','currency':'UZS','opening':'100000','opening_date':str(today()-timedelta(days=62))}).json()['id']
+        self.budget('100','soft')
+        big=self.request('150').json()['id'];self.assertEqual(self.approve(big).status_code,200)
+        prev=today().replace(day=1)-timedelta(days=5)
+        late=self.post('/api/requests',{'account_id':acc,'category_id':self.cat,'counterparty':'Supplier','amount':'10','date':str(prev),'purpose':'Заявка прошлого месяца'}).json()['id']
+        self.assertEqual(self.approve(late).status_code,200)
+        r=self.post('/api/ledger',{'account_id':acc,'category_id':self.cat,'kind':'out','amount':'10','date':self.date,'reference':'BORROW','request_id':late},*book)
+        self.assertEqual(r.status_code,409,r.text);self.assertIn('перенести срок',r.text)
+        self.assertEqual(self.post('/api/ledger',self.pay_body(big,amount='150'),*book).status_code,200)
+
+    def test_99_manual_expenses_and_transfers_keep_due_reservations(self):
+        acc=self.post('/api/accounts',{'name':'Счёт с резервом X','kind':'bank','currency':'UZS','opening':'1000','opening_date':str(today()-timedelta(days=20))}).json()['id']
+        other=self.post('/api/accounts',{'name':'Второй счёт X','kind':'bank','currency':'UZS','opening':'0','opening_date':str(today()-timedelta(days=20))}).json()['id']
+        rid=self.post('/api/requests',{'account_id':acc,'category_id':self.cat,'counterparty':'Supplier','amount':'1000','date':str(today()-timedelta(days=2)),'purpose':'Просроченная утверждённая заявка'}).json()['id']
+        self.assertEqual(self.approve(rid).status_code,200)
+        spend=lambda d,ref:self.post('/api/ledger',{'account_id':acc,'category_id':self.cat,'kind':'out','amount':'1000','date':d,'reference':ref,'note':'Расход без заявки со счёта с резервом'})
+        self.assertEqual(spend(self.date,'X-TODAY').status_code,409)
+        self.assertEqual(spend(str(today()-timedelta(days=5)),'X-BACK').status_code,409)
+        move={'account_id':acc,'to_account_id':other,'kind':'transfer','amount':'1000','date':self.date,'reference':'X-MOVE','note':'Перевод зарезервированных денег'}
+        self.assertEqual(self.post('/api/ledger',move).status_code,409)
+        self.assertEqual(self.post('/api/ledger',{**move,'amount':'0.01','reference':'X-MOVE-0'}).status_code,409)
+        self.assertEqual(self.ledger('1000','out',reference='X-PAY',account_id=acc,request_id=rid).status_code,200)
+
+    def test_100_hard_budget_in_the_payment_month_asks_for_a_budget_revision(self):
+        book=self.make_user('accountant','hard_book')
+        acc=self.post('/api/accounts',{'name':'Счёт жёсткого месяца','kind':'bank','currency':'UZS','opening':'100000','opening_date':str(today()-timedelta(days=62))}).json()['id']
+        prev=today().replace(day=1)-timedelta(days=5)
+        rid=self.post('/api/requests',{'account_id':acc,'category_id':self.cat,'counterparty':'Supplier','amount':'100','date':str(prev),'purpose':'Заявка прошлого месяца под жёсткий лимит'}).json()['id']
+        self.assertEqual(self.approve(rid).status_code,200)
+        self.budget('50','hard')
+        r=self.post('/api/ledger',{'account_id':acc,'category_id':self.cat,'kind':'out','amount':'100','date':self.date,'reference':'HARD-1','request_id':rid},*book)
+        self.assertEqual(r.status_code,409,r.text);self.assertIn('пересмотреть бюджет',r.text);self.assertNotIn('перенести срок',r.text)
 
 if __name__=='__main__':unittest.main(verbosity=2)
