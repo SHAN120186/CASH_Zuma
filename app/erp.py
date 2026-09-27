@@ -10,7 +10,7 @@ from fastapi.responses import Response
 from pydantic import BaseModel, Field, ConfigDict
 from sqlalchemy import select
 from .db import *
-from .security import session_user, PERMS, can_attach_document
+from .security import session_user, PERMS, can_attach_document, payment_channels, perms_of
 from .services import post_ledger, money, get, log, today
 
 router=APIRouter()
@@ -120,7 +120,7 @@ def commit_import(id:int,request:Request):
     from .main import LedgerIn
     with unit(True) as s:
         u,_=session_user(s,request,'import');batch=get(s,ImportBatch,id)
-        if batch.user_id!=u.id and u.role!='admin':raise HTTPException(403,'Импорт создан другим пользователем.')
+        if batch.user_id!=u.id:raise HTTPException(403,'Импорт создан другим пользователем.')
         if batch.status!='preview':raise HTTPException(409,'Импорт уже выполнен либо содержит ошибки.')
         if s.scalar(select(ImportBatch.id).where(ImportBatch.digest==batch.digest,ImportBatch.status=='committed').limit(1)):
             raise HTTPException(409,'Этот файл уже импортирован. Повторная загрузка заблокирована.')
@@ -148,12 +148,12 @@ def documents(request:Request,ledger_id:int):
 def writable_ledger(s,u,id):
     """Документ прикладывается к проводке выбранной компании.
 
-    Право pay не открывает посторонние операции на запись: исполнитель платежа
-    прикладывает документ только к собственной оплате по заявке.
+    Право оплаты (pay_bank или pay_cash) не открывает посторонние операции на запись:
+    исполнитель платежа прикладывает документ только к собственной оплате по заявке.
     """
     entry=get(s,Ledger,id)
     if can_attach_document(u,entry):return entry
-    if 'pay' not in PERMS[u.role]:raise HTTPException(403,'У вашей роли нет прав на это действие.')
+    if not payment_channels(perms_of(u)):raise HTTPException(403,'У вашей роли нет прав на это действие.')
     raise HTTPException(403,'Документ прикладывается только к собственной оплате по утверждённой заявке.')
 
 @router.post('/api/ledger/{id}/document')

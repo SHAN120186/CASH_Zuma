@@ -165,7 +165,7 @@ class CommitPlanImport(BaseModel):
 def commit_plan_import(id:int,data:CommitPlanImport,request:Request):
     with unit(True) as s:
         u,_=session_user(s,request,'import');batch=get(s,PlanImportBatch,id)
-        if batch.user_id!=u.id and u.role!='admin':raise HTTPException(403,'Импорт создан другим пользователем.')
+        if batch.user_id!=u.id:raise HTTPException(403,'Импорт создан другим пользователем.')
         if batch.status!='preview':raise HTTPException(409,'Импорт уже выполнен или недоступен.')
         if s.scalar(select(PlanImportBatch.id).where(PlanImportBatch.digest==batch.digest,PlanImportBatch.status=='committed').limit(1)):
             raise HTTPException(409,'Этот файл и период уже импортированы. Обновите предпросмотр.')

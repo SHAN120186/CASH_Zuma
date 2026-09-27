@@ -2,10 +2,10 @@ from __future__ import annotations
 import json
 from decimal import Decimal, InvalidOperation
 from datetime import date, datetime, timedelta, timezone
-from sqlalchemy import select
+from sqlalchemy import select, func
 from fastapi import HTTPException
 from .company_scope import get_setting
-from .security import PERMS
+from .security import PERMS, pay_right, perms_of, company_role
 from .db import Account, Category, Budget, PaymentRequest, Receipt, Ledger, Audit, Setting
 
 def today():return datetime.now(timezone(timedelta(hours=5))).date()
@@ -41,6 +41,13 @@ def account_balance(s,a,upto=None):
         if t.account_id==a.id:balance += t.amount if t.kind=='in' else -t.amount
         if t.to_account_id==a.id:balance += t.amount
     return balance
+
+def day_start_balance(s,a,day):
+    """Остаток на начало дня. Начальный остаток задан на начало дня ``opening_date``,
+    поэтому счёт, открытый в этот день, начинает его с начального остатка, а счёт,
+    открытый позже, в этот день равен нулю."""
+    if day<a.opening_date:return 0
+    return a.opening if day==a.opening_date else account_balance(s,a,day-timedelta(days=1))
 
 def funds_state(s, account, as_of, exclude_request=None):
     """Actual account money less fully approved unpaid requests due by ``as_of``.
@@ -111,18 +118,79 @@ def check_request_version(r,version):
     if r.version!=version:raise HTTPException(409,'Заявка уже изменена другим пользователем. Обновите список и проверьте изменения.')
 
 def needs_director(s,r):
-    a=get(s,Account,r.account_id)
-    threshold=get_setting(s,'approval_limit_'+a.currency,a.company_id)
-    return threshold is None or r.amount>int(threshold.value)
+    """Решение владельца (Q03): директор утверждает каждую заявку, порог этап не пропускает."""
+    return True
+
+def overrun(b):
+    """Превышение мягкого бюджета после учёта суммы, в копейках/тийинах."""
+    return max(0,b['after']-b['limit']) if b['limit'] is not None else 0
+
+def clear_approval(r):
+    """Любой возврат или правка снимает утверждение целиком."""
+    r.approved_by=None;r.finance_approved_by=None;r.approved_at=None;r.approved_overrun=None
+
+def local_date(moment):
+    return moment.replace(tzinfo=timezone.utc).astimezone(timezone(timedelta(hours=5))).date()
+
+def check_payer(s,u,req):
+    """Кто может провести оплату заявки: отдельное право канала и не участник заявки."""
+    account=get(s,Account,req.account_id)
+    right=pay_right(account)
+    if right not in perms_of(u):
+        raise HTTPException(403,'Оплату кассовой заявки проводит кассир.' if account.kind=='cash' else 'Оплату банковской заявки проводит расчётный бухгалтер.')
+    if u.id in {req.creator_id,req.last_editor_id,req.finance_approved_by,req.approved_by}:
+        raise HTTPException(403,'Автор, последний редактор и согласующие заявки не могут провести её оплату.')
+    return account
+
+RETURN_HINT='Оплата не проведена. Верните заявку финансовому директору с комментарием.'
+
+def month_bounds(month):
+    start=date.fromisoformat(month+'-01')
+    return start,(start.replace(day=28)+timedelta(days=4)).replace(day=1)
+
+def accepted_overrun(s,category,month,currency):
+    """Мягкое превышение статьи за месяц, которое согласующие уже приняли при утверждении.
+
+    Учитываются утверждённые заявки со сроком в этом месяце и оплаченные заявки,
+    оплата которых действительно пришлась на этот месяц."""
+    start,end=month_bounds(month)
+    base=select(func.max(PaymentRequest.approved_overrun)).join(Account,Account.id==PaymentRequest.account_id).where(
+        PaymentRequest.category_id==category,Account.currency==currency,PaymentRequest.approved_overrun.is_not(None),
+        PaymentRequest.due_date>=start,PaymentRequest.due_date<end)
+    approved=s.scalar(base.where(PaymentRequest.status=='approved')) or 0
+    paid=s.scalar(base.join(Ledger,Ledger.request_id==PaymentRequest.id).where(
+        PaymentRequest.status=='paid',Ledger.date>=start,Ledger.date<end)) or 0
+    return max(approved,paid)
+
+def enforce_payment_budget(s,req,account,paid_on):
+    """Бюджет при оплате: плательщик не может обойти его комментарием.
+
+    Допускается только мягкое превышение статьи, которое согласующие приняли
+    при утверждении заявок этого месяца, и только если заявка сама утверждалась
+    на месяц оплаты."""
+    month=str(paid_on)[:7];same_month=month==str(req.due_date)[:7]
+    b=budget_state(s,req.category_id,month,account.currency,req.amount,req.id)
+    if not b['over']:return b
+    allowed=accepted_overrun(s,req.category_id,month,account.currency) if b['mode']=='soft' and same_month else 0
+    if b['mode']=='hard' or overrun(b)>allowed:
+        detail=f'Бюджет статьи на {month} превышен на {money(overrun(b)-allowed)} {account.currency} сверх утверждённого.'
+        if b['mode']=='hard':
+            detail+=' Лимит жёсткий: сначала нужно пересмотреть бюджет статьи на этот месяц.'
+        elif not same_month:
+            detail+=(f' Срок заявки {req.due_date}: финансовому директору нужно перенести срок на месяц оплаты;'
+                     ' после переноса заявку проверяет другой финансист или администратор и утверждает директор.')
+        raise HTTPException(409,f'{detail} {RETURN_HINT}')
+    return b
 
 def request_json(s,r,accounts=None,categories=None,users=None):
     a=get(s,Account,r.account_id);c=get(s,Category,r.category_id)
     b=budget_state(s,c.id,str(r.due_date)[:7],a.currency,r.amount if r.status in ('pending','draft') else 0)
     return {'id':r.id,'number':f'CF-{r.id:05d}','creator_id':r.creator_id,'category_id':c.id,'category':c.name,
-            'account_id':a.id,'account':a.name,'currency':a.currency,'counterparty':r.counterparty,
+            'account_id':a.id,'account':a.name,'account_kind':a.kind,'currency':a.currency,'counterparty':r.counterparty,
             'amount':money(r.amount),'date':str(r.due_date),'status':r.status,'purpose':r.purpose,
             'version':r.version,'last_editor_id':r.last_editor_id,'priority':r.priority,
             'created_at':str(r.created_at),'finance_approved_by':r.finance_approved_by,'approved_by':r.approved_by,
+            'approved_on':str(local_date(r.approved_at)) if r.approved_at else None,
             'approval_stage':('director' if r.finance_approved_by else 'finance') if r.status=='pending' else None,
             'project':r.project,'decision_note':r.decision_note,'overdue':r.due_date<today() and r.status in ('pending','approved'),
             'budget':budget_json(b)}
@@ -130,9 +198,13 @@ def request_json(s,r,accounts=None,categories=None,users=None):
 def post_ledger(s,u,data):
     a=get(s,Account,data.account_id)
     if a.archived:raise HTTPException(409,'Счёт в архиве. Сначала восстановите его.')
-    if u.role=='cashier' and (data.kind!='out' or not data.request_id):raise HTTPException(403,'Кассир фиксирует оплату только утверждённой заявки.')
-    if 'write' not in PERMS[u.role] and (data.kind!='out' or not data.request_id):
-        raise HTTPException(403,'Бухгалтер фиксирует только оплату утверждённой заявки: поступления, переводы и расход без заявки недоступны.')
+    if 'write' not in perms_of(u) and (data.kind!='out' or not data.request_id):
+        raise HTTPException(403,'Плательщик фиксирует только оплату утверждённой заявки: поступления, переводы и расход без заявки недоступны.')
+    req=None
+    if data.request_id:
+        # Право и разделение обязанностей проверяются до любых сведений о заявке.
+        req=get(s,PaymentRequest,data.request_id)
+        check_payer(s,u,req)
     if data.date>today():raise HTTPException(422,'Будущий платёж — это заявка или ожидаемое поступление, а не факт.')
     if data.date<a.opening_date:raise HTTPException(422,'Операция раньше даты начального остатка счёта.')
     n=amount(data.amount);kind=data.kind
@@ -144,29 +216,50 @@ def post_ledger(s,u,data):
         if target.id==a.id or target.currency!=a.currency:raise HTTPException(422,'Для перевода нужны разные счета одной валюты. Конвертация в этой версии не поддерживается.')
         if data.date<target.opening_date:raise HTTPException(422,'Дата перевода раньше начального остатка счёта-получателя.')
     else:get(s,Category,data.category_id)
-    req=None;rec=None
-    if data.request_id:
-        req=get(s,PaymentRequest,data.request_id)
+    rec=None
+    if req:
         check_request_version(req,data.request_version)
-        if kind!='out' or req.status!='approved' or req.account_id!=a.id or req.amount!=n or req.category_id!=data.category_id:
-            raise HTTPException(409,'Оплатить можно только утверждённую заявку, целиком, на её счёт и сумму.')
+        if req.status!='approved':raise HTTPException(409,'Оплатить можно только утверждённую заявку.')
+        # Сумма, счёт (и его валюта), статья и получатель берутся из утверждённой заявки.
+        if kind!='out' or data.to_account_id or data.receipt_id or req.account_id!=a.id or req.amount!=n or req.category_id!=data.category_id:
+            raise HTTPException(409,'Оплата проводится ровно по утверждённой заявке: её счёт, валюта, статья и сумма целиком. Изменить их при оплате нельзя.')
+        if data.counterparty and data.counterparty!=req.counterparty:
+            raise HTTPException(409,'Получатель платежа берётся из утверждённой заявки и не может быть заменён.')
+        # Утверждение по прежнему порогу, без отдельного директора, к оплате не допускается (Q03).
+        if req.approved_by is None or req.finance_approved_by is None or req.approved_by==req.finance_approved_by:
+            raise HTTPException(409,f'Заявка утверждена без отдельного подтверждения директора. {RETURN_HINT} После проверки её утвердит директор.')
+        earliest=local_date(req.approved_at or req.created_at)
+        if data.date<earliest:raise HTTPException(422,f'Дата оплаты не может быть раньше утверждения заявки ({earliest}).')
     if data.receipt_id:
         rec=get(s,Receipt,data.receipt_id)
         if kind!='in' or rec.status!='expected' or rec.account_id!=a.id or rec.amount!=n or rec.category_id!=data.category_id:
             raise HTTPException(409,'Поступление уже закрыто или сумма/счёт не совпадают.')
-    if kind=='out':
-        enforce_budget(s,data.category_id,data.date,a.currency,n,data.note,req.id if req else None)
-        enforce_available_funds(s,a,data.date,n,req.id if req else None)
-        if not req and len(data.note.strip())<10:raise HTTPException(422,'Для расхода без заявки укажите основание не короче 10 символов.')
+    if kind=='out' and req:
+        enforce_payment_budget(s,req,a,data.date)
+        # Деньги проверяются на дату оплаты, на сегодня и на срок самой заявки:
+        # ни дата задним числом, ни ранняя оплата не забирают резерв других
+        # утверждённых заявок со сроком раньше.
+        for as_of in sorted({data.date,today(),max(today(),req.due_date)}):
+            try:enforce_available_funds(s,a,as_of,n,req.id)
+            except HTTPException as e:raise HTTPException(409,f'{e.detail} {RETURN_HINT}')
+    elif kind=='out':
+        enforce_budget(s,data.category_id,data.date,a.currency,n,data.note)
+        # Расход без заявки тоже не может забрать резерв заявок, срок которых наступил.
+        for as_of in sorted({data.date,today()}):enforce_available_funds(s,a,as_of,n)
+        if len(data.note.strip())<10:raise HTTPException(422,'Для расхода без заявки укажите основание не короче 10 символов.')
+    elif kind=='transfer':
+        # Перевод не уносит со счёта деньги, зарезервированные под утверждённые заявки.
+        for as_of in sorted({data.date,today()}):enforce_available_funds(s,a,as_of,n)
     t=Ledger(account_id=a.id,to_account_id=target.id if target else None,category_id=data.category_id if kind!='transfer' else None,
-             kind=kind,amount=n,date=data.date,counterparty=data.counterparty,reference=data.reference.strip(),
+             kind=kind,amount=n,date=data.date,counterparty=req.counterparty if req else data.counterparty,reference=data.reference.strip(),
              note=data.note,request_id=req.id if req else None,receipt_id=rec.id if rec else None,creator_id=u.id)
     s.add(t);s.flush()
     validate_running_balance(s,a)
     if target:validate_running_balance(s,target)
     if req:req.status='paid'
     if rec:rec.status='received'
-    log(s,u,'Фактическая операция','ledger',t.id,f'{kind}: {money(n)} {a.currency}; документ: {data.reference}')
+    log(s,u,'Фактическая операция','ledger',t.id,f'{kind}: {money(n)} {a.currency}; документ: {data.reference}'+(f'; заявка CF-{req.id:05d}' if req else ''))
+    if req:log(s,u,'Оплата заявки','request',req.id,f'операция {t.id}; {money(n)} {a.currency}; документ: {data.reference}')
     return t
 
 def dashboard(s,currency,horizon=30):

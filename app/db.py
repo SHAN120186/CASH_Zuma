@@ -51,6 +51,8 @@ class CompanyUser(Base):
     __tablename__ = 'company_users'
     company_id = Column(Integer, ForeignKey('companies.id'), primary_key=True)
     user_id = Column(Integer, ForeignKey('users.id'), primary_key=True)
+    # Роль пользователя в этой компании; пусто — действует его прежняя роль.
+    role = Column(String(20), nullable=True)
 
 class LoginSession(Base):
     __tablename__ = 'sessions'
@@ -167,6 +169,10 @@ class PaymentRequest(Base):
     last_editor_id = Column(Integer, ForeignKey('users.id'), nullable=True)
     priority = Column(String(12), nullable=False, default='normal')
     created_at = Column(DateTime, nullable=False, default=now)
+    # Final approval: its time bounds the payment date, and the soft-budget
+    # overrun the approvers accepted (minor units) is all a payer may pay into.
+    approved_at = Column(DateTime, nullable=True)
+    approved_overrun = Column(BigInteger, nullable=True)
     __mapper_args__ = {'version_id_col': version}
 
 class Receipt(Base):
@@ -351,8 +357,11 @@ def initialize():
             conn.execute(text('ALTER TABLE cash_plans ALTER COLUMN company_id SET NOT NULL'))
             conn.execute(text('ALTER TABLE cash_plans DROP CONSTRAINT IF EXISTS cash_plans_month_currency_key'))
             conn.execute(text('CREATE UNIQUE INDEX IF NOT EXISTS ux_cash_plan_scope ON cash_plans(company_id,month,currency,scenario)'))
-        for name,definition in [('version','INTEGER NOT NULL DEFAULT 1'),('last_editor_id','INTEGER REFERENCES users(id)'),('priority',"VARCHAR(12) NOT NULL DEFAULT 'normal'")]:
+        for name,definition in [('version','INTEGER NOT NULL DEFAULT 1'),('last_editor_id','INTEGER REFERENCES users(id)'),('priority',"VARCHAR(12) NOT NULL DEFAULT 'normal'"),
+                                ('approved_at','TIMESTAMP'),('approved_overrun','BIGINT')]:
             if name not in columns:conn.execute(text(f'ALTER TABLE payment_requests ADD COLUMN {name} {definition}'))
+        membership_columns={c['name'] for c in inspect(conn).get_columns('company_users')}
+        if 'role' not in membership_columns:conn.execute(text('ALTER TABLE company_users ADD COLUMN role VARCHAR(20)'))
     from .company_scope import migrate_columns, migrate_data
     migrate_columns(engine)
     with Session(engine) as s:
@@ -375,3 +384,10 @@ def initialize():
         s.commit()
 
     migrate_data(engine)
+    with engine.begin() as conn:
+        # Роль в компании хранится явно: прежние связи сотрудников получают их прежнюю роль.
+        # Пустое значение остаётся у пользователей холдинга и в служебном пространстве.
+        # Служебное пространство сотрудникам недоступно: там роль не назначается.
+        conn.execute(text("UPDATE company_users SET role=(SELECT u.role FROM users u WHERE u.id=company_users.user_id) "
+                          "WHERE role IS NULL AND user_id IN (SELECT id FROM users WHERE role NOT IN ('admin','founder')) "
+                          "AND company_id NOT IN (SELECT id FROM companies WHERE code='UNASSIGNED')"))
