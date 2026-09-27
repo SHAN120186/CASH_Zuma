@@ -1211,5 +1211,82 @@ class SiteTests(unittest.TestCase):
             'date':self.date,'reference':'SCOPE-FRESH','note':'Оплата по актуальной версии','request_id':rid},*book)
         self.assertEqual(fresh.status_code,200,fresh.text)
 
+    def group_report(self,day,company=None):
+        r=self.client.get(f"/api/group-report?company_id={company or self.company}&currency=UZS&scenario=A&month={str(day)[:7]}&day={day}")
+        self.assertEqual(r.status_code,200,r.text)
+        return r.json()
+    def balances(self,company=None,currency='UZS'):
+        from decimal import Decimal
+        return format(sum(Decimal(a['balance']) for a in self.client.get('/api/accounts').json()
+                          if a['company_id']==(company or self.company) and a['currency']==currency),'.2f')
+    def past_request(self,account,day,purpose='Резерв на дату отчёта'):
+        r=self.post('/api/requests',{'account_id':account,'category_id':self.cat,'counterparty':'Supplier','amount':'600','date':str(day),'purpose':purpose})
+        self.assertEqual(r.status_code,200,r.text);self.assertEqual(self.approve(r.json()['id']).status_code,200)
+
+    def test_85_group_report_includes_account_opened_on_report_day(self):
+        new=self.post('/api/accounts',{'name':'Opened on report day','company_id':self.company,'kind':'bank','currency':'UZS','opening':'5000000.00','opening_date':self.date})
+        self.assertEqual(new.status_code,200,new.text);new=new.json()['id']
+        self.assertEqual(self.ledger('100','in',reference='NEW-DAY-IN',account_id=new).status_code,200)
+        self.assertEqual(self.ledger('50','transfer',reference='OLD-TO-NEW',to_account_id=new).status_code,200)
+        self.past_request(new,self.date)
+        data=self.group_report(self.date)
+        # The opening balance is set at the start of opening_date, so the day starts with it.
+        self.assertEqual(data['opening'],'6000000.00')
+        self.assertEqual((data['income_day'],data['expense_day']),('100.00','0.00'))
+        self.assertEqual(data['closing'],'6000100.00')
+        self.assertEqual(data['closing'],self.balances())
+        self.assertEqual((data['reserved'],data['available']),('600.00','5999500.00'))
+        self.assertIn('конец дня 6000100.00; резерв 600.00; доступно 5999500.00 UZS',data['text'])
+
+    def test_86_report_day_before_newer_account_counts_it_as_zero(self):
+        from fastapi import HTTPException
+        from app.services import funds_state
+        day=today()-timedelta(days=1)
+        self.assertEqual(self.ledger('200','in',reference='OLD-DAY-IN',date=str(day)).status_code,200)
+        self.past_request(self.acc,day)
+        new=self.post('/api/accounts',{'name':'Opened later','company_id':self.company,'kind':'bank','currency':'UZS','opening':'5000000.00','opening_date':self.date}).json()['id']
+        # A specific account still refuses dates before its own opening.
+        early=self.post('/api/requests',{'account_id':new,'category_id':self.cat,'counterparty':'Supplier','amount':'1','date':str(day),'purpose':'Дата до открытия счёта'})
+        self.assertEqual(early.status_code,422,early.text)
+        with unit() as s:
+            with self.assertRaises(HTTPException) as denied:funds_state(s,s.get(Account,new),day)
+            self.assertEqual(denied.exception.status_code,422)
+        data=self.group_report(day)
+        self.assertEqual((data['opening'],data['income_day'],data['closing']),('1000000.00','200.00','1000200.00'))
+        self.assertEqual((data['reserved'],data['available']),('600.00','999600.00'))
+        # The Cash Flow report and its export at the same cut-off also leave the newer account out.
+        m=day.month
+        report=self.client.get(f'/api/report?year={day.year}&currency=UZS&company_id={self.company}&scenario=A&as_of={day}').json()
+        self.assertEqual(set(report['closing'][m-1:]),{'1000200.00'})
+        import io
+        from openpyxl import load_workbook
+        r=self.client.get(f'/api/export/report.xlsx?year={day.year}&currency=UZS&mode=actual&start_month={m}&end_month={m}&company_id={self.company}&scenario=A&as_of={day}')
+        self.assertEqual(r.status_code,200,r.text)
+        rows={row[0]:row[1:] for row in load_workbook(io.BytesIO(r.content)).active.iter_rows(values_only=True)}
+        self.assertEqual(float(rows['Остаток на конец'][0]),1000200.0)
+        # From its opening day the newer account is part of the report.
+        self.assertEqual(self.group_report(self.date)['closing'],self.balances())
+
+    def test_87_group_report_ordinary_days_are_unchanged(self):
+        from app.services import account_balance,money
+        day=today();prev=day-timedelta(days=1)
+        cash=self.post('/api/accounts',{'name':'Ordinary cash','company_id':self.company,'kind':'cash','currency':'UZS','opening':'250.00','opening_date':str(day-timedelta(days=10))}).json()['id']
+        self.assertEqual(self.ledger('300','in',reference='PREV-IN',date=str(prev)).status_code,200)
+        self.assertEqual(self.ledger('100','in',reference='DAY-IN').status_code,200)
+        self.assertEqual(self.ledger('40','out',reference='DAY-OUT').status_code,200)
+        self.assertEqual(self.ledger('50','transfer',reference='DAY-TRANSFER',to_account_id=cash).status_code,200)
+        self.past_request(self.acc,day)
+        before,current=self.group_report(prev),self.group_report(day)
+        self.assertEqual((before['opening'],before['income_day'],before['closing']),('1000250.00','300.00','1000550.00'))
+        self.assertEqual((before['reserved'],before['available']),('0.00','1000550.00'))
+        with unit() as s:
+            accounts=s.scalars(select(Account).where(Account.company_id==self.company,Account.currency=='UZS'))
+            legacy=sum(account_balance(s,a,prev) for a in accounts)
+        self.assertEqual(current['opening'],money(legacy))
+        self.assertEqual(current['opening'],before['closing'])
+        self.assertEqual((current['income_day'],current['expense_day'],current['closing']),('100.00','40.00','1000610.00'))
+        self.assertEqual(current['closing'],self.balances())
+        self.assertEqual((current['reserved'],current['available']),('600.00','1000010.00'))
+
 
 if __name__=='__main__':unittest.main(verbosity=2)

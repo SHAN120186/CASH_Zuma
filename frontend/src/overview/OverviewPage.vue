@@ -185,26 +185,16 @@ const balanceState = computed(() => {
   if (s.value.accounts && !s.value.accounts.length) return 'empty';
   return 'ready';
 });
-// Balance on accounts comes from /api/accounts: the group report does not yet
-// include the opening balance of an account opened on the report day.
-const onAccounts = computed(() => (s.value.accounts ? sumCents(s.value.accounts, a => a.balance) : toCents(s.value.now?.closing)));
+// «Доступно» (CASHFLOW_RULES_RU.md) comes from the server's daily group report:
+// balance on accounts at the end of today minus approved, unpaid requests due
+// by today. The split line uses the same answer, so the three figures reconcile.
+const onAccounts = computed(() => toCents(s.value.now?.closing) ?? (s.value.accounts ? sumCents(s.value.accounts, a => a.balance) : null));
 const reserved = computed(() => toCents(s.value.now?.reserved));
-// «Доступно» (CASHFLOW_RULES_RU.md): balance on accounts minus approved,
-// unpaid requests due by today.
-const available = computed(() => {
-  if (s.value.accounts && onAccounts.value != null && reserved.value != null) return onAccounts.value - reserved.value;
-  return toCents(s.value.now?.available);
-});
-// The previous figure gets the same correction for accounts opened that day.
+const available = computed(() => toCents(s.value.now?.available));
 const change = computed(() => {
-  const prev = s.value.prev, accounts = s.value.accounts;
-  if (!prev || !accounts) return null;
-  const opened = sumCents(accounts.filter(a => a.opening_date === prev.day), a => a.opening);
-  const base = toCents(prev.available);
-  const before = base == null || opened == null ? null : base + opened;
-  const now = available.value;
+  const now = available.value, before = toCents(s.value.prev?.available);
   if (now == null || before == null || before === 0) return null;
-  return {ratio: (now - before) / Math.abs(before), since: prev.day};
+  return {ratio: (now - before) / Math.abs(before), since: s.value.prev.day};
 });
 
 const kpi = computed(() => {
@@ -248,7 +238,8 @@ const byDue = (a, b) => a.date.localeCompare(b.date) || a.id - b.id;
 const payments = computed(() => (s.value.approved || []).filter(r => r.date <= props.today).sort(byDue));
 const decisions = computed(() => [...(s.value.pending || [])].sort(byDue));
 const approver = computed(() => props.has('approve'));
-const canPay = computed(() => props.has('write') || props.has('pay'));
+// Paying a request needs a payment right; the general right to write never pays.
+const canPay = computed(() => ['pay', 'pay_bank', 'pay_cash'].some(p => props.has(p)));
 
 const risks = computed(() => {
   const out = [], d = s.value.dash, cur = c.value;
