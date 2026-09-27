@@ -16,6 +16,7 @@ if os.getenv('TEST_DATABASE_URL'):
     if not (test_url.database or '').startswith('zuma_test_'):raise RuntimeError('Test database must start with zuma_test_')
     os.environ['DATABASE_URL']=os.environ['TEST_DATABASE_URL']
 from fastapi.testclient import TestClient
+from sqlalchemy import select
 from app.main import app
 from app.db import *
 from app.services import today
@@ -30,7 +31,10 @@ def tearDownModule():
 class SiteTests(unittest.TestCase):
     def setUp(self):
         Base.metadata.drop_all(engine);initialize()
-        with unit(True) as s:s.add(User(username='admin',name='Test Admin',role='admin',password_hash=HASH))
+        with unit(True) as s:
+            admin=User(username='admin',name='Test Admin',role='admin',password_hash=HASH);s.add(admin);s.flush()
+            # Администратор холдинга работает с финансами только по отдельному назначению в компании.
+            for c in s.scalars(select(Company).where(Company.code!='UNASSIGNED')):s.add(CompanyUser(company_id=c.id,user_id=admin.id,role='finance'))
         self.client=TestClient(app)
         r=self.client.post('/api/login',json={'username':'admin','password':PASSWORD});self.assertEqual(r.status_code,200,r.text)
         self.h={'X-CSRF-Token':r.json()['csrf']}
@@ -896,6 +900,8 @@ class SiteTests(unittest.TestCase):
             with unit(True) as s:
                 u=s.scalar(select(User).where(User.username=='revoked_upload'))
                 u.role='investor'
+                # The role that counts is the one assigned in the company.
+                for m in s.scalars(select(CompanyUser).where(CompanyUser.user_id==u.id)):m.role='investor'
             return raw
         try:
             with patch.object(importer,'read_upload',side_effect=revoke_during_upload):
@@ -953,7 +959,8 @@ class SiteTests(unittest.TestCase):
             self.assertEqual(cl.get('/api/export/ledger.csv?company_id='+str(cid)).status_code,403)
             self.assertEqual(cl.get('/api/companies').status_code,200)
             self.assertFalse(any(u['username']=='only_uzgermed' for u in self.client.get('/api/users',headers=h).json()))
-            self.assertEqual(self.post('/api/company-users',{'username':'only_uzgermed'},headers=h).status_code,200)
+            self.assertEqual(self.post('/api/company-users',{'username':'only_uzgermed'},headers=h).status_code,422)
+            self.assertEqual(self.post('/api/company-users',{'username':'only_uzgermed','role':'operator'},headers=h).status_code,200)
             users=self.client.get('/api/users',headers=h).json();uid=next(u['id'] for u in users if u['username']=='only_uzgermed')
             self.assertEqual(len(cl.get('/api/companies').json()['companies']),2)
             self.assertEqual(cl.get('/api/accounts',headers={'X-Company-ID':str(cid)}).json()[0]['id'],acc)
@@ -1195,9 +1202,9 @@ class SiteTests(unittest.TestCase):
         author=self.make_user('employee','scope_author')
         cid,h,cat,acc=self.second_company()
         other=self.make_user('finance','scope_finance')
-        self.assertEqual(self.post('/api/company-users',{'username':'scope_finance'},headers=h).status_code,200)
+        self.assertEqual(self.post('/api/company-users',{'username':'scope_finance','role':'finance'},headers=h).status_code,200)
         boss=self.make_user('director','scope_director')
-        self.assertEqual(self.post('/api/company-users',{'username':'scope_director'},headers=h).status_code,200)
+        self.assertEqual(self.post('/api/company-users',{'username':'scope_director','role':'director'},headers=h).status_code,200)
         foreign=self.post('/api/requests',{'account_id':acc,'category_id':cat,'counterparty':'Supplier',
             'amount':'100','date':self.date,'purpose':'Заявка другой компании'},headers=h)
         self.assertEqual(foreign.status_code,200,foreign.text)
@@ -1581,6 +1588,255 @@ class SiteTests(unittest.TestCase):
         self.assertEqual((current['income_day'],current['expense_day'],current['closing']),('100.00','40.00','1000610.00'))
         self.assertEqual(current['closing'],self.balances())
         self.assertEqual((current['reserved'],current['available']),('600.00','1000010.00'))
+
+
+    # ---- Холдинг и компании: роль на пару «пользователь × компания», учредитель, заявитель.
+    def company_ids(self):
+        return {c['code']:c['id'] for c in self.client.get('/api/companies').json()['companies']}
+    def user_in(self,company,role,name):
+        """Создаёт пользователя в указанной компании и возвращает клиент и заголовки с этой компанией."""
+        h={**self.h,'X-Company-ID':str(company)}
+        r=self.client.post('/api/users',json={'username':name,'name':name,'password':PASSWORD,'role':role},headers=h)
+        self.assertEqual(r.status_code,200,r.text)
+        cl=TestClient(app);login=cl.post('/api/login',json={'username':name,'password':PASSWORD});self.assertEqual(login.status_code,200,login.text)
+        return cl,{'X-CSRF-Token':login.json()['csrf'],'X-Company-ID':str(company)}
+
+    def test_104_a_company_user_cannot_read_or_change_another_company(self):
+        ids=self.company_ids();zuma=ids['ZUMA'];uzg=ids['UZGERMED']
+        rid=self.request('600').json()['id'];self.assertEqual(self.approve(rid).status_code,200)
+        cl,h=self.user_in(zuma,'finance','zuma_only')
+        try:
+            self.assertEqual([c['code'] for c in cl.get('/api/companies').json()['companies']],['ZUMA'])
+            foreign={**h,'X-Company-ID':str(uzg)}
+            for path in ('/api/bootstrap','/api/accounts','/api/requests','/api/dashboard','/api/ledger','/api/budgets'):
+                self.assertEqual(cl.get(path,headers=foreign).status_code,403,path)
+            self.assertEqual(cl.get(f'/api/report?company_id={uzg}').status_code,403)
+            self.assertEqual(cl.get(f'/api/report?company_id={uzg}',headers=h).status_code,409)
+            # Direct identifiers of the other company inside the own company context.
+            row={'account_id':self.acc,'category_id':self.cat,'counterparty':'Supplier','amount':'600','date':self.date,'purpose':'Попытка чужой правки','version':1,'reason':'Попытка изменить чужую заявку'}
+            self.assertEqual(cl.put(f'/api/requests/{rid}',json=row,headers=h).status_code,404)
+            self.assertEqual(cl.post(f'/api/requests/{rid}/decision',json={'action':'cancel','version':3,'note':'Отмена чужой заявки'},headers=h).status_code,404)
+            edit={'name':'Чужой счёт','kind':'bank','currency':'UZS','opening':'1','opening_date':self.date,'allow_overdraft':False,'reason':'Попытка изменить чужой счёт'}
+            self.assertEqual(cl.post(f'/api/accounts/{self.acc}',json=edit,headers=h).status_code,404)
+            spend={'account_id':self.acc,'category_id':self.cat,'kind':'out','amount':'1','date':self.date,'reference':'ALIEN','note':'Расход с чужого счёта'}
+            self.assertEqual(cl.post('/api/ledger',json=spend,headers=h).status_code,404)
+            self.assertEqual(cl.post('/api/ledger',json=spend,headers=foreign).status_code,403)
+        finally:cl.close()
+        self.assertEqual(self.client.get('/api/accounts').json()[0]['balance'],'1000000.00')
+
+    def test_105_founder_sees_every_company_and_changes_nothing(self):
+        ids=self.company_ids()
+        rid=self.request('600').json()['id']
+        cl,h=self.user_in(ids['UZGERMED'],'founder','owner')
+        try:
+            self.assertEqual(sorted(c['code'] for c in cl.get('/api/companies').json()['companies']),['UZGERMED','ZUMA'])
+            for code in ('UZGERMED','ZUMA'):
+                hh={**h,'X-Company-ID':str(ids[code])}
+                me=cl.get('/api/bootstrap',headers=hh).json()['user']
+                self.assertEqual((me['holding_role'],me['company_role']),('founder',None))
+                self.assertEqual(me['permissions'],['audit','export','ledger','view'])
+                for path in ('/api/dashboard','/api/accounts','/api/ledger','/api/requests','/api/budgets',f'/api/report?year={self.date[:4]}','/api/audit'):
+                    self.assertEqual(cl.get(path,headers=hh).status_code,200,(code,path))
+            writes=[('/api/accounts',{'name':'Учредитель','kind':'bank','currency':'UZS','opening':'0','opening_date':self.date}),
+                    ('/api/requests',{'account_id':self.acc,'category_id':self.cat,'counterparty':'Supplier','amount':'1','date':self.date,'purpose':'Заявка учредителя'}),
+                    ('/api/ledger',{'account_id':self.acc,'category_id':self.cat,'kind':'in','amount':'1','date':self.date,'reference':'OWNER','note':'Поступление учредителя'}),
+                    ('/api/budgets',{'category_id':self.cat,'month':self.month,'currency':'UZS','amount':'1','mode':'soft','reason':'Бюджет учредителя'}),
+                    ('/api/reserve',{'currency':'UZS','amount':'1'}),
+                    ('/api/categories',{'name':'Статья учредителя','type':'outcome','activity':'operating'}),
+                    ('/api/cash-plan',{'month':self.month,'currency':'UZS','version':0,'reason':'План учредителя','items':[]}),
+                    ('/api/receipts',{'account_id':self.acc,'category_id':self.cat,'counterparty':'Покупатель','amount':'1','date':self.date}),
+                    ('/api/approval-policy',{'amount':'1'}),
+                    ('/api/users',{'username':'owner_made','name':'owner_made','password':PASSWORD,'role':'employee'}),
+                    ('/api/company-users',{'username':'admin'}),
+                    (f'/api/requests/{rid}/decision',{'action':'approve','version':1,'note':'Согласование учредителем'})]
+            for path,body in writes:
+                self.assertEqual(cl.post(path,json=body,headers=h).status_code,403,path)
+            row={'account_id':self.acc,'category_id':self.cat,'counterparty':'Supplier','amount':'1','date':self.date,'purpose':'Правка учредителем','version':1,'reason':'Правка заявки учредителем'}
+            self.assertEqual(cl.put(f'/api/requests/{rid}',json=row,headers=h).status_code,403)
+            self.assertEqual(self.preview_plan(client=cl,headers=h).status_code,403)
+        finally:cl.close()
+        # The founder is not a member of a company and cannot be given a company role.
+        self.assertEqual(self.post('/api/company-users',{'username':'owner','role':'finance'}).status_code,409)
+
+    def test_106_requester_sees_only_own_requests_and_never_account_balances(self):
+        foreign=self.request('600').json()['id']
+        cl,h=self.make_user('employee','buyer')
+        try:
+            own=self.request('100',client=cl,headers=h).json()['id']
+            listed=cl.get('/api/requests',headers=h).json()
+            self.assertEqual([x['id'] for x in listed],[own]);self.assertNotIn(foreign,[x['id'] for x in listed])
+            self.assertTrue(listed[0]['budget']['hidden']);self.assertNotIn('limit',{k for k,v in listed[0]['budget'].items() if v is not None})
+            for path in ('/api/accounts','/api/dashboard','/api/ledger','/api/budgets',f'/api/report?year={self.date[:4]}',
+                         f'/api/group-report?company_id={self.company}&currency=UZS&scenario=A&month={self.month}&day={self.date}'):
+                self.assertEqual(cl.get(path,headers=h).status_code,403,path)
+            accounts=cl.get('/api/bootstrap',headers=h).json()['accounts']
+            self.assertTrue(accounts)
+            self.assertTrue(all(not {'balance','opening','available'}&set(a) for a in accounts))
+            self.assertEqual(self.post(f'/api/requests/{foreign}/decision',{'action':'cancel','note':'Отмена чужой заявки'},cl,h).status_code,403)
+        finally:cl.close()
+
+    def test_107_requester_budget_card_shows_only_availability_and_the_rest_after(self):
+        book=self.make_user('accountant','card_book')
+        self.budget('1000','soft');rid=self.request('600').json()['id'];self.assertEqual(self.approve(rid).status_code,200)
+        cl,h=self.make_user('employee','card_buyer')
+        try:
+            q=lambda n:cl.get(f'/api/budget-check?account_id={self.acc}&category_id={self.cat}&amount={n}&date={self.date}',headers=h)
+            ok=q('300').json()
+            self.assertEqual(ok,{'period':self.month,'currency':'UZS','budget_set':True,'available':'400.00','after':'100.00','status':'ok','mode':'soft'})
+            over=q('500').json();self.assertEqual((over['after'],over['status']),('-100.00','soft'))
+            other=next(c['id'] for c in cl.get('/api/bootstrap',headers=h).json()['categories'] if c['id']!=self.cat and c['type']=='outcome')
+            none=cl.get(f'/api/budget-check?account_id={self.acc}&category_id={other}&amount=1&date={self.date}',headers=h).json()
+            self.assertEqual((none['budget_set'],none['status']),(False,'no_budget'))
+            self.assertEqual(book[0].get(f'/api/budget-check?account_id={self.acc}&category_id={self.cat}&amount=1&date={self.date}',headers=book[1]).status_code,403)
+        finally:cl.close()
+
+    def test_108_one_user_has_different_roles_in_different_companies(self):
+        ids=self.company_ids();zuma=ids['ZUMA'];uzg=ids['UZGERMED']
+        cl,h=self.make_user('finance','multi')
+        self.assertEqual(self.client.post('/api/company-users',json={'username':'multi','role':'director'},headers={**self.h,'X-Company-ID':str(zuma)}).status_code,200)
+        hz={**h,'X-Company-ID':str(zuma)};hu={**h,'X-Company-ID':str(uzg)}
+        try:
+            self.assertEqual(cl.get('/api/bootstrap',headers=hu).json()['user']['role'],'finance')
+            self.assertEqual(cl.get('/api/bootstrap',headers=hz).json()['user']['role'],'director')
+            rid=self.request('600').json()['id']
+            first=cl.post(f'/api/requests/{rid}/decision',json={'action':'approve','version':1,'note':'Проверено финансовым директором'},headers=hu)
+            self.assertEqual(first.status_code,200,first.text);self.assertEqual(first.json()['approval_stage'],'director')
+            self.assertEqual(cl.post(f'/api/requests/{rid}/decision',json={'action':'approve','version':first.json()['version'],'note':'Попытка директорского этапа'},headers=hu).status_code,403)
+            cid,zh,cat,acc=self.second_company()
+            zr=self.client.post('/api/requests',json={'account_id':acc,'category_id':cat,'counterparty':'Supplier','amount':'100','date':self.date,'purpose':'Заявка второй компании'},headers=zh).json()
+            self.assertEqual(cl.post(f"/api/requests/{zr['id']}/decision",json={'action':'approve','version':zr['version'],'note':'Попытка финансового этапа'},headers=hz).status_code,403)
+            fin=self.user_in(zuma,'finance','zuma_fin')
+            checked=fin[0].post(f"/api/requests/{zr['id']}/decision",json={'action':'approve','version':zr['version'],'note':'Проверено во второй компании'},headers=fin[1]).json()
+            done=cl.post(f"/api/requests/{zr['id']}/decision",json={'action':'approve','version':checked['version'],'note':'Утверждаю директором'},headers=hz)
+            self.assertEqual(done.status_code,200,done.text);self.assertEqual(done.json()['status'],'approved')
+            fin[0].close()
+        finally:cl.close()
+
+    def test_109_holding_admin_gets_finances_only_by_a_separate_assignment(self):
+        ids=self.company_ids();zuma=ids['ZUMA']
+        cl,h=self.make_user('admin','admin2')
+        try:
+            me=cl.get('/api/bootstrap',headers=h).json()['user']
+            self.assertEqual((me['holding_role'],me['company_role']),('admin',None))
+            self.assertFalse({'write','request','approve','budget','pay_bank','pay_cash'}&set(me['permissions']))
+            self.assertEqual(sorted(c['code'] for c in cl.get('/api/companies').json()['companies']),['UNASSIGNED','UZGERMED','ZUMA'])
+            self.assertEqual(self.request(client=cl,headers=h).status_code,403)
+            self.assertEqual(self.post('/api/accounts',{'name':'Счёт админа','kind':'bank','currency':'UZS','opening':'0','opening_date':self.date},cl,h).status_code,403)
+            self.assertEqual(self.post('/api/ledger',{'account_id':self.acc,'category_id':self.cat,'kind':'in','amount':'1','date':self.date,'reference':'ADM','note':'Поступление администратора'},cl,h).status_code,403)
+            self.assertEqual(cl.get('/api/users',headers=h).status_code,200)
+            # No self-assignment, and an admin needs a concrete role.
+            self.assertEqual(self.post('/api/company-users',{'username':'admin2','role':'finance'},cl,h).status_code,409)
+            self.assertEqual(self.post('/api/company-users',{'username':'admin2'}).status_code,422)
+            self.assertEqual(self.post('/api/company-users',{'username':'admin2','role':'finance'}).status_code,200)
+            self.assertEqual(self.request(client=cl,headers=h).status_code,200)
+            self.assertEqual(self.request(client=cl,headers={**h,'X-Company-ID':str(zuma)}).status_code,403)
+            uid=me['id']
+            self.assertEqual(self.client.delete(f'/api/company-users/{uid}',headers=self.h).status_code,200)
+            self.assertEqual(self.request(client=cl,headers=h).status_code,403)
+            self.assertIn('UZGERMED',[c['code'] for c in cl.get('/api/companies').json()['companies']])
+        finally:cl.close()
+
+    def test_110_permissions_have_no_generic_pay_and_payments_stay_split(self):
+        from app.security import PERMS,ROLES
+        self.assertTrue(all('pay' not in PERMS[r] for r in ROLES))
+        self.assertEqual(PERMS['accountant'],{'ledger','pay_bank'});self.assertIn('pay_cash',PERMS['cashier'])
+        self.assertTrue(all(not {'pay_bank','pay_cash'}&PERMS[r] for r in ('admin','founder','director','finance','operator')))
+        book=self.make_user('accountant','split_book')
+        self.assertEqual(book[0].get('/api/bootstrap',headers=book[1]).json()['user']['permissions'],['ledger','pay_bank'])
+
+    def test_111_company_role_column_is_added_to_an_existing_database(self):
+        from sqlalchemy import inspect as sa_inspect,text
+        cl,h=self.make_user('employee','kept_role')
+        with engine.begin() as conn:conn.execute(text('ALTER TABLE company_users DROP COLUMN role'))
+        initialize();initialize()
+        with engine.connect() as conn:self.assertIn('role',{c['name'] for c in sa_inspect(conn).get_columns('company_users')})
+        # The previous role becomes the explicit company role: no access is lost.
+        with unit() as s:
+            uid=s.scalar(select(User.id).where(User.username=='kept_role'))
+            self.assertEqual([m.role for m in s.scalars(select(CompanyUser).where(CompanyUser.user_id==uid))],['employee'])
+        self.assertEqual(cl.get('/api/bootstrap',headers=h).json()['user']['role'],'employee')
+        self.assertEqual(self.request(client=cl,headers=h).status_code,200)
+        cl.close()
+
+    def test_112_a_holding_user_moved_to_a_company_role_stays_only_in_that_company(self):
+        ids=self.company_ids();zuma=ids['ZUMA'];uzg=ids['UZGERMED']
+        rid=self.request('600').json()['id']
+        # A founder created in UZGERMED and an admin from before the migration with empty links everywhere.
+        self.assertEqual(self.post('/api/users',{'username':'owner1','name':'owner1','password':PASSWORD,'role':'founder'}).status_code,200)
+        self.assertEqual(self.post('/api/users',{'username':'legacy_admin','name':'legacy_admin','password':PASSWORD,'role':'admin'}).status_code,200)
+        with unit(True) as s:
+            uid=s.scalar(select(User.id).where(User.username=='legacy_admin'))
+            for c in s.scalars(select(Company)):s.add(CompanyUser(company_id=c.id,user_id=uid,role=None))
+        zh={**self.h,'X-Company-ID':str(zuma)}
+        for name in ('owner1','legacy_admin'):
+            uid=next(u['id'] for u in self.client.get('/api/users',headers=zh).json() if u['username']==name)
+            self.assertEqual(self.client.post(f'/api/users/{uid}',json={'role':'finance','active':True},headers=zh).status_code,200)
+            cl=TestClient(app);login=cl.post('/api/login',json={'username':name,'password':PASSWORD});h={'X-CSRF-Token':login.json()['csrf']}
+            try:
+                self.assertEqual([c['code'] for c in cl.get('/api/companies').json()['companies']],['ZUMA'],name)
+                self.assertEqual(cl.get('/api/bootstrap',headers={**h,'X-Company-ID':str(uzg)}).status_code,403,name)
+                self.assertEqual(cl.post(f'/api/requests/{rid}/decision',json={'action':'approve','version':1,'note':'Попытка в чужой компании'},headers={**h,'X-Company-ID':str(uzg)}).status_code,403,name)
+                self.assertEqual(cl.get('/api/bootstrap',headers={**h,'X-Company-ID':str(zuma)}).json()['user']['role'],'finance',name)
+            finally:cl.close()
+        # Roles held before a change of holding status never come back later.
+        def edit(name,role,company):
+            hh={**self.h,'X-Company-ID':str(company)}
+            uid=next(u['id'] for u in self.client.get('/api/users',headers=hh).json() if u['username']==name)
+            self.assertEqual(self.client.post(f'/api/users/{uid}',json={'role':role,'active':True},headers=hh).status_code,200)
+        def state(name,company):
+            cl=TestClient(app);h={'X-CSRF-Token':cl.post('/api/login',json={'username':name,'password':PASSWORD}).json()['csrf']}
+            try:
+                codes=[c['code'] for c in cl.get('/api/companies').json()['companies']]
+                me=cl.get('/api/bootstrap',headers={**h,'X-Company-ID':str(company)}).json()['user'] if company else None
+                return codes,me
+            finally:cl.close()
+        self.user_in(zuma,'finance','promoted')[0].close()
+        edit('promoted','founder',zuma);edit('promoted','investor',uzg)
+        self.assertEqual(state('promoted',None)[0],['UZGERMED'])
+        self.user_in(zuma,'finance','to_admin')[0].close()
+        edit('to_admin','admin',zuma)
+        me=state('to_admin',zuma)[1];self.assertEqual(me['company_role'],None);self.assertNotIn('write',me['permissions'])
+        self.assertEqual(self.post('/api/company-users',{'username':'to_admin','role':'director'},headers={**self.h,'X-Company-ID':str(zuma)}).status_code,200)
+        edit('to_admin','employee',uzg)
+        self.assertEqual(state('to_admin',None)[0],['UZGERMED'])
+
+    def test_113_admin_rights_come_only_from_the_assignment(self):
+        cl,h=self.make_user('admin','plain_admin')
+        op=self.make_user('operator','import_owner')
+        try:
+            # Archive and restore change an account: an admin without an assignment cannot.
+            aid=self.post('/api/accounts',{'name':'Пустой счёт','kind':'bank','currency':'UZS','opening':'0','opening_date':self.date}).json()['id']
+            self.assertEqual(self.post(f'/api/accounts/{aid}/archive',{'archived':True,'reason':'Закрытие банковского счёта'},cl,h).status_code,403)
+            # Nobody commits another user's import, the holding admin included.
+            batch=self.preview_plan(client=op[0],headers=op[1]);self.assertEqual(batch.status_code,200,batch.text)
+            self.assertEqual(self.post(f"/api/plan-import/{batch.json()['id']}/commit",{'mappings':{},'reason':'Загрузка чужого плана'}).status_code,403)
+            # Counterparties of other people's requests are not sent to the requester.
+            self.request('100')
+            buyer=self.make_user('employee','cp_buyer')
+            self.assertEqual(buyer[0].get('/api/bootstrap',headers=buyer[1]).json()['counterparties'],[])
+            self.assertTrue(self.client.get('/api/bootstrap').json()['counterparties'])
+            buyer[0].close()
+        finally:cl.close();op[0].close()
+
+    def test_114_an_assignment_only_adds_rights_and_the_service_company_gets_no_roles(self):
+        with unit() as s:service=s.scalar(select(Company.id).where(Company.code=='UNASSIGNED'))
+        rid=self.request('600').json()['id']
+        cl,h=self.make_user('admin','viewer_admin')
+        try:
+            self.assertEqual(self.post('/api/company-users',{'username':'viewer_admin','role':'employee'}).status_code,200)
+            listed=cl.get('/api/requests',headers=h).json()
+            self.assertIn(rid,[x['id'] for x in listed]);self.assertFalse(listed[0]['budget'].get('hidden'))
+        finally:cl.close()
+        legacy=self.make_user('operator','legacy_everywhere')[0];legacy.close()
+        with unit(True) as s:
+            uid=s.scalar(select(User.id).where(User.username=='legacy_everywhere'))
+            from sqlalchemy import delete
+            s.execute(delete(CompanyUser).where(CompanyUser.user_id==uid))
+            for c in s.scalars(select(Company)):s.add(CompanyUser(company_id=c.id,user_id=uid,role=None))
+        initialize()
+        with unit() as s:
+            roles={m.company_id:m.role for m in s.scalars(select(CompanyUser).where(CompanyUser.user_id==uid))}
+        self.assertIsNone(roles.pop(service));self.assertEqual(set(roles.values()),{'operator'})
 
 
 if __name__=='__main__':unittest.main(verbosity=2)

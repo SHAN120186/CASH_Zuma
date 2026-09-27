@@ -5,6 +5,7 @@ import ForecastCard from './ForecastCard.vue';
 import AppIcon from '../AppIcon.vue';
 import {toCents, formatCents, formatShortDate, addDays, sameDayPreviousMonth} from './format.js';
 import {balanceHistory, monthPlanFact} from './history.js';
+import {canPayAny} from './rights.js';
 
 const props = defineProps({
   api: {type: Function, required: true},
@@ -239,7 +240,7 @@ const payments = computed(() => (s.value.approved || []).filter(r => r.date <= p
 const decisions = computed(() => [...(s.value.pending || [])].sort(byDue));
 const approver = computed(() => props.has('approve'));
 // Paying a request needs a payment right; the general right to write never pays.
-const canPay = computed(() => ['pay', 'pay_bank', 'pay_cash'].some(p => props.has(p)));
+const canPay = computed(() => canPayAny(props.has));
 
 const risks = computed(() => {
   const out = [], d = s.value.dash, cur = c.value;

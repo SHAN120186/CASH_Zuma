@@ -6,11 +6,19 @@ from fastapi import HTTPException, Request
 from sqlalchemy import select, delete
 from .db import User, LoginSession, LoginAttempt, now, DATA
 
-ROLES = {'admin':'Администратор', 'director':'Директор', 'finance':'Финансист / казначей', 'cashier':'Кассир',
-         'accountant':'Бухгалтер', 'employee':'Инициатор', 'auditor':'Аудитор',
+ROLES = {'admin':'Администратор холдинга', 'founder':'Учредитель', 'director':'Директор', 'finance':'Финансовый директор',
+         'cashier':'Кассир', 'accountant':'Расчётный бухгалтер', 'employee':'Заявитель', 'auditor':'Аудитор',
          'operator':'Сотрудник / оператор', 'investor':'Инвестор / управленец'}
+# Роли холдинга действуют во всех компаниях; остальные роли назначаются на пару
+# «пользователь × компания» (company_users.role).
+HOLDING_ROLES = ('admin', 'founder')
+COMPANY_ROLES = tuple(r for r in ROLES if r not in HOLDING_ROLES)
 PERMS = {
- 'admin': {'view','ledger','export','request','write','approve','budget','plan','import','users','schedule','catalog','audit','approval_policy','request_edit'},
+ # Администратор холдинга: компании, пользователи, назначения, справочники, аудит.
+ # Финансовые действия — только по отдельному назначению роли в конкретной компании.
+ 'admin': {'view','ledger','export','users','catalog','audit','approval_policy'},
+ # Учредитель: все компании только для чтения.
+ 'founder': {'view','ledger','export','audit'},
  'director': {'view','ledger','export','request','write','approve','budget','plan','import','schedule','catalog','audit','approval_policy','request_edit'},
  'cashier': {'request','ledger','pay_cash'},
  'finance': {'view','ledger','export','request','write','approve','budget','plan','import','schedule','request_edit'},
@@ -36,9 +44,42 @@ def payment_channels(permissions):
     return {kind for kind, right in PAY_RIGHTS.items() if right in permissions}
 
 
+def scope_user(user, assigned):
+    """Роль и права пользователя в выбранной компании.
+
+    Учредитель всегда только читает. Администратор холдинга получает финансовые
+    права роли лишь при отдельном назначении в этой компании. Остальные работают
+    по роли назначения, а без неё — по своей прежней роли (перенос без потери доступа)."""
+    if user.role == 'founder':
+        role = None
+    elif user.role == 'admin':
+        role = assigned if assigned in COMPANY_ROLES else None
+    else:
+        role = assigned if assigned in COMPANY_ROLES else user.role
+    permissions = set(PERMS.get(user.role, set())) if user.role in HOLDING_ROLES else set()
+    if role:
+        permissions |= PERMS[role]
+    user._company_role = role
+    user._permissions = frozenset(permissions)
+
+
+def perms_of(user):
+    """Права в выбранной компании; до выбора компании — права собственной роли."""
+    if hasattr(user, '_permissions'):
+        return user._permissions
+    return frozenset(PERMS.get(user.role, set()))
+
+
+def company_role(user):
+    """Роль в выбранной компании, по которой работают этапы согласования и оплаты."""
+    if hasattr(user, '_company_role'):
+        return user._company_role
+    return None if user.role in HOLDING_ROLES else user.role
+
+
 def can_attach_document(user, entry):
     """Call only after the entry has been restricted to the selected company."""
-    permissions = PERMS.get(user.role, set())
+    permissions = perms_of(user)
     return 'write' in permissions or (
         bool(payment_channels(permissions)) and entry.creator_id == user.id and entry.request_id is not None
     )
@@ -93,10 +134,11 @@ def session_user(s, request: Request, permission=None):
     if not bearer.startswith('Bearer ') and request.method not in ('GET','HEAD'):
         if not hmac.compare_digest(request.headers.get('X-CSRF-Token',''), session.csrf):
             raise HTTPException(403, 'Защитный токен не совпадает. Обновите страницу.')
-    if permission and permission not in PERMS.get(user.role,set()):
-        raise HTTPException(403,'У вашей роли нет прав на это действие.')
     from .company_scope import activate
     activate(s, request, user)
+    # Права проверяются после выбора компании: роль назначается отдельно в каждой.
+    if permission and permission not in perms_of(user):
+        raise HTTPException(403,'У вашей роли нет прав на это действие.')
     return user,session
 
 def login_keys(request, username):
@@ -112,6 +154,25 @@ def record_failure(s,keys):
         elif a.since<now()-timedelta(minutes=10):a.count=1;a.since=now()
         else:a.count+=1
 
+def role_label(holding, role):
+    if holding and role:return f'{ROLES[holding]} · {ROLES[role]}'
+    return ROLES[holding or role]
+
+
 def user_json(user):
-    return {'id':user.id,'username':user.username,'name':user.name,'role':user.role,
-            'role_label':ROLES[user.role],'permissions':sorted(PERMS[user.role]),'active':user.active}
+    """Текущий пользователь: роль и права в выбранной компании."""
+    holding = user.role if user.role in HOLDING_ROLES else None
+    role = company_role(user)
+    return {'id':user.id,'username':user.username,'name':user.name,'role':role or user.role,
+            'holding_role':holding,'company_role':role,'role_label':role_label(holding,role),
+            'permissions':sorted(perms_of(user)),'active':user.active}
+
+
+def member_json(user, assigned):
+    """Сотрудник в списке выбранной компании с его ролью именно в этой компании."""
+    holding = user.role if user.role in HOLDING_ROLES else None
+    if user.role == 'founder':role = None
+    elif holding:role = assigned if assigned in COMPANY_ROLES else None
+    else:role = assigned if assigned in COMPANY_ROLES else user.role
+    return {'id':user.id,'username':user.username,'name':user.name,'role':role or user.role,
+            'holding_role':holding,'company_role':role,'role_label':role_label(holding,role),'active':user.active}

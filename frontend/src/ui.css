@@ -460,6 +460,12 @@ table.cf{border-collapse:separate;border-spacing:0;min-width:100%;font-size:13px
 @media(max-width:360px){.company-grid{grid-template-columns:1fr;max-width:240px;width:100%;align-self:center}.company-card b{font-size:22px}.company-choice .brand{gap:8px}.company-choice .mark{width:40px;height:40px;font-size:20px}.company-choice .bname{font-size:25px}}
 @media(prefers-reduced-motion:reduce){.company-card,.company-card::before,.company-symbol,.company-enter,.company-enter .app-icon{transition:none!important;transform:none!important}}
 
+.budget-check{margin-top:18px;padding:14px 16px;border-radius:14px;border:1px solid var(--line);background:var(--surface)}
+.budget-check p{margin:6px 0 0;font-size:13.5px}.budget-check b{font-variant-numeric:tabular-nums}
+.budget-check.ok{border-color:rgba(22,134,91,.35);background:var(--income-soft,#E6F4EC)}
+.budget-check.soft{border-color:rgba(183,121,31,.4);background:var(--warning-soft,#FBF2E0)}
+.budget-check.hard{border-color:rgba(193,59,41,.4);background:var(--expense-soft,#FBECE9)}
+.ro-badge{margin-left:10px;white-space:nowrap}
 .request-documents-placeholder{margin-top:18px;padding:16px;border:1px dashed var(--line,#c8d7d2);border-radius:14px;background:var(--bg,#f2eee5)}
 .request-documents-placeholder p{margin:8px 0;font-size:13px;line-height:1.5}
 .request-documents-placeholder button{max-width:100%;white-space:normal}

@@ -87,7 +87,7 @@ def release_version():return FileResponse(ROOT/'release.json',media_type='applic
 
 def visible_request(s,r,u):
     data=request_json(s,r)
-    if u.role in ('employee','cashier') or payment_channels(PERMS[u.role]):data['budget']={'limit':None,'hidden':True,'over':data['budget']['over'],'mode':data['budget']['mode']}
+    if 'view' not in perms_of(u) and (company_role(u) in ('employee','cashier') or payment_channels(perms_of(u))):data['budget']={'limit':None,'hidden':True,'over':data['budget']['over'],'mode':data['budget']['mode']}
     return data
 
 class Input(BaseModel):model_config=ConfigDict(extra='forbid',str_strip_whitespace=True)
@@ -100,10 +100,10 @@ class UserIn(Input):
     username:str=Field(pattern=r'^[a-zA-Z0-9_.-]{3,80}$')
     name:str=Field(min_length=2,max_length=160)
     password:str=Field(min_length=12,max_length=128)
-    role:Literal['admin','director','finance','accountant','employee','auditor','cashier','operator','investor']
+    role:Literal['admin','founder','director','finance','accountant','employee','auditor','cashier','operator','investor']
 class UserEdit(Input):
     model_config=ConfigDict(extra='forbid',str_strip_whitespace=False)
-    role:Literal['admin','director','finance','accountant','employee','auditor','cashier','operator','investor']
+    role:Literal['admin','founder','director','finance','accountant','employee','auditor','cashier','operator','investor']
     active:bool
     password:str=Field(default='',max_length=128)
 class PasswordIn(Input):
@@ -250,7 +250,8 @@ def bootstrap(request:Request):
         companies=[{'id':x.id,'code':x.code,'name':x.name} for x in available_companies(s,user)]
         a=[{'id':a.id,'name':a.name,'kind':a.kind,'currency':a.currency,'company_id':a.company_id,'opening_date':str(a.opening_date)} for a in s.scalars(select(Account).where(Account.archived==False).order_by(Account.name))]
         c=[{'id':c.id,'name':c.name,'activity':c.activity,'type':c.type} for c in s.scalars(select(Category).order_by(Category.id))]
-        cp=[{'name':x.name,'inn':x.inn} for x in s.scalars(select(Counterparty).order_by(Counterparty.name).limit(1000))]
+        # Контрагенты собраны из операций и чужих заявок: только тем, кто видит реестр.
+        cp=[{'name':x.name,'inn':x.inn} for x in s.scalars(select(Counterparty).order_by(Counterparty.name).limit(1000))] if {'view','ledger'}&perms_of(user) else []
         return {'accounts':a,'companies':companies,'categories':c,'counterparties':cp,'roles':ROLES,'today':str(today()),'user':user_json(user),'csrf':session.csrf}
 
 def remember_counterparty(s,name):
@@ -276,6 +277,7 @@ def accounts(request:Request,archived:bool=False):
 def archive_account(id:int,data:ArchiveIn,request:Request):
     with unit(True) as s:
         u,_=session_user(s,request,'users');a=get(s,Account,id)
+        if 'write' not in perms_of(u):raise HTTPException(403,'Архивировать счёт может администратор с назначением «Директор», «Финансовый директор» или «Сотрудник / оператор» в этой компании.')
         if data.archived:
             if account_balance(s,a)!=0:raise HTTPException(409,'Сначала перенесите остаток: архивировать можно счёт с нулевым балансом.')
             if s.scalar(select(PaymentRequest.id).where(PaymentRequest.account_id==id,PaymentRequest.status.in_(['draft','pending','approved','returned'])).limit(1)) or s.scalar(select(Receipt.id).where(Receipt.account_id==id,Receipt.status=='expected').limit(1)):
@@ -302,7 +304,7 @@ def set_approval_policy(data:ApprovalLimitIn,request:Request):
 def add_account(data:AccountIn,request:Request):
     with unit(True) as s:
         u,_=session_user(s,request,'write')
-        if u.role=='cashier':raise HTTPException(403,'Счета создаёт финансист или администратор.')
+        if company_role(u)=='cashier':raise HTTPException(403,'Счета создаёт финансовый директор.')
         if data.opening_date>today():raise HTTPException(422,'Начальный остаток не может быть задан будущей датой.')
         if data.kind=='cash' and data.allow_overdraft:raise HTTPException(422,'Для кассы отрицательный остаток запрещён.')
         company_id=data.company_id or s.info['company_id']
@@ -314,7 +316,7 @@ def add_account(data:AccountIn,request:Request):
 def edit_account(id:int,data:AccountEdit,request:Request):
     with unit(True) as s:
         u,_=session_user(s,request,'write');a=get(s,Account,id)
-        if u.role=='cashier':raise HTTPException(403,'Счета изменяет финансист или администратор.')
+        if company_role(u)=='cashier':raise HTTPException(403,'Счета изменяет финансовый директор.')
         if a.archived:raise HTTPException(409,'Сначала восстановите счёт из архива.')
         if data.opening_date>today():raise HTTPException(422,'Начальный остаток не может быть задан будущей датой.')
         if data.kind=='cash' and data.allow_overdraft:raise HTTPException(422,'Для кассы отрицательный остаток запрещён.')
@@ -382,14 +384,14 @@ def save_reserve(data:ReserveIn,request:Request):
 def requests_list(request:Request,date_from:Optional[date]=None,date_to:Optional[date]=None,currency:Optional[Literal['UZS','USD','EUR']]=None,q:str='',state:str='',page:int=Query(1,ge=1),page_size:int=Query(10,ge=1,le=100),paginated:bool=False):
     with unit() as s:
         u,_=session_user(s,request)
-        channels=payment_channels(PERMS[u.role])
-        if not ({'request','view'} & PERMS[u.role] or channels):raise HTTPException(403,'Недостаточно прав для просмотра заявок.')
-        payer_only=not ({'request','view'} & PERMS[u.role])
+        channels=payment_channels(perms_of(u))
+        if not ({'request','view'} & perms_of(u) or channels):raise HTTPException(403,'Недостаточно прав для просмотра заявок.')
+        payer_only=not ({'request','view'} & perms_of(u))
         if date_from and date_to and date_from>date_to:raise HTTPException(422,'Начало периода позже окончания.')
         query=select(PaymentRequest).join(Account,Account.id==PaymentRequest.account_id)
         payable=and_(PaymentRequest.status.in_(['approved','paid']),Account.kind.in_(sorted(channels)))
         # Кассир видит свои заявки и кассовые заявки к оплате; инициатор — только свои.
-        if u.role in ('employee','cashier'):query=query.where(or_(PaymentRequest.creator_id==u.id,payable) if channels else PaymentRequest.creator_id==u.id)
+        if 'view' not in perms_of(u) and company_role(u) in ('employee','cashier'):query=query.where(or_(PaymentRequest.creator_id==u.id,payable) if channels else PaymentRequest.creator_id==u.id)
         if payer_only:query=query.where(payable)
         if currency:query=query.where(Account.currency==currency)
         if date_from:query=query.where(PaymentRequest.due_date>=date_from)
@@ -400,6 +402,18 @@ def requests_list(request:Request,date_from:Optional[date]=None,date_to:Optional
         query=query.order_by(PaymentRequest.due_date.desc(),PaymentRequest.id.desc())
         items=[visible_request(s,r,u) for r in s.scalars(query.offset((page-1)*page_size).limit(page_size) if paginated else query.limit(500))]
         return {'items':items,'total':total,'page':page,'page_size':page_size} if paginated else items
+@app.get('/api/budget-check')
+def budget_check(request:Request,account_id:int,category_id:int,value:str=Query(alias='amount'),day:date=Query(alias='date')):
+    """Карточка бюджета в форме заявки: только доступность статьи на период и остаток после заявки."""
+    with unit() as s:
+        session_user(s,request,'request');a=get(s,Account,account_id);get(s,Category,category_id)
+        n=amount(value);month=str(day)[:7]
+        b=budget_state(s,category_id,month,a.currency,n)
+        if b['limit'] is None:return {'period':month,'currency':a.currency,'budget_set':False,'status':'no_budget'}
+        available=b['limit']-b['used'];after=available-n
+        return {'period':month,'currency':a.currency,'budget_set':True,'available':money(available),'after':money(after),
+                'status':'ok' if after>=0 else b['mode'],'mode':b['mode']}
+
 @app.post('/api/requests')
 def add_request(data:RequestIn,request:Request):
     with unit(True) as s:
@@ -416,7 +430,7 @@ def add_request(data:RequestIn,request:Request):
 def edit_request(id:int,data:RequestEdit,request:Request):
     with unit(True) as s:
         u,_=session_user(s,request,'request');r=get(s,PaymentRequest,id)
-        if r.creator_id!=u.id and 'request_edit' not in PERMS[u.role]:raise HTTPException(403,'Редактировать может автор или финансовый руководитель.')
+        if r.creator_id!=u.id and 'request_edit' not in perms_of(u):raise HTTPException(403,'Редактировать может автор или финансовый руководитель.')
         check_request_version(r,data.version)
         if r.status=='rejected':raise HTTPException(409,'Отклонённая заявка хранится только для чтения. Создайте новую заявку.')
         if r.status not in ('draft','pending','returned'):raise HTTPException(409,'Редактирование доступно до утверждения. Утверждённую заявку сначала верните на доработку.')
@@ -437,23 +451,23 @@ def decide(id:int,data:DecisionIn,request:Request):
         if data.action=='reject':raise HTTPException(422,'Отклонение больше не используется. Верните заявку на доработку с комментарием.')
         if data.action=='return_finance':
             # Плательщик канала, которому не хватило денег или бюджета при оплате.
-            if pay_right(a) not in PERMS[u.role]:raise HTTPException(403,'Вернуть финансовому директору может плательщик этой заявки.')
+            if pay_right(a) not in perms_of(u):raise HTTPException(403,'Вернуть финансовому директору может плательщик этой заявки.')
         else:
-            if not ({'request','approve'} & PERMS[u.role]):raise HTTPException(403,'Недостаточно прав.')
-            if u.role in ('employee','cashier') and r.creator_id!=u.id:raise HTTPException(403,'Доступны только собственные заявки.')
+            if not ({'request','approve'} & perms_of(u)):raise HTTPException(403,'Недостаточно прав.')
+            if company_role(u) in ('employee','cashier') and r.creator_id!=u.id:raise HTTPException(403,'Доступны только собственные заявки.')
         check_request_version(r,data.version)
         before={'status':r.status,'date':str(r.due_date),'version':r.version,'approved_by':r.approved_by}
         if data.action=='submit':
-            if r.status not in ('draft','returned') or (r.creator_id!=u.id and 'request_edit' not in PERMS[u.role]):raise HTTPException(403,'Отправить можно свой черновик или возвращённую заявку.')
+            if r.status not in ('draft','returned') or (r.creator_id!=u.id and 'request_edit' not in perms_of(u)):raise HTTPException(403,'Отправить можно свой черновик или возвращённую заявку.')
             enforce_budget(s,r.category_id,r.due_date,a.currency,r.amount,r.purpose);r.status='pending'
         elif data.action=='cancel':
-            if r.creator_id!=u.id and 'request_edit' not in PERMS[u.role]:raise HTTPException(403,'Отмена недоступна.')
+            if r.creator_id!=u.id and 'request_edit' not in perms_of(u):raise HTTPException(403,'Отмена недоступна.')
             if r.status=='rejected':raise HTTPException(409,'Отклонённая заявка хранится только для чтения.')
             if r.status not in ('draft','pending','approved','returned'):raise HTTPException(409,'Оплаченную или отменённую заявку отменить нельзя.')
             if len(data.note)<10:raise HTTPException(422,'Укажите причину отмены не короче 10 символов.')
             r.status='cancelled';clear_approval(r)
         elif data.action=='return':
-            if 'approve' not in PERMS[u.role]:raise HTTPException(403,'Недостаточно прав для возврата.')
+            if 'approve' not in perms_of(u):raise HTTPException(403,'Недостаточно прав для возврата.')
             if r.status not in ('pending','approved'):raise HTTPException(409,'Вернуть можно заявку на согласовании или утверждённую заявку.')
             if len(data.note)<10:raise HTTPException(422,'Укажите причину возврата не короче 10 символов.')
             r.status='returned';clear_approval(r)
@@ -462,21 +476,21 @@ def decide(id:int,data:DecisionIn,request:Request):
             if len(data.note)<10:raise HTTPException(422,'Укажите причину возврата не короче 10 символов: чего не хватает для оплаты.')
             r.status='pending';clear_approval(r)
         elif data.action=='reschedule':
-            if 'request_edit' not in PERMS[u.role] or r.status not in ('pending','approved'):raise HTTPException(403,'Перенос недоступен.')
+            if 'request_edit' not in perms_of(u) or r.status not in ('pending','approved'):raise HTTPException(403,'Перенос недоступен.')
             if not data.date or len(data.note)<10:raise HTTPException(422,'Нужны новая дата и причина не короче 10 символов.')
             if data.date<a.opening_date:raise HTTPException(422,'Дата раньше начала учёта счёта.')
             r.due_date=data.date;r.status='pending';clear_approval(r);r.last_editor_id=u.id
         else:
-            if 'approve' not in PERMS[u.role]:raise HTTPException(403,'Недостаточно прав для согласования.')
+            if 'approve' not in perms_of(u):raise HTTPException(403,'Недостаточно прав для согласования.')
             if r.status!='pending':raise HTTPException(409,'Заявка уже обработана или не отправлена на согласование.')
             if u.id in (r.creator_id,r.last_editor_id):raise HTTPException(403,'Автор и последний редактор не могут согласовать свою заявку, включая администратора. Нужен другой согласующий.')
             b=enforce_budget(s,r.category_id,r.due_date,a.currency,r.amount,data.note,r.id)
             if r.finance_approved_by is None:
-                if u.role not in ('finance','admin'):raise HTTPException(403,'Сначала требуется проверка финансиста.')
+                if company_role(u)!='finance':raise HTTPException(403,'Сначала требуется проверка финансового директора компании.')
                 # Этап директора следует всегда (Q03): финансовое согласование не завершает заявку.
                 r.finance_approved_by=u.id
             else:
-                if u.role not in ('director','admin') or u.id==r.finance_approved_by:raise HTTPException(403,'Требуется отдельное подтверждение директора.')
+                if company_role(u)!='director' or u.id==r.finance_approved_by:raise HTTPException(403,'Требуется отдельное подтверждение директора компании.')
                 enforce_available_funds(s,a,r.due_date,r.amount,r.id)
                 r.status='approved';r.approved_by=u.id;r.approved_at=now();r.approved_overrun=overrun(b)
         if data.action in ('submit','cancel','return','reschedule','return_finance'):r.finance_approved_by=None
@@ -529,13 +543,13 @@ def ledger_list(request:Request,date_from:Optional[date]=None,date_to:Optional[d
 def add_ledger(data:LedgerIn,request:Request):
     with unit(True) as s:
         u,_=session_user(s,request)
-        if not ('write' in PERMS[u.role] or payment_channels(PERMS[u.role])):raise HTTPException(403,'У вашей роли нет прав на это действие.')
+        if not ('write' in perms_of(u) or payment_channels(perms_of(u))):raise HTTPException(403,'У вашей роли нет прав на это действие.')
         t=post_ledger(s,u,data);remember_counterparty(s,data.counterparty);return {'id':t.id}
 @app.post('/api/ledger/{id}/reverse')
 def reverse(id:int,data:ReverseIn,request:Request):
     with unit(True) as s:
         u,_=session_user(s,request,'write')
-        if u.role not in ('admin','finance','director'):raise HTTPException(403,'Сторно выполняет финансовый руководитель или администратор.')
+        if company_role(u) not in ('finance','director'):raise HTTPException(403,'Сторно выполняет финансовый директор или директор компании.')
         t=get(s,Ledger,id)
         if t.reversal_of or s.scalar(select(Ledger.id).where(Ledger.reversal_of==id)):raise HTTPException(409,'Сторнирование уже выполнено или это запись сторно.')
         inv=Ledger(account_id=t.to_account_id if t.kind=='transfer' else t.account_id,to_account_id=t.account_id if t.kind=='transfer' else None,
@@ -650,10 +664,14 @@ def model_drive_sync(request:Request):
 @app.get('/api/users')
 def users(request:Request):
     with unit() as s:
-        session_user(s,request,'users');return [user_json(u) for u in s.scalars(select(User).order_by(User.id))]
+        session_user(s,request,'users')
+        roles={m.user_id:m.role for m in s.scalars(select(CompanyUser).where(CompanyUser.company_id==s.info['company_id']))}
+        return [member_json(u,roles.get(u.id)) for u in s.scalars(select(User).order_by(User.id))]
 
 class CompanyUserIn(Input):
     username:str=Field(min_length=3,max_length=80)
+    # Роль в выбранной компании; для администратора холдинга это отдельное финансовое назначение.
+    role:Optional[Literal['director','finance','accountant','employee','auditor','cashier','operator','investor']]=None
 
 @app.post('/api/company-users')
 def grant_company_access(data:CompanyUserIn,request:Request):
@@ -662,18 +680,26 @@ def grant_company_access(data:CompanyUserIn,request:Request):
         u=s.scalar(select(User).where(User.username==data.username.strip().lower()).execution_options(company_unscoped=True))
         if not u:raise HTTPException(404,'Логин не найден. Создайте нового пользователя.')
         cid=s.info['company_id']
-        if not s.get(CompanyUser,(cid,u.id)):s.add(CompanyUser(company_id=cid,user_id=u.id))
-        log(s,admin,'Предоставлен доступ к компании','user',u.id)
+        if u.role=='founder':raise HTTPException(409,'Учредитель видит все компании только для чтения; назначение не требуется.')
+        if u.id==admin.id and data.role:raise HTTPException(409,'Роль в компании себе не назначают: её выдаёт другой администратор.')
+        if u.role=='admin' and not data.role:raise HTTPException(422,'Администратору холдинга в компании назначается роль, например «Финансовый директор».')
+        if not data.role:raise HTTPException(422,'Выберите роль сотрудника в этой компании.')
+        m=s.get(CompanyUser,(cid,u.id))
+        if not m:m=CompanyUser(company_id=cid,user_id=u.id);s.add(m)
+        m.role=data.role
+        log(s,admin,'Предоставлен доступ к компании','user',u.id,f'роль: {data.role}')
         return {'ok':True}
 
 @app.delete('/api/company-users/{id}')
 def revoke_company_access(id:int,request:Request):
     with unit(True) as s:
         admin,_=session_user(s,request,'users');u=get(s,User,id)
-        if u.role=='admin':raise HTTPException(409,'Администратор управляет всеми компаниями.')
+        if u.role=='founder':raise HTTPException(409,'Учредитель видит все компании только для чтения.')
         membership=s.get(CompanyUser,(s.info['company_id'],id))
+        # Администратор холдинга видит компанию и без назначения: снимается только его финансовая роль.
         if membership:s.delete(membership)
-        log(s,admin,'Отозван доступ к компании','user',id)
+        action='Снято назначение администратора в компании' if u.role=='admin' else 'Отозван доступ к компании'
+        log(s,admin,action,'user',id)
         return {'ok':True}
 
 @app.post('/api/users')
@@ -682,7 +708,10 @@ def add_user(data:UserIn,request:Request):
         admin,_=session_user(s,request,'users')
         try:pw=hash_password(data.password)
         except ValueError as e:raise HTTPException(422,str(e))
-        u=User(username=data.username.lower(),name=data.name,password_hash=pw,role=data.role,role_id=s.scalar(select(Role.id).where(Role.name==data.role)));s.add(u);s.flush();s.add(CompanyUser(company_id=s.info['company_id'],user_id=u.id));log(s,admin,'Создан пользователь','user',u.id,u.role);return user_json(u)
+        u=User(username=data.username.lower(),name=data.name,password_hash=pw,role=data.role,role_id=s.scalar(select(Role.id).where(Role.name==data.role)));s.add(u);s.flush()
+        # Пользователь холдинга видит компании по своей роли; сотруднику нужна роль в выбранной компании.
+        if data.role not in HOLDING_ROLES:s.add(CompanyUser(company_id=s.info['company_id'],user_id=u.id,role=data.role))
+        log(s,admin,'Создан пользователь','user',u.id,u.role);return member_json(u,None if data.role in HOLDING_ROLES else data.role)
 @app.post('/api/users/{id}')
 def edit_user(id:int,data:UserEdit,request:Request):
     with unit(True) as s:
@@ -691,13 +720,27 @@ def edit_user(id:int,data:UserEdit,request:Request):
         if u.role=='admin' and (not data.active or data.role!='admin'):
             count=s.scalar(select(func.count()).select_from(User).where(User.role=='admin',User.active==True))
             if count<=1:raise HTTPException(409,'В системе должен оставаться активный администратор.')
-        u.role=data.role;u.role_id=s.scalar(select(Role.id).where(Role.name==data.role));u.active=data.active
+        cid=s.info['company_id']
+        if data.role!=u.role and (data.role in HOLDING_ROLES or u.role in HOLDING_ROLES):
+            # Смена статуса холдинга начинается с чистого листа: прежние роли в компаниях снимаются.
+            # Администратору финансовое назначение выдаётся заново, учредителю оно не нужно,
+            # бывший пользователь холдинга остаётся только в выбранной компании.
+            s.execute(delete(CompanyUser).where(CompanyUser.user_id==u.id))
+            # Роль холдинга действует во всех компаниях.
+            u.role=data.role;u.role_id=s.scalar(select(Role.id).where(Role.name==data.role))
+        if data.role not in HOLDING_ROLES:
+            # Роль сотрудника назначается в выбранной компании; в других остаётся своя.
+            m=s.get(CompanyUser,(cid,u.id))
+            if not m:m=CompanyUser(company_id=cid,user_id=u.id);s.add(m)
+            m.role=data.role
+        u.active=data.active
         if data.password:
             try:u.password_hash=hash_password(data.password)
             except ValueError as e:raise HTTPException(422,str(e))
         s.execute(delete(LoginSession).where(LoginSession.user_id==u.id))
         log(s,admin,'Изменены права / пароль пользователя','user',id,f'{data.role}; active={data.active}; сессии отозваны')
-        return user_json(u)
+        m=s.get(CompanyUser,(cid,u.id))
+        return member_json(u,m.role if m else None)
 
 @app.post('/api/users/{id}/password')
 def reset_user_password(id:int,data:ResetPasswordIn,request:Request):

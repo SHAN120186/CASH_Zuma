@@ -29,7 +29,9 @@ def available_companies(s, user):
         # Интерфейс его скрывает; сервер тоже не принимает его как контекст сотрудника,
         # даже если прежняя связь CompanyUser сохранилась после миграции.
         q = q.where(Company.code != SERVICE_CODE)
-        q = q.where(Company.id.in_(select(CompanyUser.company_id).where(CompanyUser.user_id == user.id)))
+        if user.role != 'founder':
+            # Учредитель видит все компании холдинга; остальные — только назначенные.
+            q = q.where(Company.id.in_(select(CompanyUser.company_id).where(CompanyUser.user_id == user.id)))
     return list(s.scalars(q.order_by(Company.code == 'UNASSIGNED', Company.name)))
 
 
@@ -48,6 +50,9 @@ def activate(s, request, user):
         raise HTTPException(422, 'Некорректная компания.')
     if not any(c.id == cid for c in available_companies(s, user)):
         raise HTTPException(403, 'Нет доступа к выбранной компании.')
+    from .security import scope_user
+    membership = s.get(CompanyUser, (cid, user.id))
+    scope_user(user, membership.role if membership else None)
     s.info['company_id'] = cid
     request.state.company_id = cid
 
@@ -65,7 +70,7 @@ def criteria(cid):
         (Ledger, Ledger.account_id.in_(aids)),
         (Document, Document.ledger_id.in_(lids)),
         (Budget, Budget.category_id.in_(cats)),
-        (User, or_(User.role == 'admin', User.id.in_(select(CompanyUser.user_id).where(CompanyUser.company_id == cid)))),
+        (User, or_(User.role.in_(('admin', 'founder')), User.id.in_(select(CompanyUser.user_id).where(CompanyUser.company_id == cid)))),
     ]
 
 

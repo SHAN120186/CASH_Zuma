@@ -5,7 +5,7 @@ from datetime import date, datetime, timedelta, timezone
 from sqlalchemy import select, func
 from fastapi import HTTPException
 from .company_scope import get_setting
-from .security import PERMS, pay_right
+from .security import PERMS, pay_right, perms_of, company_role
 from .db import Account, Category, Budget, PaymentRequest, Receipt, Ledger, Audit, Setting
 
 def today():return datetime.now(timezone(timedelta(hours=5))).date()
@@ -136,7 +136,7 @@ def check_payer(s,u,req):
     """Кто может провести оплату заявки: отдельное право канала и не участник заявки."""
     account=get(s,Account,req.account_id)
     right=pay_right(account)
-    if right not in PERMS[u.role]:
+    if right not in perms_of(u):
         raise HTTPException(403,'Оплату кассовой заявки проводит кассир.' if account.kind=='cash' else 'Оплату банковской заявки проводит расчётный бухгалтер.')
     if u.id in {req.creator_id,req.last_editor_id,req.finance_approved_by,req.approved_by}:
         raise HTTPException(403,'Автор, последний редактор и согласующие заявки не могут провести её оплату.')
@@ -198,7 +198,7 @@ def request_json(s,r,accounts=None,categories=None,users=None):
 def post_ledger(s,u,data):
     a=get(s,Account,data.account_id)
     if a.archived:raise HTTPException(409,'Счёт в архиве. Сначала восстановите его.')
-    if 'write' not in PERMS[u.role] and (data.kind!='out' or not data.request_id):
+    if 'write' not in perms_of(u) and (data.kind!='out' or not data.request_id):
         raise HTTPException(403,'Плательщик фиксирует только оплату утверждённой заявки: поступления, переводы и расход без заявки недоступны.')
     req=None
     if data.request_id:
