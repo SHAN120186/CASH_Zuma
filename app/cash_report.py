@@ -31,13 +31,15 @@ def report(s, year, currency, company_id, scenario='A', as_of=None):
     plan_net = [total([r['plan'][m] for r in rows]) for m in range(12)]
     groups = [{'activity':key,'name':name,'values':[sum(r['values'][m] for r in rows if r['activity']==key) for m in range(12)],'plan':[total([r['plan'][m] for r in rows if r['activity']==key]) for m in range(12)]} for key,name in ACTIVITIES.items()]
     # Opening balances are introduced on their original dates, never as operating income.
+    # An account opened after the cut-off date does not exist yet in a report on that date.
+    opened=[a for a in accounts if a.opening_date<=cutoff]
     opening=[];closing=[];adjustments=[];plan_opening=[];plan_closing=[]
     for m in range(1,13):
         start=date(year,m,1);end=date(year+1,1,1) if m==12 else date(year,m+1,1)
         prior=sum(t.amount if t.kind=='in' else -t.amount for t in entries if t.date<start)
-        base=sum(a.opening for a in accounts if a.opening_date<start or a.opening_date==date(year,1,1))
+        base=sum(a.opening for a in opened if a.opening_date<start or a.opening_date==date(year,1,1))
         opening.append(base+prior)
-        adjustment=sum(a.opening for a in accounts if start<=a.opening_date<end and a.opening_date>date(year,1,1))
+        adjustment=sum(a.opening for a in opened if start<=a.opening_date<end and a.opening_date>date(year,1,1))
         adjustments.append(adjustment)
         closing.append(opening[-1]+net[m-1]+adjustment)
         p=periods.get(f'{year}-{m:02}')

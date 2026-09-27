@@ -42,6 +42,13 @@ def account_balance(s,a,upto=None):
         if t.to_account_id==a.id:balance += t.amount
     return balance
 
+def day_start_balance(s,a,day):
+    """Остаток на начало дня. Начальный остаток задан на начало дня ``opening_date``,
+    поэтому счёт, открытый в этот день, начинает его с начального остатка, а счёт,
+    открытый позже, в этот день равен нулю."""
+    if day<a.opening_date:return 0
+    return a.opening if day==a.opening_date else account_balance(s,a,day-timedelta(days=1))
+
 def funds_state(s, account, as_of, exclude_request=None):
     """Actual account money less fully approved unpaid requests due by ``as_of``.
 

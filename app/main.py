@@ -579,11 +579,13 @@ def group_report(request:Request,company_id:int,currency:Literal['UZS','USD','EU
         income_mtd=sum(t.amount for t in entries if t.kind=='in' and t.account_id in bank_ids)
         last_income=max((t.date for t in entries if t.kind=='in' and t.account_id in bank_ids),default=None)
         expense_plan=abs(sum(v for k,v in payload.items() if k.endswith(':out')))
-        opening=sum(account_balance(s,a,day-timedelta(days=1)) for a in accounts)
+        # Счёт, открытый позже дня отчёта, в этот день ещё не существует и даёт ноль, а не ошибку.
+        opened=[a for a in accounts if a.opening_date<=day]
+        opening=sum(day_start_balance(s,a,day) for a in opened)
         income_day=sum(t.amount for t in entries if t.kind=='in' and t.date==day)
         expense_day=sum(t.amount for t in entries if t.kind=='out' and t.date==day)
         closing=opening+income_day-expense_day
-        reserved=sum(funds_state(s,a,day)['reserved'] for a in accounts)
+        reserved=sum(funds_state(s,a,day)['reserved'] for a in opened)
         available=closing-reserved
         if expense_plan:
             remaining=max(0,expense_plan-income_mtd);coverage=income_mtd*100/expense_plan
