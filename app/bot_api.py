@@ -236,7 +236,9 @@ def company_role_of(user, company, members):
     if company.code == SERVICE_CODE or user.id not in assigned:
         return None
     role = assigned[user.id]
-    return role if role in COMPANY_ROLES else user.role
+    # Только явная роль, и только если сотрудник назначен в одну компанию (как на сайте).
+    valid = sum(1 for cid, people in members.get('_valid', {}).items() if user.id in people)
+    return role if role in COMPANY_ROLES and valid <= 1 else None
 
 
 def responsible(r, account, company, users, members):
@@ -272,6 +274,8 @@ def pending_requests(request: Request):
         members = {}
         for m in s.scalars(select(CompanyUser)):
             members.setdefault(m.company_id, {})[m.user_id] = m.role
+            if m.role in COMPANY_ROLES and m.company_id in companies and companies[m.company_id].code != SERVICE_CODE:
+                members.setdefault('_valid', {}).setdefault(m.company_id, set()).add(m.user_id)
         # Every change of a request (creation, edit, decision, payment reversal) is audited
         # with entity='request'; the latest one is when it entered its current stage.
         entered = {}

@@ -10,7 +10,7 @@ from fastapi.responses import Response
 from pydantic import BaseModel, Field, ConfigDict
 from sqlalchemy import select
 from .db import *
-from .security import session_user, can_attach_document, payment_channels, perms_of, pay_right
+from .security import session_user, PERMS, can_attach_document, payment_channels, perms_of, pay_right
 from .services import post_ledger, money, get, log, today
 
 router=APIRouter()
@@ -139,10 +139,26 @@ def google_preview(request:Request):
         u,_=session_user(s,request,'import')
         return preview(s,u,raw,name)
 
+def readable_ledger(s,u,entry):
+    """Плательщик без просмотра реестра читает документы только операций своего канала."""
+    channels=payment_channels(perms_of(u))
+    if 'view' not in perms_of(u) and channels and get(s,Account,entry.account_id).kind not in channels:
+        raise HTTPException(404,'Запись не найдена.')
+    return entry
+
+def safe_filename(name,suffix=''):
+    """Имя файла без управляющих символов; при обрезке расширение сохраняется."""
+    name=''.join(ch for ch in name if ch.isprintable() and ch not in '\\/"').strip() or 'document'
+    name=' '.join(name.split())
+    if len(name)>220:
+        stem,ext=(name[:-len(suffix)],suffix) if suffix and name.lower().endswith(suffix) else (name,'')
+        name=stem[:220-len(ext)]+ext
+    return name
+
 @router.get('/api/documents')
 def documents(request:Request,ledger_id:int):
     with unit() as s:
-        session_user(s,request,'ledger');get(s,Ledger,ledger_id)
+        u,_=session_user(s,request,'ledger');readable_ledger(s,u,get(s,Ledger,ledger_id))
         return [{'id':d.id,'filename':d.filename,'url':f'/api/documents/{d.id}'} for d in s.scalars(select(Document).where(Document.ledger_id==ledger_id))]
 
 def writable_ledger(s,u,id):
@@ -161,7 +177,7 @@ async def add_document(id:int,request:Request):
     with unit() as s:u,_=session_user(s,request);uid=u.id;writable_ledger(s,u,id)
     raw=await read_upload(request)
     name=Path(unquote(request.headers.get('X-Filename','document'))).name
-    suffix=Path(name).suffix.lower()
+    suffix=Path(name).suffix.lower();name=safe_filename(name,suffix)
     allowed={'.pdf':('application/pdf',b'%PDF-'),'.png':('image/png',b'\x89PNG\r\n\x1a\n'),'.jpg':('image/jpeg',b'\xff\xd8\xff'),'.jpeg':('image/jpeg',b'\xff\xd8\xff')}
     if suffix not in allowed or not raw.startswith(allowed[suffix][1]):raise HTTPException(422,'Документ: PDF, PNG или JPEG, максимум 5 МБ.')
     with unit(True) as s:
@@ -173,35 +189,42 @@ async def add_document(id:int,request:Request):
 @router.get('/api/documents/{id}')
 def download_document(id:int,request:Request):
     with unit() as s:
-        session_user(s,request,'ledger');d=get(s,Document,id)
+        u,_=session_user(s,request,'ledger');d=get(s,Document,id);readable_ledger(s,u,get(s,Ledger,d.ledger_id))
         return Response(d.content,media_type=d.mime,headers={'Content-Disposition':"attachment; filename*=UTF-8''"+quote(d.filename),'Cache-Control':'no-store'})
 
 REQUEST_DOCUMENT_KINDS={'internal':'Внутренняя заявка / Индент','contract':'Договор / Счёт на оплату','other':'Прочие документы'}
 
 def request_document_access(s,user,payment,write=False):
+    """Права на документы заявки берутся из роли в выбранной компании, а не из прежнего поля роли.
+
+    Читают автор, реестр (view), согласующие и плательщик канала утверждённой заявки;
+    меняет автор или финансовый руководитель, пока заявка в черновике или на доработке."""
     permissions=perms_of(user)
     if write:
-        if not ({'request','request_edit'} & permissions):
-            raise HTTPException(403,'Нет права изменять документы заявки.')
+        if not ((payment.creator_id==user.id and 'request' in permissions) or 'request_edit' in permissions):
+            raise HTTPException(403,'Документы изменяет автор или финансовый руководитель.')
         if payment.status not in ('draft','returned'):
             raise HTTPException(409,'Документы можно менять только в черновике или после возврата на доработку.')
-        if payment.creator_id!=user.id and 'request_edit' not in permissions:
-            raise HTTPException(403,'Документы изменяет автор или финансовый руководитель.')
-    elif payment.creator_id!=user.id and not ({'view','approve','request_edit','write'} & permissions):
-        account=get(s,Account,payment.account_id)
-        if payment.status not in ('approved','paid') or pay_right(account) not in permissions:
-            raise HTTPException(403,'Нет доступа к документам этой заявки.')
+        return
+    if payment.creator_id==user.id or {'view','approve','request_edit'}&permissions:return
+    account=get(s,Account,payment.account_id)
+    if payment.status in ('approved','paid') and pay_right(account) in permissions:return
+    raise HTTPException(403,'Нет доступа к документам этой заявки.')
 
 def request_document_json(d):
     return {'id':d.id,'kind':d.kind,'label':REQUEST_DOCUMENT_KINDS[d.kind],'filename':d.filename,
             'version':d.version,'created_at':str(d.created_at),'url':f'/api/request-documents/{d.id}'}
 
 @router.get('/api/requests/{id}/documents')
-def request_documents(id:int,request:Request):
+def request_documents(id:int,request:Request,history:bool=False):
+    """Текущие документы заявки; с history=true — и прежние версии с автором."""
     with unit() as s:
         user,_=session_user(s,request);payment=get(s,PaymentRequest,id);request_document_access(s,user,payment)
-        rows=s.scalars(select(RequestDocument).where(RequestDocument.request_id==id,RequestDocument.active==True).order_by(RequestDocument.kind,RequestDocument.id))
-        return [request_document_json(d) for d in rows]
+        query=select(RequestDocument).where(RequestDocument.request_id==id)
+        if not history:query=query.where(RequestDocument.active==True)
+        names={u.id:u.name for u in s.scalars(select(User).execution_options(company_unscoped=True))} if history else {}
+        rows=s.scalars(query.order_by(RequestDocument.kind,RequestDocument.version,RequestDocument.id))
+        return [{**request_document_json(d),'active':d.active,**({'created_by':names.get(d.created_by,'')} if history else {})} for d in rows]
 
 @router.post('/api/requests/{id}/documents')
 async def add_request_document(id:int,kind:Literal['internal','contract','other'],request:Request):
@@ -209,7 +232,7 @@ async def add_request_document(id:int,kind:Literal['internal','contract','other'
         user,_=session_user(s,request);payment=get(s,PaymentRequest,id);request_document_access(s,user,payment,True);uid=user.id
     raw=await read_upload(request)
     name=Path(unquote(request.headers.get('X-Filename','document'))).name
-    suffix=Path(name).suffix.lower()
+    suffix=Path(name).suffix.lower();name=safe_filename(name,suffix)
     allowed={'.pdf':('application/pdf',b'%PDF-'),'.png':('image/png',b'\x89PNG\r\n\x1a\n'),'.jpg':('image/jpeg',b'\xff\xd8\xff'),'.jpeg':('image/jpeg',b'\xff\xd8\xff')}
     if suffix not in allowed or not raw.startswith(allowed[suffix][1]):raise HTTPException(422,'Документ: PDF, PNG или JPEG, максимум 5 МБ.')
     with unit(True) as s:
@@ -236,7 +259,8 @@ def delete_request_document(id:int,request:Request):
 def download_request_document(id:int,request:Request):
     with unit() as s:
         user,_=session_user(s,request);doc=s.get(RequestDocument,id)
-        if not doc or not doc.active:raise HTTPException(404,'Документ не найден.')
+        # Прежние версии остаются доступны тем, кто вправе читать документы заявки.
+        if not doc:raise HTTPException(404,'Документ не найден.')
         payment=get(s,PaymentRequest,doc.request_id);request_document_access(s,user,payment)
         return Response(doc.content,media_type=doc.mime,headers={'Content-Disposition':"attachment; filename*=UTF-8''"+quote(doc.filename),'Cache-Control':'no-store'})
 

@@ -27,8 +27,10 @@ def make_user(reset=None):
         except ValueError as e:print(str(e))
     with unit(True) as s:
         if reset:
-            u=s.scalar(select(User).where(User.username==username));u.password_hash=encoded
+            u=s.scalar(select(User).where(User.username==username));u.password_hash=encoded;u.must_change_password=False
             s.execute(delete(LoginSession).where(LoginSession.user_id==u.id))
+            from app.bot_api import revoke_telegram
+            revoke_telegram(s,u.id)
             s.add(Audit(user_id=u.id,action='Сброс пароля через консоль',entity='user',entity_id=str(u.id)))
         else:
             if s.scalar(select(User.id).where(User.username==username)):raise ValueError('Этот логин уже существует.')

@@ -30,14 +30,18 @@ def available_companies(s, user):
         # даже если прежняя связь CompanyUser сохранилась после миграции.
         q = q.where(Company.code != SERVICE_CODE)
         if user.role != 'founder':
-            # Учредитель видит все компании холдинга; остальные — только назначенные.
-            q = q.where(Company.id.in_(select(CompanyUser.company_id).where(CompanyUser.user_id == user.id)))
+            # Учредитель видит все компании холдинга. Сотрудник — ровно одну: связь без
+            # действующей роли доступа не даёт, а назначения в нескольких компаниях
+            # приостанавливают доступ до явного решения администратора.
+            from .access import staff_company_ids
+            q = q.where(Company.id.in_(staff_company_ids(s, user)))
     return list(s.scalars(q.order_by(Company.code == 'UNASSIGNED', Company.name)))
 
 
 def activate(s, request, user):
     if request.url.path in ('/api/me', '/api/logout', '/api/password', '/api/companies',
-                            '/api/telegram', '/api/telegram/code'):
+                            '/api/telegram', '/api/telegram/code') or request.url.path.startswith('/api/admin/'):
+        # Центр администрирования работает с реестром холдинга, а не с выбранной компанией.
         return
     header = request.headers.get('X-Company-ID')
     query = request.query_params.get('company_id')

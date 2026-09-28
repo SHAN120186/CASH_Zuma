@@ -87,8 +87,18 @@ class SiteTests(unittest.TestCase):
             if not hasattr(self,'payer'):self.payer=self.make_user('accountant','payer')
             client=self.payer
         return self.post('/api/ledger',data,*(client or ()))
+    def ready(self,name):
+        """Тестовый пароль уже сменён: обязательная смена временного пароля проверяется отдельными тестами."""
+        with unit(True) as s:s.scalar(select(User).where(User.username==name).execution_options(company_unscoped=True)).must_change_password=False
+    def relogin(self,name,company=None):
+        """Изменение прав завершает прежние сеансы: сотрудник входит заново."""
+        cl=TestClient(app);r=cl.post('/api/login',json={'username':name,'password':PASSWORD});self.assertEqual(r.status_code,200,r.text)
+        h={'X-CSRF-Token':r.json()['csrf']}
+        if company:h['X-Company-ID']=str(company)
+        return cl,h
     def make_user(self,role='employee',name='worker'):
         r=self.post('/api/users',{'username':name,'name':name,'password':PASSWORD,'role':role});self.assertEqual(r.status_code,200,r.text)
+        self.ready(name)
         cl=TestClient(app);r=cl.post('/api/login',json={'username':name,'password':PASSWORD});self.assertEqual(r.status_code,200,r.text)
         return cl,{'X-CSRF-Token':r.json()['csrf']}
     def test_release_metadata_is_public_and_never_cached(self):
@@ -1049,10 +1059,14 @@ class SiteTests(unittest.TestCase):
             self.assertEqual(self.post('/api/company-users',{'username':'only_uzgermed'},headers=h).status_code,422)
             self.assertEqual(self.post('/api/company-users',{'username':'only_uzgermed','role':'operator'},headers=h).status_code,200)
             users=self.client.get('/api/users',headers=h).json();uid=next(u['id'] for u in users if u['username']=='only_uzgermed')
+            # Назначение завершает прежний сеанс.
+            self.assertEqual(cl.get('/api/companies').status_code,401);cl.close();cl,uh=self.relogin('only_uzgermed')
             self.assertEqual([c['id'] for c in cl.get('/api/companies').json()['companies']],[cid])
             self.assertEqual(cl.get('/api/accounts',headers={'X-Company-ID':str(self.company)}).status_code,403)
             self.assertEqual(cl.get('/api/accounts',headers={'X-Company-ID':str(cid)}).json()[0]['id'],acc)
             self.assertEqual(self.client.delete('/api/company-users/'+str(uid),headers=h).status_code,200)
+            self.assertEqual(cl.get('/api/accounts',headers={'X-Company-ID':str(cid)}).status_code,401);cl.close();cl,uh=self.relogin('only_uzgermed')
+            self.assertEqual(cl.get('/api/companies').json()['companies'],[])
             self.assertEqual(cl.get('/api/accounts',headers={'X-Company-ID':str(cid)}).status_code,403)
             self.assertEqual(cl.get('/api/accounts').status_code,403)
             self.assertEqual(cl.post('/api/company-users',json={'username':'admin'},headers=uh).status_code,403)
@@ -1289,10 +1303,12 @@ class SiteTests(unittest.TestCase):
         book=self.make_user('accountant','scope_book')
         author=self.make_user('employee','scope_author')
         cid,h,cat,acc=self.second_company()
-        other=self.make_user('finance','scope_finance')
+        self.make_user('finance','scope_finance')[0].close()
         self.assertEqual(self.post('/api/company-users',{'username':'scope_finance','role':'finance'},headers=h).status_code,200)
-        boss=self.make_user('director','scope_director')
+        other=self.relogin('scope_finance')
+        self.make_user('director','scope_director')[0].close()
         self.assertEqual(self.post('/api/company-users',{'username':'scope_director','role':'director'},headers=h).status_code,200)
+        boss=self.relogin('scope_director')
         foreign=self.post('/api/requests',{'account_id':acc,'category_id':cat,'counterparty':'Supplier',
             'amount':'100','date':self.date,'purpose':'Заявка другой компании'},headers=h)
         self.assertEqual(foreign.status_code,200,foreign.text)
@@ -1685,7 +1701,7 @@ class SiteTests(unittest.TestCase):
         """Создаёт пользователя в указанной компании и возвращает клиент и заголовки с этой компанией."""
         h={**self.h,'X-Company-ID':str(company)}
         r=self.client.post('/api/users',json={'username':name,'name':name,'password':PASSWORD,'role':role},headers=h)
-        self.assertEqual(r.status_code,200,r.text)
+        self.assertEqual(r.status_code,200,r.text);self.ready(name)
         cl=TestClient(app);login=cl.post('/api/login',json={'username':name,'password':PASSWORD});self.assertEqual(login.status_code,200,login.text)
         return cl,{'X-CSRF-Token':login.json()['csrf'],'X-Company-ID':str(company)}
 
@@ -1782,6 +1798,8 @@ class SiteTests(unittest.TestCase):
         ids=self.company_ids();zuma=ids['ZUMA'];uzg=ids['UZGERMED']
         cl,h=self.make_user('finance','multi')
         self.assertEqual(self.client.post('/api/company-users',json={'username':'multi','role':'director'},headers={**self.h,'X-Company-ID':str(zuma)}).status_code,200)
+        # Перенос в другую компанию завершает прежний сеанс.
+        self.assertEqual(cl.get('/api/bootstrap',headers=h).status_code,401);cl.close();cl,h=self.relogin('multi')
         hz={**h,'X-Company-ID':str(zuma)};hu={**h,'X-Company-ID':str(uzg)}
         try:
             self.assertEqual(cl.get('/api/bootstrap',headers=hu).status_code,403)
@@ -1805,10 +1823,12 @@ class SiteTests(unittest.TestCase):
             self.assertEqual(self.post('/api/company-users',{'username':'admin2','role':'finance'},cl,h).status_code,409)
             self.assertEqual(self.post('/api/company-users',{'username':'admin2'}).status_code,422)
             self.assertEqual(self.post('/api/company-users',{'username':'admin2','role':'finance'}).status_code,200)
+            cl.close();cl,h=self.relogin('admin2')
             self.assertEqual(self.request(client=cl,headers=h).status_code,200)
             self.assertEqual(self.request(client=cl,headers={**h,'X-Company-ID':str(zuma)}).status_code,403)
             uid=me['id']
             self.assertEqual(self.client.delete(f'/api/company-users/{uid}',headers=self.h).status_code,200)
+            cl.close();cl,h=self.relogin('admin2')
             self.assertEqual(self.request(client=cl,headers=h).status_code,403)
             self.assertIn('UZGERMED',[c['code'] for c in cl.get('/api/companies').json()['companies']])
         finally:cl.close()
@@ -1827,12 +1847,14 @@ class SiteTests(unittest.TestCase):
         with engine.begin() as conn:conn.execute(text('ALTER TABLE company_users DROP COLUMN role'))
         initialize();initialize()
         with engine.connect() as conn:self.assertIn('role',{c['name'] for c in sa_inspect(conn).get_columns('company_users')})
-        # The previous role becomes the explicit company role: no access is lost.
+        # Роль не придумывается при запуске: связь без роли доступа не даёт, пока её не назначит администратор.
         with unit() as s:
             uid=s.scalar(select(User.id).where(User.username=='kept_role'))
-            self.assertEqual([m.role for m in s.scalars(select(CompanyUser).where(CompanyUser.user_id==uid))],['employee'])
-        self.assertEqual(cl.get('/api/bootstrap',headers=h).json()['user']['role'],'employee')
-        self.assertEqual(self.request(client=cl,headers=h).status_code,200)
+            self.assertEqual([m.role for m in s.scalars(select(CompanyUser).where(CompanyUser.user_id==uid))],[None])
+        self.assertEqual(cl.get('/api/companies').json()['companies'],[])
+        self.assertEqual(self.request(client=cl,headers=h).status_code,403)
+        row=next(u for u in self.client.get('/api/admin/users').json() if u['username']=='kept_role')
+        self.assertEqual(row['state'],'no_role')
         cl.close()
 
     def test_112_a_holding_user_moved_to_a_company_role_stays_only_in_that_company(self):
@@ -1841,6 +1863,7 @@ class SiteTests(unittest.TestCase):
         # A founder created in UZGERMED and an admin from before the migration with empty links everywhere.
         self.assertEqual(self.post('/api/users',{'username':'owner1','name':'owner1','password':PASSWORD,'role':'founder'}).status_code,200)
         self.assertEqual(self.post('/api/users',{'username':'legacy_admin','name':'legacy_admin','password':PASSWORD,'role':'admin'}).status_code,200)
+        self.ready('owner1');self.ready('legacy_admin')
         with unit(True) as s:
             uid=s.scalar(select(User.id).where(User.username=='legacy_admin'))
             for c in s.scalars(select(Company)):s.add(CompanyUser(company_id=c.id,user_id=uid,role=None))
@@ -1901,6 +1924,7 @@ class SiteTests(unittest.TestCase):
         cl,h=self.make_user('admin','viewer_admin')
         try:
             self.assertEqual(self.post('/api/company-users',{'username':'viewer_admin','role':'employee'}).status_code,200)
+            cl.close();cl,h=self.relogin('viewer_admin')
             listed=cl.get('/api/requests',headers=h).json()
             self.assertIn(rid,[x['id'] for x in listed]);self.assertFalse(listed[0]['budget'].get('hidden'))
         finally:cl.close()
@@ -1913,15 +1937,15 @@ class SiteTests(unittest.TestCase):
         initialize()
         with unit() as s:
             roles={m.company_id:m.role for m in s.scalars(select(CompanyUser).where(CompanyUser.user_id==uid))}
-        self.assertIsNone(roles.pop(service));self.assertEqual(set(roles.values()),{'operator'})
+        # Роли не восстанавливаются из прежнего поля: пустые связи остаются пустыми.
+        self.assertEqual(set(roles.values()),{None})
 
     def test_115_admin_center_lists_scope_and_archives_without_deleting_history(self):
         self.make_user('procurement','old_buyer')[0].close()
         rows=self.client.get('/api/admin/users').json()
         buyer=next(u for u in rows if u['username']=='old_buyer')
-        self.assertEqual(len(buyer['memberships']),1)
-        self.assertEqual(buyer['memberships'][0]['role'],'procurement')
-        self.assertFalse(buyer['scope_conflict'])
+        self.assertEqual([(a['code'],a['role']) for a in buyer['assignments']],[('UZGERMED','procurement')])
+        self.assertEqual(buyer['state'],'ok')
         self.assertEqual(self.post(f"/api/admin/users/{buyer['id']}/archive",{'reason':'Старая тестовая учётная запись больше не используется'}).status_code,200)
         with unit() as s:
             stored=s.scalar(select(User).where(User.username=='old_buyer'))

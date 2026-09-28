@@ -46,6 +46,8 @@ class User(Base):
     role_id = Column(Integer, ForeignKey('roles.id'), nullable=True)
     active = Column(Boolean, nullable=False, default=True)
     created_at = Column(DateTime, default=now, nullable=False)
+    # Временный пароль (создание, сброс, восстановление): до смены работает только смена пароля.
+    must_change_password = Column(Boolean, nullable=False, default=False)
 
 class CompanyUser(Base):
     __tablename__ = 'company_users'
@@ -339,6 +341,7 @@ def initialize():
         if not SQLITE:conn.execute(text('SELECT pg_advisory_xact_lock(7312801)'))
         columns={c['name'] for c in inspect(conn).get_columns('users')}
         if 'role_id' not in columns:conn.execute(text('ALTER TABLE users ADD COLUMN role_id INTEGER REFERENCES roles(id)'))
+        if 'must_change_password' not in columns:conn.execute(text('ALTER TABLE users ADD COLUMN must_change_password BOOLEAN NOT NULL DEFAULT FALSE'))
         columns={c['name'] for c in inspect(conn).get_columns('categories')}
         if 'cost_group' not in columns:conn.execute(text("ALTER TABLE categories ADD COLUMN cost_group VARCHAR(12) NOT NULL DEFAULT 'other'"))
         if 'type' not in columns:
@@ -398,10 +401,6 @@ def initialize():
         s.commit()
 
     migrate_data(engine)
-    with engine.begin() as conn:
-        # Роль в компании хранится явно: прежние связи сотрудников получают их прежнюю роль.
-        # Пустое значение остаётся у пользователей холдинга и в служебном пространстве.
-        # Служебное пространство сотрудникам недоступно: там роль не назначается.
-        conn.execute(text("UPDATE company_users SET role=(SELECT u.role FROM users u WHERE u.id=company_users.user_id) "
-                          "WHERE role IS NULL AND user_id IN (SELECT id FROM users WHERE role NOT IN ('admin','founder')) "
-                          "AND company_id NOT IN (SELECT id FROM companies WHERE code='UNASSIGNED')"))
+    # Роль в компании назначает только администратор. Прежняя автоматическая подстановка
+    # роли в пустые связи при каждом запуске убрана: она возвращала снятый доступ и
+    # открывала сотрудникам все компании из старой миграции. Пустая связь доступа не даёт.
