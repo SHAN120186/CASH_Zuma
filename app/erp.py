@@ -10,7 +10,7 @@ from fastapi.responses import Response
 from pydantic import BaseModel, Field, ConfigDict
 from sqlalchemy import select
 from .db import *
-from .security import session_user, PERMS, can_attach_document, payment_channels, perms_of
+from .security import session_user, can_attach_document, payment_channels, perms_of, pay_right
 from .services import post_ledger, money, get, log, today
 
 router=APIRouter()
@@ -178,15 +178,19 @@ def download_document(id:int,request:Request):
 
 REQUEST_DOCUMENT_KINDS={'internal':'Внутренняя заявка / Индент','contract':'Договор / Счёт на оплату','other':'Прочие документы'}
 
-def request_document_access(user,payment,write=False):
-    permissions=PERMS.get(user.role,set())
+def request_document_access(s,user,payment,write=False):
+    permissions=perms_of(user)
     if write:
+        if not ({'request','request_edit'} & permissions):
+            raise HTTPException(403,'Нет права изменять документы заявки.')
         if payment.status not in ('draft','returned'):
             raise HTTPException(409,'Документы можно менять только в черновике или после возврата на доработку.')
         if payment.creator_id!=user.id and 'request_edit' not in permissions:
             raise HTTPException(403,'Документы изменяет автор или финансовый руководитель.')
-    elif payment.creator_id!=user.id and not ({'view','approve','request_edit','pay','write'} & permissions):
-        raise HTTPException(403,'Нет доступа к документам этой заявки.')
+    elif payment.creator_id!=user.id and not ({'view','approve','request_edit','write'} & permissions):
+        account=get(s,Account,payment.account_id)
+        if payment.status not in ('approved','paid') or pay_right(account) not in permissions:
+            raise HTTPException(403,'Нет доступа к документам этой заявки.')
 
 def request_document_json(d):
     return {'id':d.id,'kind':d.kind,'label':REQUEST_DOCUMENT_KINDS[d.kind],'filename':d.filename,
@@ -195,21 +199,21 @@ def request_document_json(d):
 @router.get('/api/requests/{id}/documents')
 def request_documents(id:int,request:Request):
     with unit() as s:
-        user,_=session_user(s,request);payment=get(s,PaymentRequest,id);request_document_access(user,payment)
+        user,_=session_user(s,request);payment=get(s,PaymentRequest,id);request_document_access(s,user,payment)
         rows=s.scalars(select(RequestDocument).where(RequestDocument.request_id==id,RequestDocument.active==True).order_by(RequestDocument.kind,RequestDocument.id))
         return [request_document_json(d) for d in rows]
 
 @router.post('/api/requests/{id}/documents')
 async def add_request_document(id:int,kind:Literal['internal','contract','other'],request:Request):
     with unit() as s:
-        user,_=session_user(s,request);payment=get(s,PaymentRequest,id);request_document_access(user,payment,True);uid=user.id
+        user,_=session_user(s,request);payment=get(s,PaymentRequest,id);request_document_access(s,user,payment,True);uid=user.id
     raw=await read_upload(request)
     name=Path(unquote(request.headers.get('X-Filename','document'))).name
     suffix=Path(name).suffix.lower()
     allowed={'.pdf':('application/pdf',b'%PDF-'),'.png':('image/png',b'\x89PNG\r\n\x1a\n'),'.jpg':('image/jpeg',b'\xff\xd8\xff'),'.jpeg':('image/jpeg',b'\xff\xd8\xff')}
     if suffix not in allowed or not raw.startswith(allowed[suffix][1]):raise HTTPException(422,'Документ: PDF, PNG или JPEG, максимум 5 МБ.')
     with unit(True) as s:
-        user,_=session_user(s,request);payment=get(s,PaymentRequest,id);request_document_access(user,payment,True)
+        user,_=session_user(s,request);payment=get(s,PaymentRequest,id);request_document_access(s,user,payment,True)
         previous=list(s.scalars(select(RequestDocument).where(RequestDocument.request_id==id,RequestDocument.kind==kind).order_by(RequestDocument.version.desc())))
         version=(previous[0].version+1) if previous else 1
         if kind!='other':
@@ -224,7 +228,7 @@ def delete_request_document(id:int,request:Request):
     with unit(True) as s:
         user,_=session_user(s,request);doc=s.get(RequestDocument,id)
         if not doc or not doc.active:raise HTTPException(404,'Документ не найден.')
-        payment=get(s,PaymentRequest,doc.request_id);request_document_access(user,payment,True)
+        payment=get(s,PaymentRequest,doc.request_id);request_document_access(s,user,payment,True)
         doc.active=False;log(s,user,'Удалён документ из черновика заявки','request_document',doc.id,f'request={payment.id}; kind={doc.kind}')
         return {'ok':True}
 
@@ -233,7 +237,7 @@ def download_request_document(id:int,request:Request):
     with unit() as s:
         user,_=session_user(s,request);doc=s.get(RequestDocument,id)
         if not doc or not doc.active:raise HTTPException(404,'Документ не найден.')
-        payment=get(s,PaymentRequest,doc.request_id);request_document_access(user,payment)
+        payment=get(s,PaymentRequest,doc.request_id);request_document_access(s,user,payment)
         return Response(doc.content,media_type=doc.mime,headers={'Content-Disposition':"attachment; filename*=UTF-8''"+quote(doc.filename),'Cache-Control':'no-store'})
 
 def report_data(s,year,currency):

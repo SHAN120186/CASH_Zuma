@@ -150,6 +150,63 @@ class SiteTests(unittest.TestCase):
         self.assertEqual(cl.get('/api/users').status_code,403);self.assertEqual(cl.get('/api/budgets').status_code,403)
         rs=cl.get('/api/requests').json();self.assertEqual(len(rs),1);self.assertTrue(rs[0]['budget']['hidden']);self.assertNotIn('spent',rs[0]['budget'])
         self.assertEqual(self.post(f"/api/requests/{r.json()['id']}/decision",{'action':'approve'},cl,h).status_code,403)
+    def test_procurement_sees_only_own_requests_and_limited_budget(self):
+        foreign=self.request('50').json()['id']
+        cl,h=self.make_user('procurement','isolated_buyer')
+        try:
+            own=self.request('100',client=cl,headers=h)
+            self.assertEqual(own.status_code,200,own.text)
+            rows=cl.get('/api/requests',headers=h).json()
+            self.assertEqual([r['id'] for r in rows],[own.json()['id']])
+            paged=cl.get('/api/requests?paginated=true',headers=h).json()
+            self.assertEqual(paged['total'],1)
+            self.assertTrue(rows[0]['budget']['hidden'])
+            self.assertNotIn('spent',rows[0]['budget'])
+            self.assertNotIn('used',rows[0]['budget'])
+            for path in ('/api/dashboard','/api/budgets','/api/ledger','/api/users',f'/api/requests/{foreign}/documents'):
+                self.assertEqual(cl.get(path,headers=h).status_code,403,path)
+            self.assertEqual(self.post(f'/api/requests/{foreign}/decision',{'action':'cancel','note':'Cannot cancel another buyer request'},cl,h).status_code,403)
+            ids=self.company_ids()
+            self.assertEqual(cl.get('/api/requests',headers={**h,'X-Company-ID':str(ids['ZUMA'])}).status_code,403)
+        finally:cl.close()
+
+    def test_request_documents_use_company_role_and_payment_channel(self):
+        book=self.make_user('accountant','doc_book');cashier=self.make_user('cashier','doc_cashier')
+        try:
+            rid=self.request('50').json()['id']
+            path=f'/api/requests/{rid}/documents'
+            self.assertEqual(book[0].get(path,headers=book[1]).status_code,403)
+            self.assertEqual(self.approve(rid).status_code,200)
+            docs=book[0].get(path,headers=book[1])
+            self.assertEqual(docs.status_code,200,docs.text)
+            doc=docs.json()[0]
+            self.assertEqual(book[0].get(doc['url'],headers=book[1]).status_code,200)
+            self.assertEqual(cashier[0].get(path,headers=cashier[1]).status_code,403)
+            self.assertEqual(cashier[0].get(doc['url'],headers=cashier[1]).status_code,403)
+            cash=self.cash_account()
+            created=self.post('/api/requests',{'account_id':cash,'category_id':self.cat,'amount':'10','date':self.date,'purpose':'Cash document test','counterparty':'Document supplier'})
+            self.assertEqual(created.status_code,200,created.text)
+            cashid=created.json()['id']
+            self.assertEqual(self.approve(cashid).status_code,200)
+            self.assertEqual(cashier[0].get(f'/api/requests/{cashid}/documents',headers=cashier[1]).status_code,200)
+            self.assertEqual(book[0].get(f'/api/requests/{cashid}/documents',headers=book[1]).status_code,403)
+        finally:book[0].close();cashier[0].close()
+
+    def test_edit_user_removes_legacy_other_company_access(self):
+        cl,h=self.make_user('finance','legacy_scope_editor')
+        try:
+            ids=self.company_ids()
+            with unit(True) as s:
+                u=s.scalar(select(User).where(User.username=='legacy_scope_editor'));uid=u.id
+                s.add(CompanyUser(company_id=ids['ZUMA'],user_id=uid,role='finance'))
+            r=self.post(f'/api/users/{uid}',{'role':'director','active':True})
+            self.assertEqual(r.status_code,200,r.text)
+            initialize()
+            with unit() as s:
+                memberships=list(s.scalars(select(CompanyUser).where(CompanyUser.user_id==uid)))
+                self.assertEqual([(m.company_id,m.role) for m in memberships],[(self.company,'director')])
+        finally:cl.close()
+
     def test_10_director_cannot_approve_own(self):
         cl,h=self.make_user('director','boss')
         own=self.request('100',client=cl,headers=h)

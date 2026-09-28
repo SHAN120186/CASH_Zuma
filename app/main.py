@@ -88,7 +88,7 @@ def release_version():return FileResponse(ROOT/'release.json',media_type='applic
 
 def visible_request(s,r,u):
     data=request_json(s,r)
-    if 'view' not in perms_of(u) and (company_role(u) in ('employee','cashier') or payment_channels(perms_of(u))):data['budget']={'limit':None,'hidden':True,'over':data['budget']['over'],'mode':data['budget']['mode']}
+    if 'view' not in perms_of(u):data['budget']={'limit':None,'hidden':True,'over':data['budget']['over'],'mode':data['budget']['mode']}
     return data
 
 class Input(BaseModel):model_config=ConfigDict(extra='forbid',str_strip_whitespace=True)
@@ -395,7 +395,7 @@ def requests_list(request:Request,date_from:Optional[date]=None,date_to:Optional
         query=select(PaymentRequest).join(Account,Account.id==PaymentRequest.account_id)
         payable=and_(PaymentRequest.status.in_(['approved','paid']),Account.kind.in_(sorted(channels)))
         # Кассир видит свои заявки и кассовые заявки к оплате; инициатор — только свои.
-        if 'view' not in perms_of(u) and company_role(u) in ('employee','cashier'):query=query.where(or_(PaymentRequest.creator_id==u.id,payable) if channels else PaymentRequest.creator_id==u.id)
+        if 'view' not in perms_of(u) and 'request' in perms_of(u):query=query.where(or_(PaymentRequest.creator_id==u.id,payable) if channels else PaymentRequest.creator_id==u.id)
         if payer_only:query=query.where(payable)
         if currency:query=query.where(Account.currency==currency)
         if date_from:query=query.where(PaymentRequest.due_date>=date_from)
@@ -462,7 +462,7 @@ def decide(id:int,data:DecisionIn,request:Request):
             if pay_right(a) not in perms_of(u):raise HTTPException(403,'Вернуть финансовому директору может плательщик этой заявки.')
         else:
             if not ({'request','approve'} & perms_of(u)):raise HTTPException(403,'Недостаточно прав.')
-            if company_role(u) in ('employee','cashier') and r.creator_id!=u.id:raise HTTPException(403,'Доступны только собственные заявки.')
+            if not ({'approve','request_edit'} & perms_of(u)) and r.creator_id!=u.id:raise HTTPException(403,'Доступны только собственные заявки.')
         check_request_version(r,data.version)
         before={'status':r.status,'date':str(r.due_date),'version':r.version,'approved_by':r.approved_by}
         if data.action=='submit':
@@ -783,7 +783,8 @@ def edit_user(id:int,data:UserEdit,request:Request):
             # Роль холдинга действует во всех компаниях.
             u.role=data.role;u.role_id=s.scalar(select(Role.id).where(Role.name==data.role))
         if data.role not in HOLDING_ROLES:
-            # Роль сотрудника назначается в выбранной компании; в других остаётся своя.
+            # Любой путь назначения сотрудника оставляет только выбранную компанию.
+            s.execute(delete(CompanyUser).where(CompanyUser.user_id==u.id,CompanyUser.company_id!=cid))
             m=s.get(CompanyUser,(cid,u.id))
             if not m:m=CompanyUser(company_id=cid,user_id=u.id);s.add(m)
             m.role=data.role
