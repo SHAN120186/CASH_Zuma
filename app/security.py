@@ -8,7 +8,8 @@ from .db import User, LoginSession, LoginAttempt, now, DATA
 
 ROLES = {'admin':'Администратор холдинга', 'founder':'Учредитель', 'director':'Директор', 'finance':'Финансовый директор',
          'cashier':'Кассир', 'accountant':'Расчётный бухгалтер', 'employee':'Заявитель', 'auditor':'Аудитор',
-         'operator':'Сотрудник / оператор', 'investor':'Инвестор / управленец'}
+         'operator':'Сотрудник / оператор', 'investor':'Инвестор / управленец',
+         'material_accountant':'Материальный бухгалтер', 'procurement':'Отдел закупок'}
 # Роли холдинга действуют во всех компаниях; остальные роли назначаются на пару
 # «пользователь × компания» (company_users.role).
 HOLDING_ROLES = ('admin', 'founder')
@@ -27,6 +28,9 @@ PERMS = {
  'auditor': {'view','ledger','export','audit'},
  'operator': {'view','ledger','export','request','write','plan','import','schedule'},
  'investor': {'view','ledger','export'},
+ 'material_accountant': {'view','ledger','export'},
+ # Закупки создают и отслеживают свои заявки, но не видят счета и остатки.
+ 'procurement': {'request'},
 }
 
 # Paying an approved request is a separate right per channel: the bank account
@@ -55,7 +59,9 @@ def scope_user(user, assigned):
     elif user.role == 'admin':
         role = assigned if assigned in COMPANY_ROLES else None
     else:
-        role = assigned if assigned in COMPANY_ROLES else user.role
+        # Для сотрудника действует только явное назначение в выбранной компании.
+        # Поле users.role хранится для совместимости и не расширяет область доступа.
+        role = assigned if assigned in COMPANY_ROLES else None
     permissions = set(PERMS.get(user.role, set())) if user.role in HOLDING_ROLES else set()
     if role:
         permissions |= PERMS[role]
@@ -156,7 +162,7 @@ def record_failure(s,keys):
 
 def role_label(holding, role):
     if holding and role:return f'{ROLES[holding]} · {ROLES[role]}'
-    return ROLES[holding or role]
+    return ROLES.get(holding or role,'Без роли в компании')
 
 
 def user_json(user):
@@ -173,6 +179,6 @@ def member_json(user, assigned):
     holding = user.role if user.role in HOLDING_ROLES else None
     if user.role == 'founder':role = None
     elif holding:role = assigned if assigned in COMPANY_ROLES else None
-    else:role = assigned if assigned in COMPANY_ROLES else user.role
+    else:role = assigned if assigned in COMPANY_ROLES else None
     return {'id':user.id,'username':user.username,'name':user.name,'role':role or user.role,
             'holding_role':holding,'company_role':role,'role_label':role_label(holding,role),'active':user.active}

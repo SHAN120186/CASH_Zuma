@@ -256,19 +256,16 @@ def morning_summary(request: Request, chat_id: int, report_date: date, today: da
 
 def company_role_of(user, company, members):
     """The user's role in this company, by the same rule as security.scope_user and
-    company_scope.available_companies: the founder only reads, an administrator acts only
-    through a role assigned in the company, other staff need membership (never in the
-    service company) and fall back to their own role when none is assigned."""
+    company_scope.available_companies: the founder only reads; everybody else, holding
+    administrators included, acts only through a role explicitly assigned in this company
+    (users.role never widens access), and staff never in the service company."""
     assigned = members.get(company.id, {})
     if user.role == 'founder':
         return None
-    if user.role == 'admin':
-        role = assigned.get(user.id)
-        return role if role in COMPANY_ROLES else None
-    if company.code == SERVICE_CODE or user.id not in assigned:
+    if user.role != 'admin' and company.code == SERVICE_CODE:
         return None
-    role = assigned[user.id]
-    return role if role in COMPANY_ROLES else user.role
+    role = assigned.get(user.id)
+    return role if role in COMPANY_ROLES else None
 
 
 def responsible(r, account, company, users, members):

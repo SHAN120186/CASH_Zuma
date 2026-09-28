@@ -31,7 +31,7 @@ async def lifespan(app):
     drop_shadowed_groups()
     drop_orphan_groups()
     yield
-app=FastAPI(title='UZGERMED Treasury',version='2.12.2',docs_url=None,redoc_url=None,openapi_url=None,lifespan=lifespan)
+app=FastAPI(title='UZGERMED Treasury',version='2.12.7',docs_url=None,redoc_url=None,openapi_url=None,lifespan=lifespan)
 app.add_middleware(TrustedHostMiddleware,allowed_hosts=ALLOWED)
 app.mount('/static',StaticFiles(directory=ROOT/'app'/'static'),name='static')
 
@@ -91,7 +91,7 @@ def release_version():return FileResponse(ROOT/'release.json',media_type='applic
 
 def visible_request(s,r,u):
     data=request_json(s,r)
-    if 'view' not in perms_of(u) and (company_role(u) in ('employee','cashier') or payment_channels(perms_of(u))):data['budget']={'limit':None,'hidden':True,'over':data['budget']['over'],'mode':data['budget']['mode']}
+    if 'view' not in perms_of(u):data['budget']={'limit':None,'hidden':True,'over':data['budget']['over'],'mode':data['budget']['mode']}
     return data
 
 class Input(BaseModel):model_config=ConfigDict(extra='forbid',str_strip_whitespace=True)
@@ -104,10 +104,10 @@ class UserIn(Input):
     username:str=Field(pattern=r'^[a-zA-Z0-9_.-]{3,80}$')
     name:str=Field(min_length=2,max_length=160)
     password:str=Field(min_length=12,max_length=128)
-    role:Literal['admin','founder','director','finance','accountant','employee','auditor','cashier','operator','investor']
+    role:Literal['admin','founder','director','finance','accountant','employee','auditor','cashier','operator','investor','material_accountant','procurement']
 class UserEdit(Input):
     model_config=ConfigDict(extra='forbid',str_strip_whitespace=False)
-    role:Literal['admin','founder','director','finance','accountant','employee','auditor','cashier','operator','investor']
+    role:Literal['admin','founder','director','finance','accountant','employee','auditor','cashier','operator','investor','material_accountant','procurement']
     active:bool
     password:str=Field(default='',max_length=128)
 class PasswordIn(Input):
@@ -398,7 +398,7 @@ def requests_list(request:Request,date_from:Optional[date]=None,date_to:Optional
         query=select(PaymentRequest).join(Account,Account.id==PaymentRequest.account_id)
         payable=and_(PaymentRequest.status.in_(['approved','paid']),Account.kind.in_(sorted(channels)))
         # Кассир видит свои заявки и кассовые заявки к оплате; инициатор — только свои.
-        if 'view' not in perms_of(u) and company_role(u) in ('employee','cashier'):query=query.where(or_(PaymentRequest.creator_id==u.id,payable) if channels else PaymentRequest.creator_id==u.id)
+        if 'view' not in perms_of(u) and 'request' in perms_of(u):query=query.where(or_(PaymentRequest.creator_id==u.id,payable) if channels else PaymentRequest.creator_id==u.id)
         if payer_only:query=query.where(payable)
         if currency:query=query.where(Account.currency==currency)
         if date_from:query=query.where(PaymentRequest.due_date>=date_from)
@@ -465,7 +465,7 @@ def decide(id:int,data:DecisionIn,request:Request):
             if pay_right(a) not in perms_of(u):raise HTTPException(403,'Вернуть финансовому директору может плательщик этой заявки.')
         else:
             if not ({'request','approve'} & perms_of(u)):raise HTTPException(403,'Недостаточно прав.')
-            if company_role(u) in ('employee','cashier') and r.creator_id!=u.id:raise HTTPException(403,'Доступны только собственные заявки.')
+            if not ({'approve','request_edit'} & perms_of(u)) and r.creator_id!=u.id:raise HTTPException(403,'Доступны только собственные заявки.')
         check_request_version(r,data.version)
         before={'status':r.status,'date':str(r.due_date),'version':r.version,'approved_by':r.approved_by}
         if data.action=='submit':
@@ -686,7 +686,7 @@ def users(request:Request):
 class CompanyUserIn(Input):
     username:str=Field(min_length=3,max_length=80)
     # Роль в выбранной компании; для администратора холдинга это отдельное финансовое назначение.
-    role:Optional[Literal['director','finance','accountant','employee','auditor','cashier','operator','investor']]=None
+    role:Optional[Literal['director','finance','accountant','employee','auditor','cashier','operator','investor','material_accountant','procurement']]=None
 
 @app.post('/api/company-users')
 def grant_company_access(data:CompanyUserIn,request:Request):
@@ -699,10 +699,53 @@ def grant_company_access(data:CompanyUserIn,request:Request):
         if u.id==admin.id and data.role:raise HTTPException(409,'Роль в компании себе не назначают: её выдаёт другой администратор.')
         if u.role=='admin' and not data.role:raise HTTPException(422,'Администратору холдинга в компании назначается роль, например «Финансовый директор».')
         if not data.role:raise HTTPException(422,'Выберите роль сотрудника в этой компании.')
+        if u.role not in HOLDING_ROLES:
+            # Сотрудник относится к одной компании. Переназначение переносит доступ,
+            # а не оставляет скрытую роль в прежней компании.
+            s.execute(delete(CompanyUser).where(CompanyUser.user_id==u.id,CompanyUser.company_id!=cid))
         m=s.get(CompanyUser,(cid,u.id))
         if not m:m=CompanyUser(company_id=cid,user_id=u.id);s.add(m)
         m.role=data.role
         log(s,admin,'Предоставлен доступ к компании','user',u.id,f'роль: {data.role}')
+        return {'ok':True}
+
+class ArchiveUserIn(Input):
+    reason:str=Field(min_length=10,max_length=1000)
+
+@app.get('/api/admin/users')
+def admin_users(request:Request):
+    """Единый реестр пользователей холдинга для защищённого админ-раздела."""
+    with unit() as s:
+        admin,_=session_user(s,request,'users')
+        if admin.role!='admin':raise HTTPException(403,'Раздел доступен только администратору холдинга.')
+        companies={c.id:c for c in s.scalars(select(Company).execution_options(company_unscoped=True))}
+        memberships={}
+        for m in s.scalars(select(CompanyUser).execution_options(company_unscoped=True)):
+            co=companies.get(m.company_id)
+            if co and co.code!='UNASSIGNED':memberships.setdefault(m.user_id,[]).append({'company_id':co.id,'company':co.name,'code':co.code,'role':m.role,'role_label':ROLES.get(m.role,'Без роли')})
+        result=[]
+        for u in s.scalars(select(User).order_by(User.name).execution_options(company_unscoped=True)):
+            rows=sorted(memberships.get(u.id,[]),key=lambda x:x['company'])
+            result.append({**member_json(u,None),'memberships':rows,'scope_conflict':u.role not in HOLDING_ROLES and len(rows)>1})
+        return result
+
+@app.post('/api/admin/users/{id}/archive')
+def archive_user(id:int,data:ArchiveUserIn,request:Request):
+    """Безопасно убирает доступ, сохраняя автора финансовых записей и аудит."""
+    with unit(True) as s:
+        admin,_=session_user(s,request,'users')
+        if admin.role!='admin':raise HTTPException(403,'Раздел доступен только администратору холдинга.')
+        u=s.get(User,id,execution_options={'company_unscoped':True})
+        if not u:raise HTTPException(404,'Пользователь не найден.')
+        if u.id==admin.id:raise HTTPException(409,'Нельзя архивировать собственную учётную запись.')
+        if u.role=='admin' and u.active:
+            count=s.scalar(select(func.count()).select_from(User).where(User.role=='admin',User.active==True).execution_options(company_unscoped=True))
+            if count<=1:raise HTTPException(409,'В системе должен оставаться активный администратор.')
+        u.active=False
+        s.execute(delete(CompanyUser).where(CompanyUser.user_id==u.id))
+        s.execute(delete(LoginSession).where(LoginSession.user_id==u.id));revoke_telegram(s,u.id)
+        drop_groups_of(s,u,admin)
+        log(s,admin,'Пользователь архивирован; доступ ко всем компаниям отозван','user',u.id,data.reason)
         return {'ok':True}
 
 @app.delete('/api/company-users/{id}')
@@ -744,7 +787,8 @@ def edit_user(id:int,data:UserEdit,request:Request):
             # Роль холдинга действует во всех компаниях.
             u.role=data.role;u.role_id=s.scalar(select(Role.id).where(Role.name==data.role))
         if data.role not in HOLDING_ROLES:
-            # Роль сотрудника назначается в выбранной компании; в других остаётся своя.
+            # Любой путь назначения сотрудника оставляет только выбранную компанию.
+            s.execute(delete(CompanyUser).where(CompanyUser.user_id==u.id,CompanyUser.company_id!=cid))
             m=s.get(CompanyUser,(cid,u.id))
             if not m:m=CompanyUser(company_id=cid,user_id=u.id);s.add(m)
             m.role=data.role

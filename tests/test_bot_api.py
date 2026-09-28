@@ -573,7 +573,8 @@ class BotApiTests(unittest.TestCase):
         self.assertEqual(self.group(GROUP,555404).json(),{'chat_id':GROUP,'connected':True,'source':'config','companies':['UZGERMED'],'can_manage':False,'choices':[]})
         self.assertEqual(self.connect(GROUP,['ZUMA'],555404).status_code,409)
         self.assertEqual(self.disconnect(GROUP,555404).status_code,409)
-        with unit(True) as s:s.add(TelegramGroup(chat_id=GROUP,title='Старая группа',companies='ZUMA',added_by=self.admin_id()))
+        owner=self.admin_id()  # an HTTP call: never inside the write transaction below
+        with unit(True) as s:s.add(TelegramGroup(chat_id=GROUP,title='Старая группа',companies='ZUMA',added_by=owner))
         self.assertEqual(self.groups()[GROUP],{'chat_id':GROUP,'title':'Старая группа','companies':['UZGERMED'],'source':'config'})
         self.assertEqual({b['company'] for b in self.summary().json()['balances']},{'UZGERMED'})
 
@@ -710,6 +711,24 @@ class BotApiTests(unittest.TestCase):
         self.assertEqual(r.status_code,200,r.text)
         self.assertEqual(self.groups()[chat]['companies'],['UZGERMED'])
         self.assertEqual(self.audit_rows('Telegram-группа отключена'),[])
+
+    def test_only_an_explicit_company_role_brings_reminders(self):
+        author=self.make_user('employee','author');finance=self.make_user('finance','checker');self.link(finance,1001)
+        rid=self.new_request(author,'100')
+        self.assertEqual([i['assignee_user_id'] for i in self.pending() if i['request_id']==rid],[finance['id']])
+        with unit(True) as s:  # membership kept, role removed: users.role no longer widens access
+            s.get(CompanyUser,(self.companies['UZGERMED'],finance['id'])).role=None
+        self.assertEqual([i for i in self.pending() if i['request_id']==rid],[])
+
+    def test_archiving_the_connecting_admin_disconnects_the_group(self):
+        other=self.make_user('admin','admin2');self.link(other,1004)
+        chat=-1005454545454
+        self.assertEqual(self.connect(chat,['UZGERMED'],1004).status_code,200)
+        self.assertIn(chat,self.groups())
+        r=self.post(f'/api/admin/users/{other["id"]}/archive',{'reason':'Сотрудник уволен из компании'})
+        self.assertEqual(r.status_code,200,r.text)
+        self.assertNotIn(chat,self.groups())
+        with unit() as s:self.assertIsNone(s.get(TelegramGroup,chat))
 
     def test_groups_without_an_active_connecting_admin_get_no_summary_and_are_removed(self):
         from app.bot_api import drop_orphan_groups
