@@ -992,11 +992,12 @@ class SiteTests(unittest.TestCase):
             self.assertEqual(self.post('/api/company-users',{'username':'only_uzgermed'},headers=h).status_code,422)
             self.assertEqual(self.post('/api/company-users',{'username':'only_uzgermed','role':'operator'},headers=h).status_code,200)
             users=self.client.get('/api/users',headers=h).json();uid=next(u['id'] for u in users if u['username']=='only_uzgermed')
-            self.assertEqual(len(cl.get('/api/companies').json()['companies']),2)
+            self.assertEqual([c['id'] for c in cl.get('/api/companies').json()['companies']],[cid])
+            self.assertEqual(cl.get('/api/accounts',headers={'X-Company-ID':str(self.company)}).status_code,403)
             self.assertEqual(cl.get('/api/accounts',headers={'X-Company-ID':str(cid)}).json()[0]['id'],acc)
             self.assertEqual(self.client.delete('/api/company-users/'+str(uid),headers=h).status_code,200)
             self.assertEqual(cl.get('/api/accounts',headers={'X-Company-ID':str(cid)}).status_code,403)
-            self.assertEqual(cl.get('/api/accounts').status_code,200)
+            self.assertEqual(cl.get('/api/accounts').status_code,403)
             self.assertEqual(cl.post('/api/company-users',json={'username':'admin'},headers=uh).status_code,403)
         finally:cl.close()
 
@@ -1720,27 +1721,15 @@ class SiteTests(unittest.TestCase):
             self.assertEqual(book[0].get(f'/api/budget-check?account_id={self.acc}&category_id={self.cat}&amount=1&date={self.date}',headers=book[1]).status_code,403)
         finally:cl.close()
 
-    def test_108_one_user_has_different_roles_in_different_companies(self):
+    def test_108_a_company_employee_is_moved_to_the_new_company(self):
         ids=self.company_ids();zuma=ids['ZUMA'];uzg=ids['UZGERMED']
         cl,h=self.make_user('finance','multi')
         self.assertEqual(self.client.post('/api/company-users',json={'username':'multi','role':'director'},headers={**self.h,'X-Company-ID':str(zuma)}).status_code,200)
         hz={**h,'X-Company-ID':str(zuma)};hu={**h,'X-Company-ID':str(uzg)}
         try:
-            self.assertEqual(cl.get('/api/bootstrap',headers=hu).json()['user']['role'],'finance')
+            self.assertEqual(cl.get('/api/bootstrap',headers=hu).status_code,403)
             self.assertEqual(cl.get('/api/bootstrap',headers=hz).json()['user']['role'],'director')
-            rid=self.request('600').json()['id']
-            current=next(x for x in self.client.get('/api/requests').json() if x['id']==rid)
-            first=cl.post(f'/api/requests/{rid}/decision',json={'action':'approve','version':current['version'],'note':'Проверено финансовым директором'},headers=hu)
-            self.assertEqual(first.status_code,200,first.text);self.assertEqual(first.json()['approval_stage'],'director')
-            self.assertEqual(cl.post(f'/api/requests/{rid}/decision',json={'action':'approve','version':first.json()['version'],'note':'Попытка директорского этапа'},headers=hu).status_code,403)
-            cid,zh,cat,acc=self.second_company()
-            zr=self.documented_request({'account_id':acc,'category_id':cat,'counterparty':'Supplier','amount':'100','date':self.date,'purpose':'Заявка второй компании'},headers=zh).json()
-            self.assertEqual(cl.post(f"/api/requests/{zr['id']}/decision",json={'action':'approve','version':zr['version'],'note':'Попытка финансового этапа'},headers=hz).status_code,403)
-            fin=self.user_in(zuma,'finance','zuma_fin')
-            checked=fin[0].post(f"/api/requests/{zr['id']}/decision",json={'action':'approve','version':zr['version'],'note':'Проверено во второй компании'},headers=fin[1]).json()
-            done=cl.post(f"/api/requests/{zr['id']}/decision",json={'action':'approve','version':checked['version'],'note':'Утверждаю директором'},headers=hz)
-            self.assertEqual(done.status_code,200,done.text);self.assertEqual(done.json()['status'],'approved')
-            fin[0].close()
+            self.assertEqual([c['code'] for c in cl.get('/api/companies').json()['companies']],['ZUMA'])
         finally:cl.close()
 
     def test_109_holding_admin_gets_finances_only_by_a_separate_assignment(self):
@@ -1868,6 +1857,35 @@ class SiteTests(unittest.TestCase):
         with unit() as s:
             roles={m.company_id:m.role for m in s.scalars(select(CompanyUser).where(CompanyUser.user_id==uid))}
         self.assertIsNone(roles.pop(service));self.assertEqual(set(roles.values()),{'operator'})
+
+    def test_115_admin_center_lists_scope_and_archives_without_deleting_history(self):
+        self.make_user('procurement','old_buyer')[0].close()
+        rows=self.client.get('/api/admin/users').json()
+        buyer=next(u for u in rows if u['username']=='old_buyer')
+        self.assertEqual(len(buyer['memberships']),1)
+        self.assertEqual(buyer['memberships'][0]['role'],'procurement')
+        self.assertFalse(buyer['scope_conflict'])
+        self.assertEqual(self.post(f"/api/admin/users/{buyer['id']}/archive",{'reason':'Старая тестовая учётная запись больше не используется'}).status_code,200)
+        with unit() as s:
+            stored=s.scalar(select(User).where(User.username=='old_buyer'))
+            self.assertFalse(stored.active)
+            self.assertEqual(list(s.scalars(select(CompanyUser).where(CompanyUser.user_id==stored.id))),[])
+        denied=TestClient(app).post('/api/login',json={'username':'old_buyer','password':PASSWORD})
+        self.assertEqual(denied.status_code,401)
+
+    def test_116_company_employee_is_moved_instead_of_getting_two_company_scopes(self):
+        ids=self.company_ids();zuma=ids['ZUMA'];uzg=ids['UZGERMED']
+        self.make_user('material_accountant','stock_book')[0].close()
+        self.assertEqual(self.post('/api/company-users',{'username':'stock_book','role':'material_accountant'},headers={**self.h,'X-Company-ID':str(zuma)}).status_code,200)
+        with unit() as s:
+            uid=s.scalar(select(User.id).where(User.username=='stock_book'))
+            memberships=list(s.scalars(select(CompanyUser).where(CompanyUser.user_id==uid)))
+            self.assertEqual([(m.company_id,m.role) for m in memberships],[(zuma,'material_accountant')])
+        cl=TestClient(app);login=cl.post('/api/login',json={'username':'stock_book','password':PASSWORD});h={'X-CSRF-Token':login.json()['csrf']}
+        try:
+            self.assertEqual([c['code'] for c in cl.get('/api/companies').json()['companies']],['ZUMA'])
+            self.assertEqual(cl.get('/api/bootstrap',headers={**h,'X-Company-ID':str(uzg)}).status_code,403)
+        finally:cl.close()
 
 
 if __name__=='__main__':unittest.main(verbosity=2)
