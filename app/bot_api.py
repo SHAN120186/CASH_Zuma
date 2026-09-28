@@ -1,9 +1,11 @@
-"""Protected API for the Cash Zuma Telegram bot and the user's Telegram link.
+"""Protected API for the Cash Zuma Telegram bot, the user's Telegram link and the holding
+administrators' list of summary groups on the site.
 
 The bot authenticates as a service (HTTP Basic, BOT_CLIENT_ID / BOT_CLIENT_SECRET).
 Its sessions are deliberately unscoped: company rules are applied explicitly here,
-from the group allow-list (BOT_REPORT_GROUPS) or from each responsible user's own
-company access. The bot never receives rows it would have to filter itself.
+from the group allow-list (BOT_REPORT_GROUPS and groups a holding administrator
+connected from Telegram) or from each responsible user's own company access.
+The bot never receives rows it would have to filter itself.
 Contract: Cash_Zuma_Bot/API_CONTRACT_RU.md.
 """
 from __future__ import annotations
@@ -17,13 +19,13 @@ import re
 import secrets
 from datetime import date, datetime, time, timedelta, timezone
 
-from fastapi import APIRouter, HTTPException, Query, Request
+from fastapi import APIRouter, HTTPException, Path, Query, Request
 from pydantic import BaseModel, ConfigDict, Field
-from sqlalchemy import delete, func, select
+from sqlalchemy import delete, func, insert, or_, select
 
 from .company_scope import SERVICE_CODE
 from .db import (Account, Audit, Budget, Category, Company, CompanyUser, Ledger, PaymentRequest,
-                 Setting, TelegramLink, TelegramLinkCode, User, now, unit)
+                 Setting, TelegramGroup, TelegramLink, TelegramLinkCode, User, now, unit)
 from .security import COMPANY_ROLES, PERMS, digest, pay_right, session_user
 from .services import account_balance, budget_state, effective_cashflows, funds_state, log, money
 from .services import today as tashkent_today
@@ -62,11 +64,12 @@ def utc_iso(value):
     return value.replace(tzinfo=timezone.utc).isoformat() if value else None
 
 
-def audit(company_ids, action, entity_id, detail):
-    """Bot calls are recorded once per affected company so each company journal shows them."""
+def audit(company_ids, action, entity_id, detail, user_id=None):
+    """Bot calls are recorded once per affected company so each company journal shows them.
+    ``user_id`` is the site user behind a Telegram button; Telegram ids are never logged."""
     with unit(True) as s:
         for company_id in company_ids or [None]:
-            s.add(Audit(company_id=company_id, user_id=None, action=action, entity='bot',
+            s.add(Audit(company_id=company_id, user_id=user_id, action=action, entity='bot',
                         entity_id=str(entity_id), detail=detail))
 
 
@@ -75,7 +78,7 @@ def bot_username():
     return name if re.fullmatch(r'[A-Za-z0-9_]{5,32}', name) else None
 
 
-def report_groups():
+def config_groups():
     """BOT_REPORT_GROUPS: "-1001234567890:UZGERMED,ZUMA; -100…:ZUMA" → {chat_id: {codes}}."""
     groups = {}
     for part in os.getenv('BOT_REPORT_GROUPS', '').split(';'):
@@ -89,6 +92,33 @@ def report_groups():
         if codes:
             groups[int(match.group(1))] = codes
     return groups
+
+
+def stored_codes(row):
+    return {c for c in row.companies.split(',') if c}
+
+
+def report_groups(s):
+    """Every group allowed to receive the morning summary:
+    {chat_id: {'companies': {codes}, 'source': 'config' | 'site', 'title': str}}.
+
+    Groups connected from Telegram live in telegram_groups; BOT_REPORT_GROUPS wins for its chat ids
+    (a stored row under such an id is removed at startup, see drop_shadowed_groups)."""
+    # A stored group counts only while the holding administrator who connected it could still
+    # manage it (active admin). Rows left without one — changed directly in the database, restored
+    # from a backup, inserted by hand — get no summary and are removed at startup.
+    owners = select(User.id).where(User.active.is_(True), User.role == 'admin')
+    groups = {g.chat_id: {'companies': stored_codes(g), 'source': 'site', 'title': g.title}
+              for g in s.scalars(select(TelegramGroup).where(TelegramGroup.added_by.in_(owners)))}
+    for chat_id, codes in config_groups().items():
+        title = groups[chat_id]['title'] if chat_id in groups else ''
+        groups[chat_id] = {'companies': codes, 'source': 'config', 'title': title}
+    return groups
+
+
+def journal_path(path):
+    """Request path for the audit journal: a Telegram user id in it is personal data."""
+    return '/api/bot/v1/telegram-users/{telegram_user_id}' if path.startswith('/api/bot/v1/telegram-users/') else path
 
 
 def authenticate_bot(request):
@@ -107,7 +137,7 @@ def authenticate_bot(request):
     same_id = hmac.compare_digest(user.encode(), client_id.encode())
     same_secret = hmac.compare_digest(password.encode(), secret.encode())
     if not (same_id and same_secret):
-        audit(None, 'Бот: отказ в доступе', '', request.url.path)
+        audit(None, 'Бот: отказ в доступе', '', journal_path(request.url.path))
         raise HTTPException(401, 'Неверный ключ бота.', headers={'WWW-Authenticate': 'Basic realm="cash-zuma-bot"'})
 
 
@@ -133,10 +163,12 @@ def morning_summary(request: Request, chat_id: int, report_date: date, today: da
     authenticate_bot(request)
     if today > tashkent_today() or report_date != today - timedelta(days=1):
         raise HTTPException(422, 'Сводка строится на сегодня по Ташкенту за предыдущий календарный день.')
-    codes = report_groups().get(chat_id)
-    if not codes:
+    with unit() as s:
+        group = report_groups(s).get(chat_id)
+    if not group:
         audit(None, 'Бот: группа не разрешена', chat_id, f'Сводка за {report_date} не выдана')
         raise HTTPException(403, 'Группа не разрешена для утренней сводки.')
+    codes = group['companies']
 
     with unit() as s:
         companies = {c.id: c for c in s.scalars(select(Company).where(Company.active.is_(True)))
@@ -258,55 +290,436 @@ def responsible(r, account, company, users, members):
     return stage, [u for u in users if u.id not in excluded and fits(company_role_of(u, company, members))]
 
 
+def pending_items(s, user_id=None):
+    """Requests waiting for an action, one row per responsible person with a linked Telegram,
+    ordered by request. With ``user_id`` only that person's rows, chosen by the same rules."""
+    origin = os.getenv('PUBLIC_ORIGIN', '').rstrip('/')
+    url = origin + '/#requests' if origin.startswith('https://') else ''
+    people_query = select(User).where(User.active.is_(True))
+    if user_id is not None:
+        people_query = people_query.where(User.id == user_id)
+    users = list(s.scalars(people_query.order_by(User.id)))
+    if not users:
+        return []
+    companies = {c.id: c for c in s.scalars(select(Company).where(Company.active.is_(True)))}
+    accounts = {a.id: a for a in s.scalars(select(Account))}
+    categories = {c.id: c.name for c in s.scalars(select(Category))}
+    links = {link.user_id: link.telegram_user_id for link in s.scalars(select(TelegramLink))}
+    members = {}
+    for m in s.scalars(select(CompanyUser)):
+        members.setdefault(m.company_id, {})[m.user_id] = m.role
+    # Every change of a request (creation, edit, decision, payment reversal) is audited
+    # with entity='request'; the latest one is when it entered its current stage.
+    entered = {}
+    for entity_id, stamp in s.execute(select(Audit.entity_id, func.max(Audit.created_at))
+                                      .where(Audit.entity == 'request').group_by(Audit.entity_id)):
+        if str(entity_id).isdigit():
+            entered[int(entity_id)] = stamp
+
+    items = []
+    current = tashkent_today()
+    for r in s.scalars(select(PaymentRequest).where(PaymentRequest.status.in_(['pending', 'approved']))
+                       .order_by(PaymentRequest.id)):
+        if r.status == 'approved' and r.due_date > current:
+            continue  # payment is due later; the payer is reminded from the due date
+        account = accounts.get(r.account_id)
+        company = companies.get(account.company_id) if account else None
+        if company is None:
+            continue
+        stage, people = responsible(r, account, company, users, members)
+        since = entered.get(r.id, r.created_at)
+        if r.status == 'approved':
+            # Payment waits from the start of the working day it is due, not from the approval.
+            since = max(since, datetime.combine(r.due_date, WORKDAY_START) - TASHKENT_OFFSET)
+        purpose = mask_digits(f'{categories.get(r.category_id, "")}: {r.purpose}', 200)
+        for u in people:
+            if u.id not in links:
+                continue  # nobody to write to; linking is up to the user
+            items.append({'request_id': r.id, 'number': request_number(r), 'status': r.status,
+                          'stage': stage, 'stage_label': STAGE_LABELS[stage],
+                          'assignee_user_id': u.id, 'assignee_telegram_id': links[u.id],
+                          'stage_entered_at': utc_iso(since),
+                          'company': company.name, 'amount': money(r.amount), 'currency': account.currency,
+                          'purpose': purpose, 'url': url})
+    return items
+
+
 @router.get('/api/bot/v1/pending-requests')
 def pending_requests(request: Request):
     authenticate_bot(request)
-    origin = os.getenv('PUBLIC_ORIGIN', '').rstrip('/')
-    url = origin + '/#requests' if origin.startswith('https://') else ''
     with unit() as s:
-        companies = {c.id: c for c in s.scalars(select(Company).where(Company.active.is_(True)))}
-        accounts = {a.id: a for a in s.scalars(select(Account))}
-        categories = {c.id: c.name for c in s.scalars(select(Category))}
-        users = list(s.scalars(select(User).where(User.active.is_(True)).order_by(User.id)))
-        links = {link.user_id: link.telegram_user_id for link in s.scalars(select(TelegramLink))}
-        members = {}
-        for m in s.scalars(select(CompanyUser)):
-            members.setdefault(m.company_id, {})[m.user_id] = m.role
-        # Every change of a request (creation, edit, decision, payment reversal) is audited
-        # with entity='request'; the latest one is when it entered its current stage.
-        entered = {}
-        for entity_id, stamp in s.execute(select(Audit.entity_id, func.max(Audit.created_at))
-                                          .where(Audit.entity == 'request').group_by(Audit.entity_id)):
-            if str(entity_id).isdigit():
-                entered[int(entity_id)] = stamp
-
-        items = []
-        current = tashkent_today()
-        for r in s.scalars(select(PaymentRequest).where(PaymentRequest.status.in_(['pending', 'approved']))
-                           .order_by(PaymentRequest.id)):
-            if r.status == 'approved' and r.due_date > current:
-                continue  # payment is due later; the payer is reminded from the due date
-            account = accounts.get(r.account_id)
-            company = companies.get(account.company_id) if account else None
-            if company is None:
-                continue
-            stage, people = responsible(r, account, company, users, members)
-            since = entered.get(r.id, r.created_at)
-            if r.status == 'approved':
-                # Payment waits from the start of the working day it is due, not from the approval.
-                since = max(since, datetime.combine(r.due_date, WORKDAY_START) - TASHKENT_OFFSET)
-            purpose = mask_digits(f'{categories.get(r.category_id, "")}: {r.purpose}', 200)
-            for u in people:
-                if u.id not in links:
-                    continue  # nobody to write to; linking is up to the user
-                items.append({'request_id': r.id, 'number': request_number(r), 'status': r.status,
-                              'stage': stage, 'stage_label': STAGE_LABELS[stage],
-                              'assignee_user_id': u.id, 'assignee_telegram_id': links[u.id],
-                              'stage_entered_at': utc_iso(since),
-                              'company': company.name, 'amount': money(r.amount), 'currency': account.currency,
-                              'purpose': purpose, 'url': url})
+        items = pending_items(s)
     audit(None, 'Бот: заявки для напоминаний', '', f'Строк: {len(items)}')
     return {'items': items}
+
+
+# ---------------------------------------------------------------- Telegram user (private chat buttons)
+
+def linked_user(s, telegram_user_id):
+    """The active site user this Telegram account is linked to, or None."""
+    link = s.scalar(select(TelegramLink).where(TelegramLink.telegram_user_id == telegram_user_id))
+    user = s.get(User, link.user_id) if link else None
+    return user if user is not None and user.active else None
+
+
+@router.get('/api/bot/v1/telegram-users/{telegram_user_id}')
+def telegram_user(request: Request, telegram_user_id: int = Path(gt=0, lt=2**53)):
+    """«📋 Мои заявки» / «👤 Моя привязка»: who pressed the button and what waits for them."""
+    authenticate_bot(request)
+    with unit() as s:
+        user = linked_user(s, telegram_user_id)
+        if user is None:
+            result = {'linked': False, 'user_id': None, 'name': None, 'is_admin': False, 'items': []}
+        else:
+            result = {'linked': True, 'user_id': user.id, 'name': user.name, 'is_admin': user.role == 'admin',
+                      'items': pending_items(s, user.id)}
+    if result['linked']:
+        audit(None, 'Бот: заявки пользователя', result['user_id'], f'Строк: {len(result["items"])}',
+              user_id=result['user_id'])
+    else:
+        audit(None, 'Бот: заявки пользователя', '', 'Telegram не привязан к активному пользователю')
+    return result
+
+
+# ---------------------------------------------------------------- summary groups connected from Telegram
+
+class GroupIn(BaseModel):
+    model_config = ConfigDict(extra='forbid', str_strip_whitespace=True)
+    chat_id: int = Field(gt=-2**63, lt=2**63)
+    title: str = Field(default='', max_length=255)
+    companies: list[str] = Field(max_length=100)
+    telegram_user_id: int = Field(gt=0, lt=2**53)
+
+
+class GroupRemoveIn(BaseModel):
+    model_config = ConfigDict(extra='forbid')
+    chat_id: int = Field(gt=-2**63, lt=2**63)
+    telegram_user_id: int = Field(gt=0, lt=2**53)
+
+
+def require_group(chat_id):
+    if chat_id >= 0:
+        raise HTTPException(422, 'Сводку можно подключить только к группе Telegram: её ID отрицательный.')
+
+
+def active_codes(s):
+    """Upper-case code → active company."""
+    return {c.code.upper(): c for c in s.scalars(select(Company).where(Company.active.is_(True)))}
+
+
+def group_state(s, chat_id, user):
+    """GET /report-groups/{chat_id} as seen by ``user``, the site user who pressed the button (or None)."""
+    group = report_groups(s).get(chat_id)
+    active = active_codes(s)
+    can_manage = user is not None and user.role == 'admin' and (group is None or group['source'] != 'config')
+    choices = []
+    if can_manage:
+        choices = [{'code': c.code, 'name': c.name} for c in sorted(active.values(), key=lambda c: (c.name, c.code))
+                   if c.code.upper() != SERVICE_CODE]
+    return {'chat_id': chat_id, 'connected': group is not None, 'source': group['source'] if group else None,
+            'companies': sorted(active[c].code for c in group['companies'] if c in active) if group else [],
+            'can_manage': can_manage, 'choices': choices}
+
+
+REFUSALS = {403: 'Настраивать сводку может только администратор холдинга с привязанным Telegram.',
+            409: 'Эта группа задана в настройках сайта (BOT_REPORT_GROUPS) и из Telegram не меняется.'}
+
+
+def group_manager(s, chat_id, telegram_user_id):
+    """(user, refusal): refusal is None when this person may change the group, else (status, reason)."""
+    user = linked_user(s, telegram_user_id)
+    if user is None:
+        return None, (403, 'Telegram не привязан к активному пользователю')
+    if user.role != 'admin':
+        return user, (403, 'Не администратор холдинга')
+    if chat_id in config_groups():
+        return user, (409, 'Группа задана в BOT_REPORT_GROUPS')
+    return user, None
+
+
+def check_manager(chat_id, telegram_user_id):
+    """Refusals are audited here, outside the write transaction (audit() opens its own)."""
+    with unit() as s:
+        user, refusal = group_manager(s, chat_id, telegram_user_id)
+    if refusal:
+        audit(None, 'Бот: отказ в настройке группы', chat_id, refusal[1], user_id=user.id if user else None)
+        raise HTTPException(refusal[0], REFUSALS[refusal[0]])
+
+
+def locked_manager(s, chat_id, telegram_user_id):
+    """The same check again under the write lock, in case access changed a moment ago."""
+    user, refusal = group_manager(s, chat_id, telegram_user_id)
+    if refusal:
+        raise HTTPException(refusal[0], REFUSALS[refusal[0]])
+    return user
+
+
+def chosen_companies(s, codes):
+    """Validated selection → active companies in the requested order."""
+    if not codes:
+        raise HTTPException(422, 'Выберите хотя бы одну компанию.')
+    active, known, chosen = active_codes(s), {c.code.upper() for c in s.scalars(select(Company))}, []
+    for raw in codes:
+        code = raw.strip().upper()
+        label = mask_digits(raw, 40) or '(пусто)'
+        if code == SERVICE_CODE:
+            raise HTTPException(422, 'Служебное пространство «Не распределено» нельзя подключить к сводке.')
+        if code not in known:
+            raise HTTPException(422, f'Компания «{label}» не найдена.')
+        if code not in active:
+            raise HTTPException(422, f'Компания «{label}» отключена.')
+        if active[code] in chosen:
+            raise HTTPException(422, f'Компания «{label}» указана дважды.')
+        chosen.append(active[code])
+    return chosen
+
+
+def group_detail(title, chat_id, codes, before=None):
+    """Audit text: the group and its companies, never its members."""
+    text = (f'Группа «{title}» ({chat_id})' if title else f'Группа {chat_id}') + '; компании: ' + ', '.join(sorted(codes))
+    if before is not None:
+        text += '; было: ' + (', '.join(sorted(before)) or '—')
+    return text
+
+
+def company_ids(s, codes):
+    """Ids of these companies, inactive ones included, so each company journal shows the change."""
+    wanted = {c.upper() for c in codes}
+    return sorted(c.id for c in s.scalars(select(Company)) if c.code.upper() in wanted)
+
+
+def journal_group(s, codes, action, chat_id, detail, user_id=None):
+    """One audit row per company of the group, inside the caller's transaction.
+
+    A plain INSERT on purpose: the change concerns every company of the group, while a browser
+    session (e.g. editing a user) is scoped to the selected company and company_scope refuses
+    ORM rows of the other companies."""
+    s.execute(insert(Audit.__table__), [
+        {'company_id': company_id, 'user_id': user_id, 'action': action, 'entity': 'telegram_group',
+         'entity_id': str(chat_id), 'detail': detail}
+        for company_id in company_ids(s, codes) or [None]])
+
+
+def drop_group(s, row, action, user_id=None, reason=''):
+    """Delete a stored group and record it in the journal of each of its companies."""
+    chat_id, codes = row.chat_id, stored_codes(row)
+    detail = group_detail(row.title, chat_id, codes) + (f'; {reason}' if reason else '')
+    s.delete(row)
+    journal_group(s, codes, action, chat_id, detail, user_id)
+
+
+def drop_groups_of(s, user, actor):
+    """A group connected from Telegram lives only while the holding administrator who connected
+    it could still manage it: called whenever a user's role or active flag changes (main.edit_user)."""
+    if user.active and user.role == 'admin':
+        return 0
+    reason = 'отключён' if not user.active else 'больше не администратор холдинга'
+    rows = list(s.scalars(select(TelegramGroup).where(TelegramGroup.added_by == user.id)
+                          .order_by(TelegramGroup.chat_id)))
+    for row in rows:
+        drop_group(s, row, 'Telegram-группа отключена', actor.id if actor else None,
+                   f'автоматически: подключивший её {user.name} {reason}')
+    return len(rows)
+
+
+def drop_shadowed_groups():
+    """Startup: a stored group whose chat id is now fixed in BOT_REPORT_GROUPS is removed, so that
+    deleting the entry later cannot bring back the old, possibly wider company list. Idempotent."""
+    configured = list(config_groups())
+    if not configured:
+        return 0
+    shadowed = select(TelegramGroup).where(TelegramGroup.chat_id.in_(configured)).order_by(TelegramGroup.chat_id)
+    with unit() as s:
+        if s.scalar(shadowed.limit(1)) is None:
+            return 0
+    with unit(True) as s:
+        rows = list(s.scalars(shadowed))
+        for row in rows:
+            drop_group(s, row, 'Telegram-группа заменена настройкой сервера', None,
+                       'группа задана в BOT_REPORT_GROUPS')
+    if rows:
+        logging.warning('BOT_REPORT_GROUPS: removed %d Telegram group(s) connected from Telegram under the same id', len(rows))
+    return len(rows)
+
+
+def drop_orphan_groups():
+    """Startup: remove stored groups whose connecting administrator is gone, disabled or no longer a
+    holding administrator (report_groups already ignores them). Idempotent."""
+    owners = select(User.id).where(User.active.is_(True), User.role == 'admin')
+    orphans = (select(TelegramGroup).where(or_(TelegramGroup.added_by.is_(None), TelegramGroup.added_by.not_in(owners)))
+               .order_by(TelegramGroup.chat_id))
+    with unit() as s:
+        if s.scalar(orphans.limit(1)) is None:
+            return 0
+    with unit(True) as s:
+        rows = list(s.scalars(orphans))
+        for row in rows:
+            drop_group(s, row, 'Telegram-группа отключена', None,
+                       'автоматически: у группы нет действующего администратора холдинга, который её подключил')
+    if rows:
+        logging.warning('Telegram groups: removed %d group(s) without an active connecting administrator', len(rows))
+    return len(rows)
+
+
+@router.get('/api/bot/v1/report-groups')
+def list_report_groups(request: Request):
+    """Every connected group with its active companies: the bot sends the morning summary by this list."""
+    authenticate_bot(request)
+    items = []
+    with unit() as s:
+        active = active_codes(s)
+        for chat_id, group in sorted(report_groups(s).items()):
+            codes = sorted(active[c].code for c in group['companies'] if c in active)
+            if codes:
+                items.append({'chat_id': chat_id, 'title': group['title'], 'companies': codes, 'source': group['source']})
+    audit(None, 'Бот: группы сводки', '', f'Групп: {len(items)}')
+    return {'items': items}
+
+
+@router.get('/api/bot/v1/report-groups/{chat_id}')
+def get_report_group(request: Request, chat_id: int, telegram_user_id: int = Query(gt=0, lt=2**53)):
+    authenticate_bot(request)
+    require_group(chat_id)
+    with unit() as s:
+        user = linked_user(s, telegram_user_id)
+        result = group_state(s, chat_id, user)
+    audit(None, 'Бот: настройки группы', chat_id, 'Подключена' if result['connected'] else 'Не подключена',
+          user_id=user.id if user else None)
+    return result
+
+
+@router.post('/api/bot/v1/report-groups')
+def save_report_group(data: GroupIn, request: Request):
+    """Connect a group to the morning summary or change its companies (holding administrator only)."""
+    authenticate_bot(request)
+    require_group(data.chat_id)
+    check_manager(data.chat_id, data.telegram_user_id)
+    title = ' '.join(data.title.split())
+    with unit(True) as s:
+        user = locked_manager(s, data.chat_id, data.telegram_user_id)
+        codes = [c.code.upper() for c in chosen_companies(s, data.companies)]
+        row = s.get(TelegramGroup, data.chat_id)
+        if row is None:
+            before, owner = None, user.id
+            row = TelegramGroup(chat_id=data.chat_id, title=title, companies=','.join(codes), added_by=user.id, added_at=now())
+            s.add(row)
+            action, affected = 'Telegram-группа подключена', set(codes)
+        else:
+            before, owner = stored_codes(row), row.added_by
+            row.title = title or row.title
+            row.companies = ','.join(codes)
+            # The group now depends on this administrator: another admin can take a group over.
+            row.added_by = user.id
+            action, affected = 'Telegram-группа изменена', before | set(codes)
+        detail = group_detail(row.title, data.chat_id, codes, before)
+        if owner != user.id:
+            detail += f'; теперь группа закреплена за {user.name}'
+        journal_group(s, affected, action, data.chat_id, detail, user.id)
+        s.flush()
+        return group_state(s, data.chat_id, user)
+
+
+@router.post('/api/bot/v1/report-groups/remove')
+def remove_report_group(data: GroupRemoveIn, request: Request):
+    """Stop the morning summary for a group connected from Telegram."""
+    authenticate_bot(request)
+    require_group(data.chat_id)
+    check_manager(data.chat_id, data.telegram_user_id)
+    with unit(True) as s:
+        user = locked_manager(s, data.chat_id, data.telegram_user_id)
+        row = s.get(TelegramGroup, data.chat_id)
+        if row is None:
+            s.add(Audit(user_id=user.id, action='Бот: отключение группы', entity='telegram_group',
+                        entity_id=str(data.chat_id), detail='Группа не была подключена'))
+            return {'removed': False}
+        drop_group(s, row, 'Telegram-группа отключена', user.id)
+        return {'removed': True}
+
+
+class MigrateIn(BaseModel):
+    model_config = ConfigDict(extra='forbid')
+    from_chat_id: int = Field(gt=-2**63, lt=0)
+    to_chat_id: int = Field(gt=-2**63, lt=0)
+
+
+@router.post('/api/bot/v1/report-groups/migrate')
+def migrate_report_group(data: MigrateIn, request: Request):
+    """Telegram turned a basic group into a supergroup and gave it a new id: the connection moves
+    with its companies, title, author and date."""
+    authenticate_bot(request)
+    old_id, new_id = data.from_chat_id, data.to_chat_id
+    if old_id == new_id:
+        raise HTTPException(422, 'Старый и новый ID группы совпадают.')
+    pair = f'Группа {old_id} → {new_id}'
+    if old_id in config_groups() or new_id in config_groups():
+        audit(None, 'Бот: перенос группы отклонён', new_id, pair + ': задана в BOT_REPORT_GROUPS')
+        raise HTTPException(409, 'Группа задана в настройках сервера (BOT_REPORT_GROUPS) и из Telegram не меняется.')
+    with unit(True) as s:
+        old = s.get(TelegramGroup, old_id)
+        taken = old is not None and s.get(TelegramGroup, new_id) is not None
+        if old is not None and not taken:
+            codes, title = stored_codes(old), old.title
+            moved = TelegramGroup(chat_id=new_id, title=title, companies=old.companies,
+                                  added_by=old.added_by, added_at=old.added_at)
+            s.delete(old)
+            s.flush()
+            s.add(moved)
+            journal_group(s, codes, 'Telegram-группа перенесена', new_id,
+                          group_detail(title, new_id, codes) + f'; стала супергруппой, прежний ID {old_id}')
+    if old is None:
+        audit(None, 'Бот: перенос группы', new_id, pair + ': старая группа не была подключена кнопкой')
+        return {'migrated': False}
+    if taken:
+        audit(None, 'Бот: перенос группы отклонён', new_id, pair + ': новая группа уже подключена')
+        raise HTTPException(409, 'Новая группа уже подключена к сводке.')
+    return {'migrated': True}
+
+
+# ---------------------------------------------------------------- summary groups on the site («Пользователи»)
+
+def require_holding_admin(user):
+    if user.role != 'admin':
+        raise HTTPException(403, 'Telegram-группы сводки видит и отключает только администратор холдинга.')
+
+
+@router.get('/api/telegram-groups')
+def site_report_groups(request: Request):
+    """Every group that receives the morning summary, for the holding administrators on the site.
+    The list is holding-wide whatever company is selected on the page."""
+    with unit() as s:
+        user, _ = session_user(s, request)
+        require_holding_admin(user)
+        companies = {c.code.upper(): c for c in s.scalars(select(Company))}
+        stored = {g.chat_id: g for g in s.scalars(select(TelegramGroup))}
+        names = {u.id: u.name for u in s.scalars(select(User).execution_options(company_unscoped=True))}
+        items = []
+        for chat_id, group in report_groups(s).items():
+            row = stored.get(chat_id) if group['source'] == 'site' else None
+            listed = [{'code': companies[c].code, 'name': companies[c].name, 'active': companies[c].active}
+                      if c in companies else {'code': c, 'name': c, 'active': False} for c in group['companies']]
+            items.append({'chat_id': chat_id, 'title': group['title'], 'source': group['source'],
+                          'companies': sorted(listed, key=lambda c: (c['name'].casefold(), c['code'])),
+                          'added_by': names.get(row.added_by) if row else None,
+                          'added_at': utc_iso(row.added_at) if row else None,
+                          'can_remove': row is not None})
+    items.sort(key=lambda g: (not g['title'], g['title'].casefold(), g['chat_id']))  # untitled last
+    return {'items': items}
+
+
+@router.delete('/api/telegram-groups/{chat_id}')
+def site_remove_report_group(request: Request, chat_id: int = Path(gt=-2**63, lt=0)):
+    """Disconnect a group connected from Telegram, e.g. one whose chat no longer exists."""
+    with unit(True) as s:
+        user, _ = session_user(s, request)
+        require_holding_admin(user)
+        if chat_id in config_groups():
+            raise HTTPException(409, 'Эта группа задана в настройках сервера (BOT_REPORT_GROUPS); '
+                                     'отключить её может только технический администратор.')
+        row = s.get(TelegramGroup, chat_id)
+        if row is None:
+            return {'removed': False}
+        drop_group(s, row, 'Telegram-группа отключена', user.id, 'отключена на сайте')
+        return {'removed': True}
 
 
 # ---------------------------------------------------------------- Telegram link

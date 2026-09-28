@@ -116,6 +116,18 @@ class BotApiTests(unittest.TestCase):
         code=self.post('/api/telegram/code',{},user['client'],user['h']).json()['code']
         r=self.client.post('/api/bot/v1/telegram-links',json={'code':code,'telegram_user_id':telegram_id},auth=BOT)
         self.assertEqual(r.status_code,200,r.text);return r.json()
+    def tg_user(self,telegram_id,auth=BOT):return self.client.get(f'/api/bot/v1/telegram-users/{telegram_id}',auth=auth)
+    def groups(self):
+        r=self.client.get('/api/bot/v1/report-groups',auth=BOT);self.assertEqual(r.status_code,200,r.text)
+        return {g['chat_id']:g for g in r.json()['items']}
+    def group(self,chat,telegram_id,auth=BOT):
+        return self.client.get(f'/api/bot/v1/report-groups/{chat}',params={'telegram_user_id':telegram_id},auth=auth)
+    def connect(self,chat,companies,telegram_id,title='Финансы Zuma',auth=BOT):
+        return self.client.post('/api/bot/v1/report-groups',json={'chat_id':chat,'title':title,'companies':companies,'telegram_user_id':telegram_id},auth=auth)
+    def disconnect(self,chat,telegram_id,auth=BOT):
+        return self.client.post('/api/bot/v1/report-groups/remove',json={'chat_id':chat,'telegram_user_id':telegram_id},auth=auth)
+    def audit_rows(self,action):
+        with unit() as s:return list(s.scalars(select(Audit).where(Audit.action==action).order_by(Audit.id)))
 
     # -- access
     def test_service_credentials_are_required_and_checked(self):
@@ -461,6 +473,329 @@ class BotApiTests(unittest.TestCase):
                '20208000900123456789':'••6789','8600 1234 5678 9012':'••9012','8600.1234.5678.9012':'••9012',
                'р/с 20208000/900123/456789':'р/с ••6789','Счёт 20208000_9001_2345_6789':'Счёт ••6789'}
         for text,expected in cases.items():self.assertEqual(mask_digits(text),expected,text)
+
+    # -- «Мои заявки» in the private chat
+    def test_my_requests_show_only_the_linked_users_own_items(self):
+        author=self.make_user('employee','author');finance=self.make_user('finance','checker');other=self.make_user('finance','other')
+        self.link(finance,555101);self.link(other,555102)
+        first=self.new_request(author,'100');second=self.new_request(author,'200');own=self.new_request(finance,'300')
+        r=self.tg_user(555101);self.assertEqual(r.status_code,200,r.text);data=r.json()
+        self.assertEqual({k:data[k] for k in ('linked','user_id','name','is_admin')},{'linked':True,'user_id':finance['id'],'name':'Checker','is_admin':False})
+        # The same rows and rules as pending-requests; the financier never checks their own request.
+        self.assertEqual(data['items'],[i for i in self.pending() if i['assignee_user_id']==finance['id']])
+        self.assertEqual([i['request_id'] for i in data['items']],[first,second])
+        self.assertEqual([i['request_id'] for i in self.tg_user(555102).json()['items']],[first,second,own])
+        self.link(self.me(),555100)
+        admin=self.tg_user(555100).json();self.assertEqual((admin['linked'],admin['is_admin']),(True,True))
+        with unit() as s:
+            rows=self.audit_rows('Бот: заявки пользователя')
+            self.assertEqual({a.user_id for a in rows},{finance['id'],other['id'],admin['user_id']})
+            # Telegram ids are personal data: neither the bot journal nor the HTTP log keeps them.
+            self.assertFalse(s.scalar(select(Audit.id).where(Audit.detail.contains('55510')|Audit.entity_id.contains('55510'))))
+            self.assertTrue(s.scalar(select(Audit.id).where(Audit.detail=='/api/bot/v1/telegram-users/{telegram_user_id}; status=200')))
+
+    def test_my_requests_for_unlinked_disabled_or_invalid_telegram(self):
+        empty={'linked':False,'user_id':None,'name':None,'is_admin':False,'items':[]}
+        self.assertEqual(self.tg_user(555201).json(),empty)
+        finance=self.make_user('finance','checker');self.link(finance,555202)
+        self.new_request(self.make_user('employee','author'),'100')
+        self.assertTrue(self.tg_user(555202).json()['items'])
+        with unit(True) as s:s.get(User,finance['id']).active=False
+        self.assertEqual(self.tg_user(555202).json(),empty)
+        for bad in ('0','-5','abc',str(2**53)):self.assertEqual(self.tg_user(bad).status_code,422,bad)
+        for auth in (None,('test-bot','wrong-secret-'+'y'*30)):self.assertEqual(self.tg_user(555202,auth=auth).status_code,401)
+        refused=self.audit_rows('Бот: отказ в доступе')
+        self.assertEqual(refused[-1].detail,'/api/bot/v1/telegram-users/{telegram_user_id}')
+        with unit() as s:self.assertFalse(s.scalar(select(Audit.id).where(Audit.detail.contains('55520'))))
+
+    # -- groups connected from Telegram
+    def test_admin_connects_changes_and_removes_a_group(self):
+        chat=-1004444444444;self.link(self.me(),555300)
+        admin_id=self.client.get('/api/me').json()['user']['id']
+        self.account('Zuma bank','bank','UZS','777.00',headers=self.zuma())
+        self.assertEqual(self.summary(chat=chat).status_code,403)
+        choices=[{'code':'UZGERMED','name':'UZGERMED'},{'code':'ZUMA','name':'Zuma'}]
+        self.assertEqual(self.group(chat,555300).json(),{'chat_id':chat,'connected':False,'source':None,'companies':[],'can_manage':True,'choices':choices})
+        r=self.connect(chat,['zuma','UZGERMED'],555300,title='  Финансы \n Zuma ');self.assertEqual(r.status_code,200,r.text)
+        self.assertEqual(r.json(),{'chat_id':chat,'connected':True,'source':'site','companies':['UZGERMED','ZUMA'],'can_manage':True,'choices':choices})
+        listed=self.groups()
+        self.assertEqual(listed[chat],{'chat_id':chat,'title':'Финансы Zuma','companies':['UZGERMED','ZUMA'],'source':'site'})
+        self.assertEqual(listed[GROUP],{'chat_id':GROUP,'title':'','companies':['UZGERMED'],'source':'config'})
+        self.assertEqual(listed[GROUP_BOTH]['companies'],['UZGERMED','ZUMA'])
+        # A group connected from Telegram gets exactly what a configured group gets.
+        summary=self.summary(chat=chat);self.assertEqual(summary.status_code,200,summary.text)
+        self.assertEqual({k:v for k,v in summary.json().items() if k!='chat_id'},{k:v for k,v in self.summary(chat=GROUP_BOTH).json().items() if k!='chat_id'})
+        connected=self.audit_rows('Telegram-группа подключена')
+        self.assertEqual(sorted(a.company_id for a in connected),sorted([self.companies['UZGERMED'],self.companies['ZUMA']]))
+        for a in connected:
+            self.assertEqual((a.user_id,a.entity,a.entity_id),(admin_id,'telegram_group',str(chat)))
+            self.assertEqual(a.detail,f'Группа «Финансы Zuma» ({chat}); компании: UZGERMED, ZUMA')
+        self.assertIn('Telegram-группа подключена',[a['action'] for a in self.client.get('/api/audit',headers=self.zuma()).json()])
+
+        r=self.connect(chat,['ZUMA'],555300,title='');self.assertEqual(r.status_code,200,r.text)
+        self.assertEqual(r.json()['companies'],['ZUMA'])
+        self.assertEqual(self.groups()[chat]['title'],'Финансы Zuma')  # an empty title keeps the known one
+        self.assertEqual({b['company'] for b in self.summary(chat=chat).json()['balances']},{'Zuma'})
+        changed=self.audit_rows('Telegram-группа изменена')
+        self.assertEqual(sorted(a.company_id for a in changed),sorted([self.companies['UZGERMED'],self.companies['ZUMA']]))
+        self.assertTrue(all(a.detail.endswith('компании: ZUMA; было: UZGERMED, ZUMA') for a in changed))
+
+        self.assertEqual(self.disconnect(chat,555300).json(),{'removed':True})
+        self.assertEqual(self.disconnect(chat,555300).json(),{'removed':False})
+        self.assertEqual(self.summary(chat=chat).status_code,403)
+        self.assertNotIn(chat,self.groups())
+        self.assertEqual([a.company_id for a in self.audit_rows('Telegram-группа отключена')],[self.companies['ZUMA']])
+        with unit() as s:
+            self.assertIsNone(s.get(TelegramGroup,chat))
+            self.assertFalse(s.scalar(select(Audit.id).where(Audit.detail.contains('555300')|Audit.entity_id.contains('555300'))))
+
+    def test_only_a_linked_holding_administrator_manages_groups(self):
+        chat=-1005555555555
+        finance=self.make_user('finance','checker');self.link(finance,555401)
+        founder=self.make_user('founder','owner');self.link(founder,555402)
+        admin2=self.make_user('admin','admin2');self.link(admin2,555403)
+        with unit(True) as s:s.get(User,admin2['id']).active=False
+        for tg in (555400,555401,555402,555403):
+            self.assertEqual(self.connect(chat,['UZGERMED'],tg).status_code,403,tg)
+            self.assertEqual(self.disconnect(chat,tg).status_code,403,tg)
+            state=self.group(chat,tg).json();self.assertEqual((state['can_manage'],state['choices']),(False,[]),tg)
+        self.assertNotIn(chat,self.groups())
+        refused=self.audit_rows('Бот: отказ в настройке группы')
+        self.assertIn((finance['id'],'Не администратор холдинга'),[(a.user_id,a.detail) for a in refused])
+        self.assertIn((None,'Telegram не привязан к активному пользователю'),[(a.user_id,a.detail) for a in refused])
+        for auth in (None,('test-bot','wrong-secret-'+'y'*30)):
+            self.assertEqual(self.connect(chat,['UZGERMED'],555401,auth=auth).status_code,401)
+            self.assertEqual(self.group(chat,555401,auth=auth).status_code,401)
+            self.assertEqual(self.client.get('/api/bot/v1/report-groups',auth=auth).status_code,401)
+
+        # BOT_REPORT_GROUPS is fixed on the site: Telegram cannot change it, and it wins over a stored row.
+        self.link(self.me(),555404)
+        self.assertEqual(self.group(GROUP,555404).json(),{'chat_id':GROUP,'connected':True,'source':'config','companies':['UZGERMED'],'can_manage':False,'choices':[]})
+        self.assertEqual(self.connect(GROUP,['ZUMA'],555404).status_code,409)
+        self.assertEqual(self.disconnect(GROUP,555404).status_code,409)
+        with unit(True) as s:s.add(TelegramGroup(chat_id=GROUP,title='Старая группа',companies='ZUMA',added_by=self.admin_id()))
+        self.assertEqual(self.groups()[GROUP],{'chat_id':GROUP,'title':'Старая группа','companies':['UZGERMED'],'source':'config'})
+        self.assertEqual({b['company'] for b in self.summary().json()['balances']},{'UZGERMED'})
+
+    def test_group_settings_are_validated(self):
+        chat=-1006666666666;self.link(self.me(),555500)
+        cases=[([],'Выберите хотя бы одну компанию.'),(['UNASSIGNED'],'Служебное пространство «Не распределено» нельзя подключить к сводке.'),
+               (['NOPE'],'Компания «NOPE» не найдена.'),(['ZUMA','zuma'],'Компания «zuma» указана дважды.')]
+        for companies,message in cases:
+            r=self.connect(chat,companies,555500);self.assertEqual((r.status_code,r.json()['detail']),(422,message),companies)
+        for bad in (555001,0):
+            self.assertEqual(self.connect(bad,['UZGERMED'],555500).status_code,422)
+            self.assertEqual(self.disconnect(bad,555500).status_code,422)
+            self.assertEqual(self.group(bad,555500).status_code,422)
+        self.assertEqual(self.connect(chat,['UZGERMED'],555500,title='x'*256).status_code,422)
+        self.assertEqual(self.connect(chat,['UZGERMED'],0).status_code,422)
+        self.assertEqual(self.group(chat,0).status_code,422)
+        self.assertEqual(self.client.get(f'/api/bot/v1/report-groups/{chat}',auth=BOT).status_code,422)
+        extra=self.client.post('/api/bot/v1/report-groups',json={'chat_id':chat,'companies':['UZGERMED'],'telegram_user_id':555500,'members':[1]},auth=BOT)
+        self.assertEqual(extra.status_code,422)
+        with unit(True) as s:s.scalar(select(Company).where(Company.code=='ZUMA')).active=False
+        r=self.connect(chat,['UZGERMED','ZUMA'],555500);self.assertEqual((r.status_code,r.json()['detail']),(422,'Компания «ZUMA» отключена.'))
+        self.assertNotIn(chat,self.groups())
+        self.assertEqual(self.connect(chat,['UZGERMED'],555500,title='x'*255).status_code,200)
+
+    def test_inactive_company_is_dropped_from_the_group_list(self):
+        both,zuma_only=-1007777777777,-1008888888888;self.link(self.me(),555600)
+        self.assertEqual(self.connect(both,['UZGERMED','ZUMA'],555600).status_code,200)
+        self.assertEqual(self.connect(zuma_only,['ZUMA'],555600).status_code,200)
+        with unit(True) as s:s.scalar(select(Company).where(Company.code=='ZUMA')).active=False
+        listed=self.groups()
+        self.assertEqual(listed[both]['companies'],['UZGERMED'])
+        self.assertNotIn(zuma_only,listed);self.assertNotIn(GROUP_ZUMA,listed)
+        self.assertEqual(self.summary(chat=zuma_only).status_code,403)
+        state=self.group(both,555600).json()
+        self.assertEqual((state['companies'],state['choices']),(['UZGERMED'],[{'code':'UZGERMED','name':'UZGERMED'}]))
+        # Still registered: the administrator sees it and can switch it off.
+        self.assertEqual((self.group(zuma_only,555600).json()['connected'],self.group(zuma_only,555600).json()['companies']),(True,[]))
+        self.assertEqual(self.disconnect(zuma_only,555600).json(),{'removed':True})
+
+    # -- summary groups on the site («Пользователи» → «Telegram-группы сводки»)
+    def site_groups(self,user=None,headers=None):
+        user=user or self.me()
+        return user['client'].get('/api/telegram-groups',headers=user['h'] if headers is None else headers)
+    def site_remove(self,chat,user=None,headers=None):
+        user=user or self.me()
+        return user['client'].delete(f'/api/telegram-groups/{chat}',headers=user['h'] if headers is None else headers)
+    def migrate(self,old,new,auth=BOT):
+        return self.client.post('/api/bot/v1/report-groups/migrate',json={'from_chat_id':old,'to_chat_id':new},auth=auth)
+    def admin_id(self):return self.client.get('/api/me').json()['user']['id']
+
+    def test_holding_administrator_sees_and_disconnects_groups_on_the_site(self):
+        chat=-1004040404040;self.link(self.me(),555700);admin_id=self.admin_id()
+        self.assertEqual(self.connect(chat,['ZUMA','UZGERMED'],555700).status_code,200)
+        r=self.site_groups();self.assertEqual(r.status_code,200,r.text)
+        items={g['chat_id']:g for g in r.json()['items']}
+        self.assertEqual(set(items),{chat,GROUP,GROUP_BOTH,GROUP_ZUMA})
+        mine=items[chat];added=datetime.fromisoformat(mine.pop('added_at'))
+        self.assertIsNotNone(added.tzinfo)
+        self.assertEqual(mine,{'chat_id':chat,'title':'Финансы Zuma','source':'site','added_by':'Test Admin','can_remove':True,
+                               'companies':[{'code':'UZGERMED','name':'UZGERMED','active':True},{'code':'ZUMA','name':'Zuma','active':True}]})
+        self.assertEqual(items[GROUP_BOTH],{'chat_id':GROUP_BOTH,'title':'','source':'config','added_by':None,'added_at':None,'can_remove':False,
+                                            'companies':[{'code':'UZGERMED','name':'UZGERMED','active':True},{'code':'ZUMA','name':'Zuma','active':True}]})
+        self.assertEqual(r.json()['items'][0]['chat_id'],chat)  # titled groups first
+        # Holding-wide: the same list whatever company is selected on the page.
+        self.assertEqual(self.site_groups(headers=self.zuma()).json(),r.json())
+
+        finance=self.make_user('finance','checker');founder=self.make_user('founder','owner')
+        for other in (finance,founder):
+            self.assertEqual(self.site_groups(other).status_code,403)
+            self.assertEqual(self.site_remove(chat,other).status_code,403)
+        with TestClient(app) as anonymous:
+            self.assertEqual(anonymous.get('/api/telegram-groups').status_code,401)
+            self.assertEqual(anonymous.delete(f'/api/telegram-groups/{chat}').status_code,401)
+        self.assertEqual(self.site_remove(chat,headers={}).status_code,403)  # no CSRF token
+        self.assertEqual(self.site_remove(GROUP).status_code,409)  # BOT_REPORT_GROUPS is changed on the server only
+        for bad in (0,555001):self.assertEqual(self.site_remove(bad).status_code,422,bad)
+        self.assertIn(chat,self.groups())
+
+        r=self.site_remove(chat);self.assertEqual((r.status_code,r.json()),(200,{'removed':True}),r.text)
+        self.assertEqual(self.site_remove(chat).json(),{'removed':False})
+        self.assertNotIn(chat,self.groups());self.assertEqual(self.summary(chat=chat).status_code,403)
+        self.assertNotIn(chat,{g['chat_id'] for g in self.site_groups().json()['items']})
+        removed=self.audit_rows('Telegram-группа отключена')
+        # The page had UZGERMED selected, yet each company of the group gets its own journal row.
+        self.assertEqual(sorted(a.company_id for a in removed),sorted([self.companies['UZGERMED'],self.companies['ZUMA']]))
+        for a in removed:
+            self.assertEqual((a.user_id,a.entity,a.entity_id),(admin_id,'telegram_group',str(chat)))
+            self.assertEqual(a.detail,f'Группа «Финансы Zuma» ({chat}); компании: UZGERMED, ZUMA; отключена на сайте')
+        self.assertIn('Telegram-группа отключена',[a['action'] for a in self.client.get('/api/audit',headers=self.zuma()).json()])
+
+    def test_group_stops_when_its_administrator_is_disabled_or_demoted(self):
+        kept,demoted_chat,disabled_chat,unchanged_chat=-1004141414141,-1004242424242,-1004343434343,-1004444444440
+        self.link(self.me(),555800);admin_id=self.admin_id()
+        self.assertEqual(self.connect(kept,['UZGERMED'],555800).status_code,200)
+        admin2=self.make_user('admin','admin2');self.link(admin2,555801)
+        admin3=self.make_user('admin','admin3');self.link(admin3,555802)
+        admin4=self.make_user('admin','admin4');self.link(admin4,555803)
+        self.assertEqual(self.connect(demoted_chat,['ZUMA','UZGERMED'],555801,title='Группа admin2').status_code,200)
+        self.assertEqual(self.connect(disabled_chat,['ZUMA'],555802,title='').status_code,200)
+        self.assertEqual(self.connect(unchanged_chat,['ZUMA'],555803).status_code,200)
+
+        # Editing an administrator who stays an active administrator keeps the group
+        # (the edit still unlinks their Telegram, as every change of rights does).
+        self.assertEqual(self.post(f'/api/users/{admin4["id"]}',{'role':'admin','active':True,'password':''}).status_code,200)
+        self.assertIn(unchanged_chat,self.groups())
+        self.assertEqual(self.audit_rows('Telegram-группа отключена'),[])
+
+        r=self.post(f'/api/users/{admin2["id"]}',{'role':'finance','active':True,'password':''});self.assertEqual(r.status_code,200,r.text)
+        r=self.post(f'/api/users/{admin3["id"]}',{'role':'admin','active':False,'password':''});self.assertEqual(r.status_code,200,r.text)
+        listed=self.groups()
+        self.assertNotIn(demoted_chat,listed);self.assertNotIn(disabled_chat,listed)
+        self.assertIn(kept,listed);self.assertIn(unchanged_chat,listed)
+        self.assertEqual(self.summary(chat=demoted_chat).status_code,403)
+        with unit() as s:self.assertEqual(sorted(g.chat_id for g in s.scalars(select(TelegramGroup))),sorted([kept,unchanged_chat]))
+        rows=[(a.company_id,a.user_id,a.entity_id,a.detail) for a in self.audit_rows('Telegram-группа отключена')]
+        uz,zu=self.companies['UZGERMED'],self.companies['ZUMA']
+        demoted=f'Группа «Группа admin2» ({demoted_chat}); компании: UZGERMED, ZUMA; автоматически: подключивший её Admin2 больше не администратор холдинга'
+        disabled=f'Группа {disabled_chat}; компании: ZUMA; автоматически: подключивший её Admin3 отключён'
+        self.assertEqual(sorted(rows),sorted([(uz,admin_id,str(demoted_chat),demoted),(zu,admin_id,str(demoted_chat),demoted),
+                                              (zu,admin_id,str(disabled_chat),disabled)]))
+
+    def test_another_administrator_takes_a_group_over(self):
+        chat=-1004545454545;self.link(self.me(),555900);admin_id=self.admin_id()
+        self.assertEqual(self.connect(chat,['UZGERMED','ZUMA'],555900).status_code,200)
+        admin2=self.make_user('admin','admin2');self.link(admin2,555901)
+        with unit() as s:self.assertEqual(s.get(TelegramGroup,chat).added_by,admin_id)
+        r=self.connect(chat,['UZGERMED'],555901,title='');self.assertEqual(r.status_code,200,r.text)
+        with unit() as s:self.assertEqual(s.get(TelegramGroup,chat).added_by,admin2['id'])
+        changed=self.audit_rows('Telegram-группа изменена')
+        self.assertTrue(changed and all(a.user_id==admin2['id'] and a.detail.endswith('; теперь группа закреплена за Admin2') for a in changed))
+        self.assertEqual({g['chat_id']:g['added_by'] for g in self.site_groups().json()['items']}[chat],'Admin2')
+        # The first administrator leaves: the group now depends on admin2 and keeps working.
+        r=self.post(f'/api/users/{admin_id}',{'role':'admin','active':False,'password':''},admin2['client'],admin2['h'])
+        self.assertEqual(r.status_code,200,r.text)
+        self.assertEqual(self.groups()[chat]['companies'],['UZGERMED'])
+        self.assertEqual(self.audit_rows('Telegram-группа отключена'),[])
+
+    def test_groups_without_an_active_connecting_admin_get_no_summary_and_are_removed(self):
+        from app.bot_api import drop_orphan_groups
+        admin_id=self.admin_id();gone=self.make_user('admin','goneadmin')
+        orphan,manual,kept=-1005151515151,-1005252525252,-1005353535353
+        with unit(True) as s:
+            s.add(TelegramGroup(chat_id=orphan,title='Бывшего админа',companies='UZGERMED',added_by=gone['id']))
+            s.add(TelegramGroup(chat_id=manual,title='Вручную',companies='UZGERMED',added_by=None))
+            s.add(TelegramGroup(chat_id=kept,title='Действующая',companies='UZGERMED',added_by=admin_id))
+            # Changed directly in the database, so edit_user never ran.
+            s.get(User,gone['id']).active=False
+        listed=self.groups()
+        self.assertIn(kept,listed);self.assertNotIn(orphan,listed);self.assertNotIn(manual,listed)
+        self.assertEqual(self.summary(chat=orphan).status_code,403)
+        self.assertEqual(self.summary(chat=kept).status_code,200)
+        self.assertEqual(drop_orphan_groups(),2)
+        with unit() as s:
+            self.assertIsNone(s.get(TelegramGroup,orphan));self.assertIsNone(s.get(TelegramGroup,manual))
+            self.assertIsNotNone(s.get(TelegramGroup,kept))
+        self.assertEqual(len([a for a in self.audit_rows('Telegram-группа отключена') if 'нет действующего администратора' in a.detail]),2)
+        self.assertEqual(drop_orphan_groups(),0)  # idempotent
+
+    def test_startup_removes_stored_rows_shadowed_by_the_server_setting(self):
+        from app.bot_api import drop_shadowed_groups
+        other=-1004646464646;admin_id=self.admin_id()
+        with unit(True) as s:
+            s.add(TelegramGroup(chat_id=GROUP,title='Старая группа',companies='UZGERMED,ZUMA',added_by=admin_id))
+            s.add(TelegramGroup(chat_id=other,title='Своя группа',companies='ZUMA',added_by=admin_id))
+        with TestClient(app):pass  # the application's startup
+        with unit() as s:
+            self.assertIsNone(s.get(TelegramGroup,GROUP))
+            self.assertIsNotNone(s.get(TelegramGroup,other))
+        replaced=self.audit_rows('Telegram-группа заменена настройкой сервера')
+        self.assertEqual(sorted(a.company_id for a in replaced),sorted([self.companies['UZGERMED'],self.companies['ZUMA']]))
+        for a in replaced:
+            self.assertEqual((a.user_id,a.entity_id),(None,str(GROUP)))
+            self.assertEqual(a.detail,f'Группа «Старая группа» ({GROUP}); компании: UZGERMED, ZUMA; группа задана в BOT_REPORT_GROUPS')
+        self.assertEqual(drop_shadowed_groups(),0)  # idempotent
+        self.assertEqual(len(self.audit_rows('Telegram-группа заменена настройкой сервера')),2)
+        saved=os.environ['BOT_REPORT_GROUPS']
+        try:
+            # The operator removes the entry later: the old, wider Telegram connection does not come back.
+            os.environ['BOT_REPORT_GROUPS']=f'{GROUP_ZUMA}:ZUMA'
+            self.assertNotIn(GROUP,self.groups());self.assertEqual(self.summary().status_code,403)
+            os.environ['BOT_REPORT_GROUPS']=''
+            self.assertEqual(drop_shadowed_groups(),0)
+        finally:os.environ['BOT_REPORT_GROUPS']=saved
+
+    def test_group_follows_a_supergroup_migration(self):
+        basic,supergroup,second=-412345678,-1009990000001,-412345679
+        self.link(self.me(),556000);admin_id=self.admin_id()
+        self.assertEqual(self.connect(basic,['ZUMA','UZGERMED'],556000,title='Финансы').status_code,200)
+        with unit() as s:before=s.get(TelegramGroup,basic);stamp=before.added_at
+        r=self.migrate(basic,supergroup);self.assertEqual((r.status_code,r.json()),(200,{'migrated':True}),r.text)
+        with unit() as s:
+            self.assertIsNone(s.get(TelegramGroup,basic))
+            moved=s.get(TelegramGroup,supergroup)
+            self.assertEqual((moved.title,moved.companies,moved.added_by,moved.added_at),('Финансы','ZUMA,UZGERMED',admin_id,stamp))
+        listed=self.groups()
+        self.assertNotIn(basic,listed);self.assertEqual(listed[supergroup]['companies'],['UZGERMED','ZUMA'])
+        self.assertEqual(self.summary(chat=supergroup).status_code,200);self.assertEqual(self.summary(chat=basic).status_code,403)
+        moved_rows=self.audit_rows('Telegram-группа перенесена')
+        self.assertEqual(sorted(a.company_id for a in moved_rows),sorted([self.companies['UZGERMED'],self.companies['ZUMA']]))
+        for a in moved_rows:
+            self.assertEqual((a.user_id,a.entity,a.entity_id),(None,'telegram_group',str(supergroup)))
+            self.assertEqual(a.detail,f'Группа «Финансы» ({supergroup}); компании: UZGERMED, ZUMA; стала супергруппой, прежний ID {basic}')
+
+        # Telegram reports a migration twice (old and new chat); nothing is left to move the second time.
+        self.assertEqual(self.migrate(basic,supergroup).json(),{'migrated':False})
+        self.assertEqual(self.migrate(-400000001,-1009990000002).json(),{'migrated':False})
+        self.assertIn('старая группа не была подключена кнопкой',self.audit_rows('Бот: перенос группы')[-1].detail)
+
+        self.assertEqual(self.connect(second,['UZGERMED'],556000).status_code,200)
+        for old,new in ((second,supergroup),(GROUP,-1009990000003),(second,GROUP)):
+            self.assertEqual(self.migrate(old,new).status_code,409,(old,new))
+        with unit() as s:self.assertIsNotNone(s.get(TelegramGroup,second))
+        self.assertEqual(len(self.audit_rows('Бот: перенос группы отклонён')),3)
+        self.assertEqual(self.groups()[supergroup]['companies'],['UZGERMED','ZUMA'])
+
+        for old,new in ((second,second),(412345679,supergroup),(second,0),(second,1009990000004)):
+            self.assertEqual(self.migrate(old,new).status_code,422,(old,new))
+        extra=self.client.post('/api/bot/v1/report-groups/migrate',json={'from_chat_id':second,'to_chat_id':-1009990000004,'title':'x'},auth=BOT)
+        self.assertEqual(extra.status_code,422)
+        self.assertEqual(self.client.post('/api/bot/v1/report-groups/migrate',json={'from_chat_id':second},auth=BOT).status_code,422)
+        for auth in (None,('test-bot','wrong-secret-'+'y'*30)):self.assertEqual(self.migrate(second,-1009990000004,auth=auth).status_code,401)
+        with unit() as s:self.assertIsNone(s.get(TelegramGroup,-1009990000004))
 
     def me(self):
         return {'client':self.client,'h':self.h}

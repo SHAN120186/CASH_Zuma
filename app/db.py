@@ -317,6 +317,17 @@ class TelegramLinkCode(Base):
     user_id = Column(Integer, ForeignKey('users.id'), nullable=False, unique=True)
     expires_at = Column(DateTime, nullable=False)
 
+class TelegramGroup(Base):
+    """Telegram group connected to the morning summary from Telegram by a holding administrator.
+    Groups fixed in BOT_REPORT_GROUPS take precedence; a row under such a chat id is removed at startup.
+    The row also goes when ``added_by`` is disabled or stops being a holding administrator."""
+    __tablename__ = 'telegram_groups'
+    chat_id = Column(BigInteger, primary_key=True, autoincrement=False)  # negative: a group, never a person
+    title = Column(String(255), nullable=False, default='')
+    companies = Column(Text, nullable=False)  # comma-separated upper-case company codes
+    added_by = Column(Integer, ForeignKey('users.id'), nullable=True)
+    added_at = Column(DateTime, nullable=False, default=now)
+
 @contextmanager
 def unit(write=False):
     """Сериализация записей: лимит/остаток проверяются и меняются атомарно."""

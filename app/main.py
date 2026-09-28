@@ -18,7 +18,7 @@ from .security import *
 from .services import *
 from .company_scope import available_companies, setting_key, get_setting
 from .model_import import import_snapshot, MAX_SIZE
-from .bot_api import revoke_telegram
+from .bot_api import drop_groups_of, drop_orphan_groups, drop_shadowed_groups, journal_path, revoke_telegram
 
 SECURE=os.getenv('COOKIE_SECURE','0')=='1'
 ALLOWED=[x.strip() for x in os.getenv('ALLOWED_HOSTS','127.0.0.1,localhost,testserver').split(',') if x.strip()]
@@ -27,6 +27,9 @@ PUBLIC_ORIGIN=os.getenv('PUBLIC_ORIGIN','').rstrip('/')
 @asynccontextmanager
 async def lifespan(app):
     initialize()
+    # A stored Telegram group under a chat id fixed in BOT_REPORT_GROUPS must not outlive the entry.
+    drop_shadowed_groups()
+    drop_orphan_groups()
     yield
 app=FastAPI(title='UZGERMED Treasury',version='2.12.2',docs_url=None,redoc_url=None,openapi_url=None,lifespan=lifespan)
 app.add_middleware(TrustedHostMiddleware,allowed_hosts=ALLOWED)
@@ -46,7 +49,7 @@ async def safety(request,call_next):
     if request.url.path.startswith('/api'):
         try:
             with unit(True) as audit_session:
-                audit_session.add(Audit(company_id=getattr(request.state,'company_id',None),user_id=getattr(request.state,'user_id',None),action='API '+request.method,entity='http',detail=request.url.path+'; status='+str(response.status_code)))
+                audit_session.add(Audit(company_id=getattr(request.state,'company_id',None),user_id=getattr(request.state,'user_id',None),action='API '+request.method,entity='http',detail=journal_path(request.url.path)+'; status='+str(response.status_code)))
         except OperationalError:
             # Financial changes and their business audit are committed together.
             # A failed secondary HTTP log must not disguise a completed payment.
@@ -750,6 +753,8 @@ def edit_user(id:int,data:UserEdit,request:Request):
             try:u.password_hash=hash_password(data.password)
             except ValueError as e:raise HTTPException(422,str(e))
         s.execute(delete(LoginSession).where(LoginSession.user_id==u.id));revoke_telegram(s,u.id)
+        # Summary groups this user connected stop once they are disabled or no longer a holding administrator.
+        drop_groups_of(s,u,admin)
         log(s,admin,'Изменены права / пароль пользователя','user',id,f'{data.role}; active={data.active}; сессии отозваны')
         m=s.get(CompanyUser,(cid,u.id))
         return member_json(u,m.role if m else None)

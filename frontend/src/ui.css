@@ -288,6 +288,12 @@ tr.risk td{background:#fff8ee!important}
 .tg-link p{overflow-wrap:anywhere}
 .tg-code{width:100%;min-height:54px;font:700 clamp(20px,6vw,26px)/1.2 ui-monospace,SFMono-Regular,Consolas,'Liberation Mono',monospace;letter-spacing:.14em;text-align:center}
 .tg-link code{font-family:ui-monospace,SFMono-Regular,Consolas,'Liberation Mono',monospace;font-weight:700;background:var(--surface);border:1px solid var(--line2);border-radius:6px;padding:1px 6px}
+.tg-groups{margin-top:16px}
+.tg-groups .card-b{display:grid;gap:12px}
+.tg-groups .card-b>*{min-width:0}
+.tg-groups td{overflow-wrap:anywhere}
+.tg-groups td>span{min-width:0}
+.tg-empty{font-weight:700}
 
 /* Cash Flow */
 .tools{padding:14px 16px;margin-bottom:16px;display:flex;flex-direction:column;gap:12px}
@@ -423,6 +429,7 @@ table.cf{border-collapse:separate;border-spacing:0;min-width:100%;font-size:13px
   .rsp td small{text-align:right}
   .rsp td.detail-cell{display:block}
   .table-card.rsp-wrap{background:transparent;border:0;box-shadow:none;overflow:visible}
+  .tg-groups .rsp td:empty{display:none}
   .lg-e{padding:12px}
 }
 @media print{
