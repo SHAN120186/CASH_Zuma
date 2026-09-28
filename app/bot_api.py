@@ -24,14 +24,14 @@ from sqlalchemy import delete, func, select
 from .company_scope import SERVICE_CODE
 from .db import (Account, Audit, Budget, Category, Company, CompanyUser, Ledger, PaymentRequest,
                  Setting, TelegramLink, TelegramLinkCode, User, now, unit)
-from .security import digest, session_user
+from .security import COMPANY_ROLES, PERMS, digest, pay_right, session_user
 from .services import account_balance, budget_state, effective_cashflows, funds_state, log, money
 from .services import today as tashkent_today
 
 router = APIRouter()
 
 CURRENCY_ORDER = {'UZS': 0, 'USD': 1, 'EUR': 2}
-STAGE_LABELS = {'finance': 'Проверка финансистом', 'director': 'Утверждение директором',
+STAGE_LABELS = {'finance': 'Проверка финансовым директором', 'director': 'Утверждение директором',
                 'bank_payment': 'Оплата расчётным бухгалтером', 'cash_payment': 'Выдача кассиром'}
 CODE_ALPHABET = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789'  # no 0/O, 1/I: codes are retyped by hand
 CODE_TTL = timedelta(minutes=10)
@@ -222,34 +222,40 @@ def morning_summary(request: Request, chat_id: int, report_date: date, today: da
 
 # ---------------------------------------------------------------- pending requests
 
-def responsible(r, account, company, users, members):
-    """Stage of an actionable request and the people who can act on it now."""
-    def reachable(u):
-        if u.role == 'admin':
-            return True
-        return company.code != SERVICE_CODE and u.id in members.get(company.id, ())
+def company_role_of(user, company, members):
+    """The user's role in this company, by the same rule as security.scope_user and
+    company_scope.available_companies: the founder only reads, an administrator acts only
+    through a role assigned in the company, other staff need membership (never in the
+    service company) and fall back to their own role when none is assigned."""
+    assigned = members.get(company.id, {})
+    if user.role == 'founder':
+        return None
+    if user.role == 'admin':
+        role = assigned.get(user.id)
+        return role if role in COMPANY_ROLES else None
+    if company.code == SERVICE_CODE or user.id not in assigned:
+        return None
+    role = assigned[user.id]
+    return role if role in COMPANY_ROLES else user.role
 
-    if r.status == 'pending':
-        if r.finance_approved_by is None:
-            stage, chain, excluded = 'finance', [('finance',), ('admin',)], {r.creator_id, r.last_editor_id}
-        else:
-            # The director approval must come from someone other than the financier (app/main.py decide).
-            stage, chain = 'director', [('director',), ('admin',)]
-            excluded = {r.creator_id, r.last_editor_id, r.finance_approved_by}
-    elif r.status == 'approved' and account.kind == 'bank':
-        stage, chain, excluded = 'bank_payment', [('accountant',), ('finance',), ('admin',)], set()
+
+def responsible(r, account, company, users, members):
+    """Stage of an actionable request and the people who can act on it now (app/main.py decide,
+    services.check_payer). Nobody else is reminded: a reminder must lead to a possible action."""
+    if r.status == 'pending' and r.finance_approved_by is None:
+        stage, fits = 'finance', lambda role: role == 'finance'
+        excluded = {r.creator_id, r.last_editor_id}
+    elif r.status == 'pending':
+        stage, fits = 'director', lambda role: role == 'director'
+        excluded = {r.creator_id, r.last_editor_id, r.finance_approved_by}
     elif r.status == 'approved':
-        # A cashier sees only the requests they created (app/main.py requests_list), so only the
-        # author-cashier can pay it from the list; other cash requests go to the financier.
-        stage, chain, excluded = 'cash_payment', [('cashier',), ('finance',), ('admin',)], set()
+        # The payment channel decides the payer: bank - settlement accountant, cash - cashier.
+        right = pay_right(account)
+        stage, fits = ('cash_payment' if account.kind == 'cash' else 'bank_payment'), lambda role: right in PERMS.get(role, ())
+        excluded = {r.creator_id, r.last_editor_id, r.finance_approved_by, r.approved_by}
     else:
         return None, []
-    for roles in chain:
-        found = [u for u in users if u.role in roles and u.id not in excluded and reachable(u)
-                 and (u.role != 'cashier' or u.id == r.creator_id)]
-        if found:
-            return stage, found
-    return stage, []
+    return stage, [u for u in users if u.id not in excluded and fits(company_role_of(u, company, members))]
 
 
 @router.get('/api/bot/v1/pending-requests')
@@ -265,7 +271,7 @@ def pending_requests(request: Request):
         links = {link.user_id: link.telegram_user_id for link in s.scalars(select(TelegramLink))}
         members = {}
         for m in s.scalars(select(CompanyUser)):
-            members.setdefault(m.company_id, set()).add(m.user_id)
+            members.setdefault(m.company_id, {})[m.user_id] = m.role
         # Every change of a request (creation, edit, decision, payment reversal) is audited
         # with entity='request'; the latest one is when it entered its current stage.
         entered = {}

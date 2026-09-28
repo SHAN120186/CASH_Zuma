@@ -215,7 +215,7 @@ class BotApiTests(unittest.TestCase):
         self.assertEqual(payments[f'CF-{late:05d}']['stage_label'],f'Просрочено с {self.yesterday:%d.%m.%Y}')
         self.assertEqual(payments[f'CF-{due:05d}']['purpose'],self.cat_name)
         pending={p['number']:p['stage_label'] for p in data['pending_approvals']}
-        self.assertEqual(pending,{f'CF-{waiting:05d}':'Проверка финансистом',f'CF-{big:05d}':'Утверждение директором'})
+        self.assertEqual(pending,{f'CF-{waiting:05d}':'Проверка финансовым директором',f'CF-{big:05d}':'Утверждение директором'})
         for private in ('Supplier LLC','Оплата по договору','20208000900123456789'):self.assertNotIn(private,r.text)
 
     def test_warnings_for_shortage_reserve_and_budget(self):
@@ -302,7 +302,7 @@ class BotApiTests(unittest.TestCase):
         self.assertEqual([(i['request_id'],i['stage'],i['assignee_user_id'],i['assignee_telegram_id']) for i in items],[(rid,'finance',finance['id'],1001)])
         item=items[0]
         self.assertEqual((item['number'],item['status'],item['stage_label'],item['amount'],item['currency'],item['company'],item['url']),
-                         (f'CF-{rid:05d}','pending','Проверка финансистом','600.00','UZS','UZGERMED',''))
+                         (f'CF-{rid:05d}','pending','Проверка финансовым директором','600.00','UZS','UZGERMED',''))
         self.assertTrue(item['purpose'].startswith(self.cat_name+': Оплата по договору ••6789'))
         entered=datetime.fromisoformat(item['stage_entered_at']);self.assertIsNotNone(entered.tzinfo)
 
@@ -321,13 +321,15 @@ class BotApiTests(unittest.TestCase):
         self.assertEqual(self.pending(),[])
 
         cash=self.account('Касса','cash','UZS','5000.00')
-        # A cashier sees only their own requests on the site, so only those are theirs to pay.
+        second=self.make_user('cashier','teller2');self.link(second,1005)
+        # The cash desk pays cash requests, but never its own (services.check_payer).
         foreign=self.new_request(author,'50',account=cash);self.fully_approve(finance,foreign,director)
         own=self.new_request(cashier,'40',account=cash);self.fully_approve(finance,own,director)
         self.assertEqual(sorted((i['request_id'],i['stage'],i['assignee_user_id']) for i in self.pending()),
-                         [(foreign,'cash_payment',finance['id']),(own,'cash_payment',cashier['id'])])
-        with unit(True) as s:s.get(User,cashier['id']).active=False
-        self.assertEqual(sorted((i['request_id'],i['assignee_user_id']) for i in self.pending()),[(foreign,finance['id']),(own,finance['id'])])
+                         sorted([(foreign,'cash_payment',cashier['id']),(foreign,'cash_payment',second['id']),(own,'cash_payment',second['id'])]))
+        with unit(True) as s:s.get(User,second['id']).active=False
+        # Nobody else may pay the cashier's own request, and the financier never pays: no reminder.
+        self.assertEqual(sorted((i['request_id'],i['assignee_user_id']) for i in self.pending()),[(foreign,cashier['id'])])
 
     def test_closed_returned_and_unlinked_requests_are_not_reminded(self):
         author=self.make_user('employee','author');finance=self.make_user('finance','checker')
@@ -350,6 +352,7 @@ class BotApiTests(unittest.TestCase):
         zuma_finance=self.make_user('finance','zumafin',headers=self.zuma())
         for user,tg in ((finance,1001),(other,1002),(zuma_finance,1003)):self.link(user,tg)
         own=self.new_request(finance,'100')  # the financier cannot check their own request
+        founder=self.make_user('founder','owner');self.link(founder,1006)  # reads everything, acts on nothing
         self.assertEqual([i['assignee_user_id'] for i in self.pending() if i['request_id']==own],[other['id']])
         admin2=self.make_user('admin','admin2');self.link(admin2,1004)
         zuma_acc=self.account('Zuma bank','bank','UZS','1000.00',headers=self.zuma())
@@ -357,8 +360,19 @@ class BotApiTests(unittest.TestCase):
         zid=self.new_request(zuma_author,'100',account=zuma_acc,category=self.category(self.zuma()),headers=self.zuma(zuma_author['h']))
         self.assertEqual([i['assignee_user_id'] for i in self.pending() if i['request_id']==zid],[zuma_finance['id']])
         with unit(True) as s:s.get(User,zuma_finance['id']).active=False
-        # No financier left in Zuma: administrators (who see every company) are reminded instead.
+        # An administrator acts only through a role assigned in that company (security.scope_user).
+        self.assertEqual([i['assignee_user_id'] for i in self.pending() if i['request_id']==zid],[])
+        with unit(True) as s:s.merge(CompanyUser(company_id=self.companies['ZUMA'],user_id=admin2['id'],role='finance'))
         self.assertEqual([i['assignee_user_id'] for i in self.pending() if i['request_id']==zid],[admin2['id']])
+
+    def test_the_role_assigned_in_the_company_decides(self):
+        author=self.make_user('employee','author');finance=self.make_user('finance','checker')
+        dual=self.make_user('finance','dual');self.link(dual,1007)  # a financier elsewhere, the director here
+        with unit(True) as s:s.merge(CompanyUser(company_id=self.companies['UZGERMED'],user_id=dual['id'],role='director'))
+        rid=self.new_request(author,'100')
+        self.assertEqual([i['assignee_user_id'] for i in self.pending() if i['request_id']==rid],[])
+        self.decide(finance,rid)
+        self.assertEqual([(i['stage'],i['assignee_user_id']) for i in self.pending() if i['request_id']==rid],[('director',dual['id'])])
 
     def test_request_link_uses_the_public_https_address_only(self):
         finance=self.make_user('finance','checker');self.link(finance,1001)
