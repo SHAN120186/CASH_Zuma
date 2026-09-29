@@ -570,12 +570,13 @@ class BotApiTests(unittest.TestCase):
         r=self.connect(chat,['zuma','UZGERMED'],555300,title='  Финансы \n Zuma ');self.assertEqual(r.status_code,200,r.text)
         self.assertEqual(r.json(),{'chat_id':chat,'connected':True,'source':'site','companies':['UZGERMED','ZUMA'],'can_manage':True,'choices':choices})
         listed=self.groups()
-        self.assertEqual(listed[chat],{'chat_id':chat,'title':'Финансы Zuma','companies':['UZGERMED','ZUMA'],'source':'site'})
-        self.assertEqual(listed[GROUP],{'chat_id':GROUP,'title':'','companies':['UZGERMED'],'source':'config'})
+        self.assertEqual(listed[chat],{'chat_id':chat,'title':'Финансы Zuma','companies':['UZGERMED','ZUMA'],'source':'site','scope_id':listed[chat]['scope_id']})
+        self.assertEqual(listed[GROUP],{'chat_id':GROUP,'title':'','companies':['UZGERMED'],'source':'config','scope_id':listed[GROUP]['scope_id']})
         self.assertEqual(listed[GROUP_BOTH]['companies'],['UZGERMED','ZUMA'])
-        # A group connected from Telegram gets exactly what a configured group gets.
+        # A group connected from Telegram gets exactly what a configured group gets (the scope fingerprint is per chat).
         summary=self.summary(chat=chat);self.assertEqual(summary.status_code,200,summary.text)
-        self.assertEqual({k:v for k,v in summary.json().items() if k!='chat_id'},{k:v for k,v in self.summary(chat=GROUP_BOTH).json().items() if k!='chat_id'})
+        own=lambda d:{k:v for k,v in d.items() if k not in ('chat_id','scope_id')}
+        self.assertEqual(own(summary.json()),own(self.summary(chat=GROUP_BOTH).json()))
         connected=self.audit_rows('Telegram-группа подключена')
         self.assertEqual(sorted(a.company_id for a in connected),sorted([self.companies['UZGERMED'],self.companies['ZUMA']]))
         for a in connected:
@@ -599,6 +600,63 @@ class BotApiTests(unittest.TestCase):
         with unit() as s:
             self.assertIsNone(s.get(TelegramGroup,chat))
             self.assertFalse(s.scalar(select(Audit.id).where(Audit.detail.contains('555300')|Audit.entity_id.contains('555300'))))
+
+    def scope(self,chat,auth=BOT):
+        return self.client.get(f'/api/bot/v1/report-groups/{chat}/scope',auth=auth)
+
+    def test_scope_check_before_a_resend_follows_the_current_rights(self):
+        """Cash_Zuma_Bot stores scope_id with a summary snapshot and asks /scope before every part it
+        sends again. Whatever narrows the rights must change or drop the fingerprint."""
+        chat=-1009999999999;self.link(self.me(),555950)
+        self.account('Zuma bank','bank','UZS','777.00',headers=self.zuma())
+        self.assertEqual(self.scope(chat).json(),{'chat_id':chat,'allowed':False,'companies':[],'scope_id':None,'source':None})
+        self.assertEqual(self.connect(chat,['ZUMA','UZGERMED'],555950).status_code,200)
+        both=self.scope(chat).json()
+        self.assertEqual((both['allowed'],both['companies'],both['source']),(True,['UZGERMED','ZUMA'],'site'))
+        self.assertRegex(both['scope_id'],r'^[0-9a-f]{16}$')
+        summary=self.summary(chat=chat).json()
+        self.assertEqual((summary['companies'],summary['scope_id']),(both['companies'],both['scope_id']))
+        self.assertEqual(self.groups()[chat]['scope_id'],both['scope_id'])
+        self.assertEqual(self.scope(chat).json(),both)  # deterministic: the same rights give the same value
+        # The same companies in another group never share a fingerprint: parts cannot be mixed up between chats.
+        self.assertEqual(self.groups()[GROUP_BOTH]['companies'],both['companies'])
+        self.assertNotEqual(self.groups()[GROUP_BOTH]['scope_id'],both['scope_id'])
+
+        # The confirmed scenario: ZUMA + UZGERMED → UZGERMED between two parts of one summary.
+        self.assertEqual(self.connect(chat,['UZGERMED'],555950).status_code,200)
+        narrowed=self.scope(chat).json()
+        self.assertEqual((narrowed['allowed'],narrowed['companies']),(True,['UZGERMED']))
+        self.assertNotEqual(narrowed['scope_id'],both['scope_id'])
+        fresh=self.summary(chat=chat).json()
+        self.assertEqual(fresh['scope_id'],narrowed['scope_id'])
+        self.assertEqual({b['company'] for b in fresh['balances']},{'UZGERMED'})
+        # Widened back: the earlier value returns, so an unchanged scope always compares equal.
+        self.assertEqual(self.connect(chat,['UZGERMED','ZUMA'],555950).status_code,200)
+        self.assertEqual(self.scope(chat).json()['scope_id'],both['scope_id'])
+
+        # A company switched off narrows the scope although nobody touched the group.
+        with unit(True) as s:s.scalar(select(Company).where(Company.code=='ZUMA')).active=False
+        self.assertEqual(self.scope(chat).json()['scope_id'],narrowed['scope_id'])
+        self.assertEqual(self.scope(GROUP_ZUMA).json()['allowed'],False)  # configured group left without companies
+        with unit(True) as s:s.scalar(select(Company).where(Company.code=='ZUMA')).active=True
+        config=self.scope(GROUP).json()
+        self.assertEqual((config['allowed'],config['companies'],config['source']),(True,['UZGERMED'],'config'))
+
+        # Removed on the site: refused, and the refusal is in the journal.
+        self.assertEqual(self.site_remove(chat).json(),{'removed':True})
+        self.assertEqual(self.scope(chat).json(),{'chat_id':chat,'allowed':False,'companies':[],'scope_id':None,'source':None})
+        self.assertIn('Проверка области доступа перед отправкой сохранённой сводки',[a.detail for a in self.audit_rows('Бот: группа не разрешена')])
+
+        # The administrator who connected it loses the holding admin role: the group goes with them.
+        admin2=self.make_user('admin','scope_admin');self.link(admin2,555951)
+        self.assertEqual(self.connect(chat,['ZUMA'],555951).status_code,200)
+        self.assertTrue(self.scope(chat).json()['allowed'])
+        r=self.post(f'/api/users/{admin2["id"]}',{'role':'finance','active':True,'password':''});self.assertEqual(r.status_code,200,r.text)
+        self.assertEqual(self.scope(chat).json()['allowed'],False)
+        self.assertEqual(self.summary(chat=chat).status_code,403)
+
+        for bad in (555001,0):self.assertEqual(self.scope(bad).status_code,422)
+        for auth in (None,('test-bot','wrong-secret-'+'y'*30)):self.assertEqual(self.scope(chat,auth=auth).status_code,401)
 
     def test_only_a_linked_holding_administrator_manages_groups(self):
         chat=-1005555555555
@@ -626,7 +684,8 @@ class BotApiTests(unittest.TestCase):
         self.assertEqual(self.disconnect(GROUP,555404).status_code,409)
         owner=self.admin_id()  # an HTTP call: never inside the write transaction below
         with unit(True) as s:s.add(TelegramGroup(chat_id=GROUP,title='Старая группа',companies='ZUMA',added_by=owner))
-        self.assertEqual(self.groups()[GROUP],{'chat_id':GROUP,'title':'Старая группа','companies':['UZGERMED'],'source':'config'})
+        shadowed=self.groups()[GROUP]
+        self.assertEqual(shadowed,{'chat_id':GROUP,'title':'Старая группа','companies':['UZGERMED'],'source':'config','scope_id':shadowed['scope_id']})
         self.assertEqual({b['company'] for b in self.summary().json()['balances']},{'UZGERMED'})
 
     def test_group_settings_are_validated(self):
