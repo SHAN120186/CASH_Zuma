@@ -89,6 +89,8 @@ class BotApiTests(unittest.TestCase):
     def make_user(self,role,name,headers=None):
         r=self.post('/api/users',{'username':name,'name':name.title(),'password':PASSWORD,'role':role},headers=headers)
         self.assertEqual(r.status_code,200,r.text)
+        # Временный пароль уже сменён: обязательная смена проверяется в tests/test_access.py.
+        with unit(True) as s:s.scalar(select(User).where(User.username==name).execution_options(company_unscoped=True)).must_change_password=False
         c=TestClient(app);self.extra.append(c)
         r=c.post('/api/login',json={'username':name,'password':PASSWORD});self.assertEqual(r.status_code,200,r.text)
         return {'id':r.json()['user']['id'],'client':c,'h':{'X-CSRF-Token':r.json()['csrf']}}

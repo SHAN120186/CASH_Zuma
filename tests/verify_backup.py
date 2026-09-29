@@ -26,7 +26,7 @@ with connect('postgres') as admin:
                     checksum.update(str(ident).encode());checksum.update(content)
                 return checksum.hexdigest()
             for table in ('documents','request_documents'):
-                assert documents_digest(source,table)==documents_digest(restored),table+' contents'
+                assert documents_digest(source,table)==documents_digest(restored,table),table+' contents'
             for table in ('cash_plans','plan_notes'):
                 query=sql.SQL('SELECT to_jsonb(t) FROM {} t ORDER BY id').format(sql.Identifier(table))
                 assert source.execute(query).fetchall()==restored.execute(query).fetchall(),table

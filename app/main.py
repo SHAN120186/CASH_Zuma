@@ -17,6 +17,7 @@ from .db import *
 from .security import *
 from .services import *
 from .company_scope import available_companies, setting_key, get_setting
+from . import access
 from .model_import import import_snapshot, MAX_SIZE
 from .bot_api import drop_groups_of, drop_orphan_groups, drop_shadowed_groups, journal_path, revoke_telegram
 
@@ -46,7 +47,9 @@ async def safety(request,call_next):
         expected=PUBLIC_ORIGIN or str(request.base_url).rstrip('/')
         if origin and origin!=expected:return JSONResponse({'detail':'Запрос с другого сайта запрещён.'},status_code=403)
     response=await call_next(request)
-    if request.url.path.startswith('/api'):
+    # Технический журнал пишется только для вошедших пользователей и бота с верным ключом:
+    # анонимные 401/404 не занимают общую блокировку записи. Неудачные входы учитывает ограничение попыток.
+    if request.url.path.startswith('/api') and (getattr(request.state,'user_id',None) or getattr(request.state,'bot',False)):
         try:
             with unit(True) as audit_session:
                 audit_session.add(Audit(company_id=getattr(request.state,'company_id',None),user_id=getattr(request.state,'user_id',None),action='API '+request.method,entity='http',detail=journal_path(request.url.path)+'; status='+str(response.status_code)))
@@ -91,8 +94,14 @@ def release_version():return FileResponse(ROOT/'release.json',media_type='applic
 
 def visible_request(s,r,u):
     data=request_json(s,r)
+    # Без права просмотра реестра (заявитель, закупки, кассир, плательщик) полный бюджет статьи
+    # не раскрывается: доступность показывает отдельная карточка в форме заявки.
     if 'view' not in perms_of(u):data['budget']={'limit':None,'hidden':True,'over':data['budget']['over'],'mode':data['budget']['mode']}
     return data
+
+def own_requests_only(u):
+    """Без прав согласующего или финансового руководителя сотрудник действует только в своих заявках."""
+    return not ({'approve','request_edit'} & perms_of(u))
 
 class Input(BaseModel):model_config=ConfigDict(extra='forbid',str_strip_whitespace=True)
 class LoginIn(Input):
@@ -201,18 +210,20 @@ def login(body:LoginIn,request:Request,response:Response):
         username=body.username.strip().lower();keys=login_keys(request,username)
         if login_limited(s,keys):error=HTTPException(429,'Слишком много попыток. Повторите через 10 минут.')
         else:
-            user=s.scalar(select(User).where(User.username==username,User.active==True))
-            # Стоимость проверки одинакова и для отсутствующего пользователя.
-            if not user:
-                import hashlib
-                hashlib.pbkdf2_hmac('sha256',body.password.encode(),b'nonexistent-user',600000)
+            user=s.scalar(select(User).where(User.username==username,User.active==True).execution_options(company_unscoped=True))
+            # Стоимость проверки одинакова и для отсутствующего или архивного пользователя.
+            if not user:verify_password(body.password,DUMMY_HASH)
             if not user or not verify_password(body.password,user.password_hash):
                 record_failure(s,keys);error=HTTPException(401,'Неверный логин или пароль.')
             else:
-                s.execute(delete(LoginAttempt).where(LoginAttempt.key==keys[1]))
+                s.execute(delete(LoginAttempt).where(LoginAttempt.key.in_([keys[0],keys[2]])))
                 s.execute(delete(LoginSession).where(LoginSession.expires_at<now()))
                 token=issue_token(user.id);csrf=secrets.token_urlsafe(32)
-                if not user.password_hash.startswith('bcrypt_sha256$'):user.password_hash=hash_password(body.password)
+                if not user.password_hash.startswith('bcrypt_sha256$'):
+                    # Старый хеш заменяется; пароль, не проходящий нынешние правила, нужно сменить.
+                    try:user.password_hash=hash_password(body.password)
+                    except ValueError:user.must_change_password=True
+                access.scope_home(s,user)
                 s.add(LoginSession(token_hash=digest(token),user_id=user.id,csrf=csrf,expires_at=now()+timedelta(hours=1)))
                 log(s,user,'Вход в систему','user',user.id)
                 result={'user':user_json(user),'csrf':csrf,'access_token':token,'token_type':'bearer','expires_in':3600}
@@ -223,7 +234,7 @@ def login(body:LoginIn,request:Request,response:Response):
 @app.get('/api/me')
 def me(request:Request):
     with unit() as s:
-        user,session=session_user(s,request)
+        user,session=session_user(s,request);access.scope_home(s,user)
         return {'user':user_json(user),'csrf':session.csrf,'today':str(today())}
 @app.post('/api/logout')
 def logout(request:Request,response:Response):
@@ -232,19 +243,27 @@ def logout(request:Request,response:Response):
     response.delete_cookie('zuma_session',path='/');return {'ok':True}
 @app.post('/api/password')
 def change_password(data:PasswordIn,request:Request):
+    error=None
+    with unit(True) as s:
+        user,session=session_user(s,request);key=[digest('password-user:'+str(user.id))]
+        # Подбор текущего пароля из открытого сеанса ограничен так же, как вход.
+        if login_limited(s,key):raise HTTPException(429,'Слишком много попыток. Повторите через 10 минут.')
+        if not verify_password(data.old_password,user.password_hash):record_failure(s,key);error=HTTPException(403,'Текущий пароль неверен.')
+    if error:raise error
     with unit(True) as s:
         user,session=session_user(s,request)
-        if not verify_password(data.old_password,user.password_hash):raise HTTPException(403,'Текущий пароль неверен.')
+        if verify_password(data.new_password,user.password_hash):raise HTTPException(422,'Новый пароль должен отличаться от текущего.')
         try:user.password_hash=hash_password(data.new_password)
         except ValueError as e:raise HTTPException(422,str(e))
+        forced=user.must_change_password;user.must_change_password=False
         s.execute(delete(LoginSession).where(LoginSession.user_id==user.id));revoke_telegram(s,user.id)
-        log(s,user,'Изменён пароль; сессии отозваны','user',user.id)
+        log(s,user,'Временный пароль заменён; сессии отозваны' if forced else 'Изменён пароль; сессии отозваны','user',user.id)
     return {'ok':True}
 
 @app.get('/api/companies')
 def company_choices(request:Request):
     with unit() as s:
-        user,session=session_user(s,request)
+        user,session=session_user(s,request);access.scope_home(s,user)
         return {'companies':[{'id':c.id,'code':c.code,'name':c.name} for c in available_companies(s,user)],'user':user_json(user),'csrf':session.csrf}
 
 @app.get('/api/bootstrap')
@@ -393,13 +412,16 @@ def requests_list(request:Request,date_from:Optional[date]=None,date_to:Optional
         u,_=session_user(s,request)
         channels=payment_channels(perms_of(u))
         if not ({'request','view'} & perms_of(u) or channels):raise HTTPException(403,'Недостаточно прав для просмотра заявок.')
-        payer_only=not ({'request','view'} & perms_of(u))
         if date_from and date_to and date_from>date_to:raise HTTPException(422,'Начало периода позже окончания.')
         query=select(PaymentRequest).join(Account,Account.id==PaymentRequest.account_id)
         payable=and_(PaymentRequest.status.in_(['approved','paid']),Account.kind.in_(sorted(channels)))
-        # Кассир видит свои заявки и кассовые заявки к оплате; инициатор — только свои.
-        if 'view' not in perms_of(u) and 'request' in perms_of(u):query=query.where(or_(PaymentRequest.creator_id==u.id,payable) if channels else PaymentRequest.creator_id==u.id)
-        if payer_only:query=query.where(payable)
+        # Без просмотра реестра список строится только из прав: свои заявки и заявки к оплате своего канала.
+        # Роль по названию не проверяется: так закупки, заявитель и кассир подчиняются одному правилу.
+        if 'view' not in perms_of(u):
+            visible=[]
+            if 'request' in perms_of(u):visible.append(PaymentRequest.creator_id==u.id)
+            if channels:visible.append(payable)
+            query=query.where(or_(*visible))
         if currency:query=query.where(Account.currency==currency)
         if date_from:query=query.where(PaymentRequest.due_date>=date_from)
         if date_to:query=query.where(PaymentRequest.due_date<=date_to)
@@ -465,7 +487,7 @@ def decide(id:int,data:DecisionIn,request:Request):
             if pay_right(a) not in perms_of(u):raise HTTPException(403,'Вернуть финансовому директору может плательщик этой заявки.')
         else:
             if not ({'request','approve'} & perms_of(u)):raise HTTPException(403,'Недостаточно прав.')
-            if not ({'approve','request_edit'} & perms_of(u)) and r.creator_id!=u.id:raise HTTPException(403,'Доступны только собственные заявки.')
+            if own_requests_only(u) and r.creator_id!=u.id:raise HTTPException(403,'Доступны только собственные заявки.')
         check_request_version(r,data.version)
         before={'status':r.status,'date':str(r.due_date),'version':r.version,'approved_by':r.approved_by}
         if data.action=='submit':
@@ -540,6 +562,9 @@ def ledger_list(request:Request,date_from:Optional[date]=None,date_to:Optional[d
         reversed_ids={t.reversal_of for t in s.scalars(select(Ledger).where(Ledger.reversal_of!=None))}
         if date_from and date_to and date_from>date_to:raise HTTPException(422,'Начало периода позже окончания.')
         query=select(Ledger).join(Account,Account.id==Ledger.account_id).outerjoin(Category,Category.id==Ledger.category_id)
+        # Плательщик без просмотра реестра видит операции только своего канала: кассир — кассу, бухгалтер — банк.
+        channels=payment_channels(perms_of(u))
+        if 'view' not in perms_of(u) and channels:query=query.where(Account.kind.in_(sorted(channels)))
         if currency:query=query.where(Account.currency==currency)
         if date_from:query=query.where(Ledger.date>=date_from)
         if date_to:query=query.where(Ledger.date<=date_to)
@@ -681,7 +706,7 @@ def users(request:Request):
     with unit() as s:
         session_user(s,request,'users')
         roles={m.user_id:m.role for m in s.scalars(select(CompanyUser).where(CompanyUser.company_id==s.info['company_id']))}
-        return [member_json(u,roles.get(u.id)) for u in s.scalars(select(User).order_by(User.id))]
+        return [member_json(u,roles.get(u.id)) for u in s.scalars(select(User).where(User.active==True).order_by(User.id))]
 
 class CompanyUserIn(Input):
     username:str=Field(min_length=3,max_length=80)
@@ -694,70 +719,20 @@ def grant_company_access(data:CompanyUserIn,request:Request):
         admin,_=session_user(s,request,'users')
         u=s.scalar(select(User).where(User.username==data.username.strip().lower()).execution_options(company_unscoped=True))
         if not u:raise HTTPException(404,'Логин не найден. Создайте нового пользователя.')
-        cid=s.info['company_id']
         if u.role=='founder':raise HTTPException(409,'Учредитель видит все компании только для чтения; назначение не требуется.')
         if u.id==admin.id and data.role:raise HTTPException(409,'Роль в компании себе не назначают: её выдаёт другой администратор.')
         if u.role=='admin' and not data.role:raise HTTPException(422,'Администратору холдинга в компании назначается роль, например «Финансовый директор».')
         if not data.role:raise HTTPException(422,'Выберите роль сотрудника в этой компании.')
-        if u.role not in HOLDING_ROLES:
-            # Сотрудник относится к одной компании. Переназначение переносит доступ,
-            # а не оставляет скрытую роль в прежней компании.
-            s.execute(delete(CompanyUser).where(CompanyUser.user_id==u.id,CompanyUser.company_id!=cid))
-        m=s.get(CompanyUser,(cid,u.id))
-        if not m:m=CompanyUser(company_id=cid,user_id=u.id);s.add(m)
-        m.role=data.role
-        log(s,admin,'Предоставлен доступ к компании','user',u.id,f'роль: {data.role}')
-        return {'ok':True}
-
-class ArchiveUserIn(Input):
-    reason:str=Field(min_length=10,max_length=1000)
-
-@app.get('/api/admin/users')
-def admin_users(request:Request):
-    """Единый реестр пользователей холдинга для защищённого админ-раздела."""
-    with unit() as s:
-        admin,_=session_user(s,request,'users')
-        if admin.role!='admin':raise HTTPException(403,'Раздел доступен только администратору холдинга.')
-        companies={c.id:c for c in s.scalars(select(Company).execution_options(company_unscoped=True))}
-        memberships={}
-        for m in s.scalars(select(CompanyUser).execution_options(company_unscoped=True)):
-            co=companies.get(m.company_id)
-            if co and co.code!='UNASSIGNED':memberships.setdefault(m.user_id,[]).append({'company_id':co.id,'company':co.name,'code':co.code,'role':m.role,'role_label':ROLES.get(m.role,'Без роли')})
-        result=[]
-        for u in s.scalars(select(User).order_by(User.name).execution_options(company_unscoped=True)):
-            rows=sorted(memberships.get(u.id,[]),key=lambda x:x['company'])
-            result.append({**member_json(u,None),'memberships':rows,'scope_conflict':u.role not in HOLDING_ROLES and len(rows)>1})
-        return result
-
-@app.post('/api/admin/users/{id}/archive')
-def archive_user(id:int,data:ArchiveUserIn,request:Request):
-    """Безопасно убирает доступ, сохраняя автора финансовых записей и аудит."""
-    with unit(True) as s:
-        admin,_=session_user(s,request,'users')
-        if admin.role!='admin':raise HTTPException(403,'Раздел доступен только администратору холдинга.')
-        u=s.get(User,id,execution_options={'company_unscoped':True})
-        if not u:raise HTTPException(404,'Пользователь не найден.')
-        if u.id==admin.id:raise HTTPException(409,'Нельзя архивировать собственную учётную запись.')
-        if u.role=='admin' and u.active:
-            count=s.scalar(select(func.count()).select_from(User).where(User.role=='admin',User.active==True).execution_options(company_unscoped=True))
-            if count<=1:raise HTTPException(409,'В системе должен оставаться активный администратор.')
-        u.active=False
-        s.execute(delete(CompanyUser).where(CompanyUser.user_id==u.id))
-        s.execute(delete(LoginSession).where(LoginSession.user_id==u.id));revoke_telegram(s,u.id)
-        drop_groups_of(s,u,admin)
-        log(s,admin,'Пользователь архивирован; доступ ко всем компаниям отозван','user',u.id,data.reason)
+        # Сотрудник относится к одной компании: назначение переносит доступ и отзывает прежний.
+        access.assign(s,admin,u,s.info['company_id'],data.role,'Назначение по логину в выбранной компании',request)
         return {'ok':True}
 
 @app.delete('/api/company-users/{id}')
 def revoke_company_access(id:int,request:Request):
     with unit(True) as s:
-        admin,_=session_user(s,request,'users');u=get(s,User,id)
-        if u.role=='founder':raise HTTPException(409,'Учредитель видит все компании только для чтения.')
-        membership=s.get(CompanyUser,(s.info['company_id'],id))
+        admin,_=session_user(s,request,'users');u=access.unscoped_user(s,id)
         # Администратор холдинга видит компанию и без назначения: снимается только его финансовая роль.
-        if membership:s.delete(membership)
-        action='Снято назначение администратора в компании' if u.role=='admin' else 'Отозван доступ к компании'
-        log(s,admin,action,'user',id)
+        access.unassign(s,admin,u,s.info['company_id'],'Отзыв доступа в выбранной компании',request)
         return {'ok':True}
 
 @app.post('/api/users')
@@ -766,57 +741,58 @@ def add_user(data:UserIn,request:Request):
         admin,_=session_user(s,request,'users')
         try:pw=hash_password(data.password)
         except ValueError as e:raise HTTPException(422,str(e))
-        u=User(username=data.username.lower(),name=data.name,password_hash=pw,role=data.role,role_id=s.scalar(select(Role.id).where(Role.name==data.role)));s.add(u);s.flush()
+        if s.scalar(select(User.id).where(User.username==data.username.lower()).execution_options(company_unscoped=True)):raise HTTPException(409,'Такой логин уже занят.')
+        # Пароль, заданный администратором, временный: при первом входе его нужно сменить.
+        u=User(username=data.username.lower(),name=data.name,password_hash=pw,role=data.role,role_id=s.scalar(select(Role.id).where(Role.name==data.role)),must_change_password=True);s.add(u);s.flush()
         # Пользователь холдинга видит компании по своей роли; сотруднику нужна роль в выбранной компании.
-        if data.role not in HOLDING_ROLES:s.add(CompanyUser(company_id=s.info['company_id'],user_id=u.id,role=data.role))
-        log(s,admin,'Создан пользователь','user',u.id,u.role);return member_json(u,None if data.role in HOLDING_ROLES else data.role)
+        if data.role not in HOLDING_ROLES:access.business_company(s,s.info['company_id']);s.add(CompanyUser(company_id=s.info['company_id'],user_id=u.id,role=data.role));s.flush()
+        access.record(s,admin,'Создан пользователь',u,None,'Создание в выбранной компании',None,request)
+        return member_json(u,None if data.role in HOLDING_ROLES else data.role)
 @app.post('/api/users/{id}')
 def edit_user(id:int,data:UserEdit,request:Request):
     with unit(True) as s:
-        admin,_=session_user(s,request,'users');u=get(s,User,id)
+        admin,_=session_user(s,request,'users');u=access.unscoped_user(s,id)
         if u.id==admin.id and (not data.active or data.role!='admin'):raise HTTPException(409,'Нельзя отключить себя или убрать собственные права администратора.')
-        if u.role=='admin' and (not data.active or data.role!='admin'):
-            count=s.scalar(select(func.count()).select_from(User).where(User.role=='admin',User.active==True))
-            if count<=1:raise HTTPException(409,'В системе должен оставаться активный администратор.')
         cid=s.info['company_id']
+        # Прежняя форма «Управлять» работает по тем же правилам, что и центр администрирования.
+        if not u.active:raise HTTPException(409,'Учётная запись в архиве: восстановите её в центре администрирования с новым назначением.')
+        if not data.active:
+            access.archive(s,admin,u,'Отключение через форму «Управлять»',request)
+            return member_json(u,None)
         if data.role!=u.role and (data.role in HOLDING_ROLES or u.role in HOLDING_ROLES):
             # Смена статуса холдинга начинается с чистого листа: прежние роли в компаниях снимаются.
-            # Администратору финансовое назначение выдаётся заново, учредителю оно не нужно,
-            # бывший пользователь холдинга остаётся только в выбранной компании.
-            s.execute(delete(CompanyUser).where(CompanyUser.user_id==u.id))
-            # Роль холдинга действует во всех компаниях.
-            u.role=data.role;u.role_id=s.scalar(select(Role.id).where(Role.name==data.role))
-        if data.role not in HOLDING_ROLES:
-            # Любой путь назначения сотрудника оставляет только выбранную компанию.
-            s.execute(delete(CompanyUser).where(CompanyUser.user_id==u.id,CompanyUser.company_id!=cid))
-            m=s.get(CompanyUser,(cid,u.id))
-            if not m:m=CompanyUser(company_id=cid,user_id=u.id);s.add(m)
-            m.role=data.role
-        u.active=data.active
+            access.set_holding(s,admin,u,data.role if data.role in HOLDING_ROLES else None,'Смена статуса через форму «Управлять»',cid,data.role,request)
+        elif data.role not in HOLDING_ROLES:
+            current=[m for m in access.valid_assignments(s,u)]
+            if not (len(current)==1 and current[0].company_id==cid and current[0].role==data.role):
+                # Сотрудник работает в одной компании: новое назначение отзывает прежние.
+                access.assign(s,admin,u,cid,data.role,'Назначение через форму «Управлять»',request)
         if data.password:
             try:u.password_hash=hash_password(data.password)
             except ValueError as e:raise HTTPException(422,str(e))
-        s.execute(delete(LoginSession).where(LoginSession.user_id==u.id));revoke_telegram(s,u.id)
-        # Summary groups this user connected stop once they are disabled or no longer a holding administrator.
-        drop_groups_of(s,u,admin)
-        log(s,admin,'Изменены права / пароль пользователя','user',id,f'{data.role}; active={data.active}; сессии отозваны')
+            u.must_change_password=True
+            access.revoke_links_and_sessions(s,u,admin)
+            log(s,admin,'Сброшен пароль; сессии отозваны','user',id,'временный пароль задан администратором')
         m=s.get(CompanyUser,(cid,u.id))
         return member_json(u,m.role if m else None)
 
 @app.post('/api/users/{id}/password')
 def reset_user_password(id:int,data:ResetPasswordIn,request:Request):
     with unit(True) as s:
-        admin,_=session_user(s,request,'users');u=get(s,User,id)
+        admin,_=session_user(s,request,'users');u=access.unscoped_user(s,id)
+        if not u.active:raise HTTPException(409,'Учётная запись в архиве: восстановите её с новым назначением.')
         try:u.password_hash=hash_password(data.password)
         except ValueError as e:raise HTTPException(422,str(e))
-        s.execute(delete(LoginSession).where(LoginSession.user_id==id));revoke_telegram(s,id)
+        u.must_change_password=True
+        access.revoke_links_and_sessions(s,u,admin)
         log(s,admin,'Сброшен пароль; сессии отозваны','user',id)
         return {'ok':True}
 @app.get('/api/audit')
 def audit(request:Request):
     with unit() as s:
         u,_=session_user(s,request,'audit')
-        names={u.id:u.name for u in s.scalars(select(User))}
+        # Имена всех сотрудников, включая архивных и переведённых в другую компанию.
+        names={u.id:u.name for u in s.scalars(select(User).execution_options(company_unscoped=True))}
         return [{'id':a.id,'date':str(a.created_at)+' UTC','user':names.get(a.user_id,'Система'),'action':a.action,
                 'entity':a.entity,'entity_id':a.entity_id,'detail':a.detail} for a in s.scalars(select(Audit).order_by(Audit.id.desc()).limit(200))]
 
@@ -828,6 +804,9 @@ app.include_router(review_router)
 
 from .plan_import import router as plan_import_router
 app.include_router(plan_import_router)
+
+from .admin_api import router as admin_router
+app.include_router(admin_router)
 
 from .bot_api import router as bot_router
 app.include_router(bot_router)

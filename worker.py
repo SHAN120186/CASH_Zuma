@@ -63,8 +63,16 @@ def report_tick():
 def tick():
     if not SQLITE:
         marker=DATA/'last-backup-date.txt';day=datetime.now(timezone.utc).date().isoformat()
-        if not marker.exists() or marker.read_text().strip()!=day:
-            backup_postgres();marker.write_text(day)
+        failed=DATA/'last-backup-failure.txt'
+        # Ошибка копии не останавливает рассылку; повтор — не чаще раза в час, причина — в журнале.
+        retry=not failed.exists() or time.time()-failed.stat().st_mtime>3600
+        if (not marker.exists() or marker.read_text().strip()!=day) and retry:
+            try:
+                backup_postgres();marker.write_text(day);failed.unlink(missing_ok=True)
+            except Exception as exc:
+                failed.write_text(type(exc).__name__)
+                detail=type(exc).__name__+': '+((getattr(exc,'stderr',b'') or b'').decode('utf-8','replace').strip()[-300:] or str(exc)[:300])
+                with unit(True) as s:s.add(Audit(action='Ошибка резервного копирования',entity='backup',detail=detail))
     report_tick()
 
 if __name__=='__main__':

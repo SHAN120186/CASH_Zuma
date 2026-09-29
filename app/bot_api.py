@@ -139,6 +139,8 @@ def authenticate_bot(request):
     if not (same_id and same_secret):
         audit(None, 'Бот: отказ в доступе', '', journal_path(request.url.path))
         raise HTTPException(401, 'Неверный ключ бота.', headers={'WWW-Authenticate': 'Basic realm="cash-zuma-bot"'})
+    # Технический журнал HTTP ведётся для вошедших пользователей и для бота с верным ключом.
+    request.state.bot = True
 
 
 def currency_key(currency):
@@ -265,7 +267,13 @@ def company_role_of(user, company, members):
     if user.role != 'admin' and company.code == SERVICE_CODE:
         return None
     role = assigned.get(user.id)
-    return role if role in COMPANY_ROLES else None
+    if role not in COMPANY_ROLES:
+        return None
+    # Сотрудник действует, только пока назначен ровно в одну компанию (access.access_state):
+    # при конфликте назначений напоминаний нет, как нет и доступа на сайте.
+    if user.role != 'admin' and sum(1 for people in members.get('_valid', {}).values() if user.id in people) > 1:
+        return None
+    return role
 
 
 def responsible(r, account, company, users, members):
@@ -305,6 +313,8 @@ def pending_items(s, user_id=None):
     members = {}
     for m in s.scalars(select(CompanyUser)):
         members.setdefault(m.company_id, {})[m.user_id] = m.role
+        if m.role in COMPANY_ROLES and m.company_id in companies and companies[m.company_id].code != SERVICE_CODE:
+            members.setdefault('_valid', {}).setdefault(m.company_id, set()).add(m.user_id)
     # Every change of a request (creation, edit, decision, payment reversal) is audited
     # with entity='request'; the latest one is when it entered its current stage.
     entered = {}

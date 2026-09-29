@@ -28,7 +28,9 @@ PERMS = {
  'auditor': {'view','ledger','export','audit'},
  'operator': {'view','ledger','export','request','write','plan','import','schedule'},
  'investor': {'view','ledger','export'},
- 'material_accountant': {'view','ledger','export'},
+ # Материальный бухгалтер: только чтение журнала операций и документов к ним. Отдельного
+ # материального (складского) учёта в продукте нет; остальные разделы — после согласования.
+ 'material_accountant': {'ledger'},
  # Закупки создают и отслеживают свои заявки, но не видят счета и остатки.
  'procurement': {'request'},
 }
@@ -109,11 +111,16 @@ def digest(s): return hashlib.sha256(s.encode()).hexdigest()
 def hash_password(password):
     if not 12 <= len(password) <= 128:
         raise ValueError('Пароль должен содержать от 12 до 128 символов.')
-    if password.lower() in {'password1234','123456789012','qwerty1234567'}:
+    if password.lower() in {'password1234','123456789012','qwerty1234567'} or len(set(password))<6:
         raise ValueError('Выберите более сложный пароль.')
+    if password.isdigit() or password.isalpha():
+        raise ValueError('Пароль должен содержать буквы и цифры или другие символы.')
     # SHA-256 prehash avoids bcrypt's 72-byte truncation for long/Unicode passwords.
     value=base64.b64encode(hashlib.sha256(password.encode()).digest())
     return 'bcrypt_sha256$'+bcrypt.hashpw(value,bcrypt.gensalt(rounds=12)).decode()
+# Проверка для отсутствующего пользователя занимает столько же времени, сколько для существующего.
+DUMMY_HASH=hash_password('Dummy-'+secrets.token_urlsafe(24))
+
 def verify_password(password, encoded):
     try:
         if encoded.startswith('bcrypt_sha256$'):
@@ -137,8 +144,11 @@ def session_user(s, request: Request, permission=None):
     if not user or not user.active: raise HTTPException(401,'Учётная запись отключена.')
     if claims['sub']!=str(user.id):raise HTTPException(401,'Неверный токен.')
     request.state.user_id=user.id
+    # Временный пароль открывает только смену пароля, выход и сведения о себе.
+    if user.must_change_password and request.url.path not in ('/api/me','/api/logout','/api/password'):
+        raise HTTPException(403,'Смените временный пароль: до этого остальные разделы недоступны.')
     if not bearer.startswith('Bearer ') and request.method not in ('GET','HEAD'):
-        if not hmac.compare_digest(request.headers.get('X-CSRF-Token',''), session.csrf):
+        if not hmac.compare_digest(request.headers.get('X-CSRF-Token','').encode('utf-8','surrogateescape'), session.csrf.encode()):
             raise HTTPException(403, 'Защитный токен не совпадает. Обновите страницу.')
     from .company_scope import activate
     activate(s, request, user)
@@ -147,11 +157,24 @@ def session_user(s, request: Request, permission=None):
         raise HTTPException(403,'У вашей роли нет прав на это действие.')
     return user,session
 
+def client_ip(request):
+    """Адрес клиента. На Render все запросы приходят от его прокси, а настоящий адрес
+    прокси дописывает последним в X-Forwarded-For; значения левее мог подставить клиент."""
+    peer=request.client.host if request.client else 'local'
+    if os.getenv('UZGERMED_HOSTING')=='render':
+        forwarded=[x.strip() for x in request.headers.get('X-Forwarded-For','').split(',') if x.strip()]
+        if forwarded:return forwarded[-1][:64]
+    return peer
+
+# Пороги за 10 минут: один адрес и логин — 8 ошибок; один адрес по разным логинам — 30;
+# один логин с разных адресов — 50 (высокий порог, чтобы чужие ошибки не блокировали сотрудника).
+LOGIN_LIMITS=(8,30,50)
+
 def login_keys(request, username):
-    ip=request.client.host if request.client else 'local'
-    return [digest('login-ip:'+ip),digest('login-user:'+username.lower())]
+    ip=client_ip(request);name=username.lower()
+    return [digest('login-user-ip:'+name+'|'+ip),digest('login-ip:'+ip),digest('login-user:'+name)]
 def login_limited(s,keys):
-    return any((a:=s.get(LoginAttempt,k)) and a.count>=8 and a.since>now()-timedelta(minutes=10) for k in keys)
+    return any((a:=s.get(LoginAttempt,k)) and a.count>=limit and a.since>now()-timedelta(minutes=10) for k,limit in zip(keys,LOGIN_LIMITS))
 def record_failure(s,keys):
     for k in keys:
         a=s.get(LoginAttempt,k)
@@ -171,7 +194,7 @@ def user_json(user):
     role = company_role(user)
     return {'id':user.id,'username':user.username,'name':user.name,'role':role or user.role,
             'holding_role':holding,'company_role':role,'role_label':role_label(holding,role),
-            'permissions':sorted(perms_of(user)),'active':user.active}
+            'permissions':sorted(perms_of(user)),'active':user.active,'must_change_password':bool(user.must_change_password)}
 
 
 def member_json(user, assigned):
