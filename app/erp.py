@@ -243,14 +243,14 @@ def check_document_version(payment,version):
     if payment.status in ('pending','approved') or version is not None:check_request_version(payment,version)
 
 def after_document_change(s,user,payment):
-    """Изменение документов после отправки снимает проверку и согласования: заявка снова на согласовании,
-    изменивший становится её последним редактором и её не согласует."""
+    """Любое изменение документов меняет версию заявки: тот, кто читал её раньше, при отправке или правке
+    получит 409 и увидит новый состав файлов. После отправки снимаются проверка и согласования, заявка снова
+    на согласовании; изменивший становится последним редактором и её не согласует (services.round_participants)."""
     reset=payment.status in ('pending','approved')
     if reset:
         clear_approval(payment);payment.status='pending'
-    if reset or payment.last_editor_id!=user.id:
-        payment.last_editor_id=user.id
-        flag_modified(payment,'decision_note')
+    payment.last_editor_id=user.id
+    flag_modified(payment,'decision_note')
     s.flush()
     return reset
 

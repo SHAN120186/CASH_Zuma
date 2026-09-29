@@ -26,7 +26,11 @@ async function load() {
   } catch (e) { error.value = e.message; }
 }
 
-async function openCard(u) { form.value = null; secret.value = null; card.value = await props.api(`/api/admin/users/${u.id}`); await nextTick(); dialog.value?.querySelector('button')?.focus(); }
+async function openCard(u) {
+  form.value = null; secret.value = null; error.value = '';
+  try { card.value = await props.api(`/api/admin/users/${u.id}`); } catch (e) { error.value = e.message; return; }
+  await nextTick(); dialog.value?.querySelector('button')?.focus();
+}
 function closeCard() { if (!busy.value) { card.value = null; form.value = null; secret.value = null; } }
 
 // Каждое действие — отдельная форма с обязательной причиной; сервер повторно проверяет права.
@@ -77,7 +81,8 @@ async function loadJournal(page = 1) {
 
 async function copy(text) { try { await navigator.clipboard.writeText(text); notice.value = 'Пароль скопирован.'; } catch { notice.value = 'Скопируйте пароль вручную.'; } }
 const when = s => s ? new Date(s.replace(' ', 'T') + 'Z').toLocaleString('ru-RU', {timeZone: 'Asia/Tashkent', day: '2-digit', month: '2-digit', year: 'numeric', hour: '2-digit', minute: '2-digit'}) : '—';
-function onKey(e) { if (e.key === 'Escape') { if (form.value && !busy.value) form.value = null; else closeCard(); } }
+// Escape не скрывает показанный один раз временный пароль: его убирают кнопкой «Скрыть».
+function onKey(e) { if (e.key === 'Escape' && !secret.value) { if (form.value && !busy.value) form.value = null; else closeCard(); } }
 onMounted(() => { load(); document.addEventListener('keydown', onKey); });
 onUnmounted(() => document.removeEventListener('keydown', onKey));
 </script>

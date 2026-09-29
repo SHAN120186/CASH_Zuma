@@ -475,10 +475,10 @@ def edit_request(id:int,data:RequestEdit,request:Request):
         log(s,u,'Изменена заявка','request',r.id,json.dumps({'before':before,'after':request_json(s,r),'reason':data.reason,'version':r.version},ensure_ascii=False))
         return request_view(s,u,r)
 
-def ensure_new_participant(u,r):
-    """Автор и редактор не согласуют свою заявку; один человек не проходит два этапа, в том числе по ВрИО."""
+def ensure_new_participant(s,u,r):
+    """Автор и редакторы не согласуют свою заявку; один человек не проходит два этапа, в том числе по ВрИО."""
     if u.id in (r.creator_id,r.last_editor_id):raise HTTPException(403,'Автор и последний редактор не могут согласовать свою заявку, включая администратора. Нужен другой согласующий.')
-    if u.id in participants(r):raise HTTPException(403,'Один сотрудник не проходит два этапа одной заявки: нужен другой согласующий.')
+    if u.id in round_participants(s,r):raise HTTPException(403,'Кто правил заявку или её файлы либо уже прошёл один из этапов, её не согласует: нужен другой согласующий.')
 
 @app.post('/api/requests/{id}/decision')
 def decide(id:int,data:DecisionIn,request:Request):
@@ -505,7 +505,7 @@ def decide(id:int,data:DecisionIn,request:Request):
             clear_approval(r);r.status='pending';snapshot_route(s,r,a.currency)
         elif data.action=='check':
             if 'request_check' not in perms:raise HTTPException(403,'Реквизиты и комплектность проверяет расчётный бухгалтер компании.')
-            ensure_new_participant(u,r)
+            ensure_new_participant(s,u,r)
             if stage!='check':raise HTTPException(409,'Заявка не ожидает проверки расчётного бухгалтера.')
             if not act_as(u,'accountant'):raise HTTPException(403,'Реквизиты и комплектность проверяет расчётный бухгалтер компании.')
             enforce_documents(s,r)
@@ -514,12 +514,12 @@ def decide(id:int,data:DecisionIn,request:Request):
             r.checked_by=u.id;r.checked_at=now()
         elif data.action=='approve':
             if 'approve' not in perms:raise HTTPException(403,'Недостаточно прав для согласования.')
-            if u.id in (r.creator_id,r.last_editor_id):ensure_new_participant(u,r)
+            if u.id in (r.creator_id,r.last_editor_id):ensure_new_participant(s,u,r)
             if r.status!='pending':raise HTTPException(409,'Заявка уже обработана или не отправлена на согласование.')
             if stage=='check':raise HTTPException(409,'Сначала реквизиты и комплектность проверяет расчётный бухгалтер.')
             if not act_as(u,'finance' if stage=='finance' else 'director'):
                 raise HTTPException(403,'Сначала требуется проверка финансового директора компании.' if stage=='finance' else 'Требуется отдельное подтверждение директора компании.')
-            ensure_new_participant(u,r)
+            ensure_new_participant(s,u,r)
             b=enforce_budget(s,r.category_id,r.due_date,a.currency,r.amount,note,r.id)
             if stage=='finance':r.finance_approved_by=u.id
             else:r.approved_by=u.id

@@ -8,7 +8,7 @@ from pydantic import BaseModel, Field, ConfigDict
 from sqlalchemy import select, func
 from .db import (unit, now, User, Account, Category, PaymentRequest, RequestDocument, CalendarDay, Delegation, Audit)
 from .security import (session_user, perms_of, has_role, payment_channels, pay_right, ROLES, COMPANY_ROLES)
-from .services import (get, log, money, amount, today, approval_stage, participants, all_participants, route_complete,
+from .services import (get, log, money, amount, today, approval_stage, round_participants, all_participants, route_complete,
                        DOCUMENT_KINDS, REQUIRED_DOCUMENTS, THRESHOLD_FIELDS, category_policy, request_json, request_journal)
 from .workdays import due_minimums, LEAD_DAYS
 from .workflow_setup import DEFAULT_THRESHOLDS
@@ -70,7 +70,7 @@ def request_actions(s, u, r):
         actions.append('submit')
     if editable and r.status in OPEN_STATUSES:
         actions.append('documents')
-    if stage and has_role(u, STAGE_ROLE[stage]) and u.id not in participants(r) and ('approve' in perms or stage == 'check'):
+    if stage and has_role(u, STAGE_ROLE[stage]) and u.id not in round_participants(s, r) and ('approve' in perms or stage == 'check'):
         actions.append('check' if stage == 'check' else 'approve')
     if (('approve' in perms and r.status in ('pending', 'approved')) or (stage == 'check' and has_role(u, 'accountant'))) and not own_only:
         actions.append('return')

@@ -218,6 +218,18 @@ def all_participants(s,r):
                                               Audit.action.in_(PARTICIPANT_ACTIONS+LEGACY_DOCUMENT_ACTIONS)))
     return participants(r)|set(past)
 
+# Правки заявки и её файлов. После возврата на доработку круг согласования начинается заново.
+EDIT_ACTIONS=('Изменена заявка','Действие по заявке: reschedule','Добавлен документ заявки','Новая версия документа заявки','Убран документ заявки')
+
+def round_participants(s,r):
+    """Участники текущего круга: автор, последний редактор, проверявший и согласующие, а также все, кто
+    правил заявку или её файлы после последнего возврата на доработку. Кто менял содержание — не согласует,
+    даже если после него заявку правил кто-то ещё."""
+    last_return=s.scalar(select(func.max(Audit.id)).where(request_journal(r.id),Audit.action=='Действие по заявке: return'))
+    q=select(Audit.user_id).where(request_journal(r.id),Audit.user_id.is_not(None),Audit.action.in_(EDIT_ACTIONS))
+    if last_return is not None:q=q.where(Audit.id>last_return)
+    return participants(r)|set(s.scalars(q))
+
 def route_complete(r):
     """Все нужные этапы пройдены: проверка (для заявок со снимком), финансовый директор и директор по снимку."""
     if r.finance_approved_by is None or (r.route_policy is not None and r.checked_by is None):return False

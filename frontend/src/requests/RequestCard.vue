@@ -34,11 +34,16 @@ const missing = computed(() => r.value ? missingDocs(r.value) : []);
 const draftLike = computed(() => ['draft', 'returned'].includes(r.value?.status));
 const canRemove = kind => can('documents') && (draftLike.value || !REQUIRED_DOCS.includes(kind));
 
-async function load() {
+async function load(afterAction = false) {
   try {
     r.value = await props.api(`/api/requests/${props.id}`);
     if (!options.value.some(o => o[0] === decision.value.action)) decision.value = {action: options.value[0]?.[0] || '', note: '', date: r.value.date};
-  } catch (e) { error.value = e.message; }
+  } catch (e) {
+    // Действие закрыло заявку для этого сотрудника (например, плательщик вернул её финансовому директору):
+    // карточка закрывается, список обновляется, прежние кнопки не остаются.
+    if (afterAction && e.status === 404) { emit('changed'); emit('close'); return; }
+    error.value = e.message;
+  }
 }
 
 // После действия карточка перечитывается; при конфликте версий — тоже, с сообщением сервера.
@@ -47,10 +52,10 @@ async function run(fn, message) {
   busy.value = true; error.value = ''; notice.value = '';
   try {
     const extra = await fn();
-    await load(); notice.value = typeof extra === 'string' && extra ? extra : message; emit('changed'); return true;
+    await load(true); notice.value = typeof extra === 'string' && extra ? extra : message; emit('changed'); return true;
   } catch (e) {
     error.value = e.message + ([409, 428].includes(e.status) ? ' Карточка обновлена.' : '');
-    if ([409, 428].includes(e.status)) { await load(); emit('changed'); }
+    if ([409, 428].includes(e.status)) { await load(true); emit('changed'); }
     return false;
   } finally { busy.value = false; }
 }

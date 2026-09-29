@@ -577,7 +577,10 @@ class AccessTests(base.SiteTests):
         self.approve(rid)
         before = self.row(rid)
         self.assertEqual(before['status'], 'approved')
-        again = self.upload(rid, 'contract')
+        # The reply to the first upload was lost: the same bytes are sent again (the helper alone would make a new file).
+        contract = next(d for d in before['documents_list'] if d['kind'] == 'contract' and d.get('current', True))
+        same_bytes = self.client.get(contract['url']).content
+        again = self.upload(rid, 'contract', content=same_bytes)
         self.assertEqual(again.status_code, 200, again.text)
         self.assertTrue(again.json()['duplicate'])
         self.assertFalse(again.json()['approval_reset'])
@@ -613,6 +616,56 @@ class AccessTests(base.SiteTests):
         self.assertTrue(transition.synced(Path('C:/Users/x/OneDrive - Company/private')))
         self.assertFalse(transition.synced(Path('C:/Users/x/AppData/Local/Temp/C--Users-x-OneDrive-Desktop-site/private')))
         self.assertFalse(transition.synced(Path('D:/zuma-private')))
+
+    # ---- Проверка выпуска 2.14.0: редакторы круга и версия заявки
+    def test_whoever_changed_the_request_or_its_files_in_this_round_never_approves_it(self):
+        rid = self.request('700').json()['id']
+        self.assertEqual(self.finance_approve(rid).status_code, 200)
+        director = self.stage_user('director')
+        # Директор заменяет договор: согласования снимаются, он стал последним редактором.
+        replaced = self.upload(rid, 'contract', client=director[0], headers=director[1], name='contract-v2.pdf')
+        self.assertEqual(replaced.status_code, 200, replaced.text)
+        self.assertTrue(replaced.json()['approval_reset'])
+        # Автор добавляет ещё один файл: последним редактором снова становится автор.
+        self.assertEqual(self.upload(rid, 'other', name='act.pdf').status_code, 200)
+        self.assertEqual(self.finance_approve(rid).status_code, 200)
+        card = director[0].get(f'/api/requests/{rid}', headers=director[1]).json()
+        self.assertEqual(card['approval_stage'], 'director')
+        self.assertNotIn('approve', card['actions'], 'the director who replaced the invoice is not offered the approval')
+        denied = self.post(f'/api/requests/{rid}/decision', {'action': 'approve', 'note': 'Утверждаю свой же договор'}, *director)
+        self.assertEqual(denied.status_code, 403, denied.text)
+        other_director = self.make_user('director', 'chief2')
+        ok = self.post(f'/api/requests/{rid}/decision', {'action': 'approve', 'note': 'Утверждаю после проверки'}, *other_director)
+        self.assertEqual((ok.status_code, ok.json()['status']), (200, 'approved'), ok.text)
+        # После возврата на доработку круг начинается заново: прежняя правка директора больше не мешает.
+        back = self.post(f'/api/requests/{rid}/decision', {'action': 'return', 'note': 'Нужен исправленный счёт'}, *self.stage_user('finance'))
+        self.assertEqual(back.status_code, 200, back.text)
+        self.assertEqual(self.post(f'/api/requests/{rid}/decision', {'action': 'submit'}).status_code, 200)
+        self.assertEqual(self.finance_approve(rid).status_code, 200)
+        again = self.post(f'/api/requests/{rid}/decision', {'action': 'approve', 'note': 'Новый круг согласования'}, *director)
+        self.assertEqual((again.status_code, again.json()['status']), (200, 'approved'), again.text)
+
+    def test_every_document_change_moves_the_request_version(self):
+        author = self.make_user('employee', 'ver_author')
+        created = self.request('300', client=author[0], headers=author[1], submit=False).json()
+        rid, v0 = created['id'], created['version']
+        first = self.upload(rid, 'internal', client=author[0], headers=author[1])
+        self.assertEqual(first.status_code, 200, first.text)
+        self.assertGreater(first.json()['request_version'], v0)
+        second = self.upload(rid, 'internal', client=author[0], headers=author[1], name='indent-v2.pdf')
+        self.assertGreater(second.json()['request_version'], first.json()['request_version'])
+        self.assertEqual(self.upload(rid, 'contract', client=author[0], headers=author[1]).status_code, 200)
+        # Финансовый руководитель открыл заявку, автор заменил договор: отправка с прежней версией отклоняется.
+        fin = self.stage_user('finance')
+        seen = fin[0].get(f'/api/requests/{rid}', headers=fin[1]).json()['version']
+        self.assertEqual(self.upload(rid, 'contract', client=author[0], headers=author[1], name='contract-v2.pdf').status_code, 200)
+        stale = self.post(f'/api/requests/{rid}/decision', {'action': 'submit', 'version': seen}, *fin)
+        self.assertEqual(stale.status_code, 409, stale.text)
+        stale_save = fin[0].put(f'/api/requests/{rid}', json={**self.request_body('300'), 'status': 'pending', 'version': seen,
+                                                                'reason': 'Отправляю от имени автора'}, headers=fin[1])
+        self.assertEqual(stale_save.status_code, 409, stale_save.text)
+        fresh = self.post(f'/api/requests/{rid}/decision', {'action': 'submit'}, *fin)
+        self.assertEqual((fresh.status_code, fresh.json()['status']), (200, 'pending'), fresh.text)
 
 for _name in dir(base.SiteTests):
     if _name.startswith('test'):

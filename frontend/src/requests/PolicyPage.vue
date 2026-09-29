@@ -38,7 +38,7 @@ function toggleSkip(c) {
       c.skip_allowed ? 'Статья исключена из перечня.' : 'Статья добавлена в перечень регулярных платежей.')
     .then(() => { if (!error.value) skipForm.value = null; });
 }
-function addDay() { run(() => props.api('/api/calendar-days', json('POST', dayForm.value)), 'Календарь обновлён.').then(() => { dayForm.value = {day: '', kind: 'holiday', name: ''}; }); }
+function addDay() { run(() => props.api('/api/calendar-days', json('POST', dayForm.value)), 'Календарь обновлён.').then(() => { if (!error.value) dayForm.value = {day: '', kind: 'holiday', name: ''}; }); }
 function removeDay(d) { run(() => props.api(`/api/calendar-days/${d.day}`, {method: 'DELETE'}), 'Запись календаря удалена.'); }
 
 const threshold = (c, cur) => c.policy !== 'threshold' ? '—' : c.thresholds[cur] ? props.money(c.thresholds[cur]) + ' ' + cur : 'любая сумма';

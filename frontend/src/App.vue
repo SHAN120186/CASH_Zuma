@@ -241,6 +241,7 @@ onMounted(async()=>{try{const r=await api('/api/me');user.value=r.user;csrf.valu
    <small id="login-hint" class="login-hint">Здесь появятся 3 последних успешных логина из этого браузера.</small>
    <label for="current-password">Пароль<input id="current-password" ref="passwordInput" v-model="login.password" name="password" type="password" autocomplete="current-password" aria-describedby="password-hint" placeholder="Введите пароль" required :readonly="busy"></label>
    <p v-if="error" class="error" role="alert">{{error}}</p>
+   <p v-if="notice" class="notice" role="status">{{notice}}</p>
    <button type="submit" :disabled="busy">{{busy?'Входим…':'Войти в систему'}} <AppIcon name="arrow"/></button>
    <small id="password-hint">Для автозаполнения пароля подтвердите «Сохранить» в предложении браузера. Доступность зависит от браузера и его настроек.</small>
   </form>

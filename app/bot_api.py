@@ -28,7 +28,7 @@ from .db import (Account, Audit, Budget, Category, Company, CompanyUser, Delegat
                  Setting, TelegramGroup, TelegramLink, TelegramLinkCode, User, now, unit)
 from .security import COMPANY_ROLES, PERMS, digest, pay_right, session_user
 from .services import (account_balance, all_participants, approval_stage, budget_state, effective_cashflows, funds_state, log,
-                       money, participants, route_complete)
+                       money, participants, round_participants, route_complete)
 from .services import today as tashkent_today
 
 router = APIRouter()
@@ -295,14 +295,15 @@ def responsible(r, account, company, users, members, acting=None, past=None):
     """Stage of an actionable request and the people who can act on it now (app/main.py decide,
     services.check_payer). Nobody else is reminded: a reminder must lead to a possible action.
     Pending requests: accountant check, finance, then the director only when the route snapshot
-    requires one; nobody acts twice in one request. Payment: only when every required stage is done,
-    never by anybody who took part in the request in this or an earlier round (``past``)."""
+    requires one; nobody acts twice in one request and nobody who edited it or its files in this round
+    (``past`` = services.round_participants). Payment: only when every required stage is done, never by
+    anybody who took part in the request in this or an earlier round (``past`` = services.all_participants)."""
     acting = acting or {}
     if r.status == 'pending':
         stage = approval_stage(r)
         role = STAGE_ROLE[stage]
         fits = lambda roles: role in roles
-        excluded = participants(r)
+        excluded = participants(r) | (past or set())
     elif r.status == 'approved':
         if not route_complete(r):
             return None, []
@@ -366,7 +367,7 @@ def pending_items(s, user_id=None):
         company = companies.get(account.company_id) if account else None
         if company is None:
             continue
-        past = all_participants(s, r) if r.status == 'approved' else None
+        past = all_participants(s, r) if r.status == 'approved' else round_participants(s, r)
         stage, people = responsible(r, account, company, users, members, acting, past)
         since = entered.get(r.id, r.created_at)
         if r.status == 'approved':
