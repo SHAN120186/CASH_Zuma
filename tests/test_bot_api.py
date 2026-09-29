@@ -169,6 +169,46 @@ class BotApiTests(unittest.TestCase):
         self.assertEqual(self.pending(),[])
         self.assertEqual(http(),['/api/bot/v1/pending-requests; status=200'])
 
+    def test_wrong_bot_keys_are_throttled_per_address_and_logged_once(self):
+        wrong=('test-bot','wrong-secret-'+'z'*30)
+        refused=lambda:len(self.audit_rows('Бот: отказ в доступе'))
+        for _ in range(8):self.assertEqual(self.client.get('/api/bot/v1/pending-requests',auth=wrong).status_code,401)
+        # Eight failures in ten minutes from one address: the ninth try is refused even with the right key,
+        # and the journal holds one refusal for the window, not one per attempt.
+        self.assertEqual(self.client.get('/api/bot/v1/pending-requests',auth=wrong).status_code,429)
+        self.assertEqual(self.client.get('/api/bot/v1/pending-requests',auth=BOT).status_code,429)
+        self.assertEqual(refused(),1)
+        with unit(True) as s:
+            for a in s.scalars(select(LoginAttempt)):a.since=now()-timedelta(minutes=11)
+        self.assertEqual(self.client.get('/api/bot/v1/pending-requests',auth=BOT).status_code,200)
+        self.assertEqual(self.client.get('/api/bot/v1/pending-requests',auth=wrong).status_code,401)
+        self.assertEqual(refused(),2)
+
+    def test_access_check_reports_group_and_user_rights_without_a_journal_row(self):
+        check=lambda **q:self.client.get('/api/bot/v1/access',params=q,auth=BOT)
+        self.assertEqual(check().status_code,422)
+        self.assertEqual(check(chat_id=GROUP).status_code,200)
+        self.assertEqual(self.client.get('/api/bot/v1/access',params={'chat_id':GROUP}).status_code,401)
+        finance=self.make_user('finance','checker');self.link(finance,556001)
+        founder=self.make_user('founder','owner');self.link(founder,556002)
+        self.link(self.me(),556003)
+        chat=-1005556000001
+        self.assertEqual(self.connect(chat,['ZUMA'],556003).status_code,200)
+        r=check(chat_id=chat,telegram_user_id=556001).json()
+        self.assertEqual(r['group'],{'chat_id':chat,'allowed':True,'companies':['ZUMA']})
+        self.assertEqual(r['user'],{'linked':True,'user_id':finance['id'],'is_admin':False,'companies':['UZGERMED']})
+        self.assertTrue(r['checked_at'])
+        self.assertEqual(check(telegram_user_id=556002).json()['user'],{'linked':True,'user_id':founder['id'],'is_admin':False,'companies':['UZGERMED','ZUMA']})
+        self.assertEqual(check(telegram_user_id=556003).json()['user']['is_admin'],True)
+        self.assertEqual(check(chat_id=GROUP).json()['group'],{'chat_id':GROUP,'allowed':True,'companies':['UZGERMED']})
+        self.assertEqual(check(telegram_user_id=556999).json()['user'],{'linked':False,'user_id':None,'is_admin':False,'companies':[]})
+        # A change of rights is visible at once: the link is gone and the group of a disconnected chat is not allowed.
+        self.assertEqual(self.post(f'/api/users/{finance["id"]}/password',{'password':PASSWORD+'x'}).status_code,200)
+        self.assertEqual(check(telegram_user_id=556001).json()['user']['linked'],False)
+        self.assertEqual(self.disconnect(chat,556003).status_code,200)
+        self.assertEqual(check(chat_id=chat).json()['group'],{'chat_id':chat,'allowed':False,'companies':[]})
+        self.assertEqual([a.action for a in self.audit_rows('Бот: настройки группы')],[])
+
     def test_bot_api_is_off_until_configured_with_a_long_secret(self):
         saved=os.environ['BOT_CLIENT_SECRET']
         try:
