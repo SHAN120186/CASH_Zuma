@@ -31,7 +31,7 @@ async def lifespan(app):
     drop_shadowed_groups()
     drop_orphan_groups()
     yield
-app=FastAPI(title='UZGERMED Treasury',version='2.12.7',docs_url=None,redoc_url=None,openapi_url=None,lifespan=lifespan)
+app=FastAPI(title='UZGERMED Treasury',version='2.12.8',docs_url=None,redoc_url=None,openapi_url=None,lifespan=lifespan)
 app.add_middleware(TrustedHostMiddleware,allowed_hosts=ALLOWED)
 app.mount('/static',StaticFiles(directory=ROOT/'app'/'static'),name='static')
 

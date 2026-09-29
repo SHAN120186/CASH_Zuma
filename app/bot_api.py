@@ -767,6 +767,8 @@ def revoke_telegram_link_code(data: RevokeIn, request: Request):
         if row is None:
             return {'revoked': False}
         s.delete(row)
+        if row.expires_at <= now():
+            return {'revoked': False}  # nothing active to cancel: the stale row is only cleaned up
         s.add(Audit(user_id=row.user_id, action='Код привязки Telegram отменён', entity='user',
                     entity_id=str(row.user_id), detail='Код был отправлен в группу'))
         return {'revoked': True}

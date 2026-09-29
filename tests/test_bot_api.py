@@ -402,6 +402,10 @@ class BotApiTests(unittest.TestCase):
         self.assertEqual(revoke(code).json(),{'revoked':False})
         self.assertEqual(self.client.post('/api/bot/v1/telegram-links',json={'code':code,'telegram_user_id':555001},auth=BOT).status_code,404)
         self.assertEqual(self.client.post('/api/bot/v1/telegram-links/revoke',json={'code':code}).status_code,401)
+        stale=self.post('/api/telegram/code',{},user['client'],user['h']).json()['code']
+        with unit(True) as s:s.scalar(select(TelegramLinkCode)).expires_at=now()-timedelta(seconds=1)
+        self.assertEqual(revoke(stale).json(),{'revoked':False})  # expired: nothing active to cancel
+        with unit() as s:self.assertIsNone(s.scalar(select(TelegramLinkCode.user_id)))
 
     def test_revoking_sessions_also_unlinks_telegram_and_cancels_codes(self):
         user=self.make_user('finance','victim');self.link(user,777001)
