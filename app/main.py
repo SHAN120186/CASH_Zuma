@@ -6,6 +6,8 @@ import datetime as dt
 from typing import Literal, Optional
 from contextlib import asynccontextmanager
 from fastapi import FastAPI, Request, Response, HTTPException, Query
+from fastapi.exceptions import RequestValidationError
+from fastapi.encoders import jsonable_encoder
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.middleware.trustedhost import TrustedHostMiddleware
@@ -34,7 +36,7 @@ async def lifespan(app):
     drop_shadowed_groups()
     drop_orphan_groups()
     yield
-app=FastAPI(title='UZGERMED Treasury',version='2.14.3',docs_url=None,redoc_url=None,openapi_url=None,lifespan=lifespan)
+app=FastAPI(title='UZGERMED Treasury',version='2.14.6',docs_url=None,redoc_url=None,openapi_url=None,lifespan=lifespan)
 app.add_middleware(TrustedHostMiddleware,allowed_hosts=ALLOWED)
 app.mount('/static',StaticFiles(directory=ROOT/'app'/'static'),name='static')
 
@@ -68,6 +70,11 @@ async def safety(request,call_next):
     if request.url.path.startswith('/api') or request.url.path in ('/','/version.json'):response.headers['Cache-Control']='no-store'
     return response
 
+@app.exception_handler(RequestValidationError)
+async def invalid_input(request,exc):
+    # Ответ проверки полей не возвращает введённые значения: тело могло содержать пароль.
+    errors=[{k:v for k,v in e.items() if k not in ('input','ctx','url')} for e in exc.errors()]
+    return JSONResponse({'detail':jsonable_encoder(errors)},status_code=422)
 @app.exception_handler(IntegrityError)
 async def duplicate(request,exc):
     return JSONResponse({'detail':'Дубликат или связанная запись: такой документ/пользователь уже существует. Повторная оплата заблокирована.'},status_code=409)
@@ -217,7 +224,7 @@ def login(body:LoginIn,request:Request,response:Response):
                     except ValueError:user.must_change_password=True
                 access.scope_home(s,user)
                 s.add(LoginSession(token_hash=digest(token),user_id=user.id,csrf=csrf,expires_at=now()+timedelta(hours=1)))
-                user._ip=request.client.host if request.client else None
+                user._ip=client_ip(request) if request.client else None
                 user._forwarded=(request.headers.get('X-Forwarded-For') or '')[:200] or None
                 log(s,user,'Вход в систему','user',user.id)
                 result={'user':user_json(user),'csrf':csrf,'access_token':token,'token_type':'bearer','expires_in':3600}
@@ -525,7 +532,9 @@ def decide(id:int,data:DecisionIn,request:Request):
             else:r.approved_by=u.id
             # Директор участвует по снимку политики статьи; последний нужный этап завершает согласование.
             if stage=='director' or not requires_director(r):
-                enforce_available_funds(s,a,r.due_date,r.amount,r.id)
+                # Деньги проверяются на срок заявки и на сегодня: у просроченной заявки остаток
+                # на прошлую дату срока уже не говорит о том, что деньги есть сейчас.
+                for as_of in sorted({r.due_date,max(today(),r.due_date)}):enforce_available_funds(s,a,as_of,r.amount,r.id)
                 r.status='approved';r.approved_at=now();r.approved_overrun=overrun(b)
         elif data.action=='return':
             if not (('approve' in perms and act_with_right(u,'approve')) or act_as(u,'accountant')):raise HTTPException(403,'Недостаточно прав для возврата.')
@@ -587,7 +596,11 @@ def ledger_list(request:Request,date_from:Optional[date]=None,date_to:Optional[d
         query=select(Ledger).join(Account,Account.id==Ledger.account_id).outerjoin(Category,Category.id==Ledger.category_id)
         # Плательщик без просмотра реестра видит операции только своего канала: кассир — кассу, бухгалтер — банк.
         channels=payment_channels(perms_of(u))
-        if 'view' not in perms_of(u) and channels:query=query.where(Account.kind.in_(sorted(channels)))
+        if 'view' not in perms_of(u) and channels:
+            # Перевод хранится на счёте-источнике: пополнение кассы с банка тоже движение кассы.
+            from sqlalchemy.orm import aliased
+            target=aliased(Account)
+            query=query.outerjoin(target,target.id==Ledger.to_account_id).where(or_(Account.kind.in_(sorted(channels)),target.kind.in_(sorted(channels))))
         if currency:query=query.where(Account.currency==currency)
         if date_from:query=query.where(Ledger.date>=date_from)
         if date_to:query=query.where(Ledger.date<=date_to)
@@ -768,6 +781,9 @@ def grant_company_access(data:CompanyUserIn,request:Request):
 def revoke_company_access(id:int,request:Request):
     with unit(True) as s:
         admin,_=session_user(s,request,'users');u=access.unscoped_user(s,id)
+        # Отзывать нечего, если назначения в выбранной компании нет: иначе сеансы сотрудника другой
+        # компании обрывались бы, а журнал получал запись без изменения доступа.
+        if not s.get(CompanyUser,(s.info['company_id'],u.id)):raise HTTPException(404,'У пользователя нет назначения в выбранной компании.')
         # Администратор холдинга видит компанию и без назначения: снимается только его финансовая роль.
         access.unassign(s,admin,u,s.info['company_id'],'Отзыв доступа в выбранной компании',request)
         return {'ok':True}
@@ -790,6 +806,7 @@ def edit_user(id:int,data:UserEdit,request:Request):
     with unit(True) as s:
         admin,_=session_user(s,request,'users');u=access.unscoped_user(s,id)
         if u.id==admin.id and (not data.active or data.role!='admin'):raise HTTPException(409,'Нельзя отключить себя или убрать собственные права администратора.')
+        if u.id==admin.id and data.password:raise HTTPException(409,'Собственный пароль меняется в профиле, а не сбросом администратора.')
         cid=s.info['company_id']
         # Прежняя форма «Управлять» работает по тем же правилам, что и центр администрирования.
         if not u.active:raise HTTPException(409,'Учётная запись в архиве: восстановите её в центре администрирования с новым назначением.')
@@ -817,6 +834,7 @@ def edit_user(id:int,data:UserEdit,request:Request):
 def reset_user_password(id:int,data:ResetPasswordIn,request:Request):
     with unit(True) as s:
         admin,_=session_user(s,request,'users');u=access.unscoped_user(s,id)
+        if u.id==admin.id:raise HTTPException(409,'Собственный пароль меняется в профиле, а не сбросом администратора.')
         if not u.active:raise HTTPException(409,'Учётная запись в архиве: восстановите её с новым назначением.')
         try:u.password_hash=hash_password(data.password)
         except ValueError as e:raise HTTPException(422,str(e))

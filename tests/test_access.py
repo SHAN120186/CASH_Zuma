@@ -375,6 +375,50 @@ class AccessTests(base.SiteTests):
         finally:
             os.environ.pop('UZGERMED_HOSTING', None)
 
+    def test_render_journal_keeps_the_client_address_not_the_proxy(self):
+        os.environ['UZGERMED_HOSTING'] = 'render'
+        try:
+            cl = TestClient(app)
+            r = cl.post('/api/login', json={'username': 'admin', 'password': PASSWORD}, headers={'X-Forwarded-For': '1.1.1.1, 203.0.113.5'})
+            self.assertEqual(r.status_code, 200, r.text)
+            h = {'X-CSRF-Token': r.json()['csrf'], 'X-Forwarded-For': '203.0.113.5'}
+            r = cl.post('/api/users', json={'username': 'ip_witness', 'name': 'ip_witness', 'password': PASSWORD, 'role': 'employee'}, headers=h)
+            self.assertEqual(r.status_code, 200, r.text)
+            with unit() as s:
+                login = s.scalar(select(Audit).where(Audit.action == 'Вход в систему').order_by(Audit.id.desc()).execution_options(company_unscoped=True))
+                created = s.scalar(select(Audit).where(Audit.action == 'Создан пользователь').order_by(Audit.id.desc()).execution_options(company_unscoped=True))
+                # The address added by the Render proxy is the client; the left-hand value may be forged.
+                self.assertEqual((login.ip, login.forwarded_for), ('203.0.113.5', '1.1.1.1, 203.0.113.5'))
+                self.assertEqual((created.ip, json.loads(created.detail)['ip']), ('203.0.113.5', '203.0.113.5'))
+            cl.close()
+        finally:
+            os.environ.pop('UZGERMED_HOSTING', None)
+
+    def test_validation_errors_never_echo_the_submitted_password(self):
+        for path, body in (('/api/login', {'username': 'admin', 'password': 'p' * 129}),
+                           ('/api/password', {'old_password': PASSWORD, 'new_password': 'q' * 129}),
+                           ('/api/users', {'username': 'newbie', 'name': 'newbie', 'password': 'r' * 129, 'role': 'employee'})):
+            r = self.client.post(path, json=body, headers=self.h)
+            self.assertEqual(r.status_code, 422, (path, r.text))
+            self.assertNotIn('ppp', r.text); self.assertNotIn('qqq', r.text); self.assertNotIn('rrr', r.text)
+            self.assertTrue(all('input' not in e and 'loc' in e and 'msg' in e for e in r.json()['detail']), r.text)
+
+    @unittest.skipIf(os.name == 'nt', 'POSIX file modes only')
+    def test_generated_jwt_secret_is_readable_by_the_owner_only(self):
+        from app import security
+        saved_data, saved_env = security.DATA, os.environ.pop('JWT_SECRET', None)
+        try:
+            with tempfile.TemporaryDirectory() as folder:
+                security.DATA = Path(folder)
+                first = security.jwt_key()
+                self.assertGreaterEqual(len(first), 32)
+                self.assertEqual(os.stat(Path(folder) / 'jwt.secret').st_mode & 0o777, 0o600)
+                self.assertEqual(security.jwt_key(), first, 'the same key is reused on the next call')
+        finally:
+            security.DATA = saved_data
+            if saved_env is not None:
+                os.environ['JWT_SECRET'] = saved_env
+
     def test_anonymous_calls_do_not_fill_the_journal_and_bad_csrf_is_refused(self):
         with unit() as s:
             before = s.scalar(select(func.count()).select_from(Audit))

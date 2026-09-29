@@ -2890,4 +2890,70 @@ class SiteTests(unittest.TestCase):
             self.assertEqual(self.row(rid)['documents'],{'internal':1,'contract':1,'other':1})
         finally:author[0].close();stranger[0].close();buyer[0].close()
 
+    def test_141_final_approval_of_an_overdue_request_checks_todays_money_not_the_past_due_date(self):
+        acc=self.post('/api/accounts',{'name':'Счёт просрочки','kind':'bank','currency':'UZS','opening':'1000000','opening_date':str(today()-timedelta(days=5))}).json()['id']
+        rid=self.request('600000','Заявка, утверждаемая после срока',account=acc).json()['id']
+        self.assertEqual(self.finance_approve(rid).status_code,200)
+        # The due date passed before the director decides, and the money leaves the account meanwhile.
+        with unit(True) as s:s.get(PaymentRequest,rid).due_date=today()-timedelta(days=3)
+        drained=self.post('/api/ledger',{'account_id':acc,'category_id':self.cat,'kind':'out','amount':'1000000','date':str(today()),'reference':'DRAIN-1','note':'Расход без заявки, забравший весь остаток'})
+        self.assertEqual(drained.status_code,200,drained.text)
+        late=self.post(f'/api/requests/{rid}/decision',{'action':'approve','note':'Утверждение после срока'},*self.stage_user('director'))
+        self.assertEqual(late.status_code,409,late.text);self.assertIn('Недостаточно доступных средств',late.text);self.assertIn(str(today()),late.text)
+        self.assertEqual((self.row(rid)['status'],self.row(rid)['approval_stage']),('pending','director'))
+        # Money back on the account: the same decision goes through, and the request never reserved money it did not have.
+        self.assertEqual(self.post('/api/ledger',{'account_id':acc,'category_id':self.cat,'kind':'in','amount':'700000','date':str(today()),'reference':'BACK-1','counterparty':'Покупатель'}).status_code,200)
+        ok=self.post(f'/api/requests/{rid}/decision',{'action':'approve','note':'Утверждение после срока'},*self.stage_user('director'))
+        self.assertEqual(ok.status_code,200,ok.text);self.assertEqual(ok.json()['status'],'approved')
+
+    def test_142_channel_payers_see_transfers_into_their_own_accounts(self):
+        cashier=self.make_user('cashier','till_keeper');book=self.make_user('accountant','bank_keeper')
+        till=self.post('/api/accounts',{'name':'Касса офиса','kind':'cash','currency':'UZS','opening':'50000','opening_date':str(today()-timedelta(days=5))}).json()['id']
+        self.assertEqual(self.ledger('300','out',reference='BANK-ONLY').status_code,200)
+        moves=[('TOP-UP',self.acc,till),('HAND-IN',till,self.acc)]
+        for ref,src,dst in moves:
+            r=self.post('/api/ledger',{'account_id':src,'to_account_id':dst,'category_id':None,'kind':'transfer','amount':'1000','date':self.date,'reference':ref,'note':'Перевод между своими счетами'})
+            self.assertEqual(r.status_code,200,r.text)
+        seen=lambda who:sorted(x['reference'] for x in who[0].get('/api/ledger',headers=who[1]).json())
+        # The cashier sees every movement of the till, including the top-up stored on the bank account, and nothing bank-only.
+        self.assertEqual(seen(cashier),['HAND-IN','TOP-UP'])
+        self.assertEqual(seen(book),['BANK-ONLY','HAND-IN','TOP-UP'])
+        page=cashier[0].get('/api/ledger?paginated=true&page=1&page_size=10',headers=cashier[1]).json()
+        self.assertEqual((page['total'],sorted(x['to_account'] for x in page['items'])),(2,['Test bank','Касса офиса']))
+
+    def test_143_other_documents_are_independent_files_not_versions_of_each_other(self):
+        rid=self.request('500','Заявка с несколькими прочими файлами',submit=False).json()['id']
+        for name in ('act.pdf','act2.pdf','photo.pdf'):self.assertEqual(self.upload(rid,'other',name=name).status_code,200)
+        docs=self.client.get(f'/api/requests/{rid}/documents?history=true',headers=self.h).json()
+        self.assertEqual(sorted((d['filename'],d['version'],d['active']) for d in docs if d['kind']=='other'),[('act.pdf',1,True),('act2.pdf',1,True),('photo.pdf',1,True)])
+        # A required document is one file: each replacement is the next version of it.
+        for _ in range(2):self.assertEqual(self.upload(rid,'contract').status_code,200)
+        docs=self.client.get(f'/api/requests/{rid}/documents?history=true',headers=self.h).json()
+        self.assertEqual(sorted((d['version'],d['active']) for d in docs if d['kind']=='contract'),[(1,False),(2,True)])
+
+    def test_144_legacy_user_forms_never_revoke_a_non_member_or_reset_the_admins_own_password(self):
+        ids=self.company_ids();zuma=ids['ZUMA'];uz=ids['UZGERMED']
+        cl,h=self.user_in(zuma,'cashier','zuma_till')
+        try:
+            uid=cl.get('/api/me',headers=h).json()['user']['id']
+            def links():
+                with unit() as s:return sorted((m.company_id,m.role) for m in s.scalars(select(CompanyUser).where(CompanyUser.user_id==uid).execution_options(company_unscoped=True)))
+            before=links()
+            self.assertEqual(before,[(zuma,'cashier')])
+            # Revoking access in a company where the user has no assignment is not a change and ends no session.
+            gone=self.client.delete(f'/api/company-users/{uid}',headers={**self.h,'X-Company-ID':str(uz)})
+            self.assertEqual(gone.status_code,404,gone.text)
+            self.assertEqual(cl.get('/api/me',headers=h).status_code,200)
+            with unit() as s:self.assertEqual(s.scalar(select(func.count()).select_from(Audit).where(Audit.action=='Отозван доступ к компании').execution_options(company_unscoped=True)),0)
+            # The same form in the right company still works, and a real revoke ends the session.
+            self.assertEqual(self.client.post(f'/api/users/{uid}',json={'role':'cashier','active':True},headers={**self.h,'X-Company-ID':str(zuma)}).status_code,200)
+            self.assertEqual(self.client.delete(f'/api/company-users/{uid}',headers={**self.h,'X-Company-ID':str(zuma)}).status_code,200)
+            self.assertEqual(cl.get('/api/me',headers=h).status_code,401)
+            # An administrator does not reset their own password through the legacy routes either.
+            me=self.client.get('/api/me').json()['user']['id']
+            self.assertEqual(self.client.post(f'/api/users/{me}/password',json={'password':PASSWORD+'y'},headers=self.h).status_code,409)
+            self.assertEqual(self.client.post(f'/api/users/{me}',json={'role':'admin','active':True,'password':PASSWORD+'y'},headers=self.h).status_code,409)
+            self.assertEqual(self.client.get('/api/me').status_code,200)
+        finally:cl.close()
+
 if __name__=='__main__':unittest.main(verbosity=2)

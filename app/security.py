@@ -140,7 +140,9 @@ def jwt_key():
     path=DATA/'jwt.secret'
     if not path.exists():
         try:
-            with path.open('x',encoding='ascii') as f:f.write(secrets.token_urlsafe(48))
+            # Ключ подписи сессий читает только владелец процесса: другие пользователи компьютера его не видят.
+            fd=os.open(path,os.O_WRONLY|os.O_CREAT|os.O_EXCL,0o600)
+            with os.fdopen(fd,'w',encoding='ascii') as f:f.write(secrets.token_urlsafe(48))
         except FileExistsError:pass
     return path.read_text(encoding='ascii').strip()
 

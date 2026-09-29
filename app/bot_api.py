@@ -25,9 +25,9 @@ from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy import delete, func, insert, or_, select
 
 from .company_scope import SERVICE_CODE
-from .db import (Account, Audit, Budget, Category, Company, CompanyUser, Delegation, Ledger, PaymentRequest,
+from .db import (Account, Audit, Budget, Category, Company, CompanyUser, Delegation, Ledger, LoginAttempt, PaymentRequest,
                  Setting, TelegramGroup, TelegramLink, TelegramLinkCode, User, now, unit)
-from .security import COMPANY_ROLES, PERMS, digest, pay_right, session_user
+from .security import COMPANY_ROLES, PERMS, client_ip, digest, login_limited, pay_right, record_failure, session_user
 from .services import (account_balance, all_participants, approval_stage, budget_state, effective_cashflows, funds_state, log,
                        money, participants, round_participants, route_complete)
 from .services import today as tashkent_today
@@ -156,8 +156,19 @@ def authenticate_bot(request):
     # Both comparisons always run so the response time does not reveal which part matched.
     same_id = hmac.compare_digest(user.encode(), client_id.encode())
     same_secret = hmac.compare_digest(password.encode(), secret.encode())
+    # Wrong keys are throttled per client address like /api/login (8 failures in 10 minutes),
+    # and the journal records the first refusal of a window only: an anonymous caller must not
+    # be able to grow the journal or guess the secret without limit.
+    keys = [digest('bot-ip:' + client_ip(request))]
+    with unit(True) as s:
+        if login_limited(s, keys):
+            raise HTTPException(429, 'Слишком много попыток. Повторите через 10 минут.')
+        if not (same_id and same_secret):
+            record_failure(s, keys)
+            first = s.get(LoginAttempt, keys[0]).count == 1
     if not (same_id and same_secret):
-        audit(None, 'Бот: отказ в доступе', '', journal_path(request.url.path))
+        if first:
+            audit(None, 'Бот: отказ в доступе', '', journal_path(request.url.path))
         raise HTTPException(401, 'Неверный ключ бота.', headers={'WWW-Authenticate': 'Basic realm="cash-zuma-bot"'})
     # Технический журнал HTTP ведётся для вошедших пользователей и для бота с верным ключом.
     request.state.bot = True
@@ -439,6 +450,39 @@ def telegram_user(request: Request, telegram_user_id: int = Path(gt=0, lt=2**53)
               user_id=result['user_id'])
     else:
         audit(None, 'Бот: заявки пользователя', '', 'Telegram не привязан к активному пользователю')
+    return result
+
+
+@router.get('/api/bot/v1/access')
+def access_check(request: Request, chat_id: int | None = Query(default=None, gt=-2**63, lt=0),
+                 telegram_user_id: int | None = Query(default=None, gt=0, lt=2**53)):
+    """Lightweight rights check before the bot re-sends stored parts of a message (a long summary,
+    a list of requests). The bot compares ``companies`` with the ones the message was built for and
+    drops the parts whose company is no longer allowed. No journal row: this call is frequent and
+    changes nothing. Both parameters are optional but at least one is required."""
+    authenticate_bot(request)
+    if chat_id is None and telegram_user_id is None:
+        raise HTTPException(422, 'Укажите chat_id группы или telegram_user_id.')
+    result = {'checked_at': utc_iso(now()), 'group': None, 'user': None}
+    with unit() as s:
+        if chat_id is not None:
+            # The same scope as the summary and the group list carry: a stored group left without
+            # active companies is not allowed, and scope_id lets the bot compare with its snapshot.
+            group = report_groups(s).get(chat_id)
+            codes, scope_id = group_scope(s, chat_id, group) if group else ([], None)
+            result['group'] = {'chat_id': chat_id, 'allowed': bool(codes), 'companies': codes, 'scope_id': scope_id}
+        if telegram_user_id is not None:
+            user = linked_user(s, telegram_user_id)
+            if user is None:
+                result['user'] = {'linked': False, 'user_id': None, 'is_admin': False, 'companies': []}
+            else:
+                from . import access
+                if user.role in ('admin', 'founder'):
+                    codes = sorted(c.code for c in access.business_companies(s).values())
+                else:
+                    companies = access.business_companies(s)
+                    codes = sorted(companies[i].code for i in access.staff_company_ids(s, user))
+                result['user'] = {'linked': True, 'user_id': user.id, 'is_admin': user.role == 'admin', 'companies': codes}
     return result
 
 

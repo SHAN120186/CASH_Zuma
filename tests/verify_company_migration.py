@@ -32,12 +32,19 @@ def fingerprint(conn):
                 row['category']=cats[row.pop('category_id')]
             if table=='payment_requests':row.pop('version')  # Category IDs can invalidate an open edit form.
             if table=='payment_requests':
-                # Additive nullable columns of the payment safeguard (approval time, accepted overrun).
-                for key in ('approved_at','approved_overrun'):row.pop(key,None)
+                # Additive nullable columns of the payment safeguard (approval time, accepted overrun)
+                # and of the 2.14 request workflow (accountant check, route policy snapshot).
+                for key in ('approved_at','approved_overrun','checked_by','checked_at','route_policy','route_threshold','route_at'):row.pop(key,None)
+            if table=='users':
+                # 2.14 adds the forced first-login password change; old rows keep FALSE.
+                row.pop('must_change_password',None)
             if table=='cash_plans':
                 row['payload']={cats[int(k.split(':')[0])]+':'+k.split(':')[1]:v for k,v in json.loads(row['payload']).items()}
         result[table]=records
     result['documents']=[(id,hashlib.sha256(content).hexdigest()) for id,content in conn.execute('SELECT id,content FROM documents ORDER BY id')]
+    # Request attachments (since 2.12) are compared by count and content hash; older dumps have no table.
+    if conn.execute("SELECT to_regclass('request_documents')").fetchone()[0]:
+        result['request_documents']=[(id,hashlib.sha256(content).hexdigest()) for id,content in conn.execute('SELECT id,content FROM request_documents ORDER BY id')]
     return result
 
 
