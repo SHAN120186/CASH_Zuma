@@ -10,8 +10,10 @@ from fastapi.responses import Response
 from pydantic import BaseModel, Field, ConfigDict
 from sqlalchemy import select
 from .db import *
-from .security import session_user, PERMS, can_attach_document, payment_channels, perms_of, pay_right
-from .services import post_ledger, money, get, log, today
+from .security import session_user, PERMS, can_attach_document, payment_channels, perms_of, act_with_right, pay_right
+from sqlalchemy.orm.attributes import flag_modified
+from .services import (post_ledger, money, get, log, today, clear_approval, check_request_version,
+                       DOCUMENT_KINDS, REQUIRED_DOCUMENTS)
 
 router=APIRouter()
 MAX_IMPORT=5*1024*1024
@@ -181,7 +183,9 @@ async def add_document(id:int,request:Request):
     allowed={'.pdf':('application/pdf',b'%PDF-'),'.png':('image/png',b'\x89PNG\r\n\x1a\n'),'.jpg':('image/jpeg',b'\xff\xd8\xff'),'.jpeg':('image/jpeg',b'\xff\xd8\xff')}
     if suffix not in allowed or not raw.startswith(allowed[suffix][1]):raise HTTPException(422,'Документ: PDF, PNG или JPEG, максимум 5 МБ.')
     with unit(True) as s:
-        u,_=session_user(s,request);writable_ledger(s,u,id)
+        u,_=session_user(s,request);entry=writable_ledger(s,u,id)
+        # Роль, давшая право приложить документ: запись операций или оплата своего канала (в том числе ВрИО).
+        act_with_right(u,'write' if 'write' in perms_of(u) else pay_right(get(s,Account,entry.account_id)))
         d=Document(ledger_id=id,filename=name[:220],mime=allowed[suffix][0],storage_key=secrets.token_hex(24),sha256=hashlib.sha256(raw).hexdigest(),content=raw,created_by=uid)
         s.add(d);s.flush();log(s,u,'Добавлен документ','document',d.id,f'ledger={id}')
         return {'id':d.id,'url':f'/api/documents/{d.id}'}
@@ -192,27 +196,66 @@ def download_document(id:int,request:Request):
         u,_=session_user(s,request,'ledger');d=get(s,Document,id);readable_ledger(s,u,get(s,Ledger,d.ledger_id))
         return Response(d.content,media_type=d.mime,headers={'Content-Disposition':"attachment; filename*=UTF-8''"+quote(d.filename),'Cache-Control':'no-store'})
 
-REQUEST_DOCUMENT_KINDS={'internal':'Внутренняя заявка / Индент','contract':'Договор / Счёт на оплату','other':'Прочие документы'}
+OPEN_REQUEST_STATUSES=('draft','returned','pending','approved')
+# Типы вложений заявки: сигнатура файла и для DOCX/XLSX — структура архива Office.
+REQUEST_FILE_TYPES={'.pdf':('application/pdf',b'%PDF-'),'.png':('image/png',b'\x89PNG\r\n\x1a\n'),
+                    '.jpg':('image/jpeg',b'\xff\xd8\xff'),'.jpeg':('image/jpeg',b'\xff\xd8\xff'),
+                    '.docx':('application/vnd.openxmlformats-officedocument.wordprocessingml.document',b'PK\x03\x04'),
+                    '.xlsx':('application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',b'PK\x03\x04')}
+REQUEST_FILE_ERROR='Документ заявки: PDF, PNG, JPEG, DOCX или XLSX, не больше 5 МБ.'
+
+def request_file_type(raw,suffix):
+    if suffix not in REQUEST_FILE_TYPES or not raw.startswith(REQUEST_FILE_TYPES[suffix][1]):raise HTTPException(422,REQUEST_FILE_ERROR)
+    if suffix in ('.docx','.xlsx'):
+        try:
+            with zipfile.ZipFile(io.BytesIO(raw)) as archive:
+                names=archive.namelist()
+                if sum(i.file_size for i in archive.infolist())>50*1024*1024:raise HTTPException(422,REQUEST_FILE_ERROR)
+        except zipfile.BadZipFile:raise HTTPException(422,REQUEST_FILE_ERROR)
+        folder='word/' if suffix=='.docx' else 'xl/'
+        if '[Content_Types].xml' not in names or not any(n.startswith(folder) for n in names):raise HTTPException(422,REQUEST_FILE_ERROR)
+    return REQUEST_FILE_TYPES[suffix][0]
 
 def request_document_access(s,user,payment,write=False):
-    """Права на документы заявки берутся из роли в выбранной компании, а не из прежнего поля роли.
+    """Права на документы заявки берутся из роли в выбранной компании (и ВрИО), а не из прежнего поля роли.
 
-    Читают автор, реестр (view), согласующие и плательщик канала утверждённой заявки;
-    меняет автор или финансовый руководитель, пока заявка в черновике или на доработке."""
-    permissions=perms_of(user)
+    Читает тот, кто видит заявку: автор, реестр (view), проверяющий бухгалтер, плательщик канала
+    утверждённой заявки. Меняет автор или финансовый руководитель, пока заявка не оплачена и не закрыта."""
+    from .requests_api import can_view_request
     if write:
-        if not ((payment.creator_id==user.id and 'request' in permissions) or 'request_edit' in permissions):
-            raise HTTPException(403,'Документы изменяет автор или финансовый руководитель.')
-        if payment.status not in ('draft','returned'):
-            raise HTTPException(409,'Документы можно менять только в черновике или после возврата на доработку.')
+        permissions=perms_of(user)
+        own=payment.creator_id==user.id and 'request' in permissions
+        if not (own or 'request_edit' in permissions):raise HTTPException(403,'Документы изменяет автор или финансовый руководитель.')
+        act_with_right(user,'request' if own else 'request_edit')
+        if payment.status=='rejected':raise HTTPException(409,'Отклонённая заявка хранится только для чтения.')
+        if payment.status not in OPEN_REQUEST_STATUSES:raise HTTPException(409,'Документы оплаченной или закрытой заявки не меняются.')
         return
-    if payment.creator_id==user.id or {'view','approve','request_edit'}&permissions:return
-    account=get(s,Account,payment.account_id)
-    if payment.status in ('approved','paid') and pay_right(account) in permissions:return
-    raise HTTPException(403,'Нет доступа к документам этой заявки.')
+    if not can_view_request(s,user,payment):raise HTTPException(403,'Нет доступа к документам этой заявки.')
+
+def request_version_of(request):
+    raw=request.headers.get('X-Request-Version') or request.query_params.get('version')
+    try:return int(raw) if raw else None
+    except ValueError:raise HTTPException(422,'Некорректная версия заявки.')
+
+def check_document_version(payment,version):
+    """После отправки документы меняются только по актуальной версии заявки; в черновике версия
+    проверяется, если клиент её передал."""
+    if payment.status in ('pending','approved') or version is not None:check_request_version(payment,version)
+
+def after_document_change(s,user,payment):
+    """Изменение документов после отправки снимает проверку и согласования: заявка снова на согласовании,
+    изменивший становится её последним редактором и её не согласует."""
+    reset=payment.status in ('pending','approved')
+    if reset:
+        clear_approval(payment);payment.status='pending'
+    if reset or payment.last_editor_id!=user.id:
+        payment.last_editor_id=user.id
+        flag_modified(payment,'decision_note')
+    s.flush()
+    return reset
 
 def request_document_json(d):
-    return {'id':d.id,'kind':d.kind,'label':REQUEST_DOCUMENT_KINDS[d.kind],'filename':d.filename,
+    return {'id':d.id,'kind':d.kind,'label':DOCUMENT_KINDS[d.kind],'filename':d.filename,
             'version':d.version,'created_at':str(d.created_at),'url':f'/api/request-documents/{d.id}'}
 
 @router.get('/api/requests/{id}/documents')
@@ -229,31 +272,68 @@ def request_documents(id:int,request:Request,history:bool=False):
 @router.post('/api/requests/{id}/documents')
 async def add_request_document(id:int,kind:Literal['internal','contract','other'],request:Request):
     with unit() as s:
-        user,_=session_user(s,request);payment=get(s,PaymentRequest,id);request_document_access(s,user,payment,True);uid=user.id
+        user,_=session_user(s,request);payment=get(s,PaymentRequest,id);request_document_access(s,user,payment,True)
+        check_document_version(payment,request_version_of(request));uid=user.id
     raw=await read_upload(request)
     name=Path(unquote(request.headers.get('X-Filename','document'))).name
-    suffix=Path(name).suffix.lower();name=safe_filename(name,suffix)
-    allowed={'.pdf':('application/pdf',b'%PDF-'),'.png':('image/png',b'\x89PNG\r\n\x1a\n'),'.jpg':('image/jpeg',b'\xff\xd8\xff'),'.jpeg':('image/jpeg',b'\xff\xd8\xff')}
-    if suffix not in allowed or not raw.startswith(allowed[suffix][1]):raise HTTPException(422,'Документ: PDF, PNG или JPEG, максимум 5 МБ.')
+    suffix=Path(name).suffix.lower();name=safe_filename(name,suffix);mime=request_file_type(raw,suffix)
     with unit(True) as s:
         user,_=session_user(s,request);payment=get(s,PaymentRequest,id);request_document_access(s,user,payment,True)
+        check_document_version(payment,request_version_of(request))
         previous=list(s.scalars(select(RequestDocument).where(RequestDocument.request_id==id,RequestDocument.kind==kind).order_by(RequestDocument.version.desc())))
+        sha=hashlib.sha256(raw).hexdigest()
+        same=next((old for old in previous if old.active and old.sha256==sha),None)
+        if same:
+            # Повтор той же загрузки (например, после потерянного ответа) не создаёт вторую версию и не снимает согласования.
+            return {**request_document_json(same),'request_version':payment.version,'status':payment.status,'approval_reset':False,'duplicate':True}
         version=(previous[0].version+1) if previous else 1
-        if kind!='other':
-            for old in previous:old.active=False
-        doc=RequestDocument(request_id=id,kind=kind,filename=name[:220],mime=allowed[suffix][0],storage_key=secrets.token_hex(24),
-                            sha256=hashlib.sha256(raw).hexdigest(),content=raw,version=version,active=True,created_by=uid)
-        s.add(doc);s.flush();log(s,user,'Добавлен документ к заявке','request_document',doc.id,f'request={id}; kind={kind}; version={version}')
-        return request_document_json(doc)
+        replaced=[old for old in previous if old.active] if kind!='other' else []
+        # Обязательный документ один: новая версия заменяет прежнюю, прежняя остаётся в истории.
+        for old in replaced:old.active=False
+        doc=RequestDocument(request_id=id,kind=kind,filename=name[:220],mime=mime,storage_key=secrets.token_hex(24),
+                            sha256=sha,content=raw,version=version,active=True,created_by=uid)
+        s.add(doc);s.flush();reset=after_document_change(s,user,payment)
+        log(s,user,'Новая версия документа заявки' if replaced else 'Добавлен документ заявки','request',payment.id,
+            json.dumps({'document_id':doc.id,'kind':kind,'version':version,'filename':doc.filename,'size':len(raw),'sha256':doc.sha256,
+                        'replaced':[old.id for old in replaced],'approval_reset':reset,'request_version':payment.version},ensure_ascii=False))
+        return {**request_document_json(doc),'request_version':payment.version,'status':payment.status,'approval_reset':reset}
+
+def remove_document(s,user,doc,reason):
+    payment=get(s,PaymentRequest,doc.request_id)
+    doc.active=False;reset=after_document_change(s,user,payment)
+    log(s,user,'Убран документ заявки','request',payment.id,json.dumps({'document_id':doc.id,'kind':doc.kind,'filename':doc.filename,
+        'approval_reset':reset,'reason':reason,'request_version':payment.version},ensure_ascii=False))
+    return {'ok':True,'request_version':payment.version,'status':payment.status,'approval_reset':reset}
 
 @router.delete('/api/request-documents/{id}')
 def delete_request_document(id:int,request:Request):
+    """Убрать файл из черновика или возвращённой заявки (форма заявки)."""
     with unit(True) as s:
         user,_=session_user(s,request);doc=s.get(RequestDocument,id)
         if not doc or not doc.active:raise HTTPException(404,'Документ не найден.')
         payment=get(s,PaymentRequest,doc.request_id);request_document_access(s,user,payment,True)
-        doc.active=False;log(s,user,'Удалён документ из черновика заявки','request_document',doc.id,f'request={payment.id}; kind={doc.kind}')
-        return {'ok':True}
+        if payment.status not in ('draft','returned'):raise HTTPException(409,'После отправки документ убирают с указанием причины в карточке заявки.')
+        check_document_version(payment,request_version_of(request))
+        return remove_document(s,user,doc,'')
+
+class RemoveDocumentIn(BaseModel):
+    model_config=ConfigDict(extra='forbid',str_strip_whitespace=True)
+    version:int=Field(ge=1)
+    reason:str=Field(min_length=10,max_length=1000)
+
+@router.post('/api/request-documents/{id}/remove')
+def remove_request_document(id:int,data:RemoveDocumentIn,request:Request):
+    """После отправки убирается только прочий документ; обязательные заменяются новой версией.
+    Согласование при этом начинается заново."""
+    with unit(True) as s:
+        user,_=session_user(s,request);doc=s.get(RequestDocument,id)
+        if not doc:raise HTTPException(404,'Документ не найден.')
+        payment=get(s,PaymentRequest,doc.request_id);request_document_access(s,user,payment,True)
+        check_request_version(payment,data.version)
+        if not doc.active:raise HTTPException(409,'Документ уже заменён или убран.')
+        if doc.kind in REQUIRED_DOCUMENTS and payment.status in ('pending','approved'):
+            raise HTTPException(409,'Обязательный документ не убирается: загрузите новую версию.')
+        return remove_document(s,user,doc,data.reason)
 
 @router.get('/api/request-documents/{id}')
 def download_request_document(id:int,request:Request):

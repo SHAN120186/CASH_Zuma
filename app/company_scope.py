@@ -11,11 +11,23 @@ from sqlalchemy.orm import Session, with_loader_criteria
 from sqlalchemy.schema import CreateTable
 from .db import (Company, CompanyUser, User, Account, Category, Counterparty,
                  CashPlan, PlanNote, PaymentRequest, Receipt, Ledger, Budget,
-                 Document, RequestDocument, ImportBatch, PlanImportBatch, Audit, ModelVersion,
-                 ReportSchedule, Setting)
+                 Document, ImportBatch, PlanImportBatch, Audit, ModelVersion,
+                 ReportSchedule, Setting, RequestDocument, Delegation)
 
+# Вложения заявок принадлежат компании через свою заявку (criteria ниже), а не собственным полем.
 DIRECT = (Account, Category, Counterparty, CashPlan, PlanNote, PlanImportBatch,
-          ImportBatch, Audit, ModelVersion, ReportSchedule)
+          ImportBatch, Audit, ModelVersion, ReportSchedule, Delegation)
+
+
+def active_delegations(s, user_id, company_id=None):
+    """Действующие замещения (ВрИО): не отозваны и сегодня в пределах срока."""
+    from .clock import today
+    day = today()
+    q = select(Delegation).where(Delegation.user_id == user_id, Delegation.revoked_at.is_(None),
+                                 Delegation.starts_on <= day, Delegation.ends_on >= day)
+    if company_id is not None:
+        q = q.where(Delegation.company_id == company_id)
+    return list(s.scalars(q.execution_options(company_unscoped=True)))
 
 
 SERVICE_CODE = 'UNASSIGNED'
@@ -57,12 +69,20 @@ def activate(s, request, user):
         raise HTTPException(403, 'Нет доступа к выбранной компании.')
     from .security import scope_user
     membership = s.get(CompanyUser, (cid, user.id))
-    scope_user(user, membership.role if membership else None)
+    acting = []
+    for d in active_delegations(s, user.id, cid):
+        replaced = s.get(User, d.replaced_user_id)
+        acting.append({'id': d.id, 'role': d.role, 'replaced_user_id': d.replaced_user_id,
+                       'replaced_name': replaced.name if replaced else '', 'ends_on': str(d.ends_on)})
+    scope_user(user, membership.role if membership else None, acting,
+               member=membership is not None or user.role in ('admin', 'founder'))
     s.info['company_id'] = cid
     request.state.company_id = cid
 
 
 def criteria(cid):
+    from .clock import today
+    day = today()
     a = Account.__table__.c
     l = Ledger.__table__.c
     c = Category.__table__.c
@@ -77,7 +97,9 @@ def criteria(cid):
         (Document, Document.ledger_id.in_(lids)),
         (RequestDocument, RequestDocument.request_id.in_(rids)),
         (Budget, Budget.category_id.in_(cats)),
-        (User, or_(User.role.in_(('admin', 'founder')), User.id.in_(select(CompanyUser.user_id).where(CompanyUser.company_id == cid)))),
+        (User, or_(User.role.in_(('admin', 'founder')), User.id.in_(select(CompanyUser.user_id).where(CompanyUser.company_id == cid)),
+                   User.id.in_(select(Delegation.user_id).where(Delegation.company_id == cid, Delegation.revoked_at.is_(None),
+                                                                 Delegation.starts_on <= day, Delegation.ends_on >= day)))),
     ]
 
 
@@ -121,6 +143,9 @@ def check_object(s, obj):
 
 @event.listens_for(Session, 'before_flush')
 def restrict_writes(s, *_):
+    # Журнал аудита только дополняется: записи не изменяются и не удаляются.
+    if not s.info.get('audit_maintenance') and any(isinstance(o, Audit) for o in list(s.dirty) + list(s.deleted)):
+        raise HTTPException(409, 'Журнал аудита не изменяется и не удаляется.')
     cid = s.info.get('company_id')
     if cid is None:
         return
@@ -192,6 +217,8 @@ def migrate_data(engine):
     stay under UNASSIGNED. No money or account ownership is inferred.
     """
     with Session(engine) as s, s.begin():
+        # Однократный перенос по компаниям проставляет company_id и в журнале аудита.
+        s.info['audit_maintenance'] = True
         if engine.dialect.name != 'sqlite':
             s.execute(text('SELECT pg_advisory_xact_lock(7312801)'))
         marker = 'company_workspaces_v1'

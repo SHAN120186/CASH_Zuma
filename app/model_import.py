@@ -106,7 +106,7 @@ def build_snapshot(raw, filename):
             'warnings':warnings,'errors':errors[:250],'missing_cache':missing[:250],
             'error_count':len(errors),'missing_cache_count':len(missing),'summary':summary}
 
-def import_snapshot(s,raw,filename,source='Загрузка XLSX',user_id=None):
+def import_snapshot(s,raw,filename,source='Загрузка XLSX',user_id=None,user=None):
     sha=hashlib.sha256(raw).hexdigest()
     old=s.scalar(select(ModelVersion).where(ModelVersion.sha256==sha))
     if old:return old,False
@@ -117,5 +117,8 @@ def import_snapshot(s,raw,filename,source='Загрузка XLSX',user_id=None):
         tmp=archive/(sha+'.tmp');tmp.write_bytes(raw);tmp.replace(target)
     rec=ModelVersion(sha256=sha,filename=filename[:220],source=source[:240],snapshot=json.dumps(snap,ensure_ascii=False))
     s.add(rec);s.flush()
-    s.add(Audit(user_id=user_id,action='Импорт FinModel',entity='model',entity_id=str(rec.id),detail=f'{filename}; SHA256 {sha}'))
+    if user is not None:
+        from .services import log
+        log(s,user,'Импорт FinModel','model',rec.id,f'{filename}; SHA256 {sha}')
+    else:s.add(Audit(user_id=user_id,action='Импорт FinModel',entity='model',entity_id=str(rec.id),detail=f'{filename}; SHA256 {sha}'))
     return rec,True

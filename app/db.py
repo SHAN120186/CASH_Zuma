@@ -5,7 +5,7 @@ from datetime import date, datetime, timezone
 from pathlib import Path
 from sqlalchemy import (create_engine, event, Column, Integer, BigInteger, String,
                         Text, Boolean, ForeignKey, Date, DateTime, UniqueConstraint, select, LargeBinary)
-from sqlalchemy.orm import declarative_base, Session
+from sqlalchemy.orm import declarative_base, Session, deferred
 
 ROOT = Path(__file__).resolve().parent.parent
 DATA = Path(os.getenv('DATA_DIR', str(ROOT / 'data'))).resolve()
@@ -24,7 +24,9 @@ if SQLITE:
         connection.execute('PRAGMA journal_mode=WAL')
         connection.execute('PRAGMA busy_timeout=30000')
 Base = declarative_base()
-def now(): return datetime.now(timezone.utc).replace(tzinfo=None)
+def now():
+    from .clock import utcnow
+    return utcnow()
 
 class Guard(Base):
     __tablename__ = 'write_guard'
@@ -78,6 +80,16 @@ class Category(Base):
     activity = Column(String(20), nullable=False, default='operating')
     type = Column(String(12), nullable=False, default='outcome')
     cost_group = Column(String(12), nullable=False, default='other')
+    # Участие директора в заявках статьи: always / threshold / skip. Пусто — always.
+    director_policy = Column(String(10), nullable=True)
+    # Пороги в сотых долях валюты; пусто для валюты — директор утверждает любую сумму.
+    director_threshold_uzs = Column(BigInteger, nullable=True)
+    director_threshold_usd = Column(BigInteger, nullable=True)
+    director_threshold_eur = Column(BigInteger, nullable=True)
+    director_policy_changed_at = Column(DateTime, nullable=True)
+    director_policy_changed_by = Column(Integer, ForeignKey('users.id'), nullable=True)
+    # Утверждённый перечень регулярных статей, для которых разрешён skip.
+    skip_allowed = Column(Boolean, nullable=False, default=False)
 
 class Company(Base):
     __tablename__ = 'companies'
@@ -175,6 +187,13 @@ class PaymentRequest(Base):
     # overrun the approvers accepted (minor units) is all a payer may pay into.
     approved_at = Column(DateTime, nullable=True)
     approved_overrun = Column(BigInteger, nullable=True)
+    # Проверка реквизитов и комплектности расчётным бухгалтером.
+    checked_by = Column(Integer, ForeignKey('users.id'), nullable=True)
+    checked_at = Column(DateTime, nullable=True)
+    # Снимок политики статьи на момент отправки: маршрут не меняется от поздних правок справочника.
+    route_policy = Column(String(10), nullable=True)
+    route_threshold = Column(BigInteger, nullable=True)
+    route_at = Column(DateTime, nullable=True)
     __mapper_args__ = {'version_id_col': version}
 
 class Receipt(Base):
@@ -228,6 +247,12 @@ class Audit(Base):
     entity_id = Column(String(80), nullable=False, default='')
     detail = Column(Text, nullable=False, default='')
     created_at = Column(DateTime, nullable=False, default=now)
+    # Адрес клиента по соединению; заголовок прокси сохраняется отдельно и не проверяется.
+    ip = Column(String(64), nullable=True)
+    forwarded_for = Column(String(200), nullable=True)
+    # Роль, в которой выполнено действие, и заменяемый сотрудник при ВрИО.
+    role = Column(String(20), nullable=True)
+    acting_for_id = Column(Integer, ForeignKey('users.id'), nullable=True)
 
 class Setting(Base):
     __tablename__ = 'settings'
@@ -253,6 +278,8 @@ class Document(Base):
     created_at = Column(DateTime, default=now, nullable=False)
 
 class RequestDocument(Base):
+    """Вложение заявки: внутренняя заявка, договор / счёт или прочий документ.
+    Новая версия обязательного документа заменяет прежнюю (active=False), прежняя остаётся в истории."""
     __tablename__ = 'request_documents'
     id = Column(Integer, primary_key=True)
     request_id = Column(Integer, ForeignKey('payment_requests.id'), nullable=False)
@@ -261,11 +288,36 @@ class RequestDocument(Base):
     mime = Column(String(100), nullable=False)
     storage_key = Column(String(80), unique=True, nullable=False)
     sha256 = Column(String(64), nullable=False)
-    content = Column(LargeBinary, nullable=False)
+    content = deferred(Column(LargeBinary, nullable=False))
     version = Column(Integer, nullable=False, default=1)
     active = Column(Boolean, nullable=False, default=True)
     created_by = Column(Integer, ForeignKey('users.id'), nullable=False)
     created_at = Column(DateTime, default=now, nullable=False)
+
+class CalendarDay(Base):
+    """Исключения из недели Пн–Пт для всего холдинга: праздник или рабочий выходной."""
+    __tablename__ = 'calendar_days'
+    day = Column(Date, primary_key=True)
+    kind = Column(String(10), nullable=False)  # holiday / workday
+    name = Column(String(160), nullable=False, default='')
+    created_by = Column(Integer, ForeignKey('users.id'), nullable=True)
+    created_at = Column(DateTime, default=now, nullable=False)
+
+class Delegation(Base):
+    """Временное замещение (ВрИО): сотрудник под своим логином получает роль в компании на срок."""
+    __tablename__ = 'delegations'
+    id = Column(Integer, primary_key=True)
+    company_id = Column(Integer, ForeignKey('companies.id'), nullable=True)
+    user_id = Column(Integer, ForeignKey('users.id'), nullable=False)
+    replaced_user_id = Column(Integer, ForeignKey('users.id'), nullable=False)
+    role = Column(String(20), nullable=False)
+    starts_on = Column(Date, nullable=False)
+    ends_on = Column(Date, nullable=False)
+    reason = Column(Text, nullable=False, default='')
+    created_by = Column(Integer, ForeignKey('users.id'), nullable=False)
+    created_at = Column(DateTime, default=now, nullable=False)
+    revoked_at = Column(DateTime, nullable=True)
+    revoked_by = Column(Integer, ForeignKey('users.id'), nullable=True)
 
 class ImportBatch(Base):
     __tablename__ = 'import_batches'
@@ -358,6 +410,10 @@ def initialize():
         if 'type' not in columns:
             conn.execute(text("ALTER TABLE categories ADD COLUMN type VARCHAR(12) NOT NULL DEFAULT 'outcome'"))
             conn.execute(text("UPDATE categories SET type='income' WHERE name IN ('Поступления от покупателей','Получение кредита')"))
+        for name,definition in [('director_policy','VARCHAR(10)'),('director_threshold_uzs','BIGINT'),('director_threshold_usd','BIGINT'),
+                                ('director_threshold_eur','BIGINT'),('director_policy_changed_at','TIMESTAMP'),
+                                ('director_policy_changed_by','INTEGER REFERENCES users(id)'),('skip_allowed','BOOLEAN NOT NULL DEFAULT FALSE')]:
+            if name not in columns:conn.execute(text(f'ALTER TABLE categories ADD COLUMN {name} {definition}'))
         if 'last_attempt' not in {c['name'] for c in inspect(conn).get_columns('report_schedules')}:
             conn.execute(text('ALTER TABLE report_schedules ADD COLUMN last_attempt DATE'))
         columns={c['name'] for c in inspect(conn).get_columns('payment_requests')}
@@ -386,8 +442,12 @@ def initialize():
             conn.execute(text('ALTER TABLE cash_plans DROP CONSTRAINT IF EXISTS cash_plans_month_currency_key'))
             conn.execute(text('CREATE UNIQUE INDEX IF NOT EXISTS ux_cash_plan_scope ON cash_plans(company_id,month,currency,scenario)'))
         for name,definition in [('version','INTEGER NOT NULL DEFAULT 1'),('last_editor_id','INTEGER REFERENCES users(id)'),('priority',"VARCHAR(12) NOT NULL DEFAULT 'normal'"),
-                                ('approved_at','TIMESTAMP'),('approved_overrun','BIGINT')]:
+                                ('approved_at','TIMESTAMP'),('approved_overrun','BIGINT'),('checked_by','INTEGER REFERENCES users(id)'),
+                                ('checked_at','TIMESTAMP'),('route_policy','VARCHAR(10)'),('route_threshold','BIGINT'),('route_at','TIMESTAMP')]:
             if name not in columns:conn.execute(text(f'ALTER TABLE payment_requests ADD COLUMN {name} {definition}'))
+        audit_columns={c['name'] for c in inspect(conn).get_columns('audit_log')}
+        for name,definition in [('ip','VARCHAR(64)'),('forwarded_for','VARCHAR(200)'),('role','VARCHAR(20)'),('acting_for_id','INTEGER REFERENCES users(id)')]:
+            if name not in audit_columns:conn.execute(text(f'ALTER TABLE audit_log ADD COLUMN {name} {definition}'))
         membership_columns={c['name'] for c in inspect(conn).get_columns('company_users')}
         if 'role' not in membership_columns:conn.execute(text('ALTER TABLE company_users ADD COLUMN role VARCHAR(20)'))
     from .company_scope import migrate_columns, migrate_data
@@ -404,7 +464,7 @@ def initialize():
             for name, activity in [
                 ('Поступления от покупателей','operating'),('Закупка сырья','operating'),
                 ('Упаковка и материалы','operating'),('Оплата труда','operating'),
-                ('Налоги','operating'),('Логистика','operating'),('Маркетинг','operating'),
+                ('Налоги','operating'),('Коммунальные услуги','operating'),('Логистика','operating'),('Маркетинг','operating'),
                 ('Прочие операционные расходы','operating'),('Оборудование','investing'),
                 ('Получение кредита','financing'),('Погашение основного долга','financing'),
                 ('Проценты по кредитам','financing'),('Дивиденды','financing')]:
@@ -415,3 +475,5 @@ def initialize():
     # Роль в компании назначает только администратор. Прежняя автоматическая подстановка
     # роли в пустые связи при каждом запуске убрана: она возвращала снятый доступ и
     # открывала сотрудникам все компании из старой миграции. Пустая связь доступа не даёт.
+    from .workflow_setup import migrate_workflow
+    migrate_workflow(engine)

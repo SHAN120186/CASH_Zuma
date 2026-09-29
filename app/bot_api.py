@@ -24,16 +24,18 @@ from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy import delete, func, insert, or_, select
 
 from .company_scope import SERVICE_CODE
-from .db import (Account, Audit, Budget, Category, Company, CompanyUser, Ledger, PaymentRequest,
+from .db import (Account, Audit, Budget, Category, Company, CompanyUser, Delegation, Ledger, PaymentRequest,
                  Setting, TelegramGroup, TelegramLink, TelegramLinkCode, User, now, unit)
 from .security import COMPANY_ROLES, PERMS, digest, pay_right, session_user
-from .services import account_balance, budget_state, effective_cashflows, funds_state, log, money
+from .services import (account_balance, all_participants, approval_stage, budget_state, effective_cashflows, funds_state, log,
+                       money, participants, route_complete)
 from .services import today as tashkent_today
 
 router = APIRouter()
 
 CURRENCY_ORDER = {'UZS': 0, 'USD': 1, 'EUR': 2}
-STAGE_LABELS = {'finance': 'Проверка финансовым директором', 'director': 'Утверждение директором',
+STAGE_LABELS = {'check': 'Проверка реквизитов расчётным бухгалтером',
+                'finance': 'Проверка финансовым директором', 'director': 'Утверждение директором',
                 'bank_payment': 'Оплата расчётным бухгалтером', 'cash_payment': 'Выдача кассиром'}
 CODE_ALPHABET = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789'  # no 0/O, 1/I: codes are retyped by hand
 CODE_TTL = timedelta(minutes=10)
@@ -215,7 +217,7 @@ def morning_summary(request: Request, chat_id: int, report_date: date, today: da
 
         payments = [request_line(r, f'Просрочено с {r.due_date:%d.%m.%Y}' if r.due_date < today else '')
                     for r in requests if r.status == 'approved' and r.due_date <= today]
-        pending = [request_line(r, STAGE_LABELS['director' if r.finance_approved_by else 'finance'])
+        pending = [request_line(r, STAGE_LABELS[approval_stage(r)])
                    for r in requests if r.status == 'pending']
 
         warnings = []
@@ -276,23 +278,53 @@ def company_role_of(user, company, members):
     return role
 
 
-def responsible(r, account, company, users, members):
+def roles_in(user, company, members, acting):
+    """Роли, в которых пользователь может действовать в компании: своя роль (company_role_of) и
+    действующие замещения (ВрИО) в этой компании, как в security.scope_user. Учредитель не действует."""
+    own = company_role_of(user, company, members)
+    roles = {own} if own else set()
+    if user.role != 'founder':
+        roles |= acting.get((company.id, user.id), set())
+    return roles
+
+
+STAGE_ROLE = {'check': 'accountant', 'finance': 'finance', 'director': 'director'}
+
+
+def responsible(r, account, company, users, members, acting=None, past=None):
     """Stage of an actionable request and the people who can act on it now (app/main.py decide,
-    services.check_payer). Nobody else is reminded: a reminder must lead to a possible action."""
-    if r.status == 'pending' and r.finance_approved_by is None:
-        stage, fits = 'finance', lambda role: role == 'finance'
-        excluded = {r.creator_id, r.last_editor_id}
-    elif r.status == 'pending':
-        stage, fits = 'director', lambda role: role == 'director'
-        excluded = {r.creator_id, r.last_editor_id, r.finance_approved_by}
+    services.check_payer). Nobody else is reminded: a reminder must lead to a possible action.
+    Pending requests: accountant check, finance, then the director only when the route snapshot
+    requires one; nobody acts twice in one request. Payment: only when every required stage is done,
+    never by anybody who took part in the request in this or an earlier round (``past``)."""
+    acting = acting or {}
+    if r.status == 'pending':
+        stage = approval_stage(r)
+        role = STAGE_ROLE[stage]
+        fits = lambda roles: role in roles
+        excluded = participants(r)
     elif r.status == 'approved':
+        if not route_complete(r):
+            return None, []
         # The payment channel decides the payer: bank - settlement accountant, cash - cashier.
         right = pay_right(account)
-        stage, fits = ('cash_payment' if account.kind == 'cash' else 'bank_payment'), lambda role: right in PERMS.get(role, ())
-        excluded = {r.creator_id, r.last_editor_id, r.finance_approved_by, r.approved_by}
+        stage = 'cash_payment' if account.kind == 'cash' else 'bank_payment'
+        fits = lambda roles: any(right in PERMS.get(x, ()) for x in roles)
+        excluded = participants(r) | (past or set())
     else:
         return None, []
-    return stage, [u for u in users if u.id not in excluded and fits(company_role_of(u, company, members))]
+    return stage, [u for u in users if u.id not in excluded and fits(roles_in(u, company, members, acting))]
+
+
+def acting_roles(s):
+    """Действующие замещения (ВрИО) на сегодня: (компания, пользователь) -> роли."""
+    current = tashkent_today()
+    acting = {}
+    for d in s.scalars(select(Delegation).where(Delegation.revoked_at.is_(None), Delegation.starts_on <= current,
+                                                Delegation.ends_on >= current)):
+        if d.role in COMPANY_ROLES:
+            acting.setdefault((d.company_id, d.user_id), set()).add(d.role)
+    return acting
 
 
 def pending_items(s, user_id=None):
@@ -315,6 +347,7 @@ def pending_items(s, user_id=None):
         members.setdefault(m.company_id, {})[m.user_id] = m.role
         if m.role in COMPANY_ROLES and m.company_id in companies and companies[m.company_id].code != SERVICE_CODE:
             members.setdefault('_valid', {}).setdefault(m.company_id, set()).add(m.user_id)
+    acting = acting_roles(s)
     # Every change of a request (creation, edit, decision, payment reversal) is audited
     # with entity='request'; the latest one is when it entered its current stage.
     entered = {}
@@ -333,7 +366,8 @@ def pending_items(s, user_id=None):
         company = companies.get(account.company_id) if account else None
         if company is None:
             continue
-        stage, people = responsible(r, account, company, users, members)
+        past = all_participants(s, r) if r.status == 'approved' else None
+        stage, people = responsible(r, account, company, users, members, acting, past)
         since = entered.get(r.id, r.created_at)
         if r.status == 'approved':
             # Payment waits from the start of the working day it is due, not from the approval.

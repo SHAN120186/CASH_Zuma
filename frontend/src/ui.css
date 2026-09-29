@@ -603,3 +603,53 @@ button:active:not(:disabled),.button:active{transform:translateY(1px)}
 .admin-journal{margin-top:16px}
 .admin-center td .pill,.admin-card .pill{white-space:normal;text-align:left}
 @media (max-width:700px){.admin-center .rsp td{flex-wrap:wrap;justify-content:flex-start}.admin-center .rsp td::before{flex-basis:100%}.admin-chips button{padding:0 4px}}
+
+/* Заявка на оплату: форма, карточка, политика директора, ВрИО (2.13) */
+.modal.rq-editor{width:min(760px,100%)}
+.modal.rq-sheet{width:min(900px,100%)}
+.field-error{color:var(--bad);font-weight:700}
+.budget-grid{display:grid;grid-template-columns:max-content 1fr;gap:4px 16px;margin:8px 0 0;font-size:13.5px}
+.budget-grid dt{color:var(--mut)}
+.budget-grid dd{margin:0;font-variant-numeric:tabular-nums}
+.rq-head{display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap;margin:6px 0 2px}
+.rq-amount{font-size:22px}
+.rq-route{margin-top:8px}
+.rq-kv{display:grid;grid-template-columns:max-content 1fr;gap:6px 18px;margin:14px 0;font-size:14px}
+.rq-kv dt{color:var(--mut);font-weight:700}
+.rq-kv dd{margin:0;overflow-wrap:anywhere}
+.rq-sec{margin:18px 0 8px;font-size:15px}
+.rq-docs{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:12px}
+.rq-doc{border:1px solid var(--line);border-radius:14px;padding:12px;display:grid;gap:8px;align-content:start;min-width:0}
+.rq-doc-h{display:flex;justify-content:space-between;gap:8px;align-items:flex-start;flex-wrap:wrap}
+.rq-files{list-style:none;margin:0;padding:0;display:grid;gap:8px}
+.rq-files li{display:grid;gap:4px;min-width:0;overflow-wrap:anywhere}
+.rq-files small{color:var(--mut);font-size:12px}
+.rq-files.old a{color:var(--mut)}
+.file-btn{position:relative;justify-self:start}
+.file-btn input{position:absolute;inset:0;width:100%;height:100%;opacity:0;cursor:pointer}
+.file-btn:focus-within{outline:2px solid var(--focus);outline-offset:2px}
+.rq-inline{display:flex;gap:8px;flex-wrap:wrap;align-items:center}
+.rq-inline input{flex:1 1 220px;min-width:0}
+.rq-decision{padding:14px 16px;margin-top:16px}
+.rq-decision h3{margin-bottom:10px;font-size:15px}
+.rq-history{list-style:none;margin:0;padding:0;display:grid;gap:8px;font-size:13px}
+.rq-history li{display:grid;grid-template-columns:max-content 1fr;gap:2px 12px;padding:8px 0;border-bottom:1px solid var(--line2)}
+.rq-history time{color:var(--mut);grid-row:span 2}
+.rq-history span{color:var(--mut)}
+.trk .st.skip{background:transparent;border:1px dashed var(--line);color:var(--mut)}
+.cal-days{list-style:none;margin:12px 0;padding:0;display:grid;gap:6px}
+.cal-days li{display:flex;gap:10px;align-items:center;flex-wrap:wrap}
+.delegations{margin-top:16px}
+@media (max-width:700px){.rq-docs{grid-template-columns:1fr}.rq-kv,.budget-grid{grid-template-columns:1fr}.rq-kv dt{margin-top:6px}.rq-history li{grid-template-columns:1fr}.rq-history time{grid-row:auto}}
+.rq-history li>:not(time){grid-column:2}
+.rq-history time{grid-row:span 4}
+.rq-history small{color:var(--mut)}
+.rq-history q{color:var(--ink);font-style:italic}
+@media (max-width:700px){.rq-history li>:not(time){grid-column:auto}.rq-history time{grid-row:auto}}
+/* Форма заявки 2.14: сохранённые и выбранные файлы в блоках вложений, подсказка перед отправкой */
+.request-document-slot .saved-file,.request-document-slot .pending-file{display:flex;flex-wrap:wrap;align-items:center;gap:4px 8px;max-width:100%;overflow-wrap:anywhere;font-size:12.5px}
+.request-document-slot small{color:var(--mut);font-size:12px}
+.request-document-slot .file-btn{margin-top:2px}
+.rq-missing{margin-top:8px;text-align:right}
+.route-steps{margin-top:16px}
+@media (max-width:700px){.rq-missing{text-align:left}}

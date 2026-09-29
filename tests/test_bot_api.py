@@ -2,7 +2,7 @@
 
 Uses its own temporary database. Client id/secret here are test-only values."""
 import os, sys, tempfile, unittest
-from datetime import datetime, timedelta
+from datetime import date, datetime, timedelta
 from pathlib import Path
 ROOT=Path(__file__).resolve().parents[1]
 sys.path.insert(0,str(ROOT))
@@ -30,8 +30,12 @@ from app.main import app
 from app.db import *
 from app.services import today
 from app.security import hash_password
+from app import clock
 PASSWORD='OnlyForTemporaryTests_9841!'
 HASH=hash_password(PASSWORD)
+# Среда в середине месяца: сроки заявок в рабочих днях не зависят от даты запуска тестов.
+FROZEN_TODAY=date(2026,9,16)
+PDF=b'%PDF-1.4\nsynthetic request document'
 
 def tearDownModule():
     engine.dispose()
@@ -41,11 +45,14 @@ def tearDownModule():
 
 class BotApiTests(unittest.TestCase):
     def setUp(self):
+        clock.FROZEN=FROZEN_TODAY
         Base.metadata.drop_all(engine);initialize()
         with unit(True) as s:
             admin=User(username='admin',name='Test Admin',role='admin',password_hash=HASH);s.add(admin);s.flush()
             for c in s.scalars(select(Company).where(Company.code!='UNASSIGNED')):
                 s.add(CompanyUser(company_id=c.id,user_id=admin.id,role='finance'))
+            # Директор утверждает каждую заявку, как в прежних проверках; политики статей проверяются отдельно.
+            for c in s.scalars(select(Category)):c.director_policy='always'
         self.client=TestClient(app)
         r=self.client.post('/api/login',json={'username':'admin','password':PASSWORD});self.assertEqual(r.status_code,200,r.text)
         self.h={'X-CSRF-Token':r.json()['csrf']}
@@ -53,29 +60,21 @@ class BotApiTests(unittest.TestCase):
         b=self.client.get('/api/bootstrap').json()
         self.companies={c['code']:c['id'] for c in b['companies']}
         self.cat=b['categories'][1]['id'];self.cat_name=b['categories'][1]['name']
+        self.dues=b['due_minimums']
         self.acc=self.account('Test bank','bank','UZS','1000000.00')
-        self.post('/api/approval-policy',{'amount':'1000000'})
         self.extra=[]
     def tearDown(self):
         for c in self.extra:c.close()
         self.client.close()
+        clock.FROZEN=None
 
     # -- helpers
     def post(self,path,data,client=None,headers=None):
-        if path=='/api/requests' and data.get('status','pending')=='pending':
-            return self.documented_request(data,client,headers)
         return (client or self.client).post(path,json=data,headers=headers or self.h)
-    def documented_request(self,data,client=None,headers=None):
-        cl=client or self.client;h=headers or self.h;payload=dict(data);payload['status']='draft'
-        created=cl.post('/api/requests',json=payload,headers=h)
-        if created.status_code!=200:return created
-        rid=created.json()['id'];raw=b'%PDF-1.4\nsynthetic request document'
-        for kind,name in [('internal','request.pdf'),('contract','contract.pdf')]:
-            uploaded=cl.post(f'/api/requests/{rid}/documents',params={'kind':kind},content=raw,
-                             headers={**h,'Content-Type':'application/pdf','X-Filename':name})
-            if uploaded.status_code!=200:return uploaded
-        return cl.post(f'/api/requests/{rid}/decision',json={'action':'submit','version':created.json()['version']},headers=h)
     def zuma(self,h=None):return {**(h or self.h),'X-Company-ID':str(self.companies['ZUMA'])}
+    def admin_headers(self,headers=None):
+        """Заголовки администратора в той же компании, что и у переданных заголовков."""
+        return {**self.h,**({'X-Company-ID':headers['X-Company-ID']} if headers and 'X-Company-ID' in headers else {})}
     def account(self,name,kind,currency,opening,opened=None,headers=None):
         r=self.post('/api/accounts',{'name':name,'kind':kind,'currency':currency,'opening':opening,
             'opening_date':str(opened or self.today-timedelta(days=10))},headers=headers)
@@ -94,16 +93,37 @@ class BotApiTests(unittest.TestCase):
         c=TestClient(app);self.extra.append(c)
         r=c.post('/api/login',json={'username':name,'password':PASSWORD});self.assertEqual(r.status_code,200,r.text)
         return {'id':r.json()['user']['id'],'client':c,'h':{'X-CSRF-Token':r.json()['csrf']}}
+    def request_body(self,amount,purpose,account=None,category=None,priority='urgent',status='draft'):
+        with unit() as s:a=s.get(Account,account or self.acc)
+        return {'company_id':a.company_id,'account_id':a.id,'channel':a.kind,'currency':a.currency,'category_id':category or self.cat,
+                'counterparty':'Supplier LLC','amount':amount,'date':self.dues[priority],'purpose':purpose,'priority':priority,'status':status}
     def new_request(self,user,amount='600',day=None,account=None,category=None,headers=None,purpose='Оплата по договору 20208000900123456789'):
-        r=self.post('/api/requests',{'account_id':account or self.acc,'category_id':category or self.cat,'counterparty':'Supplier LLC',
-            'amount':amount,'date':str(day or self.today),'purpose':purpose},user['client'],headers or user['h'])
-        self.assertEqual(r.status_code,200,r.text);return r.json()['id']
+        """Черновик, внутренняя заявка и договор, отправка. Новая заявка не бывает на сегодня или в прошлом,
+        поэтому срок оплаты (по умолчанию сегодня) ставится прямо в базе, как у заявок, дождавшихся срока."""
+        cl,h=user['client'],headers or user['h']
+        r=cl.post('/api/requests',json=self.request_body(amount,purpose,account,category),headers=h)
+        self.assertEqual(r.status_code,200,r.text);rid=r.json()['id']
+        for kind in ('internal','contract'):
+            up=cl.post(f'/api/requests/{rid}/documents',params={'kind':kind},content=PDF,headers={**h,'Content-Type':'application/pdf','X-Filename':kind+'.pdf'})
+            self.assertEqual(up.status_code,200,up.text)
+        r=cl.post(f'/api/requests/{rid}/decision',json={'action':'submit','version':up.json()['request_version']},headers=h)
+        self.assertEqual(r.status_code,200,r.text)
+        with unit(True) as s:s.get(PaymentRequest,rid).due_date=day or self.today
+        return rid
     def version(self,rid,headers=None):
-        return next(r['version'] for r in self.client.get('/api/requests',headers=headers or self.h).json() if r['id']==rid)
-    def decide(self,user,rid,action='approve',note='Проверено для тестирования'):
-        r=self.post(f'/api/requests/{rid}/decision',{'action':action,'note':note,'version':self.version(rid)},user['client'],user['h'])
+        return next(r['version'] for r in self.client.get('/api/requests',headers=self.admin_headers(headers)).json() if r['id']==rid)
+    def decide(self,user,rid,action='approve',note='Проверено для тестирования',headers=None):
+        h=headers or user['h']
+        r=self.post(f'/api/requests/{rid}/decision',{'action':action,'note':note,'version':self.version(rid,h)},user['client'],h)
         self.assertEqual(r.status_code,200,r.text);return r.json()
+    def checker(self):
+        """Расчётный бухгалтер без привязанного Telegram: проверяет реквизиты и комплектность."""
+        if not hasattr(self,'stage_checker'):self.stage_checker=self.make_user('accountant','stagebook')
+        return self.stage_checker
+    def check(self,rid,user=None,headers=None):
+        return self.decide(user or self.checker(),rid,'check',headers=headers)
     def fully_approve(self,finance,rid,director=None):
+        self.check(rid)
         self.decide(finance,rid)
         if director is None:
             if not hasattr(self,'payment_director'):self.payment_director=self.make_user('director','payment_director')
@@ -143,6 +163,11 @@ class BotApiTests(unittest.TestCase):
         self.assertEqual(self.summary(auth=None).status_code,401)
         with unit() as s:
             self.assertTrue(s.scalar(select(Audit.id).where(Audit.action=='Бот: отказ в доступе')))
+        # The HTTP journal keeps the bot's authenticated calls only: refused calls do not fill it.
+        http=lambda:[a.detail for a in self.audit_rows('API GET') if a.detail.startswith('/api/bot/v1/')]
+        self.assertEqual(http(),[])
+        self.assertEqual(self.pending(),[])
+        self.assertEqual(http(),['/api/bot/v1/pending-requests; status=200'])
 
     def test_bot_api_is_off_until_configured_with_a_long_secret(self):
         saved=os.environ['BOT_CLIENT_SECRET']
@@ -220,16 +245,20 @@ class BotApiTests(unittest.TestCase):
         due=self.new_request(author,'600');self.fully_approve(finance,due,director)
         late=self.new_request(author,'400',day=self.yesterday);self.fully_approve(finance,late,director)
         waiting=self.new_request(author,'300')
+        checked=self.new_request(author,'350');self.check(checked)
         big=self.new_request(author,'1500000',day=self.today+timedelta(days=3))
-        self.decide(finance,big)  # above the limit: goes to the director
+        self.check(big);self.decide(finance,big)  # the director approves every amount of this category
+        later=self.new_request(author,'200',day=self.today+timedelta(days=3));self.fully_approve(finance,later,director)
         r=self.summary();data=r.json()
         payments={p['number']:p for p in data['payments_today']}
+        # Only approved requests due today or overdue are listed for payment.
         self.assertEqual(set(payments),{f'CF-{due:05d}',f'CF-{late:05d}'})
         self.assertEqual(payments[f'CF-{due:05d}']['stage_label'],'')
         self.assertEqual(payments[f'CF-{late:05d}']['stage_label'],f'Просрочено с {self.yesterday:%d.%m.%Y}')
         self.assertEqual(payments[f'CF-{due:05d}']['purpose'],self.cat_name)
         pending={p['number']:p['stage_label'] for p in data['pending_approvals']}
-        self.assertEqual(pending,{f'CF-{waiting:05d}':'Проверка финансовым директором',f'CF-{big:05d}':'Утверждение директором'})
+        self.assertEqual(pending,{f'CF-{waiting:05d}':'Проверка реквизитов расчётным бухгалтером',
+                                  f'CF-{checked:05d}':'Проверка финансовым директором',f'CF-{big:05d}':'Утверждение директором'})
         for private in ('Supplier LLC','Оплата по договору','20208000900123456789'):self.assertNotIn(private,r.text)
 
     def test_warnings_for_shortage_reserve_and_budget(self):
@@ -305,20 +334,28 @@ class BotApiTests(unittest.TestCase):
 
     # -- pending requests
     def test_reminders_follow_the_stage_and_the_responsible_role(self):
-        self.post('/api/approval-policy',{'amount':'100'})  # 600 UZS needs the director
         author=self.make_user('employee','author')
         finance=self.make_user('finance','checker');director=self.make_user('director','boss')
         accountant=self.make_user('accountant','payer');cashier=self.make_user('cashier','teller')
+        book=self.make_user('accountant','book')
         self.make_user('finance','silent')  # not linked: never listed
-        for user,tg in ((finance,1001),(director,1002),(accountant,1003),(cashier,1004)):self.link(user,tg)
+        for user,tg in ((finance,1001),(director,1002),(accountant,1003),(cashier,1004),(book,1008)):self.link(user,tg)
         rid=self.new_request(author,'600')
+        # The company's settlement accountants check the details and documents first.
         items=self.pending()
-        self.assertEqual([(i['request_id'],i['stage'],i['assignee_user_id'],i['assignee_telegram_id']) for i in items],[(rid,'finance',finance['id'],1001)])
+        self.assertEqual([(i['request_id'],i['stage'],i['assignee_user_id'],i['assignee_telegram_id']) for i in items],
+                         [(rid,'check',accountant['id'],1003),(rid,'check',book['id'],1008)])
         item=items[0]
         self.assertEqual((item['number'],item['status'],item['stage_label'],item['amount'],item['currency'],item['company'],item['url']),
-                         (f'CF-{rid:05d}','pending','Проверка финансовым директором','600.00','UZS','UZGERMED',''))
+                         (f'CF-{rid:05d}','pending','Проверка реквизитов расчётным бухгалтером','600.00','UZS','UZGERMED',''))
         self.assertTrue(item['purpose'].startswith(self.cat_name+': Оплата по договору ••6789'))
         entered=datetime.fromisoformat(item['stage_entered_at']);self.assertIsNotNone(entered.tzinfo)
+
+        self.check(rid,book)
+        items=self.pending()
+        self.assertEqual([(i['request_id'],i['stage'],i['assignee_user_id'],i['assignee_telegram_id']) for i in items],[(rid,'finance',finance['id'],1001)])
+        self.assertEqual(items[0]['stage_label'],'Проверка финансовым директором')
+        self.assertGreaterEqual(datetime.fromisoformat(items[0]['stage_entered_at']),entered)
 
         self.decide(finance,rid)
         items=self.pending()
@@ -326,6 +363,7 @@ class BotApiTests(unittest.TestCase):
         self.assertGreaterEqual(datetime.fromisoformat(items[0]['stage_entered_at']),entered)
 
         self.decide(director,rid)
+        # The accountant who checked the request never pays it: only the other accountant is reminded.
         self.assertEqual([(i['stage'],i['assignee_user_id']) for i in self.pending()],[('bank_payment',accountant['id'])])
 
         paid=self.post('/api/ledger',{'account_id':self.acc,'category_id':self.cat,'kind':'out','amount':'600','date':str(self.today),
@@ -348,15 +386,15 @@ class BotApiTests(unittest.TestCase):
     def test_closed_returned_and_unlinked_requests_are_not_reminded(self):
         author=self.make_user('employee','author');finance=self.make_user('finance','checker')
         self.link(finance,1001)
-        returned=self.new_request(author,'100');self.decide(finance,returned,'return','Нужны документы от поставщика')
-        cancelled=self.new_request(author,'100');self.decide(self.me(),cancelled,'cancel','Больше не требуется оплата')
-        rejected=self.new_request(author,'100')
+        returned=self.new_request(author,'100');self.check(returned);self.decide(finance,returned,'return','Нужны документы от поставщика')
+        # «Закрыта без оплаты» (прежнее «cancel»).
+        cancelled=self.new_request(author,'100');self.check(cancelled);self.decide(self.me(),cancelled,'close','Больше не требуется оплата')
+        rejected=self.new_request(author,'100');self.check(rejected)
         with unit(True) as s:s.get(PaymentRequest,rejected).status='rejected'  # legacy closed request
-        draft=self.post('/api/requests',{'account_id':self.acc,'category_id':self.cat,'counterparty':'Supplier LLC','amount':'100',
-            'date':str(self.today),'purpose':'Черновик заявки','status':'draft'},author['client'],author['h'])
-        self.assertEqual(draft.status_code,200,draft.text)
+        draft=self.post('/api/requests',self.request_body('100','Черновик заявки'),author['client'],author['h'])
+        self.assertEqual(draft.status_code,200,draft.text);self.assertEqual(draft.json()['status'],'draft')
         self.assertEqual(self.pending(),[])
-        live=self.new_request(author,'100')
+        live=self.new_request(author,'100');self.check(live)
         self.assertEqual([i['request_id'] for i in self.pending()],[live])
         self.assertEqual(finance['client'].delete('/api/telegram',headers=finance['h']).status_code,200)
         self.assertEqual(self.pending(),[])
@@ -365,13 +403,17 @@ class BotApiTests(unittest.TestCase):
         finance=self.make_user('finance','checker');other=self.make_user('finance','other')
         zuma_finance=self.make_user('finance','zumafin',headers=self.zuma())
         for user,tg in ((finance,1001),(other,1002),(zuma_finance,1003)):self.link(user,tg)
-        own=self.new_request(finance,'100')  # the financier cannot check their own request
+        own=self.new_request(finance,'100');self.check(own)  # the financier cannot approve their own request
         founder=self.make_user('founder','owner');self.link(founder,1006)  # reads everything, acts on nothing
         self.assertEqual([i['assignee_user_id'] for i in self.pending() if i['request_id']==own],[other['id']])
         admin2=self.make_user('admin','admin2');self.link(admin2,1004)
         zuma_acc=self.account('Zuma bank','bank','UZS','1000.00',headers=self.zuma())
         zuma_author=self.make_user('employee','zumaauthor',headers=self.zuma())
+        zuma_book=self.make_user('accountant','zumabook',headers=self.zuma());self.link(zuma_book,1005)
         zid=self.new_request(zuma_author,'100',account=zuma_acc,category=self.category(self.zuma()),headers=self.zuma(zuma_author['h']))
+        # The check stage belongs to the accountant of the request's own company only.
+        self.assertEqual([(i['stage'],i['assignee_user_id']) for i in self.pending() if i['request_id']==zid],[('check',zuma_book['id'])])
+        self.check(zid,zuma_book,self.zuma(zuma_book['h']))
         self.assertEqual([i['assignee_user_id'] for i in self.pending() if i['request_id']==zid],[zuma_finance['id']])
         with unit(True) as s:s.get(User,zuma_finance['id']).active=False
         # An administrator acts only through a role assigned in that company (security.scope_user).
@@ -385,12 +427,14 @@ class BotApiTests(unittest.TestCase):
         with unit(True) as s:s.merge(CompanyUser(company_id=self.companies['UZGERMED'],user_id=dual['id'],role='director'))
         rid=self.new_request(author,'100')
         self.assertEqual([i['assignee_user_id'] for i in self.pending() if i['request_id']==rid],[])
+        self.check(rid)
+        self.assertEqual([i['assignee_user_id'] for i in self.pending() if i['request_id']==rid],[])
         self.decide(finance,rid)
         self.assertEqual([(i['stage'],i['assignee_user_id']) for i in self.pending() if i['request_id']==rid],[('director',dual['id'])])
 
     def test_request_link_uses_the_public_https_address_only(self):
         finance=self.make_user('finance','checker');self.link(finance,1001)
-        self.new_request(self.make_user('employee','author'),'100')
+        self.check(self.new_request(self.make_user('employee','author'),'100'))
         for origin,expected in (('https://cash.example','https://cash.example/#requests'),('http://cash.example','')):
             os.environ['PUBLIC_ORIGIN']=origin
             try:self.assertEqual(self.pending()[0]['url'],expected)
@@ -481,6 +525,7 @@ class BotApiTests(unittest.TestCase):
         author=self.make_user('employee','author');finance=self.make_user('finance','checker');other=self.make_user('finance','other')
         self.link(finance,555101);self.link(other,555102)
         first=self.new_request(author,'100');second=self.new_request(author,'200');own=self.new_request(finance,'300')
+        for rid in (first,second,own):self.check(rid)
         r=self.tg_user(555101);self.assertEqual(r.status_code,200,r.text);data=r.json()
         self.assertEqual({k:data[k] for k in ('linked','user_id','name','is_admin')},{'linked':True,'user_id':finance['id'],'name':'Checker','is_admin':False})
         # The same rows and rules as pending-requests; the financier never checks their own request.
@@ -500,7 +545,7 @@ class BotApiTests(unittest.TestCase):
         empty={'linked':False,'user_id':None,'name':None,'is_admin':False,'items':[]}
         self.assertEqual(self.tg_user(555201).json(),empty)
         finance=self.make_user('finance','checker');self.link(finance,555202)
-        self.new_request(self.make_user('employee','author'),'100')
+        self.check(self.new_request(self.make_user('employee','author'),'100'))
         self.assertTrue(self.tg_user(555202).json()['items'])
         with unit(True) as s:s.get(User,finance['id']).active=False
         self.assertEqual(self.tg_user(555202).json(),empty)
@@ -716,7 +761,7 @@ class BotApiTests(unittest.TestCase):
 
     def test_only_an_explicit_company_role_brings_reminders(self):
         author=self.make_user('employee','author');finance=self.make_user('finance','checker');self.link(finance,1001)
-        rid=self.new_request(author,'100')
+        rid=self.new_request(author,'100');self.check(rid)
         self.assertEqual([i['assignee_user_id'] for i in self.pending() if i['request_id']==rid],[finance['id']])
         with unit(True) as s:  # membership kept, role removed: users.role no longer widens access
             s.get(CompanyUser,(self.companies['UZGERMED'],finance['id'])).role=None
@@ -817,6 +862,95 @@ class BotApiTests(unittest.TestCase):
         self.assertEqual(self.client.post('/api/bot/v1/report-groups/migrate',json={'from_chat_id':second},auth=BOT).status_code,422)
         for auth in (None,('test-bot','wrong-secret-'+'y'*30)):self.assertEqual(self.migrate(second,-1009990000004,auth=auth).status_code,401)
         with unit() as s:self.assertIsNone(s.get(TelegramGroup,-1009990000004))
+
+    # -- reminders along the 2.14 route: accountant check, director policy, ВрИО, earlier rounds
+    def category_named(self,name,headers=None):
+        return next(c['id'] for c in self.client.get('/api/bootstrap',headers=headers or self.h).json()['categories'] if c['name']==name)
+    def pay(self,user,rid,amount,reference):
+        return self.post('/api/ledger',{'account_id':self.acc,'category_id':self.cat,'kind':'out','amount':amount,'date':str(self.today),
+                                        'reference':reference,'note':'Оплата по заявке','request_id':rid,'request_version':self.version(rid)},
+                         user['client'],user['h'])
+
+    def test_check_stage_reminds_only_the_accountants_of_the_requests_company(self):
+        author=self.make_user('employee','author');finance=self.make_user('finance','fin')
+        book=self.make_user('accountant','book');zbook=self.make_user('accountant','zbook',headers=self.zuma())
+        cashier=self.make_user('cashier','teller');director=self.make_user('director','boss')
+        for user,tg in ((finance,1001),(book,1002),(zbook,1003),(cashier,1004),(director,1005)):self.link(user,tg)
+        rid=self.new_request(author,'600')
+        label='Проверка реквизитов расчётным бухгалтером'
+        self.assertEqual([(i['request_id'],i['stage'],i['stage_label'],i['assignee_user_id']) for i in self.pending()],
+                         [(rid,'check',label,book['id'])])
+        # «Мои заявки» of the accountant and the morning summary show the same stage.
+        self.assertEqual([(i['request_id'],i['stage']) for i in self.tg_user(1002).json()['items']],[(rid,'check')])
+        self.assertEqual(self.tg_user(1001).json()['items'],[])
+        self.assertEqual([(p['number'],p['stage_label']) for p in self.summary().json()['pending_approvals']],[(f'CF-{rid:05d}',label)])
+        self.check(rid,book)
+        self.assertEqual([(i['stage'],i['assignee_user_id']) for i in self.pending()],[('finance',finance['id'])])
+        self.assertEqual([p['stage_label'] for p in self.summary().json()['pending_approvals']],['Проверка финансовым директором'])
+
+    def test_skip_policy_has_no_director_stage_and_finance_completes_the_route(self):
+        taxes=self.category_named('Налоги')
+        r=self.client.put(f'/api/categories/{taxes}/director-policy',json={'policy':'skip','reason':'Регулярный налоговый платёж'},headers=self.h)
+        self.assertEqual(r.status_code,200,r.text)
+        author=self.make_user('employee','author');finance=self.make_user('finance','fin');director=self.make_user('director','boss')
+        payer=self.make_user('accountant','payer')
+        for user,tg in ((finance,1001),(director,1002),(payer,1003)):self.link(user,tg)
+        tax=self.new_request(author,'600',category=taxes);usual=self.new_request(author,'700')
+        for rid in (tax,usual):self.check(rid)
+        self.assertEqual(sorted((i['request_id'],i['stage'],i['assignee_user_id']) for i in self.pending()),
+                         sorted([(tax,'finance',finance['id']),(usual,'finance',finance['id'])]))
+        done=self.decide(finance,tax)
+        self.assertEqual((done['status'],done['approved_by'],done['route']['director_required']),('approved',None,False))
+        self.decide(finance,usual)
+        # The director is reminded only of the category that needs him; the tax request goes straight to payment.
+        self.assertEqual(sorted((i['request_id'],i['stage'],i['assignee_user_id']) for i in self.pending()),
+                         sorted([(tax,'bank_payment',payer['id']),(usual,'director',director['id'])]))
+        paid=self.post('/api/ledger',{'account_id':self.acc,'category_id':taxes,'kind':'out','amount':'600','date':str(self.today),
+                                      'reference':'PAY-TAX','note':'Оплата налога','request_id':tax,'request_version':self.version(tax)},payer['client'],payer['h'])
+        self.assertEqual(paid.status_code,200,paid.text)
+        self.assertEqual([(i['request_id'],i['stage']) for i in self.pending()],[(usual,'director')])
+
+    def test_acting_director_receives_the_director_reminder(self):
+        author=self.make_user('employee','author');finance=self.make_user('finance','fin')
+        director=self.make_user('director','boss');deputy=self.make_user('employee','deputy');other=self.make_user('employee','bystander')
+        for user,tg in ((finance,1001),(director,1002),(deputy,1003),(other,1004)):self.link(user,tg)
+        d=self.post('/api/delegations',{'user_id':deputy['id'],'replaced_user_id':director['id'],'role':'director','starts_on':str(self.today),
+                                        'ends_on':str(self.today+timedelta(days=2)),'reason':'Отпуск директора по графику'})
+        self.assertEqual(d.status_code,200,d.text)
+        rid=self.new_request(author,'600');self.check(rid)
+        self.assertEqual([(i['stage'],i['assignee_user_id']) for i in self.pending()],[('finance',finance['id'])])
+        self.decide(finance,rid)
+        self.assertEqual([(i['stage'],i['assignee_user_id']) for i in self.pending()],[('director',director['id']),('director',deputy['id'])])
+        self.assertEqual([i['stage'] for i in self.tg_user(1003).json()['items']],['director'])
+        done=self.decide(deputy,rid);self.assertEqual(done['status'],'approved')
+        # A revoked substitution stops the reminders at once.
+        second=self.new_request(author,'500');self.check(second);self.decide(finance,second)
+        self.assertIn(deputy['id'],[i['assignee_user_id'] for i in self.pending() if i['request_id']==second])
+        self.assertEqual(self.post(f"/api/delegations/{d.json()['id']}/revoke",{'reason':'Директор вернулся из отпуска'}).status_code,200)
+        self.assertEqual([i['assignee_user_id'] for i in self.pending() if i['request_id']==second],[director['id']])
+
+    def test_payer_who_took_part_in_an_earlier_round_is_not_reminded(self):
+        author=self.make_user('employee','author');finance=self.make_user('finance','fin');director=self.make_user('director','boss')
+        first=self.make_user('accountant','roundone');second=self.make_user('accountant','roundtwo');payer=self.make_user('accountant','payer')
+        for user,tg in ((first,1001),(second,1002),(payer,1003)):self.link(user,tg)
+        # Returned after the first check, then sent again (the lead time is checked again) and checked by another accountant.
+        rid=self.new_request(author,'600',day=date.fromisoformat(self.dues['urgent']));self.check(rid,first)
+        self.decide(finance,rid,'return','Уточните реквизиты получателя')
+        self.decide(author,rid,'submit')
+        # A new round: every accountant may check it again, the first one included.
+        self.assertEqual({i['assignee_user_id'] for i in self.pending() if i['request_id']==rid},{first['id'],second['id'],payer['id']})
+        self.check(rid,second);self.decide(finance,rid);self.decide(director,rid)
+        with unit(True) as s:s.get(PaymentRequest,rid).due_date=self.today  # the payment day has come
+        self.assertEqual([(i['request_id'],i['stage'],i['assignee_user_id']) for i in self.pending()],[(rid,'bank_payment',payer['id'])])
+        # A replaced file resets the approvals, but the earlier checker still never pays.
+        other=self.new_request(author,'500');self.check(other,first)
+        up=author['client'].post(f'/api/requests/{other}/documents',params={'kind':'contract'},content=PDF+b'% corrected invoice\n',
+                                 headers={**author['h'],'Content-Type':'application/pdf','X-Filename':'contract-v2.pdf','X-Request-Version':str(self.version(other))})
+        self.assertEqual(up.status_code,200,up.text);self.assertTrue(up.json()['approval_reset'])
+        self.check(other,second);self.decide(finance,other);self.decide(director,other)
+        self.assertEqual(sorted((i['request_id'],i['assignee_user_id']) for i in self.pending()),sorted([(rid,payer['id']),(other,payer['id'])]))
+        self.assertEqual(self.pay(first,rid,'600','PAY-EARLIER').status_code,403)
+        self.assertEqual(self.pay(payer,rid,'600','PAY-OUTSIDER').status_code,200)
 
     def me(self):
         return {'client':self.client,'h':self.h}

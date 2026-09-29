@@ -23,7 +23,8 @@ PERMS = {
  'director': {'view','ledger','export','request','write','approve','budget','plan','import','schedule','catalog','audit','approval_policy','request_edit'},
  'cashier': {'request','ledger','pay_cash'},
  'finance': {'view','ledger','export','request','write','approve','budget','plan','import','schedule','request_edit'},
- 'accountant': {'ledger','pay_bank'},
+ # Расчётный бухгалтер проверяет реквизиты и комплектность заявок и оплачивает банк.
+ 'accountant': {'ledger','pay_bank','request_check'},
  'employee': {'request'},
  'auditor': {'view','ledger','export','audit'},
  'operator': {'view','ledger','export','request','write','plan','import','schedule'},
@@ -50,14 +51,17 @@ def payment_channels(permissions):
     return {kind for kind, right in PAY_RIGHTS.items() if right in permissions}
 
 
-def scope_user(user, assigned):
+def scope_user(user, assigned, acting=(), member=True):
     """Роль и права пользователя в выбранной компании.
 
     Учредитель всегда только читает. Администратор холдинга получает финансовые
-    права роли лишь при отдельном назначении в этой компании. Остальные работают
-    по роли назначения, а без неё — по своей прежней роли (перенос без потери доступа)."""
+    права роли лишь при отдельном назначении в этой компании. Сотрудник работает только
+    по явной роли назначения; без неё прав в компании нет.
+    ``acting`` — действующие замещения (ВрИО) в этой компании: их роли добавляют права,
+    а собственная роль пользователя не меняется. ``member`` оставлен для совместимости вызовов."""
     if user.role == 'founder':
         role = None
+        acting = ()
     elif user.role == 'admin':
         role = assigned if assigned in COMPANY_ROLES else None
     else:
@@ -67,8 +71,44 @@ def scope_user(user, assigned):
     permissions = set(PERMS.get(user.role, set())) if user.role in HOLDING_ROLES else set()
     if role:
         permissions |= PERMS[role]
+    delegated = {}
+    for d in acting:
+        if d['role'] in COMPANY_ROLES and d['role'] != role and d['role'] not in delegated:
+            delegated[d['role']] = d
+            permissions |= PERMS[d['role']]
     user._company_role = role
+    user._acting = delegated
+    user._acted = None
     user._permissions = frozenset(permissions)
+
+
+def has_role(user, role):
+    """Собственная роль в компании или действующее замещение этой роли."""
+    return company_role(user) == role or role in getattr(user, '_acting', {})
+
+
+def act_as(user, role):
+    """Отмечает роль, в которой выполняется действие: для аудита ВрИО хранит заменяемого."""
+    if company_role(user) == role:
+        user._acted = (role, None)
+    elif role in getattr(user, '_acting', {}):
+        user._acted = (role, user._acting[role]['replaced_user_id'])
+    return has_role(user, role)
+
+
+def act_with_right(user, right):
+    """Отмечает роль, которая дала право: собственная роль в компании, замещение (ВрИО)
+    или роль холдинга. Журнал записывает именно её и заменяемого сотрудника."""
+    own = company_role(user)
+    if own and right in PERMS[own]:
+        return act_as(user, own)
+    for role in getattr(user, '_acting', {}):
+        if right in PERMS[role]:
+            return act_as(user, role)
+    if user.role in HOLDING_ROLES and right in PERMS.get(user.role, set()):
+        user._acted = (user.role, None)
+        return True
+    return right in perms_of(user)
 
 
 def perms_of(user):
@@ -144,6 +184,10 @@ def session_user(s, request: Request, permission=None):
     if not user or not user.active: raise HTTPException(401,'Учётная запись отключена.')
     if claims['sub']!=str(user.id):raise HTTPException(401,'Неверный токен.')
     request.state.user_id=user.id
+    # Адрес клиента для журнала: на Render — последнее значение X-Forwarded-For (client_ip);
+    # исходный заголовок прокси хранится отдельно и не проверяется.
+    user._ip=client_ip(request)
+    user._forwarded=(request.headers.get('X-Forwarded-For') or '')[:200] or None
     # Временный пароль открывает только смену пароля, выход и сведения о себе.
     if user.must_change_password and request.url.path not in ('/api/me','/api/logout','/api/password'):
         raise HTTPException(403,'Смените временный пароль: до этого остальные разделы недоступны.')
@@ -155,6 +199,7 @@ def session_user(s, request: Request, permission=None):
     # Права проверяются после выбора компании: роль назначается отдельно в каждой.
     if permission and permission not in perms_of(user):
         raise HTTPException(403,'У вашей роли нет прав на это действие.')
+    if permission:act_with_right(user,permission)
     return user,session
 
 def client_ip(request):
@@ -189,11 +234,16 @@ def role_label(holding, role):
 
 
 def user_json(user):
-    """Текущий пользователь: роль и права в выбранной компании."""
+    """Текущий пользователь: роль и права в выбранной компании, включая замещения (ВрИО)."""
     holding = user.role if user.role in HOLDING_ROLES else None
     role = company_role(user)
+    acting = [{'role':r,'role_label':ROLES[r],'replaced_user_id':d['replaced_user_id'],'replaced_name':d.get('replaced_name',''),
+               'ends_on':d.get('ends_on')} for r,d in getattr(user,'_acting',{}).items()]
+    label = role_label(holding,role) if (holding or role) else 'Без роли в компании'
+    if acting:label += ''.join(' · ВрИО '+a['role_label'] for a in acting)
     return {'id':user.id,'username':user.username,'name':user.name,'role':role or user.role,
-            'holding_role':holding,'company_role':role,'role_label':role_label(holding,role),
+            'holding_role':holding,'company_role':role,'role_label':label,'acting':acting,
+            'roles':sorted({x for x in [role,*[a['role'] for a in acting]] if x}),
             'permissions':sorted(perms_of(user)),'active':user.active,'must_change_password':bool(user.must_change_password)}
 
 

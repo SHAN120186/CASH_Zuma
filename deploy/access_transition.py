@@ -41,9 +41,17 @@ def connect_app(url_env):
     return db
 
 
+def synced(folder):
+    """Папка внутри OneDrive: корни из переменных окружения или папка «OneDrive» / «OneDrive - …» в пути."""
+    roots = [Path(v).resolve() for k in ('OneDrive', 'OneDriveConsumer', 'OneDriveCommercial') if (v := os.getenv(k))]
+    if any(r == folder or r in folder.parents for r in roots):
+        return True
+    return any(part.lower() == 'onedrive' or part.lower().startswith('onedrive - ') for part in folder.parts)
+
+
 def out_dir(path):
     folder = Path(path).resolve()
-    if ROOT in folder.parents or folder == ROOT or 'onedrive' in str(folder).lower():
+    if ROOT in folder.parents or folder == ROOT or synced(folder):
         sys.exit('Папка --out должна быть вне репозитория и вне OneDrive: там будут пароли и сведения о сотрудниках.')
     folder.mkdir(parents=True, exist_ok=True)
     return folder

@@ -1,7 +1,7 @@
 """Тесты используют отдельную временную БД. Тестовые пароли НЕ создают вход в рабочую систему."""
 import os,sys,tempfile,unittest,json
 from pathlib import Path
-from datetime import timedelta
+from datetime import timedelta, date
 ROOT=Path(__file__).resolve().parents[1]
 sys.path.insert(0,str(ROOT))
 TMP=tempfile.TemporaryDirectory()
@@ -16,13 +16,18 @@ if os.getenv('TEST_DATABASE_URL'):
     if not (test_url.database or '').startswith('zuma_test_'):raise RuntimeError('Test database must start with zuma_test_')
     os.environ['DATABASE_URL']=os.environ['TEST_DATABASE_URL']
 from fastapi.testclient import TestClient
-from sqlalchemy import select
+from sqlalchemy import select, func
 from app.main import app
 from app.db import *
 from app.services import today
 from app.security import hash_password
+from app import clock
 PASSWORD='OnlyForTemporaryTests_9841!'
 HASH=hash_password(PASSWORD)
+# Среда в середине месяца: сроки 1/3/7 рабочих дней не переходят в следующий месяц,
+# и тесты не зависят от даты запуска.
+FROZEN_TODAY=date(2026,9,16)
+PDF=b'%PDF-1.4\n% synthetic test document\n'
 
 def tearDownModule():
     engine.dispose()
@@ -30,56 +35,95 @@ def tearDownModule():
 
 class SiteTests(unittest.TestCase):
     def setUp(self):
+        clock.FROZEN=FROZEN_TODAY
         Base.metadata.drop_all(engine);initialize()
         with unit(True) as s:
             admin=User(username='admin',name='Test Admin',role='admin',password_hash=HASH);s.add(admin);s.flush()
             # Администратор холдинга работает с финансами только по отдельному назначению в компании.
             for c in s.scalars(select(Company).where(Company.code!='UNASSIGNED')):s.add(CompanyUser(company_id=c.id,user_id=admin.id,role='finance'))
+            # Прежние проверки написаны для маршрута «директор утверждает всё»;
+            # политики статей и их первоначальные пороги проверяются отдельными тестами.
+            for c in s.scalars(select(Category)):c.director_policy='always'
         self.client=TestClient(app)
         r=self.client.post('/api/login',json={'username':'admin','password':PASSWORD});self.assertEqual(r.status_code,200,r.text)
         self.h={'X-CSRF-Token':r.json()['csrf']}
         self.date=str(today());self.month=self.date[:7]
         b=self.client.get('/api/bootstrap').json();self.cat=b['categories'][1]['id'];self.company=next(c['id'] for c in b['companies'] if c['code']=='UZGERMED')
+        self.dues=b['due_minimums']
         r=self.post('/api/accounts',{'name':'Test bank','kind':'bank','currency':'UZS','opening':'1000000.00','opening_date':str(today()-timedelta(days=10))})
         self.acc=r.json()['id']
     def tearDown(self):
-        for name in ('approver','director','payer'):
+        for name in ('approver','director','payer','checker'):
             if hasattr(self,name):getattr(self,name)[0].close()
         self.client.close()
+        clock.FROZEN=None
+    def admin_headers(self,headers=None):
+        """Заголовки администратора в той же компании, что и у переданных заголовков."""
+        h=dict(self.h)
+        if headers and 'X-Company-ID' in headers:h['X-Company-ID']=headers['X-Company-ID']
+        return h
+    def row(self,rid,headers=None):
+        r=self.client.get(f'/api/requests/{rid}',headers=self.admin_headers(headers))
+        return r.json() if r.status_code==200 else None
+    def version_of(self,rid,headers=None):
+        row=self.row(rid,headers);return row['version'] if row else None
     def post(self,path,data,client=None,headers=None):
         data=dict(data)
-        if path=='/api/requests' and data.get('status','pending')=='pending':return self.documented_request(data,client,headers)
         rid=int(path.split('/')[3]) if path.startswith('/api/requests/') and path.endswith('/decision') else data.get('request_id') if path=='/api/ledger' else None
         key='version' if path.endswith('/decision') else 'request_version'
         if rid and key not in data:
-            row=next((r for r in self.client.get('/api/requests').json() if r['id']==rid),None)
-            if row:data[key]=row['version']
+            version=self.version_of(rid,headers)
+            if version:data[key]=version
         return (client or self.client).post(path,json=data,headers=headers or self.h)
     def budget(self,limit='1000',mode='soft'):
         r=self.post('/api/budgets',{'category_id':self.cat,'month':self.month,'currency':'UZS','amount':limit,'mode':mode,'reason':'Подтверждено для тестирования','source':'test'})
         self.assertEqual(r.status_code,200,r.text)
-    def documented_request(self,data,client=None,headers=None):
-        cl=client or self.client;h=headers or self.h;payload=dict(data);desired=payload.pop('status','pending');payload['status']='draft'
-        created=cl.post('/api/requests',json=payload,headers=h)
-        if created.status_code!=200:return created
-        rid=created.json()['id'];raw=b'%PDF-1.4\nsynthetic request document'
-        for kind,name in [('internal','request.pdf'),('contract','contract.pdf')]:
-            uploaded=cl.post(f'/api/requests/{rid}/documents',params={'kind':kind},content=raw,headers={**h,'Content-Type':'application/pdf','X-Filename':name})
-            if uploaded.status_code!=200:return uploaded
-        return self.post(f'/api/requests/{rid}/decision',{'action':'submit','version':created.json()['version']},client,headers) if desired=='pending' else created
-    def request(self,n='600',purpose='Тестовая заявка на оплату',client=None,headers=None):
-        return self.post('/api/requests',{'account_id':self.acc,'category_id':self.cat,'counterparty':'Supplier','amount':n,'date':self.date,'purpose':purpose},client,headers)
+    def request_body(self,n='600',purpose='Тестовая заявка на оплату',priority='urgent',date=None,account=None,category=None,counterparty='Supplier'):
+        with unit() as s:a=s.get(Account,account or self.acc)
+        return {'company_id':a.company_id,'account_id':a.id,'channel':a.kind,'currency':a.currency,'category_id':category or self.cat,
+                'counterparty':counterparty,'amount':n,'date':date or self.dues[priority],'purpose':purpose,'priority':priority}
+    def upload(self,rid,kind='internal',client=None,headers=None,content=None,name='document.pdf',version=None):
+        """Вложение заявки: POST /api/requests/{id}/documents?kind=internal|contract|other.
+        Версия заявки передаётся всегда: после отправки без неё сервер отвечает 428.
+        Каждый вызов без content загружает новый файл: повтор того же файла сервер не считает заменой."""
+        if content is None:
+            self._uploads=getattr(self,'_uploads',0)+1
+            content=PDF+f'% upload {self._uploads}\n'.encode()
+        h=dict(headers or self.h)
+        version=version or self.version_of(rid,headers)
+        h.update({'Content-Type':'application/octet-stream','X-Filename':name,**({'X-Request-Version':str(version)} if version else {})})
+        return (client or self.client).post(f'/api/requests/{rid}/documents',params={'kind':kind},content=content,headers=h)
+    def request(self,n='600',purpose='Тестовая заявка на оплату',client=None,headers=None,submit=True,**body):
+        """Черновик, два обязательных документа и отправка. Возвращает первый неуспешный ответ."""
+        r=self.post('/api/requests',self.request_body(n,purpose,**body),client,headers)
+        if r.status_code!=200 or not submit:return r
+        rid=r.json()['id']
+        for kind in ('internal','contract'):
+            up=self.upload(rid,kind,client,headers)
+            if up.status_code!=200:return up
+        return self.post(f'/api/requests/{rid}/decision',{'action':'submit'},client,headers)
+    def stage_user(self,stage):
+        attr,role,name={'check':('checker','accountant','checker'),'finance':('approver','finance','reviewer'),'director':('director','director','chief')}[stage]
+        if not hasattr(self,attr):setattr(self,attr,self.make_user(role,name))
+        return getattr(self,attr)
+    def check(self,id):
+        return self.post(f'/api/requests/{id}/decision',{'action':'check'},*self.stage_user('check'))
     def finance_approve(self,id,note='Подтверждаю необходимость расхода'):
-        if not hasattr(self,'approver'):self.approver=self.make_user('finance','reviewer')
-        return self.post(f'/api/requests/{id}/decision',{'action':'approve','note':note},*self.approver)
-    def approve(self,id,note='Подтверждаю необходимость расхода'):
-        """Финансист, затем директор: директор утверждает каждую заявку (Q03)."""
-        row=next((x for x in self.client.get('/api/requests').json() if x['id']==id),None)
-        if not row or row['approval_stage']!='director':
-            r=self.finance_approve(id,note)
+        row=self.row(id)
+        if row and row['approval_stage']=='check':
+            r=self.check(id)
             if r.status_code!=200:return r
-        if not hasattr(self,'director'):self.director=self.make_user('director','chief')
-        return self.post(f'/api/requests/{id}/decision',{'action':'approve','note':note},*self.director)
+        return self.post(f'/api/requests/{id}/decision',{'action':'approve','note':note},*self.stage_user('finance'))
+    def approve(self,id,note='Подтверждаю необходимость расхода'):
+        """Проверка бухгалтера, финансовый директор и директор, если он нужен по снимку политики статьи."""
+        r=None
+        for _ in range(3):
+            row=self.row(id)
+            if not row or row['status']!='pending':break
+            stage=row['approval_stage']
+            r=self.check(id) if stage=='check' else self.post(f'/api/requests/{id}/decision',{'action':'approve','note':note},*self.stage_user(stage))
+            if r.status_code!=200:return r
+        return r or self.post(f'/api/requests/{id}/decision',{'action':'approve','note':note},*self.stage_user('finance'))
     def ledger(self,amount='100',kind='in',reference='DOC1',client=None,**extra):
         data={'account_id':self.acc,'category_id':self.cat,'amount':amount,'kind':kind,'date':self.date,'reference':reference,'note':'Подтверждённая тестовая операция'};data.update(extra)
         if client is None and data.get('request_id'):
@@ -154,12 +198,23 @@ class SiteTests(unittest.TestCase):
         r=self.ledger('250','in',receipt_id=id);self.assertEqual(r.status_code,200,r.text)
         d=self.client.get('/api/dashboard').json();self.assertEqual(d['incoming7'],'0.00');self.assertEqual(d['balance'],'1000250.00')
     def test_09_employee_permissions_and_privacy(self):
-        self.request('50')
+        foreign=self.request('50');self.assertEqual(foreign.status_code,200,foreign.text)
         cl,h=self.make_user();r=self.request('100',client=cl,headers=h);self.assertEqual(r.status_code,200,r.text)
+        rid=r.json()['id']
         self.assertEqual(cl.get('/api/dashboard').status_code,403);self.assertEqual(cl.get('/api/model').status_code,403)
         self.assertEqual(cl.get('/api/users').status_code,403);self.assertEqual(cl.get('/api/budgets').status_code,403)
-        rs=cl.get('/api/requests').json();self.assertEqual(len(rs),1);self.assertTrue(rs[0]['budget']['hidden']);self.assertNotIn('spent',rs[0]['budget'])
-        self.assertEqual(self.post(f"/api/requests/{r.json()['id']}/decision",{'action':'approve'},cl,h).status_code,403)
+        rs=cl.get('/api/requests').json();self.assertEqual([x['id'] for x in rs],[rid])
+        # Полный бюджет статьи заявителю скрыт; по выбранной статье остаётся карточка бюджета без остатков счетов.
+        self.assertTrue(rs[0]['budget']['hidden']);self.assertNotIn('spent',rs[0]['budget']);self.assertIsNone(rs[0]['budget']['limit'])
+        self.assertEqual(set(rs[0]['budget_card']),{'period','currency','budget_set','limit','used','reserved','available','after','status','mode'})
+        self.assertFalse({'balance','opening','account_balance'}&set(rs[0]))
+        # Сервер не предлагает заявителю этапов согласования, возврата или оплаты.
+        self.assertFalse({'check','approve','return','return_finance','reschedule','pay'}&set(rs[0]['actions']))
+        self.assertEqual(self.post(f'/api/requests/{rid}/decision',{'action':'check'},cl,h).status_code,403)
+        self.assertEqual(self.post(f'/api/requests/{rid}/decision',{'action':'approve'},cl,h).status_code,403)
+        self.assertEqual(self.check(rid).status_code,200)
+        self.assertEqual(self.post(f'/api/requests/{rid}/decision',{'action':'approve','note':'Согласование своей заявки'},cl,h).status_code,403)
+        self.assertEqual(self.row(rid)['approval_stage'],'finance')
     def test_procurement_sees_only_own_requests_and_limited_budget(self):
         foreign=self.request('50').json()['id']
         cl,h=self.make_user('procurement','isolated_buyer')
@@ -175,7 +230,10 @@ class SiteTests(unittest.TestCase):
             self.assertNotIn('used',rows[0]['budget'])
             for path in ('/api/dashboard','/api/budgets','/api/ledger','/api/users',f'/api/requests/{foreign}/documents'):
                 self.assertEqual(cl.get(path,headers=h).status_code,403,path)
-            self.assertEqual(self.post(f'/api/requests/{foreign}/decision',{'action':'cancel','note':'Cannot cancel another buyer request'},cl,h).status_code,403)
+            # Чужую заявку закупщик не закрывает: для него её нет; прежнее действие «cancel» отклоняется.
+            self.assertEqual(self.post(f'/api/requests/{foreign}/decision',{'action':'close','note':'Cannot close another buyer request'},cl,h).status_code,404)
+            self.assertEqual(self.post(f'/api/requests/{foreign}/decision',{'action':'cancel','note':'Cannot cancel another buyer request'},cl,h).status_code,422)
+            self.assertEqual(self.row(foreign)['status'],'pending')
             ids=self.company_ids()
             self.assertEqual(cl.get('/api/requests',headers={**h,'X-Company-ID':str(ids['ZUMA'])}).status_code,403)
         finally:cl.close()
@@ -183,9 +241,14 @@ class SiteTests(unittest.TestCase):
     def test_request_documents_use_company_role_and_payment_channel(self):
         book=self.make_user('accountant','doc_book');cashier=self.make_user('cashier','doc_cashier')
         try:
+            draft=self.request('40',submit=False).json()['id']
             rid=self.request('50').json()['id']
             path=f'/api/requests/{rid}/documents'
-            self.assertEqual(book[0].get(path,headers=book[1]).status_code,403)
+            # Расчётный бухгалтер компании проверяет комплектность: документы заявки на проверке он читает,
+            # чужой черновик — нет, кассир банковскую заявку — нет.
+            self.assertEqual(book[0].get(path,headers=book[1]).status_code,200)
+            self.assertEqual(book[0].get(f'/api/requests/{draft}/documents',headers=book[1]).status_code,403)
+            self.assertEqual(cashier[0].get(path,headers=cashier[1]).status_code,403)
             self.assertEqual(self.approve(rid).status_code,200)
             docs=book[0].get(path,headers=book[1])
             self.assertEqual(docs.status_code,200,docs.text)
@@ -194,11 +257,12 @@ class SiteTests(unittest.TestCase):
             self.assertEqual(cashier[0].get(path,headers=cashier[1]).status_code,403)
             self.assertEqual(cashier[0].get(doc['url'],headers=cashier[1]).status_code,403)
             cash=self.cash_account()
-            created=self.post('/api/requests',{'account_id':cash,'category_id':self.cat,'amount':'10','date':self.date,'purpose':'Cash document test','counterparty':'Document supplier'})
+            created=self.request('10','Cash document test',account=cash,counterparty='Document supplier')
             self.assertEqual(created.status_code,200,created.text)
             cashid=created.json()['id']
             self.assertEqual(self.approve(cashid).status_code,200)
             self.assertEqual(cashier[0].get(f'/api/requests/{cashid}/documents',headers=cashier[1]).status_code,200)
+            # Утверждённую кассовую заявку, которую он не проверял, бухгалтер банка не читает.
             self.assertEqual(book[0].get(f'/api/requests/{cashid}/documents',headers=book[1]).status_code,403)
         finally:book[0].close();cashier[0].close()
 
@@ -220,10 +284,19 @@ class SiteTests(unittest.TestCase):
     def test_10_director_cannot_approve_own(self):
         cl,h=self.make_user('director','boss')
         own=self.request('100',client=cl,headers=h)
-        self.assertEqual(own.status_code,200,own.text)
-        self.assertEqual(self.post(f"/api/requests/{own.json()['id']}/decision",{'action':'approve'},cl,h).status_code,403)
-        r=self.request('100')
-        self.assertEqual(self.post(f"/api/requests/{r.json()['id']}/decision",{'action':'approve'},cl,h).status_code,403)
+        self.assertEqual(own.status_code,200,own.text);own=own.json()['id']
+        # Своя заявка доходит до этапа директора и всё равно не согласуется автором.
+        self.assertEqual(self.finance_approve(own).status_code,200)
+        self.assertEqual(self.row(own)['approval_stage'],'director')
+        self.assertNotIn('approve',cl.get(f'/api/requests/{own}',headers=h).json()['actions'])
+        denied=self.post(f'/api/requests/{own}/decision',{'action':'approve','note':'Утверждаю собственную заявку'},cl,h)
+        self.assertEqual(denied.status_code,403,denied.text);self.assertEqual(self.row(own)['status'],'pending')
+        # Директор не проходит этапы бухгалтера и финансового директора вместо них.
+        r=self.request('100');self.assertEqual(r.status_code,200,r.text);rid=r.json()['id']
+        self.assertEqual(self.post(f'/api/requests/{rid}/decision',{'action':'check'},cl,h).status_code,403)
+        self.assertEqual(self.check(rid).status_code,200)
+        self.assertEqual(self.post(f'/api/requests/{rid}/decision',{'action':'approve','note':'Утверждаю без финансового директора'},cl,h).status_code,403)
+        self.assertEqual(self.row(rid)['approval_stage'],'finance')
         self.assertEqual(cl.get('/api/dashboard').status_code,200)
         cl.close()
     def test_11_dates_negative_and_insufficient(self):
@@ -306,10 +379,15 @@ class SiteTests(unittest.TestCase):
 
     def test_21_forecast_detects_shortfall_on_individual_account(self):
         second=self.post('/api/accounts',{'name':'Empty bank','kind':'bank','currency':'UZS','opening':'0','opening_date':self.date}).json()['id']
-        r=self.documented_request({'account_id':second,'category_id':self.cat,'counterparty':'Supplier','amount':'100','date':self.date,'purpose':'Оплата с отдельного пустого счёта'})
-        denied=self.approve(r.json()['id']);self.assertEqual(denied.status_code,409)
+        r=self.request('100','Оплата с отдельного пустого счёта',account=second);self.assertEqual(r.status_code,200,r.text)
+        rid=r.json()['id'];due=self.dues['urgent']
+        denied=self.approve(rid);self.assertEqual(denied.status_code,409,denied.text)
         self.assertIn('Недостаточно доступных средств',denied.text)
-        day=self.client.get('/api/dashboard').json()['forecast'][0]
+        self.assertEqual(self.row(rid)['status'],'pending')
+        forecast=self.client.get('/api/dashboard').json()['forecast']
+        # До срока заявки нехватки нет; в день срока её видно только в сценарии «Все заявки» и только по пустому счёту.
+        self.assertFalse(forecast[0]['requested_risk'])
+        day=next(d for d in forecast if d['date']==due)
         self.assertEqual(day['balance'],'1000000.00');self.assertFalse(day['risk'])
         self.assertTrue(day['requested_risk']);self.assertEqual(day['requested_account_shortfalls'][0]['account_id'],second)
 
@@ -320,13 +398,16 @@ class SiteTests(unittest.TestCase):
 
     def test_23_payment_in_another_month_moves_budget(self):
         next_month=(today().replace(day=28)+timedelta(days=4)).replace(day=1)
-        r=self.documented_request({'account_id':self.acc,'category_id':self.cat,'counterparty':'Supplier','amount':'100','date':str(next_month),'purpose':'Ранняя оплата заявки следующего месяца'})
+        r=self.request('100','Ранняя оплата заявки следующего месяца',date=str(next_month));self.assertEqual(r.status_code,200,r.text)
         rid=r.json()['id'];self.assertEqual(self.approve(rid).status_code,200)
-        self.assertEqual(self.ledger('100','out',request_id=rid).status_code,200)
-        current=next(b for b in self.client.get('/api/budgets').json() if b['category_id']==self.cat)
-        future=next(b for b in self.client.get(f'/api/budgets?month={str(next_month)[:7]}').json() if b['category_id']==self.cat)
-        self.assertEqual(current['spent'],'100.00')
-        self.assertEqual(future['reserved'],'0.00')
+        current=lambda:next(b for b in self.client.get('/api/budgets').json() if b['category_id']==self.cat)
+        future=lambda:next(b for b in self.client.get(f'/api/budgets?month={str(next_month)[:7]}').json() if b['category_id']==self.cat)
+        # Утверждённая заявка резервирует бюджет месяца своего срока.
+        self.assertEqual((current()['spent'],current()['reserved']),('0.00','0.00'))
+        self.assertEqual(future()['reserved'],'100.00')
+        paid=self.ledger('100','out',request_id=rid);self.assertEqual(paid.status_code,200,paid.text)
+        self.assertEqual(current()['spent'],'100.00')
+        self.assertEqual(future()['reserved'],'0.00')
 
     def edit_account(self,**changes):
         data={'name':'Corrected bank','kind':'bank','currency':'UZS','opening':'1000000','opening_date':str(today()-timedelta(days=10)),'allow_overdraft':False,'reason':'Исправление ошибочного ввода'}
@@ -442,9 +523,11 @@ class SiteTests(unittest.TestCase):
         self.assertEqual(r.status_code,422)
 
     def test_34b_request_documents_required_versioned_and_protected(self):
-        payload={'account_id':self.acc,'category_id':self.cat,'counterparty':'Supplier','amount':'100','date':self.date,'purpose':'Заявка с обязательными документами'}
-        self.assertEqual(self.client.post('/api/requests',json=payload,headers=self.h).status_code,422)
-        created=self.client.post('/api/requests',json={**payload,'status':'draft'},headers=self.h);self.assertEqual(created.status_code,200,created.text)
+        payload=self.request_body('100','Заявка с обязательными документами')
+        # Сразу «на согласование» заявка не создаётся: сначала черновик и документы.
+        self.assertEqual(self.client.post('/api/requests',json={**payload,'status':'pending'},headers=self.h).status_code,422)
+        created=self.client.post('/api/requests',json=payload,headers=self.h);self.assertEqual(created.status_code,200,created.text)
+        self.assertEqual(created.json()['status'],'draft')
         rid=created.json()['id']
         missing=self.post(f'/api/requests/{rid}/decision',{'action':'submit'});self.assertEqual(missing.status_code,409);self.assertIn('Внутренняя',missing.text)
         bad=self.client.post(f'/api/requests/{rid}/documents',params={'kind':'internal'},content=b'<script>bad</script>',headers={**self.h,'X-Filename':'bad.html'})
@@ -454,12 +537,14 @@ class SiteTests(unittest.TestCase):
         second=self.client.post(f'/api/requests/{rid}/documents',params={'kind':'internal'},content=raw+b' v2',headers={**self.h,'X-Filename':'request-v2.pdf'});self.assertEqual(second.status_code,200,second.text);self.assertEqual(second.json()['version'],2)
         contract=self.client.post(f'/api/requests/{rid}/documents',params={'kind':'contract'},content=raw,headers={**self.h,'X-Filename':'contract.pdf'});self.assertEqual(contract.status_code,200,contract.text)
         for name in ('other-1.pdf','other-2.pdf'):
-            self.assertEqual(self.client.post(f'/api/requests/{rid}/documents',params={'kind':'other'},content=raw,headers={**self.h,'X-Filename':name}).status_code,200)
+            self.assertEqual(self.client.post(f'/api/requests/{rid}/documents',params={'kind':'other'},content=raw+name.encode(),headers={**self.h,'X-Filename':name}).status_code,200)
         docs=self.client.get(f'/api/requests/{rid}/documents').json();self.assertEqual(len(docs),4);self.assertEqual(len([d for d in docs if d['kind']=='internal']),1)
         with TestClient(app) as anonymous:self.assertEqual(anonymous.get(docs[0]['url']).status_code,401)
         internal=next(d for d in docs if d['kind']=='internal');self.assertEqual(self.client.get(internal['url']).content,raw+b' v2')
         submitted=self.post(f'/api/requests/{rid}/decision',{'action':'submit'});self.assertEqual(submitted.status_code,200,submitted.text)
-        denied=self.client.post(f'/api/requests/{rid}/documents',params={'kind':'other'},content=raw,headers={**self.h,'X-Filename':'late.pdf'});self.assertEqual(denied.status_code,409)
+        # После отправки файл принимается только к актуальной версии заявки.
+        denied=self.client.post(f'/api/requests/{rid}/documents',params={'kind':'other'},content=raw,headers={**self.h,'X-Filename':'late.pdf'});self.assertEqual(denied.status_code,428)
+        self.assertEqual(len(self.client.get(f'/api/requests/{rid}/documents').json()),4)
 
     def test_35_export_xlsx_pdf_and_formula_safety(self):
         from openpyxl import load_workbook
@@ -512,42 +597,66 @@ class SiteTests(unittest.TestCase):
 
     def test_40_self_approval_admin_and_editor_blocked(self):
         r=self.request('100').json()
+        # Администратор с ролью финансового директора в компании не согласует свою заявку на своём этапе.
+        self.assertEqual(self.check(r['id']).status_code,200);self.assertEqual(self.row(r['id'])['approval_stage'],'finance')
+        self.assertNotIn('approve',self.row(r['id'])['actions'])
         self.assertEqual(self.post(f"/api/requests/{r['id']}/decision",{'action':'approve','note':'Собственное согласование'}).status_code,403)
+        self.assertEqual(self.row(r['id'])['approval_stage'],'finance')
         cl,h=self.make_user('employee','initiator')
         r=self.request('100',client=cl,headers=h).json()
-        data={k:r[k] for k in ('account_id','category_id','counterparty','amount','date','purpose','version')}
-        data.update(status='pending',reason='Уточнение назначения платежа')
+        data=self.request_body('100',purpose='Уточнённое назначение платежа')
+        data.update(version=self.version_of(r['id']),status='pending',reason='Уточнение назначения платежа')
         response=self.client.put(f"/api/requests/{r['id']}",json=data,headers=self.h)
         self.assertEqual(response.status_code,200,response.text)
+        self.assertEqual(response.json()['last_editor_id'],self.client.get('/api/me').json()['user']['id'])
+        self.assertEqual(self.check(r['id']).status_code,200);self.assertEqual(self.row(r['id'])['approval_stage'],'finance')
         self.assertEqual(self.post(f"/api/requests/{r['id']}/decision",{'action':'approve','note':'Согласование редактором'}).status_code,403)
+        self.assertEqual(self.row(r['id'])['status'],'pending')
         self.assertEqual(self.approve(r['id']).status_code,200)
+        self.assertEqual(self.row(r['id'])['status'],'approved')
         cl.close()
 
     def test_41_edit_version_and_stale_decision(self):
         r=self.request('100').json();rid=r['id']
-        data={k:r[k] for k in ('account_id','category_id','counterparty','amount','date','purpose','version')}
-        data.update(amount='120',status='pending',reason='Исправление суммы поставщика')
+        data=self.request_body('120')
+        data.update(version=r['version'],status='pending',reason='Исправление суммы поставщика')
         first=self.client.put(f'/api/requests/{rid}',json=data,headers=self.h)
         self.assertEqual(first.status_code,200,first.text);self.assertGreater(first.json()['version'],r['version'])
+        self.assertEqual(first.json()['amount'],'120.00')
         self.assertEqual(self.client.put(f'/api/requests/{rid}',json=data,headers=self.h).status_code,409)
-        self.assertEqual(self.post(f'/api/requests/{rid}/decision',{'action':'cancel','version':r['version'],'note':'Устаревшее действие пользователя'}).status_code,409)
-        self.assertEqual(self.client.post(f'/api/requests/{rid}/decision',json={'action':'cancel','note':'Нет версии документа'},headers=self.h).status_code,428)
+        # «Отмена» переименована в «Закрыть без оплаты»: устаревшая версия и отсутствие версии отклоняются.
+        self.assertEqual(self.post(f'/api/requests/{rid}/decision',{'action':'close','version':r['version'],'note':'Устаревшее действие пользователя'}).status_code,409)
+        self.assertEqual(self.client.post(f'/api/requests/{rid}/decision',json={'action':'close','note':'Нет версии документа'},headers=self.h).status_code,428)
+        self.assertEqual(self.check(rid).status_code,200)
+        stale=self.post(f'/api/requests/{rid}/decision',{'action':'approve','version':first.json()['version'],'note':'Согласование устаревшей версии'},*self.stage_user('finance'))
+        self.assertEqual(stale.status_code,409,stale.text)
+        # Вложение тоже меняет версию: файл к устаревшей версии не принимается.
+        self.assertEqual(self.upload(rid,'other',version=first.json()['version']).status_code,409)
+        self.assertEqual(self.post(f'/api/requests/{rid}/decision',{'action':'cancel','note':'Старое действие отмены заявки'}).status_code,422)
+        row=self.row(rid);self.assertEqual((row['status'],row['amount'],row['approval_stage']),('pending','120.00','finance'))
 
     def test_42_return_cancel_reserve_and_edit_rights(self):
-        self.budget('1000','hard');r=self.request('600').json();rid=r['id'];self.approve(rid)
+        self.budget('1000','hard');r=self.request('600').json();rid=r['id'];self.assertEqual(self.approve(rid).status_code,200)
         b=lambda:next(b for b in self.client.get('/api/budgets').json() if b['category_id']==self.cat)
         self.assertEqual(b()['reserved'],'600.00')
+        card=self.row(rid)['budget_card'];self.assertEqual((card['limit'],card['after'],card['mode']),('1000.00','400.00','hard'))
         response=self.post(f'/api/requests/{rid}/decision',{'action':'return','note':'Нужно уточнить условия оплаты'})
         self.assertEqual(response.status_code,200,response.text);self.assertEqual(response.json()['status'],'returned');self.assertEqual(b()['reserved'],'0.00')
         self.assertEqual(self.post(f'/api/requests/{rid}/decision',{'action':'submit'}).status_code,200)
-        self.approve(rid)
-        self.assertEqual(self.post(f'/api/requests/{rid}/decision',{'action':'cancel','note':'Поставка отменена поставщиком'}).status_code,200)
+        self.assertEqual(self.approve(rid).status_code,200);self.assertEqual(b()['reserved'],'600.00')
+        # 'cancel' is gone: the approved request keeps its reserve until it is closed without payment.
+        self.assertEqual(self.post(f'/api/requests/{rid}/decision',{'action':'cancel','note':'Поставка отменена поставщиком'}).status_code,422)
+        self.assertEqual((self.row(rid)['status'],b()['reserved']),('approved','600.00'))
+        closed=self.post(f'/api/requests/{rid}/decision',{'action':'close','note':'Поставка отменена поставщиком'})
+        self.assertEqual(closed.status_code,200,closed.text);self.assertEqual(closed.json()['status'],'cancelled')
         self.assertEqual(b()['reserved'],'0.00')
         self.assertEqual(self.ledger('600','out',request_id=rid).status_code,409)
         cl,h=self.make_user()
-        own=self.request('10',client=cl,headers=h).json()
-        data={k:own[k] for k in ('account_id','category_id','counterparty','amount','date','purpose','version')};data['reason']='Изменение чужого документа'
-        self.assertEqual(cl.put(f'/api/requests/{rid}',json=data,headers=h).status_code,403)
+        own=self.request('10',client=cl,headers=h);self.assertEqual(own.status_code,200,own.text)
+        data=self.request_body('10','Изменение чужого документа');data.update(version=self.version_of(rid),reason='Изменение чужого документа')
+        # A requester does not even see another person's request (404), so it cannot be edited.
+        self.assertEqual(cl.put(f'/api/requests/{rid}',json=data,headers=h).status_code,404)
+        after=self.row(rid);self.assertEqual((after['status'],after['amount'],after['version']),('cancelled','600.00',data['version']))
         cl.close()
 
     def test_43_two_forecasts_balance_invariants(self):
@@ -555,7 +664,12 @@ class SiteTests(unittest.TestCase):
         from random import Random
         rng=Random(51019)
         for i in range(12):
-            r=self.documented_request({'account_id':self.acc,'category_id':self.cat,'counterparty':f'Supplier {i}','amount':str(rng.randrange(1,100000)),'date':str(today()+timedelta(days=rng.randrange(-3,7))),'purpose':'Проверка прогноза денежных средств','priority':'high','status':'draft' if i==0 else 'pending'}).json()
+            n=str(rng.randrange(1,100000));due=today()+timedelta(days=rng.randrange(-3,7))
+            r=self.request(n,'Проверка прогноза денежных средств',submit=i!=0,priority='high',counterparty=f'Supplier {i}')
+            self.assertEqual(r.status_code,200,r.text);r=r.json()
+            self.assertEqual(r['status'],'draft' if i==0 else 'pending')
+            # Заявки разных сроков, включая просроченные: срок ставится напрямую, т.к. новая заявка не может быть на сегодня или в прошлом.
+            with unit(True) as s:s.get(PaymentRequest,r['id']).due_date=due
             if i%2 and i!=0:self.assertEqual(self.approve(r['id']).status_code,200)
         self.post('/api/receipts',{'account_id':self.acc,'category_id':self.cat,'counterparty':'Buyer','amount':'50.01','date':self.date})
         days=self.client.get('/api/dashboard?days=7').json()['forecast']
@@ -583,12 +697,15 @@ class SiteTests(unittest.TestCase):
         self.assertGreater(current()['version'],approved['version']);v=current()['version']
         self.assertEqual(self.post(f"/api/ledger/{paid.json()['id']}/reverse",{'reason':'Исправление платёжного документа'}).status_code,200)
         self.assertGreater(current()['version'],v)
-        self.assertEqual(self.post(f'/api/requests/{rid}/decision',{'action':'cancel','version':v,'note':'Устаревшая вкладка после сторно'}).status_code,409)
+        # 'close' replaced 'cancel': an action from a tab opened before the reversal is refused by version.
+        self.assertEqual(self.post(f'/api/requests/{rid}/decision',{'action':'close','version':v,'note':'Устаревшая вкладка после сторно'}).status_code,409)
+        self.assertEqual(current()['status'],'approved')
 
     def test_46_requested_forecast_account_shortfall(self):
         aid=self.post('/api/accounts',{'name':'Second empty','kind':'bank','currency':'UZS','opening':'0','opening_date':self.date}).json()['id']
-        self.documented_request({'account_id':aid,'category_id':self.cat,'counterparty':'Supplier','amount':'10','date':self.date,'purpose':'Проверка сценария всех заявок'})
-        d=self.client.get('/api/dashboard').json()['forecast'][0]
+        r=self.request('10','Проверка сценария всех заявок',account=aid);self.assertEqual(r.status_code,200,r.text)
+        self.assertEqual(r.json()['status'],'pending')
+        d=next(d for d in self.client.get('/api/dashboard').json()['forecast'] if d['date']==self.dues['urgent'])
         self.assertFalse(d['risk']);self.assertTrue(d['requested_risk']);self.assertEqual(d['requested_account_shortfalls'][0]['account_id'],aid)
 
     def test_47_orm_optimistic_lock_two_sessions(self):
@@ -622,7 +739,11 @@ class SiteTests(unittest.TestCase):
         director,dh=self.make_user('director','director2')
         try:
             r=self.request('101',client=cashier,headers=ch).json();rid=r['id']
+            # The director skips neither the accountant's check nor the finance stage.
+            self.assertEqual(self.post(f'/api/requests/{rid}/decision',{'action':'approve'},director,dh).status_code,409)
+            self.assertEqual(self.check(rid).status_code,200)
             self.assertEqual(self.post(f'/api/requests/{rid}/decision',{'action':'approve'},director,dh).status_code,403)
+            self.assertEqual(self.row(rid)['approval_stage'],'finance')
             first=self.finance_approve(rid).json()
             self.assertEqual(first['status'],'pending');self.assertEqual(first['approval_stage'],'director')
             self.assertEqual(self.finance_approve(rid).status_code,403)
@@ -637,12 +758,16 @@ class SiteTests(unittest.TestCase):
 
     def test_50_missing_limit_and_edit_reset(self):
         r=self.request('1').json();first=self.finance_approve(r['id']).json()
-        self.assertEqual(first['status'],'pending')
+        self.assertEqual((first['status'],first['approval_stage']),('pending','director'))
         ret=self.post(f"/api/requests/{r['id']}/decision",{'action':'return','note':'Возвращаем на уточнение'})
-        self.assertIsNone(ret.json()['finance_approved_by'])
-        self.post(f"/api/requests/{r['id']}/decision",{'action':'submit'})
+        self.assertEqual(ret.status_code,200,ret.text)
+        self.assertIsNone(ret.json()['finance_approved_by']);self.assertIsNone(ret.json()['checked_by'])
+        self.assertEqual(self.post(f"/api/requests/{r['id']}/decision",{'action':'submit'}).status_code,200)
         row=next(x for x in self.client.get('/api/requests').json() if x['id']==r['id'])
-        self.assertEqual(row['approval_stage'],'finance')
+        # A return clears every stage: the accountant checks again, then the finance stage is required again.
+        self.assertEqual((row['approval_stage'],row['checked_by'],row['finance_approved_by']),('check',None,None))
+        self.assertEqual(self.check(r['id']).status_code,200)
+        self.assertEqual(self.row(r['id'])['approval_stage'],'finance')
 
     def test_51_archive_preserves_history_and_blocks_new_entries(self):
         self.assertEqual(self.post(f'/api/accounts/{self.acc}/archive',{'archived':True,'reason':'Закрытие банковского счёта'}).status_code,409)
@@ -666,9 +791,12 @@ class SiteTests(unittest.TestCase):
         page=self.client.get('/api/ledger?paginated=true&page=2').json()
         self.assertEqual(page['total'],515);self.assertEqual(len(page['items']),10)
         self.assertEqual(self.client.get('/api/ledger?date_from=2026-12-01&date_to=2026-01-01').status_code,422)
-        for _ in range(6):self.request('1')
-        requests=self.client.get('/api/requests',params={'paginated':True,'date_from':self.date,'date_to':self.date,'state':'pending','q':'Supplier'}).json()
+        for _ in range(6):self.assertEqual(self.request('1').status_code,200)
+        due=self.dues['urgent']
+        requests=self.client.get('/api/requests',params={'paginated':True,'date_from':due,'date_to':due,'state':'pending','q':'Supplier'}).json()
         self.assertEqual(requests['total'],6)
+        # Фильтр периода работает по сроку заявки: на сегодня заявок нет.
+        self.assertEqual(self.client.get('/api/requests',params={'paginated':True,'date_from':self.date,'date_to':self.date}).json()['total'],0)
 
     def test_53_password_reset_revokes_sessions_and_hides_password(self):
         cl,h=self.make_user('employee','resetme')
@@ -691,9 +819,16 @@ class SiteTests(unittest.TestCase):
             refused=self.post('/api/approval-policy',{'currency':curr,'amount':'100'})
             self.assertEqual(refused.status_code,409);self.assertIn('директор',refused.text)
             with unit() as ss:
-                for n in (1,10000,10001):self.assertTrue(needs_director(ss,PaymentRequest(account_id=a,amount=n)))
+                # Without a route snapshot (legacy) and under the 'always' policy the director signs any amount.
+                for n in (1,10000,10001):
+                    for route in (None,'always'):self.assertTrue(needs_director(ss,PaymentRequest(account_id=a,amount=n,route_policy=route)))
+            sent=self.request('10001',account=a);self.assertEqual(sent.status_code,200,sent.text)
+            route=sent.json()['route'];self.assertEqual((route['policy'],route['director_required']),('always',True))
         policy=self.client.get('/api/approval-policy').json()
-        self.assertTrue(policy['director_always']);self.assertEqual(policy['limits'],{'UZS':None,'USD':None,'EUR':None})
+        # No global limit remains: every outcome category requires the director in every currency.
+        self.assertNotIn('limits',policy);self.assertTrue(policy['categories'])
+        for c in policy['categories']:
+            self.assertEqual(c['effective'],{cur:{'policy':'always','threshold':None} for cur in ('UZS','USD','EUR')},c['name'])
 
     def test_55_cashflow_reconciles_balances_and_plan(self):
         import io
@@ -795,10 +930,15 @@ class SiteTests(unittest.TestCase):
         first=self.request('600000').json();self.assertEqual(self.approve(first['id']).status_code,200)
         second=self.request('500000').json();denied=self.approve(second['id'])
         self.assertEqual(denied.status_code,409);self.assertIn('резерв утверждённых заявок 600000.00',denied.text)
-        self.assertEqual(self.post(f"/api/requests/{first['id']}/decision",{'action':'cancel','note':'Платёж отменён поставщиком'}).status_code,200)
+        self.assertEqual(self.row(second['id'])['status'],'pending')
+        closed=self.post(f"/api/requests/{first['id']}/decision",{'action':'close','note':'Платёж отменён поставщиком'})
+        self.assertEqual(closed.status_code,200,closed.text);self.assertEqual(closed.json()['status'],'cancelled')
         self.assertEqual(self.approve(second['id']).status_code,200)
+        # Наступил срок заявки: её деньги зарезервированы на день оплаты.
+        with unit(True) as s:s.get(PaymentRequest,second['id']).due_date=today()
         # A manual payment cannot consume money reserved for another approved request.
-        self.assertEqual(self.ledger('600000','out',reference='UNRESERVED').status_code,409)
+        unreserved=self.ledger('600000','out',reference='UNRESERVED')
+        self.assertEqual(unreserved.status_code,409,unreserved.text);self.assertIn('резерв утверждённых заявок 500000.00',unreserved.text)
         paid=self.ledger('500000','out',reference='PAY-SECOND',request_id=second['id'])
         self.assertEqual(paid.status_code,200,paid.text)
         self.assertEqual(self.client.get('/api/dashboard').json()['balance'],'500000.00')
@@ -807,8 +947,10 @@ class SiteTests(unittest.TestCase):
         companies={c['code']:c['id'] for c in self.client.get('/api/bootstrap').json()['companies']}
         r=self.post('/api/accounts',{'name':'Zuma rich bank','company_id':companies['ZUMA'],'kind':'bank','currency':'UZS','opening':'9000000','opening_date':self.date},headers={**self.h,'X-Company-ID':str(companies['ZUMA'])});self.assertEqual(r.status_code,200,r.text)
         empty=self.post('/api/accounts',{'name':'UZGERMED empty bank','company_id':companies['UZGERMED'],'kind':'bank','currency':'UZS','opening':'0','opening_date':self.date}).json()['id']
-        r=self.documented_request({'account_id':empty,'category_id':self.cat,'counterparty':'Supplier','amount':'1','date':self.date,'purpose':'Проверка изоляции денег'}).json()
-        denied=self.approve(r['id']);self.assertEqual(denied.status_code,409);self.assertIn('UZS',denied.text)
+        r=self.request('1','Проверка изоляции денег',account=empty);self.assertEqual(r.status_code,200,r.text);r=r.json()
+        denied=self.approve(r['id']);self.assertEqual(denied.status_code,409,denied.text);self.assertIn('UZS',denied.text)
+        self.assertIn('Недостаточно доступных средств на счёте «UZGERMED empty bank»',denied.text)
+        self.assertEqual(self.row(r['id'])['status'],'pending')
 
     def test_62_group_report_bank_mtd_as_of_and_no_opening_or_transfer_double_count(self):
         companies={c['code']:c['id'] for c in self.client.get('/api/bootstrap').json()['companies']}
@@ -900,8 +1042,16 @@ class SiteTests(unittest.TestCase):
             fact={'account_id':self.acc,'category_id':self.cat,'amount':'10','kind':'in','date':self.date,'reference':'OP-FACT','note':'Ввод факта оператором'}
             self.assertEqual(self.post('/api/ledger',fact,cl,h).status_code,200)
             rid=self.request().json()['id']
+            # Оператор не проходит ни проверку бухгалтера, ни этап финансового директора.
+            self.assertEqual(self.post(f'/api/requests/{rid}/decision',{'action':'check'},cl,h).status_code,403)
             self.assertEqual(self.post(f'/api/requests/{rid}/decision',{'action':'approve'},cl,h).status_code,403)
+            self.assertEqual(self.check(rid).status_code,200)
+            self.assertEqual(self.post(f'/api/requests/{rid}/decision',{'action':'approve','note':'Согласование оператором'},cl,h).status_code,403)
+            self.assertEqual(self.row(rid)['approval_stage'],'finance')
             self.assertEqual(self.post('/api/approval-policy',{'amount':'1'},cl,h).status_code,403)
+            self.assertEqual(cl.get('/api/approval-policy').status_code,403)
+            policy={'policy':'threshold','threshold_uzs':'1','reason':'Попытка оператора изменить политику'}
+            self.assertEqual(cl.put(f'/api/categories/{self.cat}/director-policy',json=policy,headers=h).status_code,403)
             self.assertEqual(cl.get('/api/users').status_code,403)
             self.assertEqual(self.post('/api/budgets',{'category_id':self.cat,'month':self.month,'currency':'UZS','amount':'1','reason':'Не разрешено оператору'},cl,h).status_code,403)
             self.assertEqual(self.preview_plan(client=cl,headers=h).status_code,200)
@@ -923,19 +1073,37 @@ class SiteTests(unittest.TestCase):
     def test_67_director_controls_limits_and_editing_without_user_administration(self):
         cl,h=self.make_user('director','director_edit')
         try:
+            # Общий порог больше не задаётся: политика директора ведётся по каждой статье.
             for currency in ('UZS','USD','EUR'):
                 self.assertEqual(self.post('/api/approval-policy',{'amount':'10','currency':currency},cl,h).status_code,409)
-            self.assertTrue(cl.get('/api/approval-policy').json()['director_always'])
+            policy=cl.get('/api/approval-policy').json()
+            self.assertFalse(policy['can_edit_skip_list'])
+            self.assertTrue(policy['categories'])
+            self.assertTrue(all(c['policy']=='always' and {e['policy'] for e in c['effective'].values()}=={'always'} for c in policy['categories']))
+            other=next(c['id'] for c in policy['categories'] if c['id']!=self.cat)
+            changed=cl.put(f'/api/categories/{other}/director-policy',json={'policy':'threshold','threshold_uzs':'1000','reason':'Порог директора для статьи'},headers=h)
+            self.assertEqual(changed.status_code,200,changed.text)
+            self.assertEqual((changed.json()['policy'],changed.json()['thresholds']['UZS']),('threshold','1000.00'))
+            policy={c['id']:c for c in cl.get('/api/approval-policy').json()['categories']}
+            self.assertEqual(policy[other]['effective']['UZS'],{'policy':'threshold','threshold':'1000.00'})
+            self.assertEqual(policy[other]['effective']['USD']['policy'],'always')
+            self.assertEqual(policy[self.cat]['policy'],'always')
             self.assertEqual(cl.get('/api/users').status_code,403)
             rid=self.request('100').json()['id']
             self.assertEqual(self.finance_approve(rid).status_code,200)
             row=next(r for r in self.client.get('/api/requests').json() if r['id']==rid)
-            edited=cl.put(f'/api/requests/{rid}',json={'account_id':self.acc,'category_id':self.cat,'counterparty':'Supplier','amount':'90','date':self.date,'purpose':'Изменение директором','reason':'Изменены условия оплаты','version':row['version']},headers=h)
+            self.assertEqual(row['approval_stage'],'director')
+            body=self.request_body('90','Изменение директором')
+            body.update(status='pending',reason='Изменены условия оплаты',version=row['version'])
+            edited=cl.put(f'/api/requests/{rid}',json=body,headers=h)
             self.assertEqual(edited.status_code,200,edited.text)
+            self.assertEqual((edited.json()['status'],edited.json()['approval_stage']),('pending','check'))
             self.assertEqual(self.finance_approve(rid).status_code,200)
+            self.assertEqual(self.row(rid)['approval_stage'],'director')
             denied=self.post(f'/api/requests/{rid}/decision',{'action':'approve'},cl,h)
             self.assertEqual(denied.status_code,403)
             self.assertIn('редактор',denied.text)
+            self.assertEqual(self.row(rid)['status'],'pending')
         finally:cl.close()
 
     def test_68_large_plan_upload_and_duplicate_pending_commits(self):
@@ -1076,7 +1244,16 @@ class SiteTests(unittest.TestCase):
         cid,h,cat,acc=self.second_company()
         self.budget('500','hard')
         self.assertTrue(all(b['limit'] is None for b in self.client.get('/api/budgets',headers=h).json()))
-        self.assertIsNone(self.client.get('/api/approval-policy',headers=h).json()['limits']['UZS'])
+        # Политика директора задаётся по статье своей компании и не видна и не меняется из другой.
+        policy={'policy':'threshold','threshold_uzs':'500','reason':'Порог директора только для UZGERMED'}
+        self.assertEqual(self.client.put(f'/api/categories/{self.cat}/director-policy',json=policy,headers=self.h).status_code,200)
+        self.assertEqual(self.client.put(f'/api/categories/{self.cat}/director-policy',json=policy,headers=h).status_code,404)
+        zuma_policy=self.client.get('/api/approval-policy',headers=h).json()['categories']
+        self.assertIn(cat,[c['id'] for c in zuma_policy]);self.assertNotIn(self.cat,[c['id'] for c in zuma_policy])
+        self.assertTrue(all(c['policy']=='always' and c['effective']['UZS']=={'policy':'always','threshold':None} for c in zuma_policy))
+        own_policy={c['id']:c for c in self.client.get('/api/approval-policy').json()['categories']}
+        self.assertNotIn(cat,own_policy)
+        self.assertEqual(own_policy[self.cat]['effective']['UZS'],{'policy':'threshold','threshold':'500.00'})
         self.post('/api/reserve',{'currency':'UZS','amount':'500'})
         self.assertEqual(self.client.get('/api/dashboard',headers=h).json()['reserve'],'0.00')
         payload={'name':'Сырьё только ZUMA','type':'outcome','activity':'operating'}
@@ -1110,26 +1287,36 @@ class SiteTests(unittest.TestCase):
         director=self.make_user('director','cycle_director')
         book=self.make_user('accountant','cycle_book')
         row=lambda:next(x for x in self.client.get('/api/requests').json() if x['id']==rid)
-        r=self.documented_request({'account_id':self.acc,'category_id':self.cat,'counterparty':'Supplier',
-            'amount':'5000','date':self.date,'purpose':'Полный цикл заявки на оплату','status':'draft'},*author)
+        r=self.post('/api/requests',{**self.request_body('5000','Полный цикл заявки на оплату'),'status':'draft'},*author)
         self.assertEqual(r.status_code,200,r.text);rid=r.json()['id']
-        self.assertEqual(r.json()['status'],'draft')
+        self.assertEqual(r.json()['status'],'draft');self.assertEqual(r.json()['missing_documents'],['internal','contract'])
+        # A draft is sent only with the internal request (indent) and the contract attached.
+        early=self.post(f'/api/requests/{rid}/decision',{'action':'submit','note':'Отправляю без документов'},*author)
+        self.assertEqual(early.status_code,409,early.text);self.assertIn('Перед отправкой прикрепите',early.text);self.assertEqual(row()['status'],'draft')
+        for kind in ('internal','contract'):
+            up=self.upload(rid,kind,*author);self.assertEqual(up.status_code,200,up.text)
         stranger=self.make_user('employee','cycle_stranger')
-        self.assertEqual(self.post(f'/api/requests/{rid}/decision',{'action':'submit','note':'Чужой черновик'},*stranger).status_code,403)
+        # Another requester does not even see the draft, so cannot send it.
+        self.assertEqual(self.post(f'/api/requests/{rid}/decision',{'action':'submit','note':'Чужой черновик'},*stranger).status_code,404)
+        self.assertEqual(row()['status'],'draft')
         self.assertEqual(self.post(f'/api/requests/{rid}/decision',{'action':'submit','note':'Отправляю на согласование'},*author).status_code,200)
         self.assertEqual(row()['status'],'pending')
         back=self.post(f'/api/requests/{rid}/decision',{'action':'return','note':'Уточните сумму по договору'},*director)
         self.assertEqual(back.status_code,200,back.text);self.assertEqual(row()['status'],'returned')
-        edit=author[0].put(f'/api/requests/{rid}',json={'account_id':self.acc,'category_id':self.cat,
-            'counterparty':'Supplier','amount':'4000','date':self.date,'purpose':'Полный цикл заявки на оплату',
+        edit=author[0].put(f'/api/requests/{rid}',json={**self.request_body('4000','Полный цикл заявки на оплату'),'status':'pending',
             'version':row()['version'],'reason':'Сумма уточнена по договору'},headers=author[1])
         self.assertEqual(edit.status_code,200,edit.text)
-        self.assertEqual(row()['status'],'pending');self.assertIsNone(row()['finance_approved_by'])
+        self.assertEqual(row()['status'],'pending');self.assertIsNone(row()['finance_approved_by']);self.assertIsNone(row()['checked_by'])
+        self.assertEqual(row()['approval_stage'],'check')
         self.assertEqual(self.finance_approve(rid).status_code,200)
         self.assertEqual(row()['status'],'pending');self.assertEqual(row()['approval_stage'],'director')
         self.assertEqual(self.finance_approve(rid).status_code,403)
         ok=self.post(f'/api/requests/{rid}/decision',{'action':'approve','note':'Подтверждаю оплату по договору'},*director)
         self.assertEqual(ok.status_code,200,ok.text);self.assertEqual(row()['status'],'approved')
+        # The accountant who checked the request is not the one who pays it.
+        own=self.post('/api/ledger',{'account_id':self.acc,'category_id':self.cat,'kind':'out','amount':'4000',
+            'date':self.date,'reference':'CYCLE-CHECKER','note':'Оплата проверявшим бухгалтером','request_id':rid},*self.stage_user('check'))
+        self.assertEqual(own.status_code,403,own.text);self.assertEqual(row()['status'],'approved')
         part=self.post('/api/ledger',{'account_id':self.acc,'category_id':self.cat,'kind':'out','amount':'1000',
             'date':self.date,'reference':'CYCLE-PART','note':'Частичная оплата заявки','request_id':rid},*book)
         self.assertEqual(part.status_code,409,part.text)
@@ -1140,7 +1327,8 @@ class SiteTests(unittest.TestCase):
             'date':self.date,'reference':'CYCLE-PAY-2','note':'Повторная оплата заявки','request_id':rid},*book)
         self.assertEqual(again.status_code,409,again.text)
         actions=' | '.join(a['action'] for a in self.client.get('/api/audit').json())
-        for expected in ('Создана заявка','Изменена заявка','Действие по заявке: return','Фактическая операция','Оплата заявки'):
+        for expected in ('Создана заявка','Добавлен документ заявки','Действие по заявке: submit','Изменена заявка','Действие по заявке: return',
+                         'Действие по заявке: check','Действие по заявке: approve','Фактическая операция','Оплата заявки'):
             self.assertIn(expected,actions)
 
     def test_78_rejected_returned_and_cancelled_requests_are_never_paid(self):
@@ -1166,7 +1354,11 @@ class SiteTests(unittest.TestCase):
         self.assertEqual(state(returned)['status'],'returned')
         self.assertEqual(pay(returned,'STOP-RETURNED').status_code,409)
         cancelled=self.request('5000',client=author[0],headers=author[1]).json()['id']
-        self.assertEqual(self.post(f'/api/requests/{cancelled}/decision',{'action':'cancel','note':'Закупка отменена'},*author).status_code,200)
+        # 'cancel' became 'close' («Закрыта без оплаты»): the author closes the request with a reason.
+        self.assertEqual(self.post(f'/api/requests/{cancelled}/decision',{'action':'cancel','note':'Закупка отменена'},*author).status_code,422)
+        self.assertEqual(self.post(f'/api/requests/{cancelled}/decision',{'action':'close','note':'Нет'},*author).status_code,422)
+        self.assertEqual(state(cancelled)['status'],'pending')
+        self.assertEqual(self.post(f'/api/requests/{cancelled}/decision',{'action':'close','note':'Закупка отменена'},*author).status_code,200)
         self.assertEqual(state(cancelled)['status'],'cancelled')
         self.assertEqual(pay(cancelled,'STOP-CANCELLED').status_code,409)
         self.assertEqual(self.client.get('/api/accounts').json()[0]['balance'],'1000000.00')
@@ -1181,12 +1373,20 @@ class SiteTests(unittest.TestCase):
         self.assertEqual(self.post(f'/api/requests/{rid}/decision',{'action':'approve','note':'Бухгалтер согласует сам'},*book).status_code,403)
         self.assertEqual(self.request('600',client=book[0],headers=book[1]).status_code,403)
         pending=self.request('700',client=author[0],headers=author[1]).json()['id']
+        draft=self.request('800',client=author[0],headers=author[1],submit=False).json()['id']
         self.assertEqual(self.approve(rid).status_code,200)
         visible=book[0].get('/api/requests',headers=book[1])
         self.assertEqual(visible.status_code,200,visible.text)
-        self.assertTrue(any(x['id']==rid for x in visible.json()))
-        self.assertFalse(any(x['id']==pending for x in visible.json()))
-        self.assertTrue(all(x['budget']['hidden'] for x in visible.json()))
+        rows={x['id']:x for x in visible.json()}
+        self.assertIn(rid,rows);self.assertIn('pay',rows[rid]['actions'])
+        # The accountant sees a request on approval only to check it, never to pay it.
+        self.assertIn(pending,rows);self.assertIn('check',rows[pending]['actions']);self.assertNotIn('pay',rows[pending]['actions'])
+        # Someone else's draft is neither listed nor opened.
+        self.assertNotIn(draft,rows)
+        self.assertEqual(book[0].get(f'/api/requests/{draft}',headers=book[1]).status_code,404)
+        card={'period','currency','budget_set','limit','used','reserved','available','after','status','mode'}
+        # Без права просмотра реестра полный бюджет статьи скрыт; карточка бюджета выбранной статьи остаётся.
+        self.assertTrue(all(set(x['budget_card'])==card and x['budget']['hidden'] and x['budget']['limit'] is None for x in rows.values()))
         wrong_amount=self.post('/api/ledger',{'account_id':self.acc,'category_id':self.cat,'kind':'out','amount':'500',
             'date':self.date,'reference':'BOOK-PARTIAL','note':'Неполная оплата','request_id':rid},*book)
         self.assertEqual(wrong_amount.status_code,409,wrong_amount.text)
@@ -1257,7 +1457,8 @@ class SiteTests(unittest.TestCase):
     def test_81_concurrent_payment_and_approval_use_independent_connections(self):
         import threading
         author=self.make_user('employee','race_author')
-        rid=self.request('600',client=author[0],headers=author[1]).json()['id']
+        r=self.request('600',client=author[0],headers=author[1]);self.assertEqual(r.status_code,200,r.text)
+        rid=r.json()['id']
         self.assertEqual(self.approve(rid).status_code,200)
         version=next(x for x in self.client.get('/api/requests').json() if x['id']==rid)['version']
         payers=[self.make_user('accountant','race_book1'),self.make_user('accountant','race_book2')]
@@ -1280,9 +1481,12 @@ class SiteTests(unittest.TestCase):
         # Два согласования, конкурирующих за один остаток на одну дату.
         small=self.post('/api/accounts',{'name':'Гонка остатка','kind':'bank','currency':'UZS','opening':'1000',
             'opening_date':self.date}).json()['id']
-        ids=[self.post('/api/requests',{'account_id':small,'category_id':self.cat,'counterparty':'Supplier',
-            'amount':'600','date':self.date,'purpose':'Заявка на один и тот же остаток'},*author).json()['id'] for _ in range(2)]
-        for i in ids:self.assertEqual(self.finance_approve(i).status_code,200)
+        made=[self.request('600','Заявка на один и тот же остаток',*author,account=small) for _ in range(2)]
+        for r in made:self.assertEqual(r.status_code,200,r.text)
+        ids=[r.json()['id'] for r in made]
+        for i in ids:
+            self.assertEqual(self.finance_approve(i).status_code,200)
+            self.assertEqual(self.row(i)['approval_stage'],'director')
         versions={x['id']:x['version'] for x in self.client.get('/api/requests').json()}
         approvers=[self.make_user('director','race_dir1'),self.make_user('director','race_dir2')]
         gate=threading.Barrier(2);codes=[]
@@ -1309,33 +1513,41 @@ class SiteTests(unittest.TestCase):
         self.make_user('director','scope_director')[0].close()
         self.assertEqual(self.post('/api/company-users',{'username':'scope_director','role':'director'},headers=h).status_code,200)
         boss=self.relogin('scope_director')
-        foreign=self.post('/api/requests',{'account_id':acc,'category_id':cat,'counterparty':'Supplier',
-            'amount':'100','date':self.date,'purpose':'Заявка другой компании'},headers=h)
+        self.make_user('accountant','scope_checker')[0].close()
+        self.assertEqual(self.post('/api/company-users',{'username':'scope_checker','role':'accountant'},headers=h).status_code,200)
+        checker=self.relogin('scope_checker')
+        foreign=self.request('100','Заявка другой компании',headers=h,account=acc,category=cat)
         self.assertEqual(foreign.status_code,200,foreign.text)
-        fid=foreign.json()['id']
-        checked=self.post(f'/api/requests/{fid}/decision',{'action':'approve','version':foreign.json()['version'],
-            'note':'Согласование в другой компании'},other[0],{**other[1],'X-Company-ID':str(cid)})
+        fid=foreign.json()['id'];self.assertEqual(foreign.json()['approval_stage'],'check')
+        checked=self.post(f'/api/requests/{fid}/decision',{'action':'check','version':foreign.json()['version']},
+            checker[0],{**checker[1],'X-Company-ID':str(cid)})
         self.assertEqual(checked.status_code,200,checked.text)
-        approved=self.post(f'/api/requests/{fid}/decision',{'action':'approve','version':checked.json()['version'],
+        financed=self.post(f'/api/requests/{fid}/decision',{'action':'approve','version':checked.json()['version'],
+            'note':'Согласование в другой компании'},other[0],{**other[1],'X-Company-ID':str(cid)})
+        self.assertEqual(financed.status_code,200,financed.text)
+        approved=self.post(f'/api/requests/{fid}/decision',{'action':'approve','version':financed.json()['version'],
             'note':'Утверждение директором компании'},boss[0],{**boss[1],'X-Company-ID':str(cid)})
         self.assertEqual(approved.status_code,200,approved.text)
         self.assertEqual(approved.json()['status'],'approved')
+        fver=approved.json()['version']
         blind=self.post('/api/ledger',{'account_id':acc,'category_id':cat,'kind':'out','amount':'100',
             'date':self.date,'reference':'SCOPE-FOREIGN','note':'Оплата чужой компании','request_id':fid,
-            'request_version':2},*book)
+            'request_version':fver},*book)
         self.assertEqual(blind.status_code,404,blind.text)
         forged=book[0].post('/api/ledger',json={'account_id':acc,'category_id':cat,'kind':'out','amount':'100',
             'date':self.date,'reference':'SCOPE-FORGED','note':'Оплата с чужим контекстом','request_id':fid,
-            'request_version':2},headers={**book[1],'X-Company-ID':str(cid)})
+            'request_version':fver},headers={**book[1],'X-Company-ID':str(cid)})
         self.assertEqual(forged.status_code,403,forged.text)
         self.assertFalse(any(x['id']==fid for x in book[0].get('/api/requests',headers=book[1]).json()))
-        rid=self.request('600',client=author[0],headers=author[1]).json()['id']
-        current=self.request('600',client=author[0],headers=author[1]).json()['version']
+        self.assertEqual(book[0].get(f'/api/requests/{fid}',headers=book[1]).status_code,404)
+        submitted=self.request('600',client=author[0],headers=author[1])
+        rid=submitted.json()['id'];current=submitted.json()['version']
         self.assertEqual(self.approve(rid).status_code,200)
+        self.assertNotEqual(self.version_of(rid),current)
         stale=self.post('/api/ledger',{'account_id':self.acc,'category_id':self.cat,'kind':'out','amount':'600',
             'date':self.date,'reference':'SCOPE-STALE','note':'Оплата по устаревшей версии','request_id':rid,
             'request_version':current},*book)
-        self.assertEqual(stale.status_code,409,stale.text)
+        self.assertEqual(stale.status_code,409,stale.text);self.assertIn('изменена',stale.text)
         fresh=self.post('/api/ledger',{'account_id':self.acc,'category_id':self.cat,'kind':'out','amount':'600',
             'date':self.date,'reference':'SCOPE-FRESH','note':'Оплата по актуальной версии','request_id':rid},*book)
         self.assertEqual(fresh.status_code,200,fresh.text)
@@ -1361,6 +1573,9 @@ class SiteTests(unittest.TestCase):
         # The cashier cannot pay from a bank account.
         r=self.post('/api/ledger',self.pay_body(rid),*cashier);self.assertEqual(r.status_code,403,r.text)
         self.assertIn('расчётный бухгалтер',r.text)
+        # The accountant who checked the request holds pay_bank, but a second accountant pays it.
+        r=self.post('/api/ledger',self.pay_body(rid),*self.checker);self.assertEqual(r.status_code,403,r.text)
+        self.assertIn('проверявший',r.text)
         # Even with a payment right, participants of the request are refused.
         saved={role:set(security.PERMS[role]) for role in ('finance','director','admin')}
         try:
@@ -1369,9 +1584,10 @@ class SiteTests(unittest.TestCase):
                 r=self.post('/api/ledger',self.pay_body(rid),*who);self.assertEqual(r.status_code,403,r.text)
                 self.assertIn('согласующие',r.text)
             edited=self.request('700',client=author[0],headers=author[1]).json()
-            data={k:edited[k] for k in ('account_id','category_id','counterparty','amount','date','purpose','version')}
-            data.update(status='pending',reason='Правка администратором перед оплатой')
-            self.assertEqual(self.client.put(f"/api/requests/{edited['id']}",json=data,headers=self.h).status_code,200)
+            data={**self.request_body(edited['amount'],edited['purpose']),'version':edited['version'],
+                  'status':'pending','reason':'Правка администратором перед оплатой'}
+            put=self.client.put(f"/api/requests/{edited['id']}",json=data,headers=self.h)
+            self.assertEqual(put.status_code,200,put.text);self.assertNotEqual(put.json()['last_editor_id'],edited['creator_id'])
             self.assertEqual(self.approve(edited['id']).status_code,200)
             r=self.post('/api/ledger',self.pay_body(edited['id'],amount='700'));self.assertEqual(r.status_code,403,r.text)
         finally:
@@ -1382,10 +1598,9 @@ class SiteTests(unittest.TestCase):
         till=self.cash_account()
         author=self.make_user('employee','cash_author');cashier=self.make_user('cashier','cash_payer')
         book=self.make_user('accountant','cash_book')
-        rid=self.post('/api/requests',{'account_id':till,'category_id':self.cat,'counterparty':'Курьер','amount':'300',
-            'date':self.date,'purpose':'Выдача наличных курьеру'},*author).json()['id']
-        own=self.post('/api/requests',{'account_id':till,'category_id':self.cat,'counterparty':'Курьер','amount':'200',
-            'date':self.date,'purpose':'Собственная кассовая заявка'},*cashier).json()['id']
+        rid=self.request('300','Выдача наличных курьеру',*author,account=till,counterparty='Курьер').json()['id']
+        own=self.request('200','Собственная кассовая заявка',*cashier,account=till,counterparty='Курьер').json()['id']
+        self.assertEqual(self.row(rid)['channel'],'cash')
         for i in (rid,own):self.assertEqual(self.approve(i).status_code,200)
         listed=[x['id'] for x in cashier[0].get('/api/requests',headers=cashier[1]).json()]
         self.assertIn(rid,listed);self.assertIn(own,listed)
@@ -1435,7 +1650,7 @@ class SiteTests(unittest.TestCase):
         back=self.post(f'/api/requests/{rid}/decision',{'action':'return_finance','note':'Лимит статьи снижен после утверждения'},*book)
         self.assertEqual(back.status_code,200,back.text)
         row=state(rid);self.assertEqual((row['status'],row['approval_stage']),('pending','finance'))
-        self.assertIsNone(row['approved_by']);self.assertIsNone(row['approved_on'])
+        self.assertIsNone(row['approved_by']);self.assertIsNone(row['approved_on']);self.assertIsNotNone(row['checked_by'])
         b=next(b for b in self.client.get('/api/budgets').json() if b['category_id']==self.cat);self.assertEqual(b['reserved'],'0.00')
         # Approvers accept the soft overrun explicitly; the payer may pay exactly within it.
         self.assertEqual(self.approve(rid,note='').status_code,409)
@@ -1445,14 +1660,14 @@ class SiteTests(unittest.TestCase):
         hard=self.post('/api/categories',{'name':'Жёсткая статья','type':'outcome','activity':'operating'})
         cat=hard.json()['id'] if hard.status_code==200 else self.cat
         self.post('/api/budgets',{'category_id':cat,'month':self.month,'currency':'UZS','amount':'1000','mode':'hard','reason':'Жёсткий лимит для проверки','source':'test'})
-        second=self.post('/api/requests',{'account_id':self.acc,'category_id':cat,'counterparty':'Supplier','amount':'400','date':self.date,'purpose':'Заявка под жёсткий лимит'}).json()['id']
+        second=self.request('400','Заявка под жёсткий лимит',category=cat).json()['id']
         self.assertEqual(self.approve(second).status_code,200)
         self.post('/api/budgets',{'category_id':cat,'month':self.month,'currency':'UZS','amount':'100','mode':'hard','reason':'Лимит снижен после утверждения','source':'test'})
         r=self.post('/api/ledger',self.pay_body(second,category_id=cat,amount='400',note=long_note),*book)
-        self.assertEqual(r.status_code,409,r.text)
+        self.assertEqual(r.status_code,409,r.text);self.assertIn('пересмотреть бюджет',r.text)
         # Money that disappeared after approval also stops the payment with the same hint.
         small=self.post('/api/accounts',{'name':'Малый счёт','kind':'bank','currency':'UZS','opening':'1000','opening_date':str(today()-timedelta(days=10))}).json()['id']
-        third=self.post('/api/requests',{'account_id':small,'category_id':self.cat,'counterparty':'Supplier','amount':'800','date':self.date,'purpose':'Заявка на малый остаток'}).json()['id']
+        third=self.request('800','Заявка на малый остаток',account=small).json()['id']
         self.assertEqual(self.approve(third).status_code,200)
         edit={'name':'Малый счёт','kind':'bank','currency':'UZS','opening':'700','opening_date':str(today()-timedelta(days=10)),'allow_overdraft':False,'reason':'Уточнён начальный остаток'}
         self.assertEqual(self.post(f'/api/accounts/{small}',edit).status_code,200)
@@ -1464,20 +1679,28 @@ class SiteTests(unittest.TestCase):
         if not hasattr(self,'director'):self.director=self.make_user('director','chief')
         for who in (self.approver,self.director):
             r=self.post(f'/api/requests/{rid}/decision',{'action':'reject','note':'Нет договора с поставщиком'},*who)
-            self.assertEqual(r.status_code,422,r.text)
+            self.assertEqual(r.status_code,422,r.text);self.assertIn('Верните заявку на доработку',r.text)
         with unit(True) as s:
             old=s.get(PaymentRequest,rid);old.status='rejected';old.finance_approved_by=None
         listed=self.client.get('/api/requests?state=rejected').json()
         self.assertEqual([x['id'] for x in listed],[rid])
-        row=listed[0]
-        data={k:row[k] for k in ('account_id','category_id','counterparty','amount','date','purpose','version')}
+        row=listed[0];self.assertEqual(row['actions'],[])
+        data={k:row[k] for k in ('company_id','account_id','channel','currency','category_id','counterparty','amount','date','purpose','priority','version')}
         data.update(status='pending',reason='Попытка вернуть отклонённую заявку')
         self.assertEqual(self.client.put(f'/api/requests/{rid}',json=data,headers=self.h).status_code,409)
-        for action in ('cancel','submit','approve','return_finance'):
-            r=self.post(f'/api/requests/{rid}/decision',{'action':action,'note':'Действие над отклонённой заявкой'})
+        data.update(status='draft');self.assertEqual(self.client.put(f'/api/requests/{rid}',json=data,headers=self.h).status_code,409)
+        self.assertEqual(self.upload(rid,'other').status_code,409)
+        for action in ('close','submit','approve','return','check','reschedule','return_finance'):
+            r=self.post(f'/api/requests/{rid}/decision',{'action':action,'note':'Действие над отклонённой заявкой','date':self.dues['normal']})
             self.assertIn(r.status_code,(403,409),(action,r.text))
+        for action in ('approve','return','close'):
+            r=self.post(f'/api/requests/{rid}/decision',{'action':action,'note':'Действие над отклонённой заявкой'},*self.director)
+            self.assertIn(r.status_code,(403,409),(action,r.text))
+        # 'cancel' no longer exists at all.
+        self.assertEqual(self.post(f'/api/requests/{rid}/decision',{'action':'cancel','note':'Действие над отклонённой заявкой'}).status_code,422)
         self.assertEqual(self.ledger('600','out',request_id=rid).status_code,409)
-        self.assertEqual(self.client.get('/api/requests?state=rejected').json()[0]['status'],'rejected')
+        after=self.client.get('/api/requests?state=rejected').json()[0]
+        self.assertEqual((after['status'],after['version']),('rejected',row['version']))
         self.assertEqual(self.client.get('/api/dashboard').status_code,200)
         self.assertEqual(self.client.get(f'/api/report?year={self.date[:4]}').status_code,200)
 
@@ -1505,7 +1728,7 @@ class SiteTests(unittest.TestCase):
     def test_92_return_to_finance_is_the_payers_action_for_their_channel(self):
         till=self.cash_account();cashier=self.make_user('cashier','ret_cashier');book=self.make_user('accountant','ret_book')
         bank=self.request('100').json()['id']
-        cash=self.post('/api/requests',{'account_id':till,'category_id':self.cat,'counterparty':'Курьер','amount':'100','date':self.date,'purpose':'Кассовая заявка на возврат'}).json()['id']
+        cash=self.request('100','Кассовая заявка на возврат',account=till,counterparty='Курьер').json()['id']
         for i in (bank,cash):self.assertEqual(self.approve(i).status_code,200)
         note={'action':'return_finance','note':'Не хватает денег на дату оплаты'}
         self.assertEqual(self.post(f'/api/requests/{bank}/decision',note,*cashier).status_code,403)
@@ -1518,20 +1741,22 @@ class SiteTests(unittest.TestCase):
     def test_93_backdated_payment_cannot_take_money_reserved_for_a_due_request(self):
         book=self.make_user('accountant','late_book')
         acc=self.post('/api/accounts',{'name':'Счёт с резервом','kind':'bank','currency':'UZS','opening':'1000','opening_date':str(today()-timedelta(days=20))}).json()['id']
-        body=lambda n,d,p:{'account_id':acc,'category_id':self.cat,'counterparty':'Supplier','amount':n,'date':d,'purpose':p}
-        x=self.post('/api/requests',body('400',str(today()-timedelta(days=5)),'Просроченная утверждённая заявка')).json()['id']
-        y=self.post('/api/requests',body('600',self.date,'Заявка на сегодня')).json()['id']
+        x=self.request('400','Просроченная утверждённая заявка',account=acc).json()['id']
+        y=self.request('600','Заявка на сегодня',account=acc).json()['id']
         for i in (x,y):self.assertEqual(self.approve(i).status_code,200)
+        # Past-due dates cannot be entered any more; the scenario sets them directly in the database.
         with unit(True) as s:
-            for i in (x,y):s.get(PaymentRequest,i).approved_at=now()-timedelta(days=10)
+            for i,due in ((x,today()-timedelta(days=5)),(y,today())):
+                r=s.get(PaymentRequest,i);r.due_date=due;r.approved_at=now()-timedelta(days=10)
         # A manual expense can no longer take the reservation, so the shortfall comes from a corrected opening balance.
         spend={'account_id':acc,'category_id':self.cat,'kind':'out','amount':'400','date':str(today()-timedelta(days=1)),'reference':'LATE-OUT','note':'Расход без заявки задним числом'}
-        self.assertEqual(self.post('/api/ledger',spend).status_code,409)
+        r=self.post('/api/ledger',spend);self.assertEqual(r.status_code,409,r.text);self.assertIn('Недостаточно доступных средств',r.text)
         edit={'name':'Счёт с резервом','kind':'bank','currency':'UZS','opening':'600','opening_date':str(today()-timedelta(days=20)),'allow_overdraft':False,'reason':'Уточнён начальный остаток счёта'}
         self.assertEqual(self.post(f'/api/accounts/{acc}',edit).status_code,200)
         pay=lambda d,ref:self.post('/api/ledger',{'account_id':acc,'category_id':self.cat,'kind':'out','amount':'600','date':d,'reference':ref,'request_id':y},*book)
-        self.assertEqual(pay(self.date,'LATE-TODAY').status_code,409)
+        r=pay(self.date,'LATE-TODAY');self.assertEqual(r.status_code,409,r.text);self.assertIn('Недостаточно доступных средств',r.text)
         r=pay(str(today()-timedelta(days=6)),'LATE-BACK');self.assertEqual(r.status_code,409,r.text);self.assertIn('финансовому директору',r.text)
+        self.assertIn('Недостаточно доступных средств',r.text)
 
     def test_94_finance_only_approvals_from_the_old_threshold_are_not_payable(self):
         book=self.make_user('accountant','legacy_book')
@@ -1559,36 +1784,44 @@ class SiteTests(unittest.TestCase):
         book=self.make_user('accountant','month_book')
         acc=self.post('/api/accounts',{'name':'Долгий счёт','kind':'bank','currency':'UZS','opening':'100000','opening_date':str(today()-timedelta(days=62))}).json()['id']
         due=today().replace(day=1)-timedelta(days=5)
-        rid=self.post('/api/requests',{'account_id':acc,'category_id':self.cat,'counterparty':'Supplier','amount':'100','date':str(due),'purpose':'Заявка прошлого месяца'}).json()['id']
+        rid=self.request('100','Заявка прошлого месяца',account=acc).json()['id']
         self.assertEqual(self.approve(rid).status_code,200)
+        with unit(True) as s:s.get(PaymentRequest,rid).due_date=due
         self.budget('50','soft')
         body=lambda ref:{'account_id':acc,'category_id':self.cat,'kind':'out','amount':'100','date':self.date,'reference':ref,'request_id':rid}
         r=self.post('/api/ledger',body('MONTH-1'),*book);self.assertEqual(r.status_code,409,r.text);self.assertIn('перенести срок',r.text)
         self.assertEqual(self.post(f'/api/requests/{rid}/decision',{'action':'return_finance','note':'Бюджет месяца оплаты превышен'},*book).status_code,200)
-        moved=self.post(f'/api/requests/{rid}/decision',{'action':'reschedule','date':self.date,'note':'Срок переносится на месяц оплаты'})
+        # Today is no longer a valid due date; the new one keeps the priority's lead time within the payment month.
+        today_date=self.post(f'/api/requests/{rid}/decision',{'action':'reschedule','date':self.date,'note':'Срок переносится на месяц оплаты'})
+        self.assertEqual(today_date.status_code,422,today_date.text)
+        moved=self.post(f'/api/requests/{rid}/decision',{'action':'reschedule','date':self.dues['urgent'],'note':'Срок переносится на месяц оплаты'})
         self.assertEqual(moved.status_code,200,moved.text)
+        self.assertEqual((moved.json()['date'][:7],moved.json()['approval_stage']),(self.month,'finance'))
         self.assertEqual(self.approve(rid).status_code,200)
         self.assertEqual(self.post('/api/ledger',body('MONTH-2'),*book).status_code,200)
 
     def test_97_early_payment_cannot_take_money_reserved_for_an_earlier_due_request(self):
         book=self.make_user('accountant','early_book')
         acc=self.post('/api/accounts',{'name':'Счёт очередности','kind':'bank','currency':'UZS','opening':'150','opening_date':str(today()-timedelta(days=5))}).json()['id']
-        body=lambda n,d,p:{'account_id':acc,'category_id':self.cat,'counterparty':'Supplier','amount':n,'date':d,'purpose':p}
-        late=self.post('/api/requests',body('100',str(today()+timedelta(days=10)),'Заявка с поздним сроком')).json()['id']
-        soon=self.post('/api/requests',body('100',str(today()+timedelta(days=5)),'Заявка с ранним сроком')).json()['id']
+        late=self.request('100','Заявка с поздним сроком',account=acc,date=str(today()+timedelta(days=10))).json()['id']
+        soon=self.request('100','Заявка с ранним сроком',account=acc,date=str(today()+timedelta(days=5))).json()['id']
         for i in (late,soon):self.assertEqual(self.approve(i).status_code,200)
         pay=lambda rid,ref:self.post('/api/ledger',{'account_id':acc,'category_id':self.cat,'kind':'out','amount':'100','date':self.date,'reference':ref,'request_id':rid},*book)
         r=pay(late,'EARLY-LATE');self.assertEqual(r.status_code,409,r.text);self.assertIn('финансовому директору',r.text)
+        self.assertIn('Недостаточно доступных средств',r.text)
         self.assertEqual(pay(soon,'EARLY-SOON').status_code,200)
 
     def test_98_another_months_accepted_overrun_is_not_borrowed(self):
         book=self.make_user('accountant','borrow_book')
         acc=self.post('/api/accounts',{'name':'Счёт двух месяцев','kind':'bank','currency':'UZS','opening':'100000','opening_date':str(today()-timedelta(days=62))}).json()['id']
+        prev=today().replace(day=1)-timedelta(days=5)
+        # The previous month's request is approved without any overrun and then moved to its past due date.
+        late=self.request('10','Заявка прошлого месяца',account=acc).json()['id']
+        self.assertEqual(self.approve(late).status_code,200)
+        with unit(True) as s:s.get(PaymentRequest,late).due_date=prev
         self.budget('100','soft')
         big=self.request('150').json()['id'];self.assertEqual(self.approve(big).status_code,200)
-        prev=today().replace(day=1)-timedelta(days=5)
-        late=self.post('/api/requests',{'account_id':acc,'category_id':self.cat,'counterparty':'Supplier','amount':'10','date':str(prev),'purpose':'Заявка прошлого месяца'}).json()['id']
-        self.assertEqual(self.approve(late).status_code,200)
+        self.assertEqual(self.row(big)['budget_card']['after'],'-50.00')
         r=self.post('/api/ledger',{'account_id':acc,'category_id':self.cat,'kind':'out','amount':'10','date':self.date,'reference':'BORROW','request_id':late},*book)
         self.assertEqual(r.status_code,409,r.text);self.assertIn('перенести срок',r.text)
         self.assertEqual(self.post('/api/ledger',self.pay_body(big,amount='150'),*book).status_code,200)
@@ -1596,22 +1829,23 @@ class SiteTests(unittest.TestCase):
     def test_99_manual_expenses_and_transfers_keep_due_reservations(self):
         acc=self.post('/api/accounts',{'name':'Счёт с резервом X','kind':'bank','currency':'UZS','opening':'1000','opening_date':str(today()-timedelta(days=20))}).json()['id']
         other=self.post('/api/accounts',{'name':'Второй счёт X','kind':'bank','currency':'UZS','opening':'0','opening_date':str(today()-timedelta(days=20))}).json()['id']
-        rid=self.post('/api/requests',{'account_id':acc,'category_id':self.cat,'counterparty':'Supplier','amount':'1000','date':str(today()-timedelta(days=2)),'purpose':'Просроченная утверждённая заявка'}).json()['id']
+        rid=self.request('1000','Просроченная утверждённая заявка',account=acc).json()['id']
         self.assertEqual(self.approve(rid).status_code,200)
+        with unit(True) as s:s.get(PaymentRequest,rid).due_date=today()-timedelta(days=2)
         spend=lambda d,ref:self.post('/api/ledger',{'account_id':acc,'category_id':self.cat,'kind':'out','amount':'1000','date':d,'reference':ref,'note':'Расход без заявки со счёта с резервом'})
-        self.assertEqual(spend(self.date,'X-TODAY').status_code,409)
-        self.assertEqual(spend(str(today()-timedelta(days=5)),'X-BACK').status_code,409)
         move={'account_id':acc,'to_account_id':other,'kind':'transfer','amount':'1000','date':self.date,'reference':'X-MOVE','note':'Перевод зарезервированных денег'}
-        self.assertEqual(self.post('/api/ledger',move).status_code,409)
-        self.assertEqual(self.post('/api/ledger',{**move,'amount':'0.01','reference':'X-MOVE-0'}).status_code,409)
+        for r in (spend(self.date,'X-TODAY'),spend(str(today()-timedelta(days=5)),'X-BACK'),
+                  self.post('/api/ledger',move),self.post('/api/ledger',{**move,'amount':'0.01','reference':'X-MOVE-0'})):
+            self.assertEqual(r.status_code,409,r.text);self.assertIn('Недостаточно доступных средств',r.text)
         self.assertEqual(self.ledger('1000','out',reference='X-PAY',account_id=acc,request_id=rid).status_code,200)
 
     def test_100_hard_budget_in_the_payment_month_asks_for_a_budget_revision(self):
         book=self.make_user('accountant','hard_book')
         acc=self.post('/api/accounts',{'name':'Счёт жёсткого месяца','kind':'bank','currency':'UZS','opening':'100000','opening_date':str(today()-timedelta(days=62))}).json()['id']
         prev=today().replace(day=1)-timedelta(days=5)
-        rid=self.post('/api/requests',{'account_id':acc,'category_id':self.cat,'counterparty':'Supplier','amount':'100','date':str(prev),'purpose':'Заявка прошлого месяца под жёсткий лимит'}).json()['id']
+        rid=self.request('100','Заявка прошлого месяца под жёсткий лимит',account=acc).json()['id']
         self.assertEqual(self.approve(rid).status_code,200)
+        with unit(True) as s:s.get(PaymentRequest,rid).due_date=prev
         self.budget('50','hard')
         r=self.post('/api/ledger',{'account_id':acc,'category_id':self.cat,'kind':'out','amount':'100','date':self.date,'reference':'HARD-1','request_id':rid},*book)
         self.assertEqual(r.status_code,409,r.text);self.assertIn('пересмотреть бюджет',r.text);self.assertNotIn('перенести срок',r.text)
@@ -1624,16 +1858,15 @@ class SiteTests(unittest.TestCase):
         from decimal import Decimal
         return format(sum(Decimal(a['balance']) for a in self.client.get('/api/accounts').json()
                           if a['company_id']==(company or self.company) and a['currency']==currency),'.2f')
-    def past_request(self,account,day,purpose='Резерв на дату отчёта'):
-        r=self.post('/api/requests',{'account_id':account,'category_id':self.cat,'counterparty':'Supplier','amount':'600','date':str(day),'purpose':purpose})
-        self.assertEqual(r.status_code,200,r.text);self.assertEqual(self.approve(r.json()['id']).status_code,200)
-
     def test_101_group_report_includes_account_opened_on_report_day(self):
         new=self.post('/api/accounts',{'name':'Opened on report day','company_id':self.company,'kind':'bank','currency':'UZS','opening':'5000000.00','opening_date':self.date})
         self.assertEqual(new.status_code,200,new.text);new=new.json()['id']
         self.assertEqual(self.ledger('100','in',reference='NEW-DAY-IN',account_id=new).status_code,200)
         self.assertEqual(self.ledger('50','transfer',reference='OLD-TO-NEW',to_account_id=new).status_code,200)
-        self.past_request(new,self.date)
+        # Утверждённая заявка со сроком в день отчёта. Новая заявка на сегодня невозможна, поэтому срок ставится напрямую.
+        r=self.request('600','Резерв на дату отчёта',account=new);self.assertEqual(r.status_code,200,r.text)
+        rid=r.json()['id'];self.assertEqual(self.approve(rid).status_code,200)
+        with unit(True) as s:s.get(PaymentRequest,rid).due_date=today()
         data=self.group_report(self.date)
         # The opening balance is set at the start of opening_date, so the day starts with it.
         self.assertEqual(data['opening'],'6000000.00')
@@ -1648,11 +1881,14 @@ class SiteTests(unittest.TestCase):
         from app.services import funds_state
         day=today()-timedelta(days=1)
         self.assertEqual(self.ledger('200','in',reference='OLD-DAY-IN',date=str(day)).status_code,200)
-        self.past_request(self.acc,day)
+        # Утверждённая заявка со сроком в день отчёта (вчера). Новая заявка в прошлом невозможна, поэтому срок ставится напрямую.
+        r=self.request('600','Резерв на дату отчёта');self.assertEqual(r.status_code,200,r.text)
+        rid=r.json()['id'];self.assertEqual(self.approve(rid).status_code,200)
+        with unit(True) as s:s.get(PaymentRequest,rid).due_date=day
         new=self.post('/api/accounts',{'name':'Opened later','company_id':self.company,'kind':'bank','currency':'UZS','opening':'5000000.00','opening_date':self.date}).json()['id']
         # A specific account still refuses dates before its own opening.
-        early=self.post('/api/requests',{'account_id':new,'category_id':self.cat,'counterparty':'Supplier','amount':'1','date':str(day),'purpose':'Дата до открытия счёта'})
-        self.assertEqual(early.status_code,422,early.text)
+        early=self.post('/api/requests',self.request_body('1','Дата до открытия счёта',date=str(day),account=new))
+        self.assertEqual(early.status_code,422,early.text);self.assertIn('Дата раньше начала учёта выбранного счёта',early.text)
         with unit() as s:
             with self.assertRaises(HTTPException) as denied:funds_state(s,s.get(Account,new),day)
             self.assertEqual(denied.exception.status_code,422)
@@ -1680,7 +1916,10 @@ class SiteTests(unittest.TestCase):
         self.assertEqual(self.ledger('100','in',reference='DAY-IN').status_code,200)
         self.assertEqual(self.ledger('40','out',reference='DAY-OUT').status_code,200)
         self.assertEqual(self.ledger('50','transfer',reference='DAY-TRANSFER',to_account_id=cash).status_code,200)
-        self.past_request(self.acc,day)
+        # Утверждённая заявка со сроком в день отчёта. Новая заявка на сегодня невозможна, поэтому срок ставится напрямую.
+        r=self.request('600','Резерв на дату отчёта');self.assertEqual(r.status_code,200,r.text)
+        rid=r.json()['id'];self.assertEqual(self.approve(rid).status_code,200)
+        with unit(True) as s:s.get(PaymentRequest,rid).due_date=day
         before,current=self.group_report(prev),self.group_report(day)
         self.assertEqual((before['opening'],before['income_day'],before['closing']),('1000250.00','300.00','1000550.00'))
         self.assertEqual((before['reserved'],before['available']),('0.00','1000550.00'))
@@ -1717,9 +1956,16 @@ class SiteTests(unittest.TestCase):
             self.assertEqual(cl.get(f'/api/report?company_id={uzg}').status_code,403)
             self.assertEqual(cl.get(f'/api/report?company_id={uzg}',headers=h).status_code,409)
             # Direct identifiers of the other company inside the own company context.
-            row={'account_id':self.acc,'category_id':self.cat,'counterparty':'Supplier','amount':'600','date':self.date,'purpose':'Попытка чужой правки','version':1,'reason':'Попытка изменить чужую заявку'}
+            version=self.version_of(rid)
+            self.assertEqual(cl.get(f'/api/requests/{rid}',headers=h).status_code,404)
+            row=self.request_body('600','Попытка чужой правки');row.update(company_id=zuma,version=version,status='pending',reason='Попытка изменить чужую заявку')
             self.assertEqual(cl.put(f'/api/requests/{rid}',json=row,headers=h).status_code,404)
-            self.assertEqual(cl.post(f'/api/requests/{rid}/decision',json={'action':'cancel','version':3,'note':'Отмена чужой заявки'},headers=h).status_code,404)
+            for action in ('close','return','approve'):
+                self.assertEqual(cl.post(f'/api/requests/{rid}/decision',json={'action':action,'version':version,'note':'Действие по чужой заявке'},headers=h).status_code,404,action)
+            self.assertEqual(self.upload(rid,'other',cl,h,version=version).status_code,404)
+            self.assertEqual(cl.post('/api/requests',json=self.request_body('600','Заявка с чужого счёта'),headers=h).status_code,409)
+            alien=self.request_body('600','Заявка с чужого счёта');alien['company_id']=zuma
+            self.assertEqual(cl.post('/api/requests',json=alien,headers=h).status_code,404)
             edit={'name':'Чужой счёт','kind':'bank','currency':'UZS','opening':'1','opening_date':self.date,'allow_overdraft':False,'reason':'Попытка изменить чужой счёт'}
             self.assertEqual(cl.post(f'/api/accounts/{self.acc}',json=edit,headers=h).status_code,404)
             spend={'account_id':self.acc,'category_id':self.cat,'kind':'out','amount':'1','date':self.date,'reference':'ALIEN','note':'Расход с чужого счёта'}
@@ -1727,6 +1973,7 @@ class SiteTests(unittest.TestCase):
             self.assertEqual(cl.post('/api/ledger',json=spend,headers=foreign).status_code,403)
         finally:cl.close()
         self.assertEqual(self.client.get('/api/accounts').json()[0]['balance'],'1000000.00')
+        after=self.row(rid);self.assertEqual((after['status'],after['version'],after['amount']),('approved',version,'600.00'))
 
     def test_105_founder_sees_every_company_and_changes_nothing(self):
         ids=self.company_ids()
@@ -1741,8 +1988,13 @@ class SiteTests(unittest.TestCase):
                 self.assertEqual(me['permissions'],['audit','export','ledger','view'])
                 for path in ('/api/dashboard','/api/accounts','/api/ledger','/api/requests','/api/budgets',f'/api/report?year={self.date[:4]}','/api/audit'):
                     self.assertEqual(cl.get(path,headers=hh).status_code,200,(code,path))
+            # Учредитель видит заявку, но сервер не предлагает ему ни одного действия.
+            listed=next(x for x in cl.get('/api/requests',headers=h).json() if x['id']==rid)
+            self.assertEqual(listed['actions'],[])
+            self.assertEqual(cl.get(f'/api/requests/{rid}',headers=h).json()['actions'],[])
+            version=self.version_of(rid)
             writes=[('/api/accounts',{'name':'Учредитель','kind':'bank','currency':'UZS','opening':'0','opening_date':self.date}),
-                    ('/api/requests',{'account_id':self.acc,'category_id':self.cat,'counterparty':'Supplier','amount':'1','date':self.date,'purpose':'Заявка учредителя'}),
+                    ('/api/requests',self.request_body('1','Заявка учредителя')),
                     ('/api/ledger',{'account_id':self.acc,'category_id':self.cat,'kind':'in','amount':'1','date':self.date,'reference':'OWNER','note':'Поступление учредителя'}),
                     ('/api/budgets',{'category_id':self.cat,'month':self.month,'currency':'UZS','amount':'1','mode':'soft','reason':'Бюджет учредителя'}),
                     ('/api/reserve',{'currency':'UZS','amount':'1'}),
@@ -1751,14 +2003,19 @@ class SiteTests(unittest.TestCase):
                     ('/api/receipts',{'account_id':self.acc,'category_id':self.cat,'counterparty':'Покупатель','amount':'1','date':self.date}),
                     ('/api/approval-policy',{'amount':'1'}),
                     ('/api/users',{'username':'owner_made','name':'owner_made','password':PASSWORD,'role':'employee'}),
-                    ('/api/company-users',{'username':'admin'}),
-                    (f'/api/requests/{rid}/decision',{'action':'approve','version':1,'note':'Согласование учредителем'})]
+                    ('/api/company-users',{'username':'admin'})]
+            writes+=[(f'/api/requests/{rid}/decision',{'action':action,'version':version,'note':'Действие учредителя по заявке'})
+                     for action in ('check','approve','return','close','return_finance','reschedule')]
             for path,body in writes:
-                self.assertEqual(cl.post(path,json=body,headers=h).status_code,403,path)
-            row={'account_id':self.acc,'category_id':self.cat,'counterparty':'Supplier','amount':'1','date':self.date,'purpose':'Правка учредителем','version':1,'reason':'Правка заявки учредителем'}
+                self.assertEqual(cl.post(path,json=body,headers=h).status_code,403,(path,body.get('action')))
+            row=self.request_body('1','Правка учредителем');row.update(version=version,status='pending',reason='Правка заявки учредителем')
             self.assertEqual(cl.put(f'/api/requests/{rid}',json=row,headers=h).status_code,403)
+            self.assertEqual(self.upload(rid,'other',cl,h,version=version).status_code,403)
+            policy={'policy':'threshold','threshold_uzs':'1','reason':'Политика директора от учредителя'}
+            self.assertEqual(cl.put(f'/api/categories/{self.cat}/director-policy',json=policy,headers=h).status_code,403)
             self.assertEqual(self.preview_plan(client=cl,headers=h).status_code,403)
         finally:cl.close()
+        after=self.row(rid);self.assertEqual((after['status'],after['version'],after['approval_stage']),('pending',version,'check'))
         # The founder is not a member of a company and cannot be given a company role.
         self.assertEqual(self.post('/api/company-users',{'username':'owner','role':'finance'}).status_code,409)
 
@@ -1769,29 +2026,51 @@ class SiteTests(unittest.TestCase):
             own=self.request('100',client=cl,headers=h).json()['id']
             listed=cl.get('/api/requests',headers=h).json()
             self.assertEqual([x['id'] for x in listed],[own]);self.assertNotIn(foreign,[x['id'] for x in listed])
-            self.assertTrue(listed[0]['budget']['hidden']);self.assertNotIn('limit',{k for k,v in listed[0]['budget'].items() if v is not None})
+            self.assertEqual(cl.get('/api/requests?paginated=true',headers=h).json()['total'],1)
+            # Полный бюджет статьи заявителю скрыт; карточка бюджета выбранной статьи есть; остатков счетов в заявке нет.
+            self.assertTrue(listed[0]['budget']['hidden']);self.assertIsNone(listed[0]['budget']['limit'])
+            self.assertEqual(set(listed[0]['budget_card']),{'period','currency','budget_set','limit','used','reserved','available','after','status','mode'})
+            self.assertFalse({'balance','opening','account_balance','actual'}&set(listed[0]))
+            self.assertTrue({'actions','route','documents','missing_documents'}<=set(listed[0]))
+            self.assertEqual(cl.get(f'/api/requests/{foreign}',headers=h).status_code,404)
             for path in ('/api/accounts','/api/dashboard','/api/ledger','/api/budgets',f'/api/report?year={self.date[:4]}',
                          f'/api/group-report?company_id={self.company}&currency=UZS&scenario=A&month={self.month}&day={self.date}'):
                 self.assertEqual(cl.get(path,headers=h).status_code,403,path)
             accounts=cl.get('/api/bootstrap',headers=h).json()['accounts']
             self.assertTrue(accounts)
             self.assertTrue(all(not {'balance','opening','available'}&set(a) for a in accounts))
-            self.assertEqual(self.post(f'/api/requests/{foreign}/decision',{'action':'cancel','note':'Отмена чужой заявки'},cl,h).status_code,403)
+            # Чужую заявку заявитель не закрывает и не меняет: для него её нет.
+            for action in ('close','return','check','approve'):
+                self.assertEqual(self.post(f'/api/requests/{foreign}/decision',{'action':action,'note':'Действие по чужой заявке'},cl,h).status_code,404,action)
+            # Документы чужой заявки заявитель не читает и не меняет.
+            self.assertEqual(self.upload(foreign,'other',cl,h,version=self.version_of(foreign)).status_code,403)
+            self.assertEqual(cl.get(f'/api/requests/{foreign}/documents',headers=h).status_code,403)
+            doc=self.row(foreign)['documents_list'][0]['id']
+            self.assertEqual(cl.get(f'/api/request-documents/{doc}',headers=h).status_code,403)
+            self.assertEqual(cl.post(f'/api/request-documents/{doc}/remove',json={'version':self.version_of(foreign),'reason':'Чужой документ заявки'},headers=h).status_code,403)
         finally:cl.close()
+        self.assertEqual(self.row(foreign)['status'],'pending')
+        self.assertEqual(self.row(foreign)['documents'],{'internal':1,'contract':1,'other':0})
 
     def test_107_requester_budget_card_shows_only_availability_and_the_rest_after(self):
         book=self.make_user('accountant','card_book')
         self.budget('1000','soft');rid=self.request('600').json()['id'];self.assertEqual(self.approve(rid).status_code,200)
         cl,h=self.make_user('employee','card_buyer')
         try:
-            q=lambda n:cl.get(f'/api/budget-check?account_id={self.acc}&category_id={self.cat}&amount={n}&date={self.date}',headers=h)
+            q=lambda n:cl.get(f"/api/budget-check?account_id={self.acc}&category_id={self.cat}&amount={n}&date={self.dues['normal']}",headers=h)
+            # Карточка бюджета статьи: лимит, оплачено, резерв утверждённых, доступно и остаток после заявки — без остатков счетов.
             ok=q('300').json()
-            self.assertEqual(ok,{'period':self.month,'currency':'UZS','budget_set':True,'available':'400.00','after':'100.00','status':'ok','mode':'soft'})
-            over=q('500').json();self.assertEqual((over['after'],over['status']),('-100.00','soft'))
+            self.assertEqual(ok,{'period':self.month,'currency':'UZS','budget_set':True,'limit':'1000.00','used':'0.00','reserved':'600.00',
+                                 'available':'400.00','after':'100.00','status':'ok','mode':'soft'})
+            over=q('500').json();self.assertEqual((over['available'],over['after'],over['status']),('400.00','-100.00','soft'))
             other=next(c['id'] for c in cl.get('/api/bootstrap',headers=h).json()['categories'] if c['id']!=self.cat and c['type']=='outcome')
-            none=cl.get(f'/api/budget-check?account_id={self.acc}&category_id={other}&amount=1&date={self.date}',headers=h).json()
-            self.assertEqual((none['budget_set'],none['status']),(False,'no_budget'))
-            self.assertEqual(book[0].get(f'/api/budget-check?account_id={self.acc}&category_id={self.cat}&amount=1&date={self.date}',headers=book[1]).status_code,403)
+            none=cl.get(f"/api/budget-check?account_id={self.acc}&category_id={other}&amount=1&date={self.dues['normal']}",headers=h).json()
+            self.assertEqual((none['budget_set'],none['status'],none['limit'],none['available'],none['after']),(False,'no_budget',None,None,None))
+            self.assertEqual(book[0].get(f"/api/budget-check?account_id={self.acc}&category_id={self.cat}&amount=1&date={self.dues['normal']}",headers=book[1]).status_code,403)
+            # После оплаты сумма переходит из резерва в «оплачено»; доступный остаток статьи не меняется.
+            self.assertEqual(self.ledger('600','out',request_id=rid).status_code,200)
+            paid=q('300').json()
+            self.assertEqual((paid['used'],paid['reserved'],paid['available'],paid['after'],paid['status']),('600.00','0.00','400.00','100.00','ok'))
         finally:cl.close()
 
     def test_108_a_company_employee_is_moved_to_the_new_company(self):
@@ -1805,6 +2084,24 @@ class SiteTests(unittest.TestCase):
             self.assertEqual(cl.get('/api/bootstrap',headers=hu).status_code,403)
             self.assertEqual(cl.get('/api/bootstrap',headers=hz).json()['user']['role'],'director')
             self.assertEqual([c['code'] for c in cl.get('/api/companies').json()['companies']],['ZUMA'])
+            # Прежняя компания закрыта: заявку UZGERMED перенесённый сотрудник не согласует.
+            rid=self.request('600').json()['id'];self.assertEqual(self.check(rid).status_code,200)
+            self.assertEqual(cl.post(f'/api/requests/{rid}/decision',json={'action':'approve','version':self.version_of(rid),'note':'Проверено финансовым директором'},headers=hu).status_code,403)
+            self.assertEqual(self.row(rid)['approval_stage'],'finance')
+            # В новой компании он директор: этап финансового директора не проходит, свой этап — проходит.
+            cid,zh,cat,acc=self.second_company()
+            zr=self.request('100','Заявка второй компании',headers=zh,account=acc,category=cat).json()
+            self.assertEqual((zr['company_id'],zr['approval_stage']),(zuma,'check'))
+            book=self.user_in(zuma,'accountant','zuma_book')
+            checked=book[0].post(f"/api/requests/{zr['id']}/decision",json={'action':'check','version':zr['version']},headers=book[1])
+            self.assertEqual(checked.status_code,200,checked.text);self.assertEqual(checked.json()['approval_stage'],'finance')
+            self.assertEqual(cl.post(f"/api/requests/{zr['id']}/decision",json={'action':'approve','version':checked.json()['version'],'note':'Попытка финансового этапа'},headers=hz).status_code,403)
+            fin=self.user_in(zuma,'finance','zuma_fin')
+            passed=fin[0].post(f"/api/requests/{zr['id']}/decision",json={'action':'approve','version':checked.json()['version'],'note':'Проверено во второй компании'},headers=fin[1])
+            self.assertEqual(passed.status_code,200,passed.text);self.assertEqual(passed.json()['approval_stage'],'director')
+            done=cl.post(f"/api/requests/{zr['id']}/decision",json={'action':'approve','version':passed.json()['version'],'note':'Утверждаю директором'},headers=hz)
+            self.assertEqual(done.status_code,200,done.text);self.assertEqual(done.json()['status'],'approved')
+            fin[0].close();book[0].close()
         finally:cl.close()
 
     def test_109_holding_admin_gets_finances_only_by_a_separate_assignment(self):
@@ -1836,10 +2133,13 @@ class SiteTests(unittest.TestCase):
     def test_110_permissions_have_no_generic_pay_and_payments_stay_split(self):
         from app.security import PERMS,ROLES
         self.assertTrue(all('pay' not in PERMS[r] for r in ROLES))
-        self.assertEqual(PERMS['accountant'],{'ledger','pay_bank'});self.assertIn('pay_cash',PERMS['cashier'])
+        # Расчётный бухгалтер проверяет заявки и платит только банк; касса — только кассир.
+        self.assertEqual(PERMS['accountant'],{'ledger','pay_bank','request_check'});self.assertIn('pay_cash',PERMS['cashier'])
+        self.assertNotIn('pay_bank',PERMS['cashier']);self.assertNotIn('pay_cash',PERMS['accountant'])
         self.assertTrue(all(not {'pay_bank','pay_cash'}&PERMS[r] for r in ('admin','founder','director','finance','operator')))
+        self.assertFalse({'request','approve','write'}&PERMS['accountant'])
         book=self.make_user('accountant','split_book')
-        self.assertEqual(book[0].get('/api/bootstrap',headers=book[1]).json()['user']['permissions'],['ledger','pay_bank'])
+        self.assertEqual(book[0].get('/api/bootstrap',headers=book[1]).json()['user']['permissions'],['ledger','pay_bank','request_check'])
 
     def test_111_company_role_column_is_added_to_an_existing_database(self):
         from sqlalchemy import inspect as sa_inspect,text
@@ -1940,7 +2240,7 @@ class SiteTests(unittest.TestCase):
         # Роли не восстанавливаются из прежнего поля: пустые связи остаются пустыми.
         self.assertEqual(set(roles.values()),{None})
 
-    def test_115_admin_center_lists_scope_and_archives_without_deleting_history(self):
+    def test_136_admin_center_lists_scope_and_archives_without_deleting_history(self):
         self.make_user('procurement','old_buyer')[0].close()
         rows=self.client.get('/api/admin/users').json()
         buyer=next(u for u in rows if u['username']=='old_buyer')
@@ -1954,7 +2254,7 @@ class SiteTests(unittest.TestCase):
         denied=TestClient(app).post('/api/login',json={'username':'old_buyer','password':PASSWORD})
         self.assertEqual(denied.status_code,401)
 
-    def test_116_company_employee_is_moved_instead_of_getting_two_company_scopes(self):
+    def test_137_company_employee_is_moved_instead_of_getting_two_company_scopes(self):
         ids=self.company_ids();zuma=ids['ZUMA'];uzg=ids['UZGERMED']
         self.make_user('material_accountant','stock_book')[0].close()
         self.assertEqual(self.post('/api/company-users',{'username':'stock_book','role':'material_accountant'},headers={**self.h,'X-Company-ID':str(zuma)}).status_code,200)
@@ -1968,5 +2268,626 @@ class SiteTests(unittest.TestCase):
             self.assertEqual(cl.get('/api/bootstrap',headers={**h,'X-Company-ID':str(uzg)}).status_code,403)
         finally:cl.close()
 
+
+    # ---- Маршрут заявок 2.13: политика директора, вложения, сроки, ВрИО, аудит.
+    def set_policy(self,cat,policy,uzs=None,usd=None,eur=None,headers=None,client=None):
+        return (client or self.client).put(f'/api/categories/{cat}/director-policy',headers=headers or self.h,json={'policy':policy,'threshold_uzs':uzs,
+            'threshold_usd':usd,'threshold_eur':eur,'reason':'Политика согласована владельцем'})
+    def account(self,name,currency='UZS',kind='bank',opening='1000000.00',headers=None):
+        r=self.post('/api/accounts',{'name':name,'kind':kind,'currency':currency,'opening':opening,'opening_date':str(today()-timedelta(days=10))},headers=headers)
+        self.assertEqual(r.status_code,200,r.text);return r.json()['id']
+    def category_id(self,name,headers=None):
+        return next(c['id'] for c in self.client.get('/api/bootstrap',headers=headers or self.h).json()['categories'] if c['name']==name)
+    def after_finance(self,rid):
+        """Проверка бухгалтера и финансовый директор; возвращает карточку заявки."""
+        self.assertEqual(self.check(rid).status_code,200)
+        r=self.post(f'/api/requests/{rid}/decision',{'action':'approve','note':'Проверено финансовым директором'},*self.stage_user('finance'))
+        self.assertEqual(r.status_code,200,r.text);return self.row(rid)
+
+    def test_115_director_policy_always_threshold_skip_and_safe_default(self):
+        # Первоначальная настройка: обычные статьи — порог 5 000 000 UZS и 500 USD, EUR без порога;
+        # налоги и коммунальные услуги — без директора.
+        with unit(True) as s:
+            for c in s.scalars(select(Category)):c.director_policy=None;c.director_threshold_uzs=c.director_threshold_usd=c.director_threshold_eur=None;c.skip_allowed=False
+            s.delete(s.get(Setting,'director_policy_v1'))
+        initialize()
+        policy={c['name']:c for c in self.client.get('/api/approval-policy',headers=self.h).json()['categories']}
+        self.assertEqual((policy['Закупка сырья']['policy'],policy['Закупка сырья']['thresholds']),('threshold',{'UZS':'5000000.00','USD':'500.00','EUR':None}))
+        self.assertEqual(policy['Закупка сырья']['effective']['EUR'],{'policy':'always','threshold':None})
+        for name in ('Налоги','Коммунальные услуги'):self.assertEqual((policy[name]['policy'],policy[name]['skip_allowed']),('skip',True),name)
+        self.assertNotIn('Поступления от покупателей',policy)
+        zuma={c['code']:c['id'] for c in self.client.get('/api/companies').json()['companies']}['ZUMA']
+        self.assertIn('Коммунальные услуги',[c['name'] for c in self.client.get('/api/bootstrap',headers={**self.h,'X-Company-ID':str(zuma)}).json()['categories']])
+        # always: директор утверждает любую сумму.
+        self.assertEqual(self.set_policy(self.cat,'always').status_code,200)
+        rid=self.request('600').json()['id'];self.assertEqual(self.after_finance(rid)['approval_stage'],'director')
+        # threshold: только сумма выше порога валюты заявки.
+        self.assertEqual(self.set_policy(self.cat,'threshold',uzs='1000').status_code,200)
+        low=self.request('1000').json()['id'];card=self.after_finance(low)
+        self.assertEqual((card['status'],card['route']['director_required'],card['approved_by']),('approved',False,None))
+        high=self.request('1000.01').json()['id'];self.assertEqual(self.after_finance(high)['approval_stage'],'director')
+        # Утверждённая без директора по политике заявка оплачивается; платёж проводит отдельный бухгалтер.
+        self.assertEqual(self.ledger('1000.00','out','PAY-LOW',request_id=low).status_code,200)
+        # skip разрешён только статьям из утверждённого перечня.
+        self.assertEqual(self.set_policy(self.cat,'skip').status_code,409)
+        taxes=self.category_id('Налоги')
+        self.assertEqual(self.set_policy(taxes,'skip').status_code,200)
+        tax=self.request('9000',category=taxes).json()['id'];self.assertEqual(self.after_finance(tax)['status'],'approved')
+        # Порог без значений не задаётся; новая статья без политики — директор всегда.
+        self.assertEqual(self.set_policy(self.cat,'threshold').status_code,422)
+        new_cat=self.post('/api/categories',{'name':'Новая статья','type':'outcome','activity':'operating'}).json()['id']
+        fresh=self.request('1',category=new_cat).json()['id'];self.assertEqual(self.after_finance(fresh)['approval_stage'],'director')
+        # Перечень статей без директора меняет только администратор холдинга; финансовый директор не меняет политику.
+        fin=self.stage_user('finance')
+        self.assertEqual(self.set_policy(self.cat,'always',headers=fin[1],client=fin[0]).status_code,403)
+        self.assertEqual(fin[0].put(f'/api/categories/{self.cat}/skip-allowed',json={'allowed':True,'reason':'Регулярный платёж по договору'},headers=fin[1]).status_code,403)
+        self.assertEqual(self.client.put(f'/api/categories/{taxes}/skip-allowed',json={'allowed':False,'reason':'Исключаем из перечня'},headers=self.h).status_code,409)
+        self.assertEqual(self.client.put(f'/api/categories/{self.cat}/skip-allowed',json={'allowed':True,'reason':'Регулярный платёж по договору'},headers=self.h).status_code,200)
+        self.assertEqual(self.set_policy(self.cat,'skip').status_code,200)
+        income=self.category_id('Поступления от покупателей')
+        self.assertEqual(self.set_policy(income,'always').status_code,422)
+        actions=[a['action'] for a in self.client.get('/api/audit',headers=self.h).json()]
+        self.assertIn('Изменена политика директора по статье',actions);self.assertIn('Изменён перечень статей без директора',actions)
+
+    def test_116_director_thresholds_are_separate_for_uzs_usd_and_eur(self):
+        usd=self.account('USD bank','USD',opening='100000.00');eur=self.account('EUR bank','EUR',opening='100000.00')
+        self.assertEqual(self.set_policy(self.cat,'threshold',uzs='1000',usd='500').status_code,200)
+        cases=[(self.acc,'900',False),(self.acc,'1500',True),(usd,'500',False),(usd,'500.01',True),(eur,'1',True)]
+        for account,n,director in cases:
+            rid=self.request(n,account=account).json()['id'];card=self.after_finance(rid)
+            self.assertEqual(card['route']['director_required'],director,(card['currency'],n))
+            self.assertEqual(card['status'],'pending' if director else 'approved',(card['currency'],n))
+        self.assertEqual(self.set_policy(self.cat,'threshold',eur='100').status_code,200)
+        rid=self.request('100',account=eur).json()['id'];self.assertEqual(self.after_finance(rid)['status'],'approved')
+        # Без порога в UZS после этой правки директор снова нужен для любой суммы в UZS.
+        rid=self.request('1').json()['id'];self.assertEqual(self.after_finance(rid)['approval_stage'],'director')
+
+    def test_117_catalog_changes_never_reroute_submitted_requests(self):
+        self.assertEqual(self.set_policy(self.cat,'threshold',uzs='1000').status_code,200)
+        small=self.request('600').json()['id']
+        self.assertEqual((self.row(small)['route']['policy'],self.row(small)['route']['threshold']),('threshold','1000.00'))
+        big=self.request('600').json()['id']
+        self.assertEqual(self.set_policy(self.cat,'always').status_code,200)
+        # Отправленная заявка идёт по снимку: директор не нужен, хотя статья уже «всегда».
+        self.assertEqual(self.after_finance(small)['status'],'approved')
+        # Возврат и повторная отправка делают новый снимок.
+        self.assertEqual(self.post(f'/api/requests/{big}/decision',{'action':'return','note':'Уточните назначение платежа'}).status_code,200)
+        self.assertEqual(self.post(f'/api/requests/{big}/decision',{'action':'submit'}).status_code,200)
+        self.assertEqual(self.row(big)['route']['policy'],'always');self.assertEqual(self.after_finance(big)['approval_stage'],'director')
+        # И наоборот: заявка, отправленная при «всегда», требует директора после смягчения политики.
+        strict=self.request('600').json()['id']
+        self.assertEqual(self.set_policy(self.cat,'threshold',uzs='1000000').status_code,200)
+        self.assertEqual(self.after_finance(strict)['approval_stage'],'director')
+
+    def test_118_draft_without_files_and_submit_requires_indent_and_contract(self):
+        cl,h=self.make_user('employee','buyer')
+        try:
+            body=self.request_body('600','Закупка материалов по индентам')
+            self.assertEqual(self.post('/api/requests',{**body,'status':'pending'},cl,h).status_code,422)
+            draft=self.post('/api/requests',body,cl,h);self.assertEqual(draft.status_code,200,draft.text)
+            rid=draft.json()['id'];self.assertEqual(draft.json()['status'],'draft');self.assertEqual(draft.json()['missing_documents'],['internal','contract'])
+            submit=lambda:self.post(f'/api/requests/{rid}/decision',{'action':'submit'},cl,h)
+            r=submit();self.assertEqual(r.status_code,409);self.assertIn('Индент',r.json()['detail']);self.assertIn('Договор',r.json()['detail'])
+            self.assertEqual(self.upload(rid,'internal',cl,h).status_code,200)
+            r=submit();self.assertEqual(r.status_code,409);self.assertNotIn('Индент',r.json()['detail']);self.assertIn('Договор',r.json()['detail'])
+            # PUT со статусом «на согласование» тоже требует оба документа.
+            put=lambda status:cl.put(f'/api/requests/{rid}',json={**body,'status':status,'version':self.version_of(rid),'reason':'Уточнена сумма заявки'},headers=h)
+            self.assertEqual(put('pending').status_code,409);self.assertEqual(self.row(rid)['status'],'draft')
+            # Тип, размер и содержимое файла проверяются.
+            self.assertEqual(self.upload(rid,'contract',cl,h,content=b'MZ fake program',name='invoice.exe').status_code,422)
+            self.assertEqual(self.upload(rid,'contract',cl,h,content=b'plain text',name='invoice.pdf').status_code,422)
+            self.assertEqual(self.upload(rid,'contract',cl,h,content=b'%PDF-'+b'0'*(5*1024*1024),name='big.pdf').status_code,413)
+            self.assertEqual(self.upload(rid,'bogus',cl,h).status_code,422)
+            self.assertEqual(self.upload(rid,'contract',cl,h,name='invoice.pdf').status_code,200)
+            # Прочих документов может быть несколько; они необязательны.
+            self.assertEqual(self.upload(rid,'other',cl,h,name='a.pdf').status_code,200)
+            self.assertEqual(self.upload(rid,'other',cl,h,name='b.png',content=b'\x89PNG\r\n\x1a\n0000').status_code,200)
+            r=submit();self.assertEqual(r.status_code,200,r.text);self.assertEqual(r.json()['status'],'pending')
+            self.assertEqual(r.json()['documents'],{'internal':1,'contract':1,'other':2});self.assertEqual(r.json()['missing_documents'],[])
+            # Чужой сотрудник не видит заявку и не прикладывает к ней файлы.
+            other=self.make_user('employee','other_buyer')
+            self.assertEqual(other[0].get(f'/api/requests/{rid}',headers=other[1]).status_code,404)
+            self.assertEqual(self.upload(rid,'other',*other).status_code,403);other[0].close()
+        finally:cl.close()
+
+    def test_119_replacing_a_file_after_submit_creates_a_version_and_resets_approval(self):
+        rid=self.request('600').json()['id']
+        card=self.after_finance(rid);self.assertEqual(card['approval_stage'],'director')
+        old=next(d for d in card['documents_list'] if d['kind']=='internal');version=card['version']
+        # Устаревшая версия заявки отклоняется.
+        self.assertEqual(self.upload(rid,'internal',version=version-1).status_code,409)
+        r=self.upload(rid,'internal',name='indent-v2.pdf');self.assertEqual(r.status_code,200,r.text)
+        self.assertEqual((r.json()['version'],r.json()['approval_reset']),(2,True))
+        card=self.row(rid)
+        self.assertGreater(card['version'],version)
+        self.assertEqual((card['status'],card['approval_stage'],card['checked_by'],card['finance_approved_by']),('pending','check',None,None))
+        docs=[d for d in card['documents_list'] if d['kind']=='internal']
+        self.assertEqual([(d['id'],d['version'],d['current']) for d in docs],[(old['id'],1,False),(r.json()['id'],2,True)])
+        self.assertEqual(card['documents']['internal'],1)
+        self.assertTrue(self.client.get(f"/api/request-documents/{docs[0]['id']}",headers=self.h).content.startswith(PDF))
+        self.assertIn('Новая версия документа заявки',[x['action'] for x in card['history']])
+        # Обязательный документ не убирается, прочий — убирается с причиной и тоже сбрасывает согласование.
+        self.assertEqual(self.check(rid).status_code,200)
+        other=self.upload(rid,'other').json()['id'];self.assertEqual(self.row(rid)['approval_stage'],'check')
+        self.assertEqual(self.check(rid).status_code,200)
+        required=next(d['id'] for d in self.row(rid)['documents_list'] if d['kind']=='contract')
+        remove=lambda doc:self.client.post(f'/api/request-documents/{doc}/remove',json={'version':self.version_of(rid),'reason':'Файл приложен по ошибке'},headers=self.h)
+        self.assertEqual(remove(required).status_code,409)
+        self.assertEqual(remove(other).status_code,200);self.assertEqual(self.row(rid)['approval_stage'],'check')
+        # Замена после утверждения возвращает заявку на согласование.
+        self.assertEqual(self.approve(rid).status_code,200);self.assertEqual(self.row(rid)['status'],'approved')
+        self.assertEqual(self.upload(rid,'contract',name='invoice-v2.pdf').status_code,200)
+        self.assertEqual((self.row(rid)['status'],self.row(rid)['approval_stage']),('pending','check'))
+        # Оплаченная заявка документы не меняет.
+        self.assertEqual(self.approve(rid).status_code,200);self.assertEqual(self.ledger('600.00','out','PAY-119',request_id=rid).status_code,200)
+        self.assertEqual(self.upload(rid,'other').status_code,409)
+
+    def test_120_lead_times_count_working_days_from_the_holiday_calendar(self):
+        self.assertEqual(self.dues,{'urgent':'2026-09-17','high':'2026-09-21','normal':'2026-09-25'})
+        create=lambda priority,day:self.post('/api/requests',self.request_body('600',priority=priority,date=day))
+        for priority,early,ok in [('urgent','2026-09-16','2026-09-17'),('high','2026-09-18','2026-09-21'),('normal','2026-09-24','2026-09-25')]:
+            self.assertEqual(create(priority,early).status_code,422,priority);self.assertEqual(create(priority,ok).status_code,200,priority)
+        self.assertEqual(create('urgent','2026-09-15').status_code,422)
+        days={d['day']:d['name'] for d in self.client.get('/api/calendar-days?year=2026',headers=self.h).json()}
+        self.assertEqual(days['2026-10-01'],'День учителя и наставника');self.assertIn('2026-12-08',days);self.assertIn('2026-03-21',days)
+        # Праздник и рабочая суббота из календаря меняют сроки.
+        fin=self.stage_user('finance')
+        self.assertEqual(fin[0].post('/api/calendar-days',json={'day':'2026-09-17','kind':'holiday','name':'Перенос выходного'},headers=fin[1]).status_code,403)
+        self.assertEqual(self.client.post('/api/calendar-days',json={'day':'2026-09-17','kind':'holiday','name':'Перенос выходного'},headers=self.h).status_code,200)
+        self.assertEqual(self.client.post('/api/calendar-days',json={'day':'2026-09-19','kind':'workday','name':'Рабочая суббота'},headers=self.h).status_code,200)
+        dues=self.client.get('/api/bootstrap',headers=self.h).json()['due_minimums']
+        self.assertEqual(dues,{'urgent':'2026-09-18','high':'2026-09-21','normal':'2026-09-25'})
+        self.assertEqual(create('urgent','2026-09-17').status_code,422)
+        # Черновик с верной датой проверяется повторно при отправке: новый праздник сдвигает срок.
+        rid=self.request(submit=False,priority='normal',date='2026-09-25').json()['id']
+        for kind in ('internal','contract'):self.assertEqual(self.upload(rid,kind).status_code,200)
+        self.assertEqual(self.client.post('/api/calendar-days',json={'day':'2026-09-22','kind':'holiday','name':'Дополнительный выходной'},headers=self.h).status_code,200)
+        r=self.post(f'/api/requests/{rid}/decision',{'action':'submit'});self.assertEqual(r.status_code,422,r.text)
+        self.assertEqual(self.client.delete('/api/calendar-days/2026-09-22',headers=self.h).status_code,200)
+        self.assertEqual(self.client.delete('/api/calendar-days/2026-09-17',headers=self.h).status_code,200)
+        sent=self.request('600').json()['id']
+        self.assertEqual(self.post(f'/api/requests/{sent}/decision',{'action':'reschedule','date':'2026-09-16','note':'Перенос на сегодня'},*self.stage_user('finance')).status_code,422)
+        self.assertEqual(self.post(f'/api/requests/{sent}/decision',{'action':'reschedule','date':'2026-09-18','note':'Перенос на пятницу'},*self.stage_user('finance')).status_code,200)
+
+    def test_121_requester_sees_the_chosen_category_budget_but_no_accounts(self):
+        self.budget('1000','soft')
+        rid=self.request('600').json()['id'];self.assertEqual(self.approve(rid).status_code,200)
+        self.assertEqual(self.ledger('100','out','MANUAL-121').status_code,200)
+        cl,h=self.make_user('employee','card_buyer')
+        try:
+            card=cl.get(f'/api/budget-check?account_id={self.acc}&category_id={self.cat}&amount=200&date={self.dues["urgent"]}',headers=h).json()
+            self.assertEqual(card,{'period':'2026-09','currency':'UZS','budget_set':True,'limit':'1000.00','used':'100.00','reserved':'600.00',
+                                   'available':'300.00','after':'100.00','status':'ok','mode':'soft'})
+            over=cl.get(f'/api/budget-check?account_id={self.acc}&category_id={self.cat}&amount=400&date={self.dues["urgent"]}',headers=h).json()
+            self.assertEqual((over['after'],over['status']),('-100.00','soft'))
+            income=self.category_id('Поступления от покупателей')
+            self.assertEqual(cl.get(f'/api/budget-check?account_id={self.acc}&category_id={income}&amount=1&date={self.dues["urgent"]}',headers=h).status_code,422)
+            for path in ('/api/accounts','/api/budgets','/api/dashboard','/api/ledger'):self.assertEqual(cl.get(path,headers=h).status_code,403,path)
+            self.assertTrue(all(not {'balance','opening','available'}&set(a) for a in cl.get('/api/bootstrap',headers=h).json()['accounts']))
+            own=self.request('100',client=cl,headers=h).json()
+            self.assertEqual(own['budget_card']['limit'],'1000.00');self.assertEqual(own['budget_card']['after'],'200.00')
+            self.assertEqual(cl.get(f'/api/requests/{rid}',headers=h).status_code,404)
+        finally:cl.close()
+
+    def test_122_only_return_and_close_remain_and_both_need_a_comment(self):
+        rid=self.request('600').json()['id']
+        decide=lambda action,note='',client=None:self.post(f'/api/requests/{rid}/decision',{'action':action,'note':note},*(client or ()))
+        for action in ('reject','cancel','stop'):self.assertEqual(decide(action,'Причина длиннее десяти').status_code,422,action)
+        self.assertEqual(decide('return').status_code,422)
+        self.assertEqual(decide('return','Уточните реквизиты').status_code,200);self.assertEqual(self.row(rid)['status'],'returned')
+        # Автор исправляет ту же заявку и отправляет заново: документы сохраняются.
+        self.assertEqual(decide('submit').status_code,200);self.assertEqual(self.row(rid)['status'],'pending')
+        self.assertEqual(decide('close').status_code,422)
+        self.assertEqual(decide('close','Закупка отменена поставщиком').status_code,200)
+        card=self.row(rid);self.assertEqual(card['status'],'cancelled');self.assertEqual(card['actions'],[])
+        self.assertEqual(decide('submit').status_code,403)
+        self.assertEqual(decide('return','Повторный возврат закрытой').status_code,409)
+        self.assertEqual(self.upload(rid,'other').status_code,409)
+        # Автор закрывает свою заявку, чужой заявитель — нет.
+        cl,h=self.make_user('employee','closer');other=self.make_user('employee','stranger')
+        try:
+            own=self.request('100',client=cl,headers=h).json()['id']
+            self.assertEqual(self.post(f'/api/requests/{own}/decision',{'action':'close','note':'Больше не требуется'},*other).status_code,404)
+            self.assertEqual(self.post(f'/api/requests/{own}/decision',{'action':'close','note':'Больше не требуется'},cl,h).status_code,200)
+        finally:cl.close();other[0].close()
+        self.assertEqual(self.post(f'/api/requests/{rid}/decision',{'action':'close','note':'Повторное закрытие'}).status_code,409)
+
+    def test_123_acting_substitute_works_only_in_its_company_and_period(self):
+        ids=self.company_ids();zuma=ids['ZUMA']
+        fin=self.make_user('finance','fin_main');sub=self.make_user('employee','sub_user')
+        users={u['username']:u['id'] for u in self.client.get('/api/users',headers=self.h).json()}
+        body={'user_id':users['sub_user'],'replaced_user_id':users['fin_main'],'role':'finance','starts_on':self.date,'ends_on':'2026-09-18','reason':'Отпуск финансового директора'}
+        add=lambda data,h=None:self.client.post('/api/delegations',json=data,headers=h or self.h)
+        admin_id=next(u['id'] for u in self.client.get('/api/users',headers=self.h).json() if u['username']=='admin')
+        self.assertEqual(add({**body,'user_id':admin_id}).status_code,409)
+        self.assertEqual(add({**body,'role':'director'}).status_code,409)
+        self.assertEqual(add({**body,'ends_on':'2026-09-15'}).status_code,422)
+        self.assertEqual(fin[0].post('/api/delegations',json=body,headers=fin[1]).status_code,403)
+        d=add(body);self.assertEqual(d.status_code,200,d.text);self.assertEqual(d.json()['state'],'active')
+        try:
+            me=sub[0].get('/api/bootstrap',headers=sub[1]).json()['user']
+            self.assertEqual([a['role'] for a in me['acting']],['finance']);self.assertIn('ВрИО',me['role_label'])
+            rid=self.request('600').json()['id'];self.assertEqual(self.check(rid).status_code,200)
+            r=self.post(f'/api/requests/{rid}/decision',{'action':'approve','note':'Проверено ВрИО'},*sub);self.assertEqual(r.status_code,200,r.text)
+            row=next(a for a in self.client.get('/api/audit',headers=self.h).json() if a['action']=='Действие по заявке: approve')
+            self.assertEqual((row['user'],row['acting_for'],row['role']),('sub_user','fin_main','Финансовый директор'))
+            # Собственную заявку ВрИО не согласует.
+            own=self.request('100',client=sub[0],headers=sub[1]).json()['id']
+            self.assertEqual(self.check(own).status_code,200)
+            self.assertEqual(self.post(f'/api/requests/{own}/decision',{'action':'approve','note':'Своя заявка'},*sub).status_code,403)
+            # Замещение действует только в своей компании.
+            self.assertEqual(sub[0].get('/api/bootstrap',headers={**sub[1],'X-Company-ID':str(zuma)}).status_code,403)
+            # После срока права прекращаются автоматически: срок проверяется при каждом запросе.
+            other=self.request('600').json()['id'];self.assertEqual(self.check(other).status_code,200)
+            def dates(start,end):
+                with unit(True) as s:x=s.get(Delegation,d.json()['id']);x.starts_on=start;x.ends_on=end
+            dates(date(2026,9,10),date(2026,9,15))
+            # Без замещения сотрудник снова обычный заявитель: чужая заявка ему даже не видна.
+            self.assertEqual(self.post(f'/api/requests/{other}/decision',{'action':'approve','note':'После срока'},*sub).status_code,404)
+            self.assertEqual(sub[0].get('/api/bootstrap',headers=sub[1]).json()['user']['acting'],[])
+            dates(date(2026,9,17),date(2026,9,18))
+            self.assertEqual(self.post(f'/api/requests/{other}/decision',{'action':'approve','note':'До начала срока'},*sub).status_code,404)
+            dates(FROZEN_TODAY,date(2026,9,18))
+            # Отмена прекращает права сразу.
+            self.assertEqual(self.client.post(f"/api/delegations/{d.json()['id']}/revoke",json={'reason':'Сотрудник вернулся раньше'},headers=self.h).status_code,200)
+            self.assertEqual(self.post(f'/api/requests/{other}/decision',{'action':'approve','note':'После отмены'},*sub).status_code,404)
+            states={x['id']:x['state'] for x in self.client.get('/api/delegations',headers=self.h).json()}
+            self.assertEqual(states[d.json()['id']],'revoked')
+            # ВрИО назначается только из сотрудников этой компании: сотрудник Zuma сюда не допускается.
+            outsider=self.user_in(zuma,'employee','zuma_sub')
+            zid=next(u['id'] for u in self.client.get('/api/users',headers={**self.h,'X-Company-ID':str(zuma)}).json() if u['username']=='zuma_sub')
+            refused=add({**body,'user_id':zid});self.assertEqual(refused.status_code,409,refused.text);self.assertIn('этой компании',refused.text)
+            self.assertEqual([c['code'] for c in outsider[0].get('/api/companies').json()['companies']],['ZUMA'])
+            self.assertEqual(outsider[0].get('/api/bootstrap',headers={**outsider[1],'X-Company-ID':str(self.company)}).status_code,403)
+            outsider[0].close()
+            # Будущее замещение не даёт прав до своего начала.
+            nxt=self.make_user('employee','sub_next');nid=next(u['id'] for u in self.client.get('/api/users',headers=self.h).json() if u['username']=='sub_next')
+            planned=add({**body,'user_id':nid,'starts_on':'2026-09-17'});self.assertEqual(planned.status_code,200,planned.text)
+            self.assertEqual(planned.json()['state'],'planned')
+            self.assertEqual(nxt[0].get('/api/bootstrap',headers=nxt[1]).json()['user']['acting'],[])
+            with unit(True) as s:s.get(Delegation,planned.json()['id']).starts_on=FROZEN_TODAY
+            me=nxt[0].get('/api/bootstrap',headers=nxt[1]).json()['user']
+            self.assertEqual((me['company_role'],me['roles']),('employee',['employee','finance']))
+            nxt[0].close()
+        finally:fin[0].close();sub[0].close()
+        actions=[a['action'] for a in self.client.get('/api/audit',headers=self.h).json()]
+        self.assertIn('Назначен ВрИО',actions);self.assertIn('Отменено ВрИО',actions)
+
+    def test_124_the_checking_accountant_never_pays_the_request(self):
+        rid=self.request('600').json()['id'];self.assertEqual(self.approve(rid).status_code,200)
+        card=self.row(rid);checker=self.stage_user('check')
+        self.assertIsNotNone(card['checked_by']);self.assertEqual(card['people']['checked_by'],'checker')
+        denied=self.ledger('600.00','out','PAY-CHECKER',client=checker,request_id=rid)
+        self.assertEqual(denied.status_code,403);self.assertIn('проверявший',denied.json()['detail'].lower())
+        self.assertEqual(self.ledger('600.00','out','PAY-OTHER',request_id=rid).status_code,200)
+        # Бухгалтер не проверяет свою заявку и не проходит второй этап той же заявки по ВрИО.
+        other=self.request('600').json()['id'];self.assertEqual(self.check(other).status_code,200)
+        self.assertEqual(self.post(f'/api/requests/{other}/decision',{'action':'check'},*checker).status_code,403)
+
+    def test_125_request_cards_files_and_policies_stay_inside_their_company(self):
+        ids=self.company_ids();zuma=ids['ZUMA']
+        rid=self.request('600').json()['id'];doc=self.row(rid)['documents_list'][0]['id']
+        cl,h=self.user_in(zuma,'finance','zuma_fin')
+        foreign={**h,'X-Company-ID':str(self.company)}
+        try:
+            for path in (f'/api/requests/{rid}',f'/api/request-documents/{doc}'):
+                self.assertEqual(cl.get(path,headers=h).status_code,404,path);self.assertEqual(cl.get(path,headers=foreign).status_code,403,path)
+            self.assertEqual(self.upload(rid,'other',cl,h,version=1).status_code,404)
+            self.assertEqual(cl.put(f'/api/categories/{self.cat}/director-policy',json={'policy':'always','reason':'Чужая статья компании'},headers=h).status_code,403)
+            self.assertEqual(self.client.put(f'/api/categories/{self.cat}/director-policy',json={'policy':'always','reason':'Чужая статья компании'},headers={**self.h,'X-Company-ID':str(zuma)}).status_code,404)
+            self.assertEqual(self.post(f'/api/requests/{rid}/decision',{'action':'close','note':'Чужая заявка компании','version':1},cl,h).status_code,404)
+            # Заявка с чужой компанией в теле не создаётся.
+            body=self.request_body('100');body['company_id']=zuma
+            self.assertEqual(self.post('/api/requests',body).status_code,409)
+            zacc=self.account('ZUMA bank',headers={**self.h,'X-Company-ID':str(zuma)})
+            self.assertEqual(self.post('/api/requests',{**self.request_body('100',account=zacc),'company_id':self.company}).status_code,404)
+            # Канал и валюта сверяются со счётом.
+            self.assertEqual(self.post('/api/requests',{**self.request_body('100'),'channel':'cash'}).status_code,422)
+            self.assertEqual(self.post('/api/requests',{**self.request_body('100'),'currency':'USD'}).status_code,422)
+        finally:cl.close()
+
+    def test_126_audit_keeps_ip_role_and_cannot_be_changed(self):
+        rid=self.request('600').json()['id'];self.assertEqual(self.check(rid).status_code,200)
+        rows=self.client.get('/api/audit',headers=self.h).json()
+        checked=next(a for a in rows if a['action']=='Действие по заявке: check')
+        self.assertEqual((checked['user'],checked['role'],checked['ip']),('checker','Расчётный бухгалтер','testclient'))
+        created=next(a for a in rows if a['action']=='Создана заявка');self.assertEqual(json.loads(created['detail'])['version'],1)
+        history=[x['action'] for x in self.row(rid)['history']]
+        self.assertEqual(history[:3],['Создана заявка','Добавлен документ заявки','Добавлен документ заявки'])
+        self.assertIn('Действие по заявке: submit',history)
+        # Журнал только дополняется: изменение и удаление записей отклоняются.
+        from fastapi import HTTPException as Refused
+        with self.assertRaises(Refused):
+            with unit(True) as s:s.scalars(select(Audit)).first().detail='подмена'
+        with self.assertRaises(Refused):
+            with unit(True) as s:s.delete(s.scalars(select(Audit)).first())
+        for method in ('put','delete','patch'):self.assertIn(getattr(self.client,method)('/api/audit',headers=self.h).status_code,(404,405))
+
+    def delegate(self,user,replaced,role,headers=None):
+        ids={u['username']:u['id'] for u in self.client.get('/api/users',headers=headers or self.h).json()}
+        r=self.client.post('/api/delegations',headers=headers or self.h,json={'user_id':ids[user],'replaced_user_id':ids[replaced],'role':role,
+            'starts_on':self.date,'ends_on':'2026-09-18','reason':'Отпуск сотрудника по графику'})
+        self.assertEqual(r.status_code,200,r.text);return r.json()['id']
+    def audit_row(self,action):
+        return next(a for a in self.client.get('/api/audit',headers=self.h).json() if a['action']==action)
+
+    def test_127_participants_of_earlier_rounds_never_pay(self):
+        first=self.stage_user('check');second=self.make_user('accountant','checker2')
+        rid=self.request('600').json()['id'];self.assertEqual(self.check(rid).status_code,200)
+        self.assertEqual(self.post(f'/api/requests/{rid}/decision',{'action':'return','note':'Уточните реквизиты получателя'}).status_code,200)
+        self.assertEqual(self.post(f'/api/requests/{rid}/decision',{'action':'submit'}).status_code,200)
+        self.assertEqual(self.post(f'/api/requests/{rid}/decision',{'action':'check'},*second).status_code,200)
+        self.assertEqual(self.approve(rid).status_code,200)
+        # Бухгалтер первого круга не видит «Факт оплаты» и не проводит оплату.
+        self.assertNotIn('pay',first[0].get(f'/api/requests/{rid}',headers=first[1]).json()['actions'])
+        self.assertEqual(self.ledger('600.00','out','PAY-127A',client=first,request_id=rid).status_code,403)
+        # То же после замены файла: сброс согласования не стирает участников.
+        other=self.request('600').json()['id'];self.assertEqual(self.check(other).status_code,200)
+        self.assertEqual(self.upload(other,'contract',name='invoice-v2.pdf').status_code,200)
+        self.assertEqual(self.post(f'/api/requests/{other}/decision',{'action':'check'},*second).status_code,200)
+        self.assertEqual(self.approve(other).status_code,200)
+        self.assertEqual(self.ledger('600.00','out','PAY-127B',client=first,request_id=other).status_code,403)
+        # Бухгалтер, не участвовавший в заявке, оплачивает.
+        self.assertEqual(self.ledger('600.00','out','PAY-127C',request_id=other).status_code,200)
+        second[0].close()
+
+    def test_128_editing_a_submitted_request_keeps_its_route_snapshot(self):
+        rid=self.request('600').json()['id'];self.assertEqual(self.row(rid)['route']['policy'],'always')
+        self.assertEqual(self.set_policy(self.cat,'threshold',uzs='1000').status_code,200)
+        body={**self.request_body('600',purpose='Исправлена опечатка в назначении'),'status':'pending','version':self.version_of(rid),'reason':'Опечатка в назначении платежа'}
+        self.assertEqual(self.client.put(f'/api/requests/{rid}',json=body,headers=self.h).status_code,200)
+        self.assertEqual(self.row(rid)['route']['policy'],'always');self.assertEqual(self.after_finance(rid)['approval_stage'],'director')
+        # Смена статьи — новый маршрут по политике новой статьи.
+        taxes=self.category_id('Налоги');self.assertEqual(self.set_policy(taxes,'skip').status_code,200)
+        body={**self.request_body('600',category=taxes),'status':'pending','version':self.version_of(rid),'reason':'Платёж относится к налогам'}
+        self.assertEqual(self.client.put(f'/api/requests/{rid}',json=body,headers=self.h).status_code,200)
+        self.assertEqual(self.row(rid)['route']['policy'],'skip')
+
+    def test_129_actions_under_a_substitution_are_journaled_with_both_identities(self):
+        fin=self.make_user('finance','fin_main');sub=self.make_user('employee','sub_user')
+        self.make_user('director','dir_main')[0].close();boss=self.make_user('employee','sub_boss')
+        self.delegate('sub_user','fin_main','finance');self.delegate('sub_boss','dir_main','director')
+        try:
+            def expect(action,user):
+                row=self.audit_row(action)
+                self.assertEqual((row['user'],row['role'],row['acting_for']),(user[0],user[1],user[2]),action)
+            rid=self.request('600').json()['id'];self.assertEqual(self.check(rid).status_code,200)
+            self.assertEqual(self.post(f'/api/requests/{rid}/decision',{'action':'reschedule','date':'2026-09-18','note':'Перенос по графику платежей'},*sub).status_code,200)
+            expect('Действие по заявке: reschedule',('sub_user','Финансовый директор','fin_main'))
+            self.assertEqual(self.upload(rid,'other',*sub).status_code,200)
+            expect('Добавлен документ заявки',('sub_user','Финансовый директор','fin_main'))
+            body={**self.request_body('700'),'status':'draft','version':self.version_of(rid),'reason':'Уточнена сумма платежа'}
+            self.assertEqual(sub[0].put(f'/api/requests/{rid}',json=body,headers=sub[1]).status_code,200)
+            expect('Изменена заявка',('sub_user','Финансовый директор','fin_main'))
+            other=self.request('600').json()['id'];self.assertEqual(self.check(other).status_code,200)
+            self.assertEqual(self.post(f'/api/requests/{other}/decision',{'action':'return','note':'Нужен счёт с печатью'},*sub).status_code,200)
+            expect('Действие по заявке: return',('sub_user','Финансовый директор','fin_main'))
+            self.assertEqual(self.post(f'/api/requests/{other}/decision',{'action':'close','note':'Закупка больше не нужна'},*sub).status_code,200)
+            expect('Действие по заявке: close',('sub_user','Финансовый директор','fin_main'))
+            policy={'policy':'threshold','threshold_uzs':'1000','reason':'Политика согласована владельцем'}
+            self.assertEqual(boss[0].put(f'/api/categories/{self.cat}/director-policy',json=policy,headers=boss[1]).status_code,200)
+            expect('Изменена политика директора по статье',('sub_boss','Директор','dir_main'))
+            # Действие администратора холдинга записывается как действие администратора, а не его назначения.
+            self.make_user('employee','journal_user')[0].close()
+            expect('Создан пользователь',('Test Admin','Администратор холдинга',None))
+        finally:fin[0].close();sub[0].close();boss[0].close()
+
+    def test_130_request_lists_follow_permissions_for_substitutes(self):
+        ids=self.company_ids();zuma=ids['ZUMA']
+        rid=self.request('600').json()['id']
+        outsider=self.user_in(zuma,'employee','zuma_sub');self.make_user('employee','buyer_main')[0].close()
+        zid=next(u['id'] for u in self.client.get('/api/users',headers={**self.h,'X-Company-ID':str(zuma)}).json() if u['username']=='zuma_sub')
+        buyer=next(u['id'] for u in self.client.get('/api/users',headers=self.h).json() if u['username']=='buyer_main')
+        body={'user_id':zid,'replaced_user_id':buyer,'role':'employee','starts_on':self.date,'ends_on':'2026-09-18','reason':'Командировка специалиста'}
+        # Сотрудник другой компании замещающим здесь не назначается и чужих заявок не видит.
+        self.assertEqual(self.client.post('/api/delegations',headers=self.h,json=body).status_code,409)
+        uz={'X-Company-ID':str(self.company)}
+        self.assertEqual(outsider[0].get('/api/requests',headers=uz).status_code,403)
+        outsider[0].close()
+        # ВрИО заявителя из своей компании видит только собственные заявки, а не реестр.
+        store=self.make_user('material_accountant','store_sub')
+        self.assertEqual(store[0].get('/api/requests',headers=store[1]).status_code,403)
+        self.delegate('store_sub','buyer_main','employee')
+        self.assertEqual(store[0].get('/api/requests',headers=store[1]).json(),[])
+        self.assertEqual(store[0].get(f'/api/requests/{rid}',headers=store[1]).status_code,404)
+        store[0].close()
+        # ВрИО расчётного бухгалтера видит очередь проверки, даже если его собственная роль — заявитель.
+        self.make_user('accountant','acc_main')[0].close();sub_acc=self.make_user('employee','sub_acc')
+        self.delegate('sub_acc','acc_main','accountant')
+        self.assertEqual([x['id'] for x in sub_acc[0].get('/api/requests',headers=sub_acc[1]).json()],[rid])
+        self.assertEqual(self.post(f'/api/requests/{rid}/decision',{'action':'check'},*sub_acc).status_code,200)
+        sub_acc[0].close()
+        # ВрИО финансового директора с ролью кассира создаёт счёт: права дают замещение, а не название роли.
+        self.make_user('finance','fin_owner')[0].close();cash=self.make_user('cashier','cash_sub')
+        self.delegate('cash_sub','fin_owner','finance')
+        self.assertEqual(self.post('/api/accounts',{'name':'Счёт ВрИО','kind':'bank','currency':'UZS','opening':'0','opening_date':self.date},*cash).status_code,200)
+        cash[0].close()
+
+    def test_131_removing_company_access_ends_a_substitution(self):
+        sub=self.make_user('employee','sub2');self.make_user('finance','fin_away')[0].close()
+        users={u['username']:u['id'] for u in self.client.get('/api/users',headers=self.h).json()}
+        sid=users['sub2']
+        d=self.delegate('sub2','fin_away','finance')
+        me=sub[0].get('/api/bootstrap',headers=sub[1]).json()['user']
+        self.assertEqual((me['company_role'],[a['role'] for a in me['acting']]),('employee',['finance']))
+        self.assertEqual(self.client.delete(f'/api/company-users/{sid}',headers=self.h).status_code,200)
+        # Снятие доступа завершает сеанс, отменяет замещение и записывает отмену в журнал компании.
+        self.assertEqual(sub[0].get('/api/bootstrap',headers=sub[1]).status_code,401);sub[0].close()
+        self.assertEqual(next(x for x in self.client.get('/api/delegations',headers=self.h).json() if x['id']==d)['state'],'revoked')
+        self.assertIn(('Отменено ВрИО',str(d)),[(a['action'],a['entity_id']) for a in self.client.get('/api/audit',headers=self.h).json()])
+        self.assertNotIn(sid,[u['id'] for u in self.client.get('/api/users',headers=self.h).json()])
+        cl,h=self.relogin('sub2')
+        try:
+            self.assertEqual(cl.get('/api/companies').json()['companies'],[])
+            self.assertEqual(cl.get('/api/bootstrap',headers={**h,'X-Company-ID':str(self.company)}).status_code,403)
+        finally:cl.close()
+
+    def test_132_pay_is_offered_only_when_every_required_stage_is_done(self):
+        rid=self.request('600').json()['id'];self.assertEqual(self.approve(rid).status_code,200)
+        payer=self.make_user('accountant','payer_check')
+        self.assertIn('pay',payer[0].get(f'/api/requests/{rid}',headers=payer[1]).json()['actions'])
+        # Заявка до 2.13, утверждённая без директора: оплаты нет ни в интерфейсе, ни на сервере.
+        with unit(True) as s:
+            r=s.get(PaymentRequest,rid);r.route_policy=None;r.checked_by=None;r.approved_by=None
+        self.assertNotIn('pay',payer[0].get(f'/api/requests/{rid}',headers=payer[1]).json()['actions'])
+        self.assertEqual(self.ledger('600.00','out','PAY-LEGACY',client=payer,request_id=rid).status_code,409)
+        payer[0].close()
+
+    def test_133_model_import_is_journaled_with_role_and_ip(self):
+        from unittest.mock import patch
+        with patch('app.model_import.build_snapshot',return_value={'sheets':{}}):
+            r=self.client.post('/api/model/upload',content=b'PK\x03\x04 model',headers={**self.h,'Content-Type':'application/octet-stream','X-Filename':'FinModel.xlsx'})
+        self.assertEqual(r.status_code,200,r.text)
+        row=self.audit_row('Импорт FinModel');self.assertEqual((row['ip'],row['role']),('testclient','Финансовый директор'))
+
+    def test_134_edits_of_submitted_requests_never_loosen_the_route(self):
+        pdf_put=lambda rid,n,**extra:self.client.put(f'/api/requests/{rid}',headers=self.h,json={**self.request_body(n,**extra),'status':'pending','version':self.version_of(rid),'reason':'Уточнение суммы платежа'})
+        # Политику ужесточили после отправки: правка суммы получает более строгий маршрут.
+        self.assertEqual(self.set_policy(self.cat,'threshold',uzs='1000').status_code,200)
+        rid=self.request('600').json()['id'];self.assertFalse(self.row(rid)['route']['director_required'])
+        self.assertEqual(self.set_policy(self.cat,'threshold',uzs='100').status_code,200)
+        self.assertEqual(pdf_put(rid,'950').status_code,200)
+        self.assertTrue(self.row(rid)['route']['director_required']);self.assertEqual(self.after_finance(rid)['approval_stage'],'director')
+        # Заявка без снимка (до 2.13) после правки остаётся с директором, даже если статья уже «выше порога».
+        old=self.request('600').json()['id']
+        with unit(True) as s:r=s.get(PaymentRequest,old);r.route_policy=None;r.route_threshold=None
+        self.assertEqual(self.set_policy(self.cat,'threshold',uzs='1000').status_code,200)
+        self.assertEqual(pdf_put(old,'600').status_code,200)
+        self.assertEqual((self.row(old)['route']['policy'],self.row(old)['route']['director_required']),(None,True))
+
+    def test_135_ledger_writes_and_reversals_under_a_substitution_keep_both_identities(self):
+        self.make_user('finance','fin_y')[0].close();cash=self.make_user('cashier','cash_vrio');boss=self.make_user('director','boss_vrio')
+        self.delegate('cash_vrio','fin_y','finance');self.delegate('boss_vrio','fin_y','finance')
+        try:
+            entry=self.ledger('100','in','VRIO-IN',client=cash);self.assertEqual(entry.status_code,200,entry.text)
+            row=self.audit_row('Фактическая операция');self.assertEqual((row['user'],row['role'],row['acting_for']),('cash_vrio','Финансовый директор','fin_y'))
+            h={**cash[1],'Content-Type':'application/octet-stream','X-Filename':'receipt.pdf'}
+            self.assertEqual(cash[0].post(f"/api/ledger/{entry.json()['id']}/document",content=PDF,headers=h).status_code,200)
+            row=self.audit_row('Добавлен документ');self.assertEqual((row['role'],row['acting_for']),('Финансовый директор','fin_y'))
+            # Директор со своей ролью и ВрИО финансового директора делает сторно как директор.
+            self.assertEqual(self.post(f"/api/ledger/{entry.json()['id']}/reverse",{'reason':'Ошибочная операция в журнале'},*boss).status_code,200)
+            row=self.audit_row('Сторно операции (исходная дата)');self.assertEqual((row['user'],row['role'],row['acting_for']),('boss_vrio','Директор',None))
+        finally:cash[0].close();boss[0].close()
+
+    # ---- Выпуск 2.14: повтор формы заявки, потерянный ответ, документы после отправки.
+    def office_file(self,*names):
+        """Минимальный архив Office: [Content_Types].xml и указанные части."""
+        import io,zipfile
+        out=io.BytesIO()
+        with zipfile.ZipFile(out,'w') as z:
+            z.writestr('[Content_Types].xml','<?xml version="1.0"?><Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"/>')
+            for name in names:z.writestr(name,'<?xml version="1.0"?><document/>')
+        return out.getvalue()
+    def attach(self,rid,kind,user,name='document.pdf',content=PDF,version='current'):
+        """Файл заявки от имени пользователя; version=None — без заголовка X-Request-Version."""
+        h={**user[1],'Content-Type':'application/octet-stream','X-Filename':name}
+        if version=='current':version=self.version_of(rid,user[1])
+        if version is not None:h['X-Request-Version']=str(version)
+        return user[0].post(f'/api/requests/{rid}/documents',params={'kind':kind},content=content,headers=h)
+
+    def test_138_request_form_retry_after_a_failed_file_keeps_one_request_and_one_file_per_kind(self):
+        author=self.make_user('employee','retry_buyer')
+        try:
+            other_acc=self.account('Retry bank');other_cat=self.category_id('Логистика')
+            created=self.post('/api/requests',self.request_body('100','Первичное назначение платежа'),*author)
+            self.assertEqual(created.status_code,200,created.text);rid=created.json()['id'];self.assertEqual(created.json()['status'],'draft')
+            self.assertEqual(self.attach(rid,'internal',author,name='indent.pdf').status_code,200)
+            # Второй файл формы не принят: черновик остаётся, внутренняя заявка уже на сервере.
+            bad=self.attach(rid,'contract',author,name='contract.pdf',content=b'not a pdf at all')
+            self.assertEqual(bad.status_code,422,bad.text)
+            self.assertEqual(self.row(rid)['missing_documents'],['contract'])
+            # Повтор формы: тот же черновик сохраняется с новыми значениями по актуальной версии, затем файл и отправка.
+            edit={**self.request_body('200','Уточнённое назначение платежа',priority='normal',account=other_acc,category=other_cat),
+                  'status':'draft','version':self.version_of(rid),'reason':'Повторная отправка формы заявки'}
+            saved=author[0].put(f'/api/requests/{rid}',json=edit,headers=author[1]);self.assertEqual(saved.status_code,200,saved.text)
+            self.assertEqual(saved.json()['status'],'draft')
+            self.assertEqual(self.attach(rid,'contract',author,name='contract.pdf').status_code,200)
+            sent=self.post(f'/api/requests/{rid}/decision',{'action':'submit','version':self.version_of(rid)},*author)
+            self.assertEqual(sent.status_code,200,sent.text)
+            row=self.row(rid)
+            self.assertEqual((row['status'],row['amount'],row['date'],row['purpose'],row['account_id'],row['category_id'],row['priority']),
+                             ('pending','200.00',self.dues['normal'],'Уточнённое назначение платежа',other_acc,other_cat,'normal'))
+            # Ровно одна заявка автора и ровно по одному действующему файлу каждого обязательного вида.
+            self.assertEqual([x['id'] for x in author[0].get('/api/requests',headers=author[1]).json()],[rid])
+            with unit() as s:
+                uid=s.scalar(select(User.id).where(User.username=='retry_buyer'))
+                self.assertEqual(s.scalar(select(func.count()).select_from(PaymentRequest).where(PaymentRequest.creator_id==uid)),1)
+            docs=self.client.get(f'/api/requests/{rid}/documents?history=true',headers=self.h).json()
+            self.assertEqual(sorted((d['kind'],d['version'],d['active']) for d in docs),[('contract',1,True),('internal',1,True)])
+            self.assertEqual((row['documents'],row['missing_documents']),({'internal':1,'contract':1,'other':0},[]))
+        finally:author[0].close()
+
+    def test_139_a_repeated_submit_or_draft_save_after_a_lost_response_never_pulls_the_request_back(self):
+        author=self.make_user('employee','lost_buyer')
+        try:
+            rid=self.request('300',client=author[0],headers=author[1],submit=False).json()['id']
+            for kind in ('internal','contract'):self.assertEqual(self.attach(rid,kind,author).status_code,200)
+            old=self.version_of(rid)
+            sent=self.post(f'/api/requests/{rid}/decision',{'action':'submit','version':old},*author)
+            self.assertEqual(sent.status_code,200,sent.text);current=sent.json()['version'];self.assertGreater(current,old)
+            # Ответ потерян: форма повторяет отправку со старой версией — сервер не принимает её второй раз.
+            again=self.post(f'/api/requests/{rid}/decision',{'action':'submit','version':old},*author)
+            self.assertEqual(again.status_code,409,again.text)
+            self.assertEqual(self.post(f'/api/requests/{rid}/decision',{'action':'submit','version':current},*author).status_code,403)
+            # Сохранение черновика по старой версии тоже отклоняется: заявка не возвращается в черновик.
+            body={**self.request_body('300'),'status':'draft','version':old,'reason':'Повторное сохранение черновика'}
+            self.assertEqual(author[0].put(f'/api/requests/{rid}',json=body,headers=author[1]).status_code,409)
+            row=self.row(rid)
+            self.assertEqual((row['status'],row['version'],row['approval_stage'],row['amount']),('pending',current,'check','300.00'))
+            self.assertEqual(row['documents'],{'internal':1,'contract':1,'other':0})
+            self.assertEqual([a['action'] for a in row['history']].count('Действие по заявке: submit'),1)
+        finally:author[0].close()
+
+    def test_140_files_after_submit_need_the_current_version_and_restart_the_approval(self):
+        author=self.make_user('employee','doc_author');stranger=self.make_user('employee','doc_stranger');buyer=self.make_user('procurement','doc_buyer')
+        try:
+            rid=self.request('600',client=author[0],headers=author[1]).json()['id']
+            internal=next(d['id'] for d in self.row(rid)['documents_list'] if d['kind']=='internal')
+            # Проверяющий бухгалтер читает документы заявки на проверке; другой заявитель и закупки — нет.
+            checker=self.stage_user('check')
+            self.assertEqual(checker[0].get(f'/api/requests/{rid}/documents',headers=checker[1]).status_code,200)
+            self.assertTrue(checker[0].get(f'/api/request-documents/{internal}',headers=checker[1]).content.startswith(PDF))
+            for who in (stranger,buyer):
+                self.assertEqual(who[0].get(f'/api/requests/{rid}/documents',headers=who[1]).status_code,403)
+                self.assertEqual(who[0].get(f'/api/request-documents/{internal}',headers=who[1]).status_code,403)
+                self.assertEqual(self.attach(rid,'other',who,version=self.version_of(rid)).status_code,403)
+            card=self.after_finance(rid);self.assertEqual(card['approval_stage'],'director');version=card['version']
+            # Замену после отправки вносит финансовый руководитель: без версии — 428, по устаревшей — 409.
+            fin=self.stage_user('finance')
+            self.assertEqual(self.attach(rid,'contract',fin,name='invoice-v2.pdf',version=None).status_code,428)
+            self.assertEqual(self.attach(rid,'contract',fin,name='invoice-v2.pdf',version=version-1).status_code,409)
+            same=self.row(rid);self.assertEqual((same['version'],same['approval_stage']),(version,'director'))
+            self.assertIsNotNone(same['checked_by']);self.assertIsNotNone(same['finance_approved_by'])
+            replaced=self.attach(rid,'contract',fin,name='invoice-v2.pdf',version=version)
+            self.assertEqual(replaced.status_code,200,replaced.text)
+            self.assertEqual((replaced.json()['approval_reset'],replaced.json()['status'],replaced.json()['version']),(True,'pending',2))
+            self.assertGreater(replaced.json()['request_version'],version)
+            row=self.row(rid);fin_id=fin[0].get('/api/me',headers=fin[1]).json()['user']['id']
+            self.assertEqual((row['status'],row['approval_stage'],row['checked_by'],row['finance_approved_by'],row['approved_by']),('pending','check',None,None,None))
+            self.assertEqual(row['last_editor_id'],fin_id)
+            # Загрузивший новую версию становится последним редактором и эту заявку не согласует.
+            self.assertEqual(self.check(rid).status_code,200)
+            self.assertNotIn('approve',fin[0].get(f'/api/requests/{rid}',headers=fin[1]).json()['actions'])
+            denied=self.post(f'/api/requests/{rid}/decision',{'action':'approve','note':'Согласование своей замены'},*fin)
+            self.assertEqual(denied.status_code,403,denied.text);self.assertIn('редактор',denied.text)
+            # После отправки файл не удаляется: только «убрать с причиной», и обязательный — никогда.
+            contract=next(d['id'] for d in self.row(rid)['documents_list'] if d['kind']=='contract' and d['current'])
+            self.assertEqual(author[0].delete(f'/api/request-documents/{contract}',headers={**author[1],'X-Request-Version':str(self.version_of(rid))}).status_code,409)
+            remove=lambda doc,reason='Файл приложен по ошибке':author[0].post(f'/api/request-documents/{doc}/remove',json={'version':self.version_of(rid),'reason':reason},headers=author[1])
+            self.assertEqual(remove(internal).status_code,409);self.assertEqual(remove(contract).status_code,409)
+            other=self.attach(rid,'other',author,name='act.pdf');self.assertEqual(other.status_code,200,other.text)
+            self.assertEqual(self.check(rid).status_code,200);self.assertEqual(self.row(rid)['approval_stage'],'finance')
+            self.assertEqual(remove(other.json()['id'],'коротко').status_code,422)
+            gone=remove(other.json()['id']);self.assertEqual(gone.status_code,200,gone.text);self.assertTrue(gone.json()['approval_reset'])
+            row=self.row(rid);self.assertEqual((row['approval_stage'],row['checked_by'],row['documents']['other']),('check',None,0))
+            self.assertIn('Убран документ заявки',[x['action'] for x in row['history']])
+            # DOCX принимается только как настоящий архив Word.
+            fake=self.attach(rid,'other',author,name='fake.docx',content=self.office_file('xl/workbook.xml'))
+            self.assertEqual(fake.status_code,422,fake.text)
+            self.assertEqual(self.attach(rid,'other',author,name='zip.docx',content=b'PK\x03\x04 broken archive').status_code,422)
+            real=self.attach(rid,'other',author,name='act.docx',content=self.office_file('word/document.xml'))
+            self.assertEqual(real.status_code,200,real.text)
+            self.assertEqual(self.row(rid)['documents'],{'internal':1,'contract':1,'other':1})
+        finally:author[0].close();stranger[0].close();buyer[0].close()
 
 if __name__=='__main__':unittest.main(verbosity=2)

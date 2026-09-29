@@ -5,7 +5,7 @@ from fastapi import APIRouter, Request, HTTPException, Query
 from pydantic import BaseModel, Field, ConfigDict
 from sqlalchemy import select, func
 from .db import unit, User, Category, Audit, CashPlan, Company, PlanNote, now
-from .security import session_user
+from .security import session_user, ROLES
 from .services import get, amount, log
 
 router=APIRouter()
@@ -80,7 +80,12 @@ def audit_history(request:Request,date_from:date|None=None,date_to:date|None=Non
         if action:q=q.where(Audit.action==action)
         if not technical:q=q.where(~Audit.action.like('API %'))
         total=s.scalar(select(func.count()).select_from(q.subquery()))
-        # Архивные и переведённые сотрудники остаются в журнале под своим именем.
-        users=list(s.scalars(select(User).order_by(User.name).execution_options(company_unscoped=True)));names={u.id:u.name for u in users}
-        items=[{'id':a.id,'date':(a.created_at+timedelta(hours=5)).strftime('%d.%m.%Y %H:%M'),'user':names.get(a.user_id,'Система'),'action':a.action,'entity':a.entity,'entity_id':a.entity_id,'detail':a.detail} for a in s.scalars(q.order_by(Audit.created_at.desc(),Audit.id.desc()).offset((page-1)*page_size).limit(page_size))]
-        return {'items':items,'total':total,'users':[{'id':u.id,'name':u.name} for u in users], 'actions':list(s.scalars(select(Audit.action).distinct().where(~Audit.action.like('API %')).order_by(Audit.action)))}
+        # Имена берутся без ограничения компанией: в журнале остаются бывшие, переведённые сотрудники и ВрИО.
+        names={u.id:u.name for u in s.scalars(select(User).execution_options(company_unscoped=True))}
+        # В фильтре — только те, кто действовал в журнале выбранной компании: сотрудники других компаний не раскрываются.
+        actors=set(s.scalars(select(Audit.user_id).distinct().where(Audit.user_id.is_not(None))))
+        users=sorted([{'id':i,'name':names[i]} for i in actors if i in names],key=lambda x:(x['name'],x['id']))
+        items=[{'id':a.id,'date':(a.created_at+timedelta(hours=5)).strftime('%d.%m.%Y %H:%M'),'user':names.get(a.user_id,'Система'),'action':a.action,'entity':a.entity,'entity_id':a.entity_id,'detail':a.detail,
+                'role':ROLES.get(a.role,a.role or ''),'acting_for':names.get(a.acting_for_id) if a.acting_for_id else None,'ip':a.ip,'forwarded_for':a.forwarded_for}
+               for a in s.scalars(q.order_by(Audit.created_at.desc(),Audit.id.desc()).offset((page-1)*page_size).limit(page_size))]
+        return {'items':items,'total':total,'users':users, 'actions':list(s.scalars(select(Audit.action).distinct().where(~Audit.action.like('API %')).order_by(Audit.action)))}

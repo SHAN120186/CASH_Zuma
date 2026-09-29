@@ -8,7 +8,7 @@
 """
 import json, secrets, string
 from fastapi import HTTPException
-from sqlalchemy import select, delete, func
+from sqlalchemy import select, delete, func, or_
 from .db import User, CompanyUser, Company, LoginSession, now
 from .security import ROLES, HOLDING_ROLES, COMPANY_ROLES
 
@@ -105,6 +105,38 @@ def revoke_links_and_sessions(s, user, actor=None):
     drop_groups_of(s, user, actor)
 
 
+def end_delegations(s, actor, user, reason):
+    """Замещения (ВрИО), потерявшие основание после изменения доступа, отменяются: ВрИО работает
+    только в своей компании, а заменяемый сотрудник должен по-прежнему иметь эту роль.
+    Замещение может относиться к другой компании, чем выбранная у администратора, поэтому запись
+    идёт без ограничения выбранной компанией; каждая отмена попадает в журнал своей компании."""
+    from .db import Delegation, Audit
+    from .clock import today
+    from .requests_api import can_act_in, member_role
+    rows = list(s.scalars(select(Delegation).where(Delegation.revoked_at.is_(None), Delegation.ends_on >= today(),
+                                                   or_(Delegation.user_id == user.id, Delegation.replaced_user_id == user.id))
+                          .execution_options(company_unscoped=True)))
+    ended = []
+    cid = s.info.pop('company_id', None)
+    try:
+        s.flush()
+        for d in rows:
+            acting = user if d.user_id == user.id else unscoped_user(s, d.user_id)
+            replaced = user if d.replaced_user_id == user.id else unscoped_user(s, d.replaced_user_id)
+            if can_act_in(s, d.company_id, acting) and member_role(s, d.company_id, replaced) == d.role:
+                continue
+            d.revoked_at = now()
+            d.revoked_by = actor.id if actor else None
+            s.add(Audit(company_id=d.company_id, user_id=actor.id if actor else None, action='Отменено ВрИО', entity='delegation',
+                        entity_id=str(d.id), detail=f'Изменён доступ сотрудника: {reason}'))
+            ended.append(d.id)
+        s.flush()
+    finally:
+        if cid is not None:
+            s.info['company_id'] = cid
+    return ended
+
+
 def record(s, actor, action, user, before, reason, extra=None, request=None):
     """Запись журнала об изменении доступа: исполнитель, время (created_at), причина, было и стало."""
     from .services import log
@@ -157,7 +189,8 @@ def assign(s, actor, user, company_id, role, reason, request=None):
     s.flush()
     # Изменение прав отвязывает Telegram и завершает сеансы (TELEGRAM_BOT_RU.md).
     revoke_links_and_sessions(s, user, actor)
-    record(s, actor, 'Назначение в компании', user, before, reason, {'company': company.code, 'role': role}, request)
+    ended = end_delegations(s, actor, user, reason)
+    record(s, actor, 'Назначение в компании', user, before, reason, {'company': company.code, 'role': role, 'delegations_ended': ended}, request)
     return m
 
 
@@ -169,8 +202,9 @@ def unassign(s, actor, user, company_id, reason, request=None):
     s.execute(delete(CompanyUser).where(CompanyUser.user_id == user.id, CompanyUser.company_id == company_id))
     s.flush()
     revoke_links_and_sessions(s, user, actor)
+    ended = end_delegations(s, actor, user, reason)
     record(s, actor, 'Снято назначение администратора в компании' if user.role == 'admin' else 'Отозван доступ к компании',
-           user, before, reason, {'company_id': company_id}, request)
+           user, before, reason, {'company_id': company_id, 'delegations_ended': ended}, request)
 
 
 def admins_left(s, excluding):
@@ -198,7 +232,8 @@ def set_holding(s, actor, user, holding_role, reason, company_id=None, role=None
         s.add(CompanyUser(company_id=company.id, user_id=user.id, role=role))
     s.flush()
     revoke_links_and_sessions(s, user, actor)
-    record(s, actor, 'Изменён статус холдинга', user, before, reason, {'holding_role': holding_role}, request)
+    ended = end_delegations(s, actor, user, reason)
+    record(s, actor, 'Изменён статус холдинга', user, before, reason, {'holding_role': holding_role, 'delegations_ended': ended}, request)
 
 
 def archive(s, actor, user, reason, request=None):
@@ -215,7 +250,8 @@ def archive(s, actor, user, reason, request=None):
     s.execute(delete(CompanyUser).where(CompanyUser.user_id == user.id))
     revoke_links_and_sessions(s, user, actor)
     s.flush()
-    record(s, actor, 'Пользователь архивирован; доступ ко всем компаниям отозван', user, before, reason, None, request)
+    ended = end_delegations(s, actor, user, reason)
+    record(s, actor, 'Пользователь архивирован; доступ ко всем компаниям отозван', user, before, reason, {'delegations_ended': ended}, request)
 
 
 def restore(s, actor, user, reason, holding_role=None, company_id=None, role=None, request=None):

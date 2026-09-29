@@ -10,7 +10,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import tests.test_site as base
 from tests.test_site import PASSWORD, TestClient, app
 from sqlalchemy import select, delete, func
-from app.db import unit, User, CompanyUser, Company, LoginSession, Audit, TelegramLink, PaymentRequest, initialize
+from app.db import unit, User, CompanyUser, Company, LoginSession, Audit, TelegramLink, TelegramGroup, PaymentRequest, Delegation, initialize
 
 PDF = b'%PDF-1.4\nsynthetic request document'
 
@@ -38,8 +38,8 @@ class AccessTests(base.SiteTests):
             return sorted((companies[m.company_id], m.role) for m in s.scalars(select(CompanyUser).where(CompanyUser.user_id == uid)))
 
     def draft(self, client, headers, amount='100'):
-        body = {'account_id': self.acc, 'category_id': self.cat, 'counterparty': 'Supplier', 'amount': amount,
-                'date': self.date, 'purpose': 'Закупка материалов для производства', 'status': 'draft'}
+        """Черновик (компания, канал, валюта и приоритет из формы) с внутренней заявкой."""
+        body = {**self.request_body(amount, 'Закупка материалов для производства'), 'status': 'draft'}
         r = client.post('/api/requests', json=body, headers=headers)
         self.assertEqual(r.status_code, 200, r.text)
         rid = r.json()['id']
@@ -71,9 +71,12 @@ class AccessTests(base.SiteTests):
             for path in ('/api/accounts', '/api/dashboard', '/api/ledger', '/api/budgets', '/api/export/ledger.csv'):
                 self.assertEqual(a[0].get(path, headers=a[1]).status_code, 403, path)
             self.assertEqual(a[0].get('/api/bootstrap', headers=a[1]).json()['counterparties'], [])
-            check = a[0].get(f'/api/budget-check?account_id={self.acc}&category_id={self.cat}&amount=10&date={self.date}', headers=a[1])
+            # Форма заявки показывает только карточку выбранной статьи на период, без остатков счетов.
+            check = a[0].get(f'/api/budget-check?account_id={self.acc}&category_id={self.cat}&amount=10&date={self.dues["urgent"]}', headers=a[1])
             self.assertEqual(check.status_code, 200)
-            self.assertNotIn('limit', check.json())
+            self.assertEqual(set(check.json()), {'period', 'currency', 'budget_set', 'limit', 'used', 'reserved', 'available', 'after', 'status', 'mode'})
+            self.assertFalse({'balance', 'actual', 'opening', 'spent', 'remaining'} & set(check.json()))
+            self.assertEqual(listed[0]['budget_card']['period'], check.json()['period'])
         finally:
             a[0].close(); b[0].close()
 
@@ -430,11 +433,186 @@ class AccessTests(base.SiteTests):
         conflict = {1: {5: 'finance'}, 2: {5: 'finance'}, '_valid': {1: {5}, 2: {5}}}
         self.assertIsNone(company_role_of(staff, uzg, conflict), 'a conflict suspends reminders too')
 
+    # ---- ВрИО и изменения доступа (2.14)
+    def substitute(self, acting, replaced, role='finance', headers=None):
+        return self.client.post('/api/delegations', headers=headers or self.h, json={
+            'user_id': self.user_id(acting), 'replaced_user_id': self.user_id(replaced), 'role': role,
+            'starts_on': self.date, 'ends_on': str(base.today() + base.timedelta(days=5)), 'reason': 'Отпуск сотрудника по графику'})
+
+    def acting_roles(self, name, company=None):
+        cl, h = self.relogin(name, company)
+        try:
+            r = cl.get('/api/bootstrap', headers=h)
+            return [a['role'] for a in r.json()['user']['acting']] if r.status_code == 200 else r.status_code
+        finally:
+            cl.close()
+
+    def ended(self, delegation_id, reason):
+        """Замещение отменено: время отмены, исполнитель и запись в журнале компании замещения."""
+        with unit() as s:
+            d = s.get(Delegation, delegation_id)
+            rows = list(s.scalars(select(Audit).where(Audit.action == 'Отменено ВрИО', Audit.entity == 'delegation',
+                                                      Audit.entity_id == str(delegation_id))))
+            self.assertIsNotNone(d.revoked_at, delegation_id)
+            self.assertEqual(d.revoked_by, self.client.get('/api/me').json()['user']['id'])
+            self.assertEqual([(a.company_id, reason in a.detail) for a in rows], [(self.company, True)])
+
+    def test_substitutes_come_only_from_the_company_and_lose_the_role_with_their_access(self):
+        self.staff('UZGERMED', 'finance', 'vrio_fin')[0].close()
+        self.staff('UZGERMED', 'director', 'vrio_boss')[0].close()
+        self.staff('ZUMA', 'employee', 'vrio_zuma')[0].close()
+        self.make_user('founder', 'vrio_owner')[0].close()
+        for name in ('vrio_a', 'vrio_b', 'vrio_c', 'vrio_d'):
+            self.staff('UZGERMED', 'employee', name)[0].close()
+        # Замещающий назначается только из сотрудников этой компании; учредитель не замещает.
+        refused = self.substitute('vrio_zuma', 'vrio_fin')
+        self.assertEqual(refused.status_code, 409, refused.text)
+        self.assertEqual(self.substitute('vrio_owner', 'vrio_fin').status_code, 409)
+        self.assertEqual(self.acting_roles('vrio_zuma', self.company_ids()['ZUMA']), [])
+        ids = {}
+        for name in ('vrio_a', 'vrio_b', 'vrio_c'):
+            r = self.substitute(name, 'vrio_fin');self.assertEqual(r.status_code, 200, r.text);ids[name] = r.json()['id']
+        r = self.substitute('vrio_d', 'vrio_boss', 'director');self.assertEqual(r.status_code, 200, r.text);ids['vrio_d'] = r.json()['id']
+        for name in ids:
+            self.assertEqual(len(self.acting_roles(name)), 1, name)
+        zuma = self.company_ids()['ZUMA']
+        # Перевод в другую компанию.
+        moved = self.client.put(f'/api/admin/users/{self.user_id("vrio_a")}/assignment', headers=self.h,
+                                json={'company_id': zuma, 'role': 'employee', 'reason': 'Перевод сотрудника в Zuma'})
+        self.assertEqual(moved.status_code, 200, moved.text)
+        self.ended(ids['vrio_a'], 'Перевод сотрудника в Zuma')
+        self.assertEqual(self.acting_roles('vrio_a', zuma), [])
+        self.assertEqual(self.acting_roles('vrio_a', self.company), 403)
+        # Архив.
+        self.assertEqual(self.client.post(f'/api/admin/users/{self.user_id("vrio_b")}/archive', headers=self.h,
+                                          json={'reason': 'Сотрудник уволен приказом'}).status_code, 200)
+        self.ended(ids['vrio_b'], 'Сотрудник уволен приказом')
+        self.assertEqual(self.login('vrio_b')[1].status_code, 401)
+        # Снятие назначения в компании.
+        self.assertEqual(self.client.post(f'/api/admin/users/{self.user_id("vrio_c")}/unassign', headers=self.h,
+                                          json={'company_id': self.company, 'reason': 'Доступ к компании снят'}).status_code, 200)
+        self.ended(ids['vrio_c'], 'Доступ к компании снят')
+        cl, h = self.relogin('vrio_c')
+        try:
+            self.assertEqual(cl.get('/api/companies').json()['companies'], [])
+            self.assertEqual(cl.get('/api/bootstrap', headers={**h, 'X-Company-ID': str(self.company)}).status_code, 403)
+        finally:
+            cl.close()
+        # Заменяемый сотрудник потерял роль: замещение этой роли тоже заканчивается, ВрИО остаётся сотрудником.
+        self.assertEqual(self.client.put(f'/api/admin/users/{self.user_id("vrio_boss")}/assignment', headers=self.h,
+                                         json={'company_id': self.company, 'role': 'finance', 'reason': 'Новая должность сотрудника'}).status_code, 200)
+        self.ended(ids['vrio_d'], 'Новая должность сотрудника')
+        self.assertEqual(self.acting_roles('vrio_d'), [])
+        states = {x['id']: x['state'] for x in self.client.get('/api/delegations', headers=self.h).json()}
+        self.assertEqual({states[i] for i in ids.values()}, {'revoked'})
+
+    def test_archiving_a_holding_admin_removes_only_his_telegram_summary_groups(self):
+        self.make_user('admin', 'tg_admin')[0].close()
+        uid, me = self.user_id('tg_admin'), self.client.get('/api/me').json()['user']['id']
+        gone, kept, demoted = -1001111000001, -1001111000002, -1001111000003
+        self.make_user('admin', 'tg_admin2')[0].close()
+        uid2 = self.user_id('tg_admin2')
+        with unit(True) as s:
+            s.add(TelegramGroup(chat_id=gone, title='Группа уволенного', companies='UZGERMED,ZUMA', added_by=uid))
+            s.add(TelegramGroup(chat_id=kept, title='Своя группа', companies='UZGERMED', added_by=me))
+            s.add(TelegramGroup(chat_id=demoted, title='Группа бывшего администратора', companies='ZUMA', added_by=uid2))
+        r = self.client.post(f'/api/admin/users/{uid}/archive', headers=self.h, json={'reason': 'Администратор уволен приказом'})
+        self.assertEqual(r.status_code, 200, r.text)
+        r = self.client.put(f'/api/admin/users/{uid2}/holding', headers=self.h,
+                            json={'company_id': self.company, 'role': 'employee', 'reason': 'Больше не администратор холдинга'})
+        self.assertEqual(r.status_code, 200, r.text)
+        with unit() as s:
+            self.assertEqual(sorted(g.chat_id for g in s.scalars(select(TelegramGroup))), [kept])
+            rows = list(s.scalars(select(Audit).where(Audit.action == 'Telegram-группа отключена').order_by(Audit.id)))
+        ids = self.company_ids()
+        self.assertEqual(sorted((a.entity_id, a.company_id, a.user_id) for a in rows),
+                         sorted([(str(gone), ids['UZGERMED'], me), (str(gone), ids['ZUMA'], me), (str(demoted), ids['ZUMA'], me)]))
+        self.assertTrue(all(a.entity == 'telegram_group' for a in rows))
+        self.assertIn('отключён', next(a.detail for a in rows if a.entity_id == str(gone)))
+        self.assertIn('больше не администратор холдинга', next(a.detail for a in rows if a.entity_id == str(demoted)))
+
     def test_attachment_names_are_cleaned(self):
         from app.erp import safe_filename
         self.assertEqual(safe_filename('счёт\r\n"№1".pdf', '.pdf'), 'счёт№1.pdf')
         self.assertTrue(safe_filename('a' * 300 + '.pdf', '.pdf').endswith('.pdf'))
         self.assertEqual(len(safe_filename('a' * 300 + '.pdf', '.pdf')), 220)
+
+    # ---- 2.14.0: заявки, отправленные до выпуска, и повтор загрузки
+    def legacy(self, rid, finance_id=None):
+        """Состояние заявки, отправленной в 2.12.x: снимка политики и проверки бухгалтера нет."""
+        with unit(True) as s:
+            r = s.get(PaymentRequest, rid)
+            r.route_policy = r.route_threshold = r.route_at = None
+            r.checked_by = r.checked_at = None
+            r.finance_approved_by = finance_id
+
+    def me_id(self, client, headers):
+        return client.get('/api/me', headers=headers).json()['user']['id']
+
+    def test_requests_sent_before_2_14_keep_the_old_route_without_the_accountant_check(self):
+        waiting_finance = self.request('300').json()['id']
+        waiting_director = self.request('400').json()['id']
+        finance = self.stage_user('finance')
+        self.legacy(waiting_finance)
+        self.legacy(waiting_director, self.me_id(*finance))
+        row = self.row(waiting_finance)
+        self.assertEqual((row['approval_stage'], row['route']['policy'], row['route']['director_required']), ('finance', None, True))
+        self.assertNotIn('check', row['actions'])
+        self.assertEqual(self.row(waiting_director)['approval_stage'], 'director')
+        # Бухгалтер такую заявку не проверяет: этапа проверки у неё нет.
+        refused = self.post(f'/api/requests/{waiting_director}/decision', {'action': 'check'}, *self.stage_user('check'))
+        self.assertEqual(refused.status_code, 409, refused.text)
+        # Директор утверждает сразу, как в 2.12.x; прежний маршрут по-прежнему требует директора.
+        ok = self.post(f'/api/requests/{waiting_director}/decision', {'action': 'approve', 'note': 'Утверждаю по прежнему маршруту'}, *self.stage_user('director'))
+        self.assertEqual(ok.status_code, 200, ok.text)
+        self.assertEqual((ok.json()['status'], ok.json()['checked_by']), ('approved', None))
+        first = self.post(f'/api/requests/{waiting_finance}/decision', {'action': 'approve', 'note': 'Бюджет и дата проверены'}, *finance)
+        self.assertEqual((first.status_code, first.json()['status'], first.json()['approval_stage']), (200, 'pending', 'director'), first.text)
+        # Проверявший бухгалтер отсутствует, поэтому бухгалтер канала может оплатить утверждённую прежнюю заявку.
+        paid = self.ledger('400', 'out', 'LEGACY-1', client=self.stage_user('check'), request_id=waiting_director)
+        self.assertEqual(paid.status_code, 200, paid.text)
+
+    def test_repeating_the_same_upload_does_not_create_a_second_version(self):
+        rid = self.request('500').json()['id']
+        self.approve(rid)
+        before = self.row(rid)
+        self.assertEqual(before['status'], 'approved')
+        again = self.upload(rid, 'contract')
+        self.assertEqual(again.status_code, 200, again.text)
+        self.assertTrue(again.json()['duplicate'])
+        self.assertFalse(again.json()['approval_reset'])
+        after = self.row(rid)
+        self.assertEqual((after['status'], after['version']), ('approved', before['version']))
+        self.assertEqual([d['version'] for d in after['documents_list'] if d['kind'] == 'contract'], [1])
+        other = self.upload(rid, 'other', name='act.pdf', content=b'%PDF-1.4\nanother act')
+        self.assertTrue(other.json()['approval_reset'])
+        self.assertEqual(self.upload(rid, 'other', name='act.pdf', content=b'%PDF-1.4\nanother act').json()['duplicate'], True)
+        self.assertEqual(sum(d['kind'] == 'other' for d in self.row(rid)['documents_list']), 1)
+
+    def test_file_events_logged_before_2_14_stay_in_the_request_history(self):
+        rid = self.request('600', submit=False).json()['id']
+        editor = self.stage_user('finance')
+        editor_id = self.me_id(*editor)
+        company = self.company_ids()['UZGERMED']  # не внутри unit(True): HTTP-запрос ждал бы блокировку записи
+        with unit(True) as s:
+            s.add(Audit(company_id=company, user_id=editor_id, action='Добавлен документ к заявке',
+                        entity='request_document', entity_id='999', detail=f'request={rid}; kind=internal; version=1'))
+            s.add(Audit(company_id=company, user_id=editor_id, action='Добавлен документ к заявке',
+                        entity='request_document', entity_id='998', detail=f'request={rid}0; kind=internal; version=1'))
+        history = [h['action'] for h in self.row(rid)['history']]
+        self.assertEqual(history.count('Добавлен документ к заявке'), 1, history)
+        from app.services import all_participants
+        with unit() as s:
+            self.assertIn(editor_id, all_participants(s, s.get(PaymentRequest, rid)))
+
+    def test_private_output_folder_is_refused_only_inside_the_repository_or_onedrive(self):
+        sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'deploy'))
+        import importlib
+        transition = importlib.import_module('access_transition')
+        self.assertTrue(transition.synced(Path('C:/Users/x/OneDrive/Documents/private')))
+        self.assertTrue(transition.synced(Path('C:/Users/x/OneDrive - Company/private')))
+        self.assertFalse(transition.synced(Path('C:/Users/x/AppData/Local/Temp/C--Users-x-OneDrive-Desktop-site/private')))
+        self.assertFalse(transition.synced(Path('D:/zuma-private')))
 
 for _name in dir(base.SiteTests):
     if _name.startswith('test'):
