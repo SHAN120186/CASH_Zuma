@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import base64
 import binascii
+import hashlib
 import hmac
 import logging
 import os
@@ -118,6 +119,23 @@ def report_groups(s):
     return groups
 
 
+def group_scope(s, chat_id, group):
+    """(codes, scope_id): the active companies the group may receive now and a fingerprint of them.
+
+    The bot stores the fingerprint with a summary snapshot and compares it with the current one
+    before every part it sends again after a failure or a restart; a different or missing value
+    means the rights changed and the stored parts must not go out. It is derived from the current
+    company list, not stored, so it also moves when a company is switched off or the group is
+    replaced by BOT_REPORT_GROUPS. The chat id is part of it: equal company lists in two groups
+    never share a fingerprint."""
+    active = active_codes(s)
+    codes = sorted(active[c].code for c in group['companies'] if c in active)
+    if not codes:
+        return [], None
+    scope_id = hashlib.sha256((f'{chat_id}|' + ','.join(c.upper() for c in codes)).encode()).hexdigest()[:16]
+    return codes, scope_id
+
+
 def journal_path(path):
     """Request path for the audit journal: a Telegram user id in it is personal data."""
     return '/api/bot/v1/telegram-users/{telegram_user_id}' if path.startswith('/api/bot/v1/telegram-users/') else path
@@ -190,6 +208,7 @@ def morning_summary(request: Request, chat_id: int, report_date: date, today: da
                      if c.code.upper() in codes}
         if not companies:
             raise HTTPException(403, 'Для группы не найдено активных компаний.')
+        scope_codes, scope_id = group_scope(s, chat_id, group)
         name = {cid: c.name for cid, c in companies.items()}
         all_accounts = {a.id: a for a in s.scalars(select(Account).where(Account.company_id.in_(list(companies))))}
         # An account opened after ``today`` does not exist yet. An archived account holds no money now,
@@ -261,7 +280,7 @@ def morning_summary(request: Request, chat_id: int, report_date: date, today: da
                                  f'{money(state["used"] - state["limit"])} {b.currency}'})
 
         result = {'chat_id': chat_id, 'report_date': str(report_date), 'today': str(today),
-                  'balances': balances, 'income': movements('in'), 'expense': movements('out'),
+                  'companies': scope_codes, 'scope_id': scope_id, 'balances': balances, 'income': movements('in'), 'expense': movements('out'),
                   'payments_today': payments, 'pending_approvals': pending, 'warnings': warnings}
     audit(list(companies), 'Бот: утренняя сводка', chat_id, f'Группа {chat_id}; сводка за {report_date:%d.%m.%Y}')
     return result
@@ -650,13 +669,32 @@ def list_report_groups(request: Request):
     authenticate_bot(request)
     items = []
     with unit() as s:
-        active = active_codes(s)
         for chat_id, group in sorted(report_groups(s).items()):
-            codes = sorted(active[c].code for c in group['companies'] if c in active)
+            codes, scope_id = group_scope(s, chat_id, group)
             if codes:
-                items.append({'chat_id': chat_id, 'title': group['title'], 'companies': codes, 'source': group['source']})
+                items.append({'chat_id': chat_id, 'title': group['title'], 'companies': codes,
+                              'source': group['source'], 'scope_id': scope_id})
     audit(None, 'Бот: группы сводки', '', f'Групп: {len(items)}')
     return {'items': items}
+
+
+@router.get('/api/bot/v1/report-groups/{chat_id}/scope')
+def report_group_scope(request: Request, chat_id: int):
+    """What the group may receive right now: the bot asks before every part of a stored summary it
+    sends again (after a refusal, a lost answer or a restart) and stops when the answer differs from
+    the scope stored with the snapshot. A group that is no longer allowed — removed, its companies
+    switched off, the administrator who connected it disabled or demoted — answers 200 with
+    allowed=false, so the bot can tell "not allowed any more" (stop, record) from "could not check"
+    (a 5xx or no connection: postpone the financial message)."""
+    authenticate_bot(request)
+    require_group(chat_id)
+    with unit() as s:
+        group = report_groups(s).get(chat_id)
+        codes, scope_id = group_scope(s, chat_id, group) if group else ([], None)
+    if not codes:
+        audit(None, 'Бот: группа не разрешена', chat_id, 'Проверка области доступа перед отправкой сохранённой сводки')
+        return {'chat_id': chat_id, 'allowed': False, 'companies': [], 'scope_id': None, 'source': None}
+    return {'chat_id': chat_id, 'allowed': True, 'companies': codes, 'scope_id': scope_id, 'source': group['source']}
 
 
 @router.get('/api/bot/v1/report-groups/{chat_id}')
