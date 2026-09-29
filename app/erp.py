@@ -286,7 +286,9 @@ async def add_request_document(id:int,kind:Literal['internal','contract','other'
         if same:
             # Повтор той же загрузки (например, после потерянного ответа) не создаёт вторую версию и не снимает согласования.
             return {**request_document_json(same),'request_version':payment.version,'status':payment.status,'approval_reset':False,'duplicate':True}
-        version=(previous[0].version+1) if previous else 1
+        # Прочие документы независимы друг от друга: у каждого версия 1. Обязательный документ один,
+        # и каждая замена получает следующий номер версии.
+        version=1 if kind=='other' else ((previous[0].version+1) if previous else 1)
         replaced=[old for old in previous if old.active] if kind!='other' else []
         # Обязательный документ один: новая версия заменяет прежнюю, прежняя остаётся в истории.
         for old in replaced:old.active=False

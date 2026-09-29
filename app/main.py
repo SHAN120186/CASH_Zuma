@@ -34,7 +34,7 @@ async def lifespan(app):
     drop_shadowed_groups()
     drop_orphan_groups()
     yield
-app=FastAPI(title='UZGERMED Treasury',version='2.14.3',docs_url=None,redoc_url=None,openapi_url=None,lifespan=lifespan)
+app=FastAPI(title='UZGERMED Treasury',version='2.14.4',docs_url=None,redoc_url=None,openapi_url=None,lifespan=lifespan)
 app.add_middleware(TrustedHostMiddleware,allowed_hosts=ALLOWED)
 app.mount('/static',StaticFiles(directory=ROOT/'app'/'static'),name='static')
 
@@ -525,7 +525,9 @@ def decide(id:int,data:DecisionIn,request:Request):
             else:r.approved_by=u.id
             # Директор участвует по снимку политики статьи; последний нужный этап завершает согласование.
             if stage=='director' or not requires_director(r):
-                enforce_available_funds(s,a,r.due_date,r.amount,r.id)
+                # Деньги проверяются на срок заявки и на сегодня: у просроченной заявки остаток
+                # на прошлую дату срока уже не говорит о том, что деньги есть сейчас.
+                for as_of in sorted({r.due_date,max(today(),r.due_date)}):enforce_available_funds(s,a,as_of,r.amount,r.id)
                 r.status='approved';r.approved_at=now();r.approved_overrun=overrun(b)
         elif data.action=='return':
             if not (('approve' in perms and act_with_right(u,'approve')) or act_as(u,'accountant')):raise HTTPException(403,'Недостаточно прав для возврата.')
@@ -587,7 +589,11 @@ def ledger_list(request:Request,date_from:Optional[date]=None,date_to:Optional[d
         query=select(Ledger).join(Account,Account.id==Ledger.account_id).outerjoin(Category,Category.id==Ledger.category_id)
         # Плательщик без просмотра реестра видит операции только своего канала: кассир — кассу, бухгалтер — банк.
         channels=payment_channels(perms_of(u))
-        if 'view' not in perms_of(u) and channels:query=query.where(Account.kind.in_(sorted(channels)))
+        if 'view' not in perms_of(u) and channels:
+            # Перевод хранится на счёте-источнике: пополнение кассы с банка тоже движение кассы.
+            from sqlalchemy.orm import aliased
+            target=aliased(Account)
+            query=query.outerjoin(target,target.id==Ledger.to_account_id).where(or_(Account.kind.in_(sorted(channels)),target.kind.in_(sorted(channels))))
         if currency:query=query.where(Account.currency==currency)
         if date_from:query=query.where(Ledger.date>=date_from)
         if date_to:query=query.where(Ledger.date<=date_to)
