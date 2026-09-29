@@ -2931,4 +2931,29 @@ class SiteTests(unittest.TestCase):
         docs=self.client.get(f'/api/requests/{rid}/documents?history=true',headers=self.h).json()
         self.assertEqual(sorted((d['version'],d['active']) for d in docs if d['kind']=='contract'),[(1,False),(2,True)])
 
+    def test_144_legacy_user_forms_never_revoke_a_non_member_or_reset_the_admins_own_password(self):
+        ids=self.company_ids();zuma=ids['ZUMA'];uz=ids['UZGERMED']
+        cl,h=self.user_in(zuma,'cashier','zuma_till')
+        try:
+            uid=cl.get('/api/me',headers=h).json()['user']['id']
+            def links():
+                with unit() as s:return sorted((m.company_id,m.role) for m in s.scalars(select(CompanyUser).where(CompanyUser.user_id==uid).execution_options(company_unscoped=True)))
+            before=links()
+            self.assertEqual(before,[(zuma,'cashier')])
+            # Revoking access in a company where the user has no assignment is not a change and ends no session.
+            gone=self.client.delete(f'/api/company-users/{uid}',headers={**self.h,'X-Company-ID':str(uz)})
+            self.assertEqual(gone.status_code,404,gone.text)
+            self.assertEqual(cl.get('/api/me',headers=h).status_code,200)
+            with unit() as s:self.assertEqual(s.scalar(select(func.count()).select_from(Audit).where(Audit.action=='Отозван доступ к компании').execution_options(company_unscoped=True)),0)
+            # The same form in the right company still works, and a real revoke ends the session.
+            self.assertEqual(self.client.post(f'/api/users/{uid}',json={'role':'cashier','active':True},headers={**self.h,'X-Company-ID':str(zuma)}).status_code,200)
+            self.assertEqual(self.client.delete(f'/api/company-users/{uid}',headers={**self.h,'X-Company-ID':str(zuma)}).status_code,200)
+            self.assertEqual(cl.get('/api/me',headers=h).status_code,401)
+            # An administrator does not reset their own password through the legacy routes either.
+            me=self.client.get('/api/me').json()['user']['id']
+            self.assertEqual(self.client.post(f'/api/users/{me}/password',json={'password':PASSWORD+'y'},headers=self.h).status_code,409)
+            self.assertEqual(self.client.post(f'/api/users/{me}',json={'role':'admin','active':True,'password':PASSWORD+'y'},headers=self.h).status_code,409)
+            self.assertEqual(self.client.get('/api/me').status_code,200)
+        finally:cl.close()
+
 if __name__=='__main__':unittest.main(verbosity=2)

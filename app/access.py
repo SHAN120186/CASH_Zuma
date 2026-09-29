@@ -10,7 +10,7 @@ import json, secrets, string
 from fastapi import HTTPException
 from sqlalchemy import select, delete, func, or_
 from .db import User, CompanyUser, Company, LoginSession, now
-from .security import ROLES, HOLDING_ROLES, COMPANY_ROLES
+from .security import ROLES, HOLDING_ROLES, COMPANY_ROLES, client_ip
 
 SERVICE_CODE = 'UNASSIGNED'
 # Без похожих символов (0/O, 1/l/I): пароль диктуют и переписывают вручную.
@@ -144,7 +144,7 @@ def record(s, actor, action, user, before, reason, extra=None, request=None):
     if extra:
         detail.update(extra)
     if request is not None and request.client:
-        detail['ip'] = request.client.host
+        detail['ip'] = client_ip(request)
     log(s, actor, action, 'user', user.id, json.dumps(detail, ensure_ascii=False))
 
 
