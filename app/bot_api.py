@@ -429,7 +429,7 @@ def pending_items(s, user_id=None):
                           'stage': stage, 'stage_label': STAGE_LABELS[stage],
                           'assignee_user_id': u.id, 'assignee_telegram_id': links[u.id],
                           'stage_entered_at': utc_iso(since),
-                          'company': company.name, 'amount': money(r.amount), 'currency': account.currency,
+                          'company': company.name, 'company_code': company.code, 'amount': money(r.amount), 'currency': account.currency,
                           'purpose': purpose, 'url': url})
     return items
 

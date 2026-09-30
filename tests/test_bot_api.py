@@ -391,6 +391,7 @@ class BotApiTests(unittest.TestCase):
         self.assertEqual([(i['request_id'],i['stage'],i['assignee_user_id'],i['assignee_telegram_id']) for i in items],
                          [(rid,'check',accountant['id'],1003),(rid,'check',book['id'],1008)])
         item=items[0]
+        self.assertEqual((item['company'],item['company_code']),('UZGERMED','UZGERMED'))  # the code is what /access lists
         self.assertEqual((item['number'],item['status'],item['stage_label'],item['amount'],item['currency'],item['company'],item['url']),
                          (f'CF-{rid:05d}','pending','Проверка реквизитов расчётным бухгалтером','600.00','UZS','UZGERMED',''))
         self.assertTrue(item['purpose'].startswith(self.cat_name+': Оплата по договору ••6789'))
