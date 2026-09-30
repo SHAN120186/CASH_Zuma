@@ -362,12 +362,16 @@ def responsible(r, account, company, users, members, acting=None, past=None):
 
 
 def acting_roles(s):
-    """Действующие замещения (ВрИО) на сегодня: (компания, пользователь) -> роли."""
+    """Действующие замещения (ВрИО) на сегодня: (компания, пользователь) -> роли.
+    Критерий тот же, что у сайта (access.delegation_in_force): заменяемый активен и держит эту роль,
+    заместитель допущен в компанию. Запись, оставшаяся после правки мимо сайта или восстановления
+    из копии, напоминаний не даёт."""
+    from .access import delegation_in_force
     current = tashkent_today()
     acting = {}
     for d in s.scalars(select(Delegation).where(Delegation.revoked_at.is_(None), Delegation.starts_on <= current,
                                                 Delegation.ends_on >= current)):
-        if d.role in COMPANY_ROLES:
+        if d.role in COMPANY_ROLES and delegation_in_force(s, d, current):
             acting.setdefault((d.company_id, d.user_id), set()).add(d.role)
     return acting
 

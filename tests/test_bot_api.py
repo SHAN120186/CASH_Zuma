@@ -1062,6 +1062,28 @@ class BotApiTests(unittest.TestCase):
         self.assertEqual(waiting(),[director['id']])
         self.assertEqual([i['stage'] for i in self.tg_user(1103).json()['items']],[])
 
+    def test_stale_delegation_of_a_disabled_or_reassigned_replaced_user_gives_no_reminder(self):
+        """The replaced director is switched off or moved to another role directly in the database
+        (a restored copy, a manual edit): the delegation is not revoked, but the site refuses it and
+        so must the bot API — one criterion (access.delegation_in_force) on both sides."""
+        author=self.make_user('employee','author');finance=self.make_user('finance','fin')
+        director=self.make_user('director','boss');deputy=self.make_user('employee','deputy')
+        for user,tg in ((finance,1201),(director,1202),(deputy,1203)):self.link(user,tg)
+        d=self.post('/api/delegations',{'user_id':deputy['id'],'replaced_user_id':director['id'],'role':'director','starts_on':str(self.today),
+                                        'ends_on':str(self.today+timedelta(days=5)),'reason':'Отпуск директора по графику'})
+        self.assertEqual(d.status_code,200,d.text)
+        rid=self.new_request(author,'600');self.check(rid);self.decide(finance,rid)
+        waiting=lambda:sorted(i['assignee_user_id'] for i in self.pending() if i['request_id']==rid)
+        self.assertEqual(waiting(),sorted([director['id'],deputy['id']]))
+        with unit(True) as s:s.get(User,director['id']).active=False
+        self.assertEqual(waiting(),[])
+        with unit(True) as s:s.get(User,director['id']).active=True
+        self.assertEqual(waiting(),sorted([director['id'],deputy['id']]))
+        with unit(True) as s:s.get(CompanyUser,(self.companies['UZGERMED'],director['id'])).role='cashier'
+        self.assertEqual(waiting(),[])
+        self.assertEqual(self.tg_user(1203).json()['items'],[])
+        with unit() as s:self.assertIsNone(s.get(Delegation,d.json()['id']).revoked_at)  # nothing rewritten behind the administrator
+
     def test_payer_who_took_part_in_an_earlier_round_is_not_reminded(self):
         author=self.make_user('employee','author');finance=self.make_user('finance','fin');director=self.make_user('director','boss')
         first=self.make_user('accountant','roundone');second=self.make_user('accountant','roundtwo');payer=self.make_user('accountant','payer')
