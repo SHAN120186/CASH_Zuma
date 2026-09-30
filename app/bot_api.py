@@ -301,19 +301,33 @@ def company_role_of(user, company, members):
     role = assigned.get(user.id)
     if role not in COMPANY_ROLES:
         return None
-    # Сотрудник действует, только пока назначен ровно в одну компанию (access.access_state):
-    # при конфликте назначений напоминаний нет, как нет и доступа на сайте.
-    if user.role != 'admin' and sum(1 for people in members.get('_valid', {}).values() if user.id in people) > 1:
-        return None
-    return role
+    return role if can_open(user, company, members) else None
+
+
+def can_open(user, company, members):
+    """Whether the site lets the user select this company at all (company_scope.available_companies):
+    a holding administrator any active company, a founder none for acting, staff exactly the one
+    business company of their single valid assignment. Assignments in several companies suspend
+    access until an administrator decides (access.staff_company_ids), so no reminder goes out either."""
+    if user.role == 'founder':
+        return False
+    if user.role == 'admin':
+        return True
+    if company.code == SERVICE_CODE:
+        return False
+    mine = [cid for cid, people in members.get('_valid', {}).items() if user.id in people]
+    return mine == [company.id]
 
 
 def roles_in(user, company, members, acting):
     """Роли, в которых пользователь может действовать в компании: своя роль (company_role_of) и
-    действующие замещения (ВрИО) в этой компании, как в security.scope_user. Учредитель не действует."""
+    действующие замещения (ВрИО) в этой компании, как в security.scope_user. Учредитель не действует.
+    Замещение считается только там, куда сотрудник может войти на сайте: назначение ВрИО проверяет
+    это при создании (requests_api.add_delegation), но потом сотрудника могли назначить во вторую
+    компанию или убрать из этой, и сайт закрывает ему доступ раньше, чем истекает срок ВрИО."""
     own = company_role_of(user, company, members)
     roles = {own} if own else set()
-    if user.role != 'founder':
+    if can_open(user, company, members):
         roles |= acting.get((company.id, user.id), set())
     return roles
 

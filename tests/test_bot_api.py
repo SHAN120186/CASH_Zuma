@@ -1037,6 +1037,31 @@ class BotApiTests(unittest.TestCase):
         self.assertEqual(self.post(f"/api/delegations/{d.json()['id']}/revoke",{'reason':'Директор вернулся из отпуска'}).status_code,200)
         self.assertEqual([i['assignee_user_id'] for i in self.pending() if i['request_id']==second],[director['id']])
 
+    def test_acting_role_counts_only_while_the_site_lets_the_deputy_in(self):
+        """A delegation outlives the deputy's access: a second assignment (conflict) or the loss of the
+        assignment closes the company on the site, so the bot API must stop the reminder as well."""
+        author=self.make_user('employee','author');finance=self.make_user('finance','fin')
+        director=self.make_user('director','boss');deputy=self.make_user('employee','deputy')
+        for user,tg in ((finance,1101),(director,1102),(deputy,1103)):self.link(user,tg)
+        d=self.post('/api/delegations',{'user_id':deputy['id'],'replaced_user_id':director['id'],'role':'director','starts_on':str(self.today),
+                                        'ends_on':str(self.today+timedelta(days=5)),'reason':'Отпуск директора по графику'})
+        self.assertEqual(d.status_code,200,d.text)
+        rid=self.new_request(author,'600');self.check(rid);self.decide(finance,rid)
+        waiting=lambda:sorted(i['assignee_user_id'] for i in self.pending() if i['request_id']==rid)
+        self.assertEqual(waiting(),sorted([director['id'],deputy['id']]))
+        # A second valid assignment: the site suspends the deputy (access_state 'conflict') and so does the bot.
+        uz,zu=self.companies['UZGERMED'],self.companies['ZUMA']
+        with unit(True) as s:s.add(CompanyUser(company_id=zu,user_id=deputy['id'],role='accountant'))
+        self.assertEqual(waiting(),[director['id']])
+        self.assertEqual(self.tg_user(1103).json()['items'],[])
+        self.assertEqual(self.client.get('/api/bot/v1/access',params={'telegram_user_id':1103},auth=BOT).json()['user']['companies'],[])
+        with unit(True) as s:s.delete(s.get(CompanyUser,(zu,deputy['id'])))
+        self.assertEqual(waiting(),sorted([director['id'],deputy['id']]))
+        # The assignment in the request's company is removed while the delegation still runs: no access, no reminder.
+        with unit(True) as s:s.get(CompanyUser,(uz,deputy['id'])).role=None
+        self.assertEqual(waiting(),[director['id']])
+        self.assertEqual([i['stage'] for i in self.tg_user(1103).json()['items']],[])
+
     def test_payer_who_took_part_in_an_earlier_round_is_not_reminded(self):
         author=self.make_user('employee','author');finance=self.make_user('finance','fin');director=self.make_user('director','boss')
         first=self.make_user('accountant','roundone');second=self.make_user('accountant','roundtwo');payer=self.make_user('accountant','payer')
