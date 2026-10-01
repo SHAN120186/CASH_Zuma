@@ -20,14 +20,17 @@ DIRECT = (Account, Category, Counterparty, CashPlan, PlanNote, PlanImportBatch,
 
 
 def active_delegations(s, user_id, company_id=None):
-    """Действующие замещения (ВрИО): не отозваны и сегодня в пределах срока."""
+    """Действующие замещения (ВрИО): не отозваны, сегодня в пределах срока и с сохранившимся
+    основанием (access.delegation_in_force: заместитель допущен в компанию, заменяемый активен и
+    держит эту роль). Тот же критерий применяет API бота."""
     from .clock import today
+    from .access import delegation_in_force
     day = today()
     q = select(Delegation).where(Delegation.user_id == user_id, Delegation.revoked_at.is_(None),
                                  Delegation.starts_on <= day, Delegation.ends_on >= day)
     if company_id is not None:
         q = q.where(Delegation.company_id == company_id)
-    return list(s.scalars(q.execution_options(company_unscoped=True)))
+    return [d for d in s.scalars(q.execution_options(company_unscoped=True)) if delegation_in_force(s, d, day)]
 
 
 SERVICE_CODE = 'UNASSIGNED'

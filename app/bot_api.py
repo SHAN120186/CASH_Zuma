@@ -301,19 +301,33 @@ def company_role_of(user, company, members):
     role = assigned.get(user.id)
     if role not in COMPANY_ROLES:
         return None
-    # Сотрудник действует, только пока назначен ровно в одну компанию (access.access_state):
-    # при конфликте назначений напоминаний нет, как нет и доступа на сайте.
-    if user.role != 'admin' and sum(1 for people in members.get('_valid', {}).values() if user.id in people) > 1:
-        return None
-    return role
+    return role if can_open(user, company, members) else None
+
+
+def can_open(user, company, members):
+    """Whether the site lets the user select this company at all (company_scope.available_companies):
+    a holding administrator any active company, a founder none for acting, staff exactly the one
+    business company of their single valid assignment. Assignments in several companies suspend
+    access until an administrator decides (access.staff_company_ids), so no reminder goes out either."""
+    if user.role == 'founder':
+        return False
+    if user.role == 'admin':
+        return True
+    if company.code == SERVICE_CODE:
+        return False
+    mine = [cid for cid, people in members.get('_valid', {}).items() if user.id in people]
+    return mine == [company.id]
 
 
 def roles_in(user, company, members, acting):
     """Роли, в которых пользователь может действовать в компании: своя роль (company_role_of) и
-    действующие замещения (ВрИО) в этой компании, как в security.scope_user. Учредитель не действует."""
+    действующие замещения (ВрИО) в этой компании, как в security.scope_user. Учредитель не действует.
+    Замещение считается только там, куда сотрудник может войти на сайте: назначение ВрИО проверяет
+    это при создании (requests_api.add_delegation), но потом сотрудника могли назначить во вторую
+    компанию или убрать из этой, и сайт закрывает ему доступ раньше, чем истекает срок ВрИО."""
     own = company_role_of(user, company, members)
     roles = {own} if own else set()
-    if user.role != 'founder':
+    if can_open(user, company, members):
         roles |= acting.get((company.id, user.id), set())
     return roles
 
@@ -348,12 +362,16 @@ def responsible(r, account, company, users, members, acting=None, past=None):
 
 
 def acting_roles(s):
-    """Действующие замещения (ВрИО) на сегодня: (компания, пользователь) -> роли."""
+    """Действующие замещения (ВрИО) на сегодня: (компания, пользователь) -> роли.
+    Критерий тот же, что у сайта (access.delegation_in_force): заменяемый активен и держит эту роль,
+    заместитель допущен в компанию. Запись, оставшаяся после правки мимо сайта или восстановления
+    из копии, напоминаний не даёт."""
+    from .access import delegation_in_force
     current = tashkent_today()
     acting = {}
     for d in s.scalars(select(Delegation).where(Delegation.revoked_at.is_(None), Delegation.starts_on <= current,
                                                 Delegation.ends_on >= current)):
-        if d.role in COMPANY_ROLES:
+        if d.role in COMPANY_ROLES and delegation_in_force(s, d, current):
             acting.setdefault((d.company_id, d.user_id), set()).add(d.role)
     return acting
 
@@ -411,7 +429,7 @@ def pending_items(s, user_id=None):
                           'stage': stage, 'stage_label': STAGE_LABELS[stage],
                           'assignee_user_id': u.id, 'assignee_telegram_id': links[u.id],
                           'stage_entered_at': utc_iso(since),
-                          'company': company.name, 'amount': money(r.amount), 'currency': account.currency,
+                          'company': company.name, 'company_code': company.code, 'amount': money(r.amount), 'currency': account.currency,
                           'purpose': purpose, 'url': url})
     return items
 
@@ -466,8 +484,11 @@ def access_check(request: Request, chat_id: int | None = Query(default=None, gt=
     result = {'checked_at': utc_iso(now()), 'group': None, 'user': None}
     with unit() as s:
         if chat_id is not None:
-            state = group_state(s, chat_id, None)
-            result['group'] = {'chat_id': chat_id, 'allowed': state['connected'], 'companies': state['companies']}
+            # The same scope as the summary and the group list carry: a stored group left without
+            # active companies is not allowed, and scope_id lets the bot compare with its snapshot.
+            group = report_groups(s).get(chat_id)
+            codes, scope_id = group_scope(s, chat_id, group) if group else ([], None)
+            result['group'] = {'chat_id': chat_id, 'allowed': bool(codes), 'companies': codes, 'scope_id': scope_id}
         if telegram_user_id is not None:
             user = linked_user(s, telegram_user_id)
             if user is None:

@@ -281,9 +281,13 @@ class DelegationIn(Input):
     reason: str = Field(min_length=10, max_length=1000)
 
 
-def delegation_json(d, names):
+def delegation_json(d, names, in_force=True):
+    """``in_force`` — результат access.delegation_in_force для записи в сроке: запись, потерявшая
+    основание мимо сайта (заменяемый отключён или сменил роль в восстановленной копии), показывается
+    как «stale»: прав не даёт, администратор видит её и может отменить."""
     day = today()
-    state = 'revoked' if d.revoked_at else 'planned' if d.starts_on > day else 'expired' if d.ends_on < day else 'active'
+    state = ('revoked' if d.revoked_at else 'planned' if d.starts_on > day else 'expired' if d.ends_on < day
+             else 'active' if in_force else 'stale')
     return {'id': d.id, 'user_id': d.user_id, 'user': names.get(d.user_id, ''), 'replaced_user_id': d.replaced_user_id,
             'replaced': names.get(d.replaced_user_id, ''), 'role': d.role, 'role_label': ROLES[d.role],
             'starts_on': str(d.starts_on), 'ends_on': str(d.ends_on), 'reason': d.reason, 'state': state,
@@ -318,9 +322,12 @@ def can_act_in(s, cid, user):
 def delegations(request: Request):
     with unit() as s:
         session_user(s, request, 'users')
+        from .access import delegation_in_force
         rows = list(s.scalars(select(Delegation).order_by(Delegation.starts_on.desc(), Delegation.id.desc())))
         names = names_of(s, [x for d in rows for x in (d.user_id, d.replaced_user_id, d.created_by)])
-        return [delegation_json(d, names) for d in rows]
+        day = today()
+        return [delegation_json(d, names, d.revoked_at is not None or not (d.starts_on <= day <= d.ends_on)
+                                or delegation_in_force(s, d, day)) for d in rows]
 
 
 @router.post('/api/delegations')

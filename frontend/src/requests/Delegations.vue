@@ -13,7 +13,8 @@ const props = defineProps({
 
 const rows = ref([]), users = ref([]), error = ref(''), notice = ref(''), busy = ref(false), creating = ref(false), revoking = ref(null), reason = ref('');
 const form = ref({user_id: null, replaced_user_id: null, role: 'finance', starts_on: props.today, ends_on: props.today, reason: ''});
-const STATE = {active: ['Действует', 'good'], planned: ['Запланировано', 'plan'], expired: ['Истекло', 'gray'], revoked: ['Отменено', 'gray']};
+const STATE = {active: ['Действует', 'good'], planned: ['Запланировано', 'plan'], expired: ['Истекло', 'gray'], revoked: ['Отменено', 'gray'],
+  stale: ['Без основания', 'warn']};
 const companyRoles = computed(() => Object.entries(props.roles).filter(([k]) => !['admin', 'founder'].includes(k)));
 // Заменить можно сотрудника с этой ролью в компании. ВрИО — сотрудник этой же компании (с назначением здесь)
 // или администратор холдинга; не учредитель, не сам назначающий и не заменяемый.
@@ -61,7 +62,7 @@ onMounted(load);
           <tr><td data-l="ВрИО"><b>{{ d.user }}</b></td><td data-l="Заменяет">{{ d.replaced }}</td><td data-l="Роль">{{ d.role_label }}</td>
             <td data-l="Срок">{{ dateRu(d.starts_on) }} — {{ dateRu(d.ends_on) }}<small>{{ d.reason }}</small></td>
             <td data-l="Статус"><span class="pill" :class="STATE[d.state][1]">{{ STATE[d.state][0] }}</span></td>
-            <td data-l=""><button v-if="['active', 'planned'].includes(d.state)" class="ghost tiny" :disabled="busy" @click="revoking = d.id">Отменить</button></td></tr>
+            <td data-l=""><button v-if="['active', 'planned', 'stale'].includes(d.state)" class="ghost tiny" :disabled="busy" @click="revoking = d.id">Отменить</button></td></tr>
           <tr v-if="revoking === d.id" class="detail-row"><td colspan="6" class="detail-cell">
             <form class="rq-inline" @submit.prevent="revoke(d)"><input v-model="reason" minlength="10" required aria-label="Причина отмены" placeholder="Причина, не короче 10 символов">
               <button class="tiny" :disabled="busy">Отменить замещение</button><button type="button" class="ghost tiny" @click="revoking = null">Назад</button></form>
