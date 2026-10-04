@@ -382,6 +382,16 @@ class TelegramGroup(Base):
     added_by = Column(Integer, ForeignKey('users.id'), nullable=True)
     added_at = Column(DateTime, nullable=False, default=now)
 
+class TelegramGroupCode(Base):
+    """Single-use group registration, bound to a chat and company. Only the hash is stored.
+    Reissuing for the chat replaces its pending code; it does not change an existing group."""
+    __tablename__ = 'telegram_group_codes'
+    code_hash = Column(String(64), primary_key=True)
+    chat_id = Column(BigInteger, unique=True, nullable=False)
+    company_id = Column(Integer, ForeignKey('companies.id'), nullable=False)
+    issued_by = Column(Integer, ForeignKey('users.id'), nullable=False)
+    expires_at = Column(DateTime, nullable=False)
+
 @contextmanager
 def unit(write=False):
     """Сериализация записей: лимит/остаток проверяются и меняются атомарно."""
