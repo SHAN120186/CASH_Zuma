@@ -339,11 +339,12 @@ def edit_account(id:int,data:AccountEdit,request:Request):
         dates=[t.date for t in entries]+[r.due_date for r in requests]+[r.due_date for r in receipts]
         if dates and data.opening_date>min(dates):raise HTTPException(409,'Дата начала учёта не может быть позже существующих операций, заявок или поступлений.')
         def snapshot():return {'name':a.name,'kind':a.kind,'currency':a.currency,'company_id':a.company_id,'opening':money(a.opening),'opening_date':str(a.opening_date),'allow_overdraft':a.allow_overdraft}
-        before=snapshot()
+        before=snapshot();old_opening=a.opening
         if data.company_id is not None:get(s,Company,data.company_id);a.company_id=data.company_id
         a.name=data.name;a.kind=data.kind;a.currency=data.currency;a.opening=amount(data.opening,True)
         a.opening_date=data.opening_date;a.allow_overdraft=data.allow_overdraft
         s.flush();validate_running_balance(s,a)
+        if a.opening<old_opening:enforce_reservations_after_correction(s,a)
         if (a.kind,a.company_id)!=(before['kind'],before['company_id']):
             for r in requests:
                 if r.status in ('pending','approved'):log(s,u,'Изменён счёт заявки','request',r.id,f'{before["kind"]} → {a.kind}')
@@ -532,9 +533,9 @@ def decide(id:int,data:DecisionIn,request:Request):
             else:r.approved_by=u.id
             # Директор участвует по снимку политики статьи; последний нужный этап завершает согласование.
             if stage=='director' or not requires_director(r):
-                # Деньги проверяются на срок заявки и на сегодня: у просроченной заявки остаток
-                # на прошлую дату срока уже не говорит о том, что деньги есть сейчас.
-                for as_of in sorted({r.due_date,max(today(),r.due_date)}):enforce_available_funds(s,a,as_of,r.amount,r.id)
+                # Срок заявки и сегодняшний остаток проверяются вместе со всеми более
+                # поздними резервами: ранняя заявка не занимает уже обещанные деньги.
+                enforce_reserved_funds(s,a,r.due_date,r.amount,r.id)
                 r.status='approved';r.approved_at=now();r.approved_overrun=overrun(b)
         elif data.action=='return':
             if not (('approve' in perms and act_with_right(u,'approve')) or act_as(u,'accountant')):raise HTTPException(403,'Недостаточно прав для возврата.')
@@ -643,6 +644,11 @@ def reverse(id:int,data:ReverseIn,request:Request):
             get(s,Receipt,t.receipt_id).status='expected';log(s,u,'Отмена поступления','receipt',t.receipt_id,f'Сторно операции {id}');t.receipt_id=None
         s.flush();validate_running_balance(s,get(s,Account,t.account_id))
         if t.to_account_id:validate_running_balance(s,get(s,Account,t.to_account_id))
+        # The inverse entry is already included in the actual balance. Check
+        # only the account losing money, with required=0, to avoid a second debit.
+        if t.kind in ('in','transfer'):
+            reduced_account=t.to_account_id if t.kind=='transfer' else t.account_id
+            enforce_reservations_after_correction(s,get(s,Account,reduced_account))
         log(s,u,'Сторно операции (исходная дата)','ledger',id,data.reason)
         return {'id':inv.id}
 

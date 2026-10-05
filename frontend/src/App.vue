@@ -9,6 +9,7 @@ import OverviewPage from './overview/OverviewPage.vue';
 import AdminCenter from './admin/AdminCenter.vue';
 import {loadRecentLogins,rememberLogin,matchingLogins,offerPasswordSave} from './loginPreferences.js';
 import {canPayRequest as canPayFor} from './overview/rights.js';
+import {reportDateForYear,validReportDate} from './cashflow/planView.js';
 import RequestEditor from './requests/RequestEditor.vue';
 import RequestCard from './requests/RequestCard.vue';
 import PolicyPage from './requests/PolicyPage.vue';
@@ -119,7 +120,9 @@ function cardPay(r){cardId.value=null;transaction(r)}
 async function api(url,opts={}){const epoch=companyEpoch,controller=new AbortController();pendingCalls.add(controller);try{const r=await fetch(url,{credentials:'same-origin',...opts,signal:controller.signal,headers:{'X-CSRF-Token':csrf.value,...(companyId.value?{'X-Company-ID':String(companyId.value)}:{}),...opts.headers}});let data;try{data=await r.json()}catch{throw Object.assign(Error('Некорректный ответ сервера'),{status:r.status})}if(epoch!==companyEpoch)throw new DOMException('Компания изменена','AbortError');if(!r.ok){if(r.status===401)user.value=null;throw Object.assign(Error(Array.isArray(data.detail)?data.detail.map(x=>`${x.loc?.slice(1).join('.')}: ${x.msg}`).join('; '):data.detail||'Ошибка запроса'),{status:r.status})}return data}finally{pendingCalls.delete(controller)}}
 const post=(url,data={})=>api(url,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(data)});
 function flash(text){notice.value=text;setTimeout(()=>notice.value='',5500)}
-async function bootstrap(){boot.value=await api('/api/bootstrap');user.value=boot.value.user;csrf.value=boot.value.csrf;month.value=month.value.match(/^\d{4}-\d{2}$/)?month.value:boot.value.today.slice(0,7)}
+async function bootstrap(){boot.value=await api('/api/bootstrap');user.value=boot.value.user;csrf.value=boot.value.csrf;month.value=month.value.match(/^\d{4}-\d{2}$/)?month.value:boot.value.today.slice(0,7);if(!validReportDate(reportAsOf.value,year.value,boot.value.today)){const cutOff=reportDateForYear(year.value,boot.value.today);if(!cutOff)year.value=Number(boot.value.today.slice(0,4));reportAsOf.value=cutOff||boot.value.today}}
+async function changeReportYear(value){const cutOff=reportDateForYear(value,boot.value.today);if(!cutOff){flash('Будущий год недоступен: дата факта не может быть позже сегодня.');return}year.value=Number(value);reportAsOf.value=cutOff;await load()}
+async function changeReportDate(value){if(!validReportDate(value,year.value,boot.value.today)){flash('Дата отчёта должна быть в выбранном году и не позже сегодня.');return}reportAsOf.value=value;await load()}
 async function enter(){companyId.value=null;companyReady.value=false;if(user.value?.must_change_password)return;const data=await api('/api/companies');boot.value={accounts:[],categories:[],...data};user.value=data.user;csrf.value=data.csrf;}
 async function selectCompany(id){
  if(saving.value||modal.value||documents.value||editor.value||cardId.value){flash('Закройте текущую форму перед сменой компании.');return}
@@ -381,7 +384,7 @@ onMounted(async()=>{try{const r=await api('/api/me');user.value=r.user;csrf.valu
     </template>
 
     <!-- Cash Flow -->
-    <CashFlowReport :key="companyId" v-if="page==='report'&&report" :report="report" :currency="currency" :year="year" :api="api" :can-plan="has('plan')" @editing="reportEditing=$event" :companies="boot.companies.filter(c=>c.id===companyId)" :company-id="companyId" :scenario="reportScenario" :as-of="reportAsOf" @company="selectCompany" @scenario="v=>{reportScenario=v;load()}" @year="v=>{year=v;reportAsOf=`${v}-12-31`;load()}" @as-of="v=>{reportAsOf=v;load()}" @refresh="load" />
+    <CashFlowReport :key="companyId" v-if="page==='report'&&report" :report="report" :currency="currency" :year="year" :api="api" :can-plan="has('plan')" @editing="reportEditing=$event" :companies="boot.companies.filter(c=>c.id===companyId)" :company-id="companyId" :scenario="reportScenario" :as-of="reportAsOf" :today="boot.today" @company="selectCompany" @scenario="v=>{reportScenario=v;load()}" @year="changeReportYear" @as-of="changeReportDate" @refresh="load" />
 
     <!-- Справочники -->
     <template v-if="page==='categories'">

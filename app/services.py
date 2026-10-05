@@ -83,6 +83,48 @@ def enforce_available_funds(s, account, as_of, required, exclude_request=None):
             f'Фактический остаток {money(state["actual"])}; резерв утверждённых заявок {money(state["reserved"])}.')
     return state
 
+def enforce_reserved_funds(s, account, effective_on, required, exclude_request=None, check_dates=()):
+    """Keep every future approved obligation funded after a new commitment/debit.
+
+    Preserve the action's original date checks, then also check the dates of
+    existing reservations from today (or the action's future date) onwards.
+    Historical reservation dates are not replayed: money that has actually
+    arrived since then can cover an outstanding obligation today. Expected
+    receipts never enter ``funds_state``. The current request is excluded for
+    both approval and payment, so its amount is required exactly once.
+
+    Call inside ``unit(write=True)`` to serialize this check with the write.
+    """
+    future_start=max(today(),effective_on)
+    dates={effective_on,future_start,*check_dates}
+    q=select(PaymentRequest.due_date).where(
+        PaymentRequest.account_id==account.id,
+        PaymentRequest.status=='approved',
+        PaymentRequest.due_date>=future_start,
+    )
+    if exclude_request is not None:q=q.where(PaymentRequest.id!=exclude_request)
+    dates.update(s.scalars(q))
+    for day in sorted(dates):
+        enforce_available_funds(s,account,day,required,exclude_request)
+
+def enforce_reservations_after_correction(s, account):
+    """Validate reservations against already corrected balances, with no second debit.
+
+    A correction with no outstanding approvals keeps the existing accounting
+    rules, including a bank's overdraft setting. If a correction takes money
+    promised to an approved request, the whole write rolls back; the finance
+    team first returns the affected requests and then records the correction.
+    """
+    approved=s.scalar(select(PaymentRequest.id).where(
+        PaymentRequest.account_id==account.id,PaymentRequest.status=='approved').limit(1))
+    if approved is None:return
+    try:enforce_reserved_funds(s,account,today(),0)
+    except HTTPException as e:
+        raise HTTPException(409,
+            'Исправление не сохранено: утверждённые заявки остаются без покрытия. '
+            'Верните непокрытые заявки финансовому директору, затем повторите исправление или сторно. '
+            +str(e.detail))
+
 def validate_running_balance(s,a):
     """Проверка на конец каждого дня, включая ввод задним числом."""
     if a.allow_overdraft and a.kind=='bank':return
@@ -363,20 +405,17 @@ def post_ledger(s,u,data):
             raise HTTPException(409,'Поступление уже закрыто или сумма/счёт не совпадают.')
     if kind=='out' and req:
         enforce_payment_budget(s,req,a,data.date)
-        # Деньги проверяются на дату оплаты, на сегодня и на срок самой заявки:
-        # ни дата задним числом, ни ранняя оплата не забирают резерв других
-        # утверждённых заявок со сроком раньше.
-        for as_of in sorted({data.date,today(),max(today(),req.due_date)}):
-            try:enforce_available_funds(s,a,as_of,n,req.id)
-            except HTTPException as e:raise HTTPException(409,f'{e.detail} {RETURN_HINT}')
+        # Исключаем текущий резерв и защищаем также все более поздние обязательства.
+        try:enforce_reserved_funds(s,a,data.date,n,req.id,(max(today(),req.due_date),))
+        except HTTPException as e:raise HTTPException(409,f'{e.detail} {RETURN_HINT}')
     elif kind=='out':
         enforce_budget(s,data.category_id,data.date,a.currency,n,data.note)
-        # Расход без заявки тоже не может забрать резерв заявок, срок которых наступил.
-        for as_of in sorted({data.date,today()}):enforce_available_funds(s,a,as_of,n)
+        # Расход без заявки не забирает ни наступившие, ни будущие резервы.
+        enforce_reserved_funds(s,a,data.date,n)
         if len(data.note.strip())<10:raise HTTPException(422,'Для расхода без заявки укажите основание не короче 10 символов.')
     elif kind=='transfer':
         # Перевод не уносит со счёта деньги, зарезервированные под утверждённые заявки.
-        for as_of in sorted({data.date,today()}):enforce_available_funds(s,a,as_of,n)
+        enforce_reserved_funds(s,a,data.date,n)
     t=Ledger(account_id=a.id,to_account_id=target.id if target else None,category_id=data.category_id if kind!='transfer' else None,
              kind=kind,amount=n,date=data.date,counterparty=req.counterparty if req else data.counterparty,reference=data.reference.strip(),
              note=data.note,request_id=req.id if req else None,receipt_id=rec.id if rec else None,creator_id=u.id)
