@@ -29,3 +29,31 @@ jobs:
       - run: python -m unittest discover -s tests -p test_render_start.py
       - run: python -m unittest discover -s tests -p test_postgres_backup.py
       - run: docker build --tag uzgermed:check .
+  postgres:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    services:
+      postgres:
+        image: postgres:17
+        env:
+          POSTGRES_USER: zuma_test
+          POSTGRES_PASSWORD: synthetic-ci-password
+          POSTGRES_DB: zuma_test_ci
+        ports: ['5432:5432']
+        options: >-
+          --health-cmd "pg_isready -U zuma_test -d zuma_test_ci"
+          --health-interval 5s --health-timeout 5s --health-retries 10
+    env:
+      TEST_DATABASE_URL: postgresql+psycopg://zuma_test:synthetic-ci-password@127.0.0.1:5432/zuma_test_ci
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: python -m pip install -r requirements-tested.txt
+      # Separate processes avoid the suites' temporary DATA_DIR cleanup affecting each other.
+      - run: python tests/test_site.py
+      - run: python tests/test_access.py
+      - run: python tests/test_bot_api.py
+      - run: python -m unittest tests.test_group_registration -q
+      - run: python -m unittest tests.test_future_reservations -q

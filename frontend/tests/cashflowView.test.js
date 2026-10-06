@@ -24,6 +24,26 @@ function mountReport(extra = {}) {
 }
 const button = (root, label) => find(root, node => node.tag === 'button' && text(node) === label);
 
+test('scenario comparison labels partial, explicit-zero and missing plans without claiming a full subtotal', async t => {
+  const replies = {
+    A:{expense_plan:'100.00', expense_plan_complete:false, expense_plan_defined_rows:1, expense_plan_missing_rows:11},
+    B:{expense_plan:'0.00', expense_plan_complete:true, expense_plan_defined_rows:12, expense_plan_missing_rows:0},
+    V:{expense_plan:'0.00', expense_plan_complete:false, expense_plan_defined_rows:0, expense_plan_missing_rows:12},
+  };
+  const view = mountReport({api:async url => {
+    const q = new URL(url, 'http://isolated.test').searchParams;
+    return {...replies[q.get('scenario')], bank_income_mtd:'100.00', available:'100.00'};
+  }}); t.after(view.unmount);
+  await button(view.container, 'Сравнить А / Б / В').props.onClick(); await settle();
+  const statuses = all(view.container, node => node.props?.role === 'status').map(text);
+  assert.ok(statuses.includes('Частичный план выплат · незаполненных строк: 11'));
+  assert.ok(statuses.includes('Полный план выплат'));
+  assert.ok(statuses.includes('План выплат не задан · незаполненных строк: 12'));
+  const comparison = find(view.container, node => node.tag === 'section' && text(node).includes('Сравнение сценариев'));
+  assert.equal(all(comparison, node => node.props?.class?.includes?.('v num')).length, 3);
+  assert.match(text(comparison), /Не задан/);
+});
+
 test('mounted plan editor chooses cut-off month, or first visible month outside that period', async t => {
   const view = mountReport(); t.after(view.unmount);
   await button(view.container, 'Задать план').props.onClick(); await settle();

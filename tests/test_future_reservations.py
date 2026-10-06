@@ -1,8 +1,11 @@
-"""Regression API checks; run as a separate process with a temporary SQLite DB.
+"""Regression API checks; run as a separate process.
 
     python -m unittest tests.test_future_reservations
 
-No working database or externally configured test database is used.
+The default is a new temporary SQLite DB; DATABASE_URL is always ignored.
+Explicit TEST_DATABASE_URL opts into a disposable local PostgreSQL database:
+its host must be localhost or 127.0.0.1 and its name must start with zuma_test_.
+Only that exact opt-in database may be reset; production URLs are rejected.
 """
 import os
 import sys
@@ -16,7 +19,16 @@ sys.path.insert(0,str(ROOT))
 TMP=tempfile.TemporaryDirectory(prefix='zuma-future-reservations-')
 os.environ['DATA_DIR']=TMP.name
 os.environ.pop('DATABASE_URL',None)
-os.environ.pop('TEST_DATABASE_URL',None)
+TEST_URL=None
+if os.getenv('TEST_DATABASE_URL'):
+    from sqlalchemy.engine import make_url
+    try:TEST_URL=make_url(os.environ['TEST_DATABASE_URL'])
+    except Exception:raise RuntimeError('TEST_DATABASE_URL must identify a local disposable PostgreSQL database.') from None
+    overrides={'host','hostaddr','dbname','database','service','servicefile','dsn','conninfo'}
+    if (TEST_URL.get_backend_name()!='postgresql' or TEST_URL.host not in ('localhost','127.0.0.1')
+            or not (TEST_URL.database or '').startswith('zuma_test_') or overrides.intersection(TEST_URL.query)):
+        raise RuntimeError('Test PostgreSQL host must be localhost or 127.0.0.1 and database must start with zuma_test_; connection overrides are forbidden.')
+    os.environ['DATABASE_URL']=os.environ['TEST_DATABASE_URL']
 os.environ['ALLOWED_HOSTS']='testserver,localhost,127.0.0.1'
 os.environ['COOKIE_SECURE']='0'
 os.environ['PUBLIC_ORIGIN']=''
@@ -43,8 +55,13 @@ def tearDownModule():
 
 class FutureReservationTests(unittest.TestCase):
     def setUp(self):
-        self.assertEqual(Path(engine.url.database).resolve(),Path(TMP.name)/'cashflow.sqlite3',
-            'Run tests.test_future_reservations in a separate process; only its temporary SQLite DB may be reset.')
+        if TEST_URL is None:
+            self.assertEqual(engine.url.get_backend_name(),'sqlite')
+            self.assertEqual(Path(engine.url.database).resolve(),Path(TMP.name)/'cashflow.sqlite3',
+                'Run tests.test_future_reservations in a separate process; only its temporary SQLite DB may be reset.')
+        else:
+            self.assertTrue(engine.url==TEST_URL,
+                'Only the exact explicitly supplied local disposable PostgreSQL database may be reset.')
         clock.FROZEN=TODAY
         Base.metadata.drop_all(engine)
         initialize()
@@ -125,10 +142,10 @@ class FutureReservationTests(unittest.TestCase):
                 finance_approved_by=self.ids['finance'],approved_at=now())
             s.add(r);s.flush();return r.id
 
-    def ledger(self,kind,amount,account=None,target=None,day='2026-10-06',request=None,receipt=None):
+    def ledger(self,kind,amount,account=None,target=None,day='2026-10-06',request=None,receipt=None,reference=None):
         data={'account_id':account or self.account,'kind':kind,'amount':amount,'date':day,
             'category_id':None if kind=='transfer' else self.income if kind=='in' else self.category,
-            'reference':'SYNTHETIC-'+str(self.ledger_count()),'note':'Synthetic reservation regression reason'}
+            'reference':reference or 'SYNTHETIC-'+str(self.ledger_count()),'note':'Synthetic reservation regression reason'}
         if target:data['to_account_id']=target
         if request:data.update(request_id=request,request_version=self.row(request)['version'])
         if receipt:data['receipt_id']=receipt
@@ -396,6 +413,163 @@ class FutureReservationTests(unittest.TestCase):
         r=self.edit_opening('100');self.assertEqual(r.status_code,409,r.text)
         r=self.edit_opening('0',account=foreign);self.assertEqual(r.status_code,404,r.text)
         with unit() as s:self.assertEqual(s.get(Account,foreign).opening,100000000)
+
+    def report(self,scenario='A',currency='UZS'):
+        r=self.clients['finance'].get(f'/api/report?year=2026&as_of=2026-10-06&scenario={scenario}&currency={currency}',headers=self.headers['finance'])
+        self.assertEqual(r.status_code,200,r.text)
+        return r.json()
+
+    def group_report(self,scenario='A',currency='UZS'):
+        r=self.clients['finance'].get(f'/api/group-report?company_id={self.company}&month=2026-10&day=2026-10-06&scenario={scenario}&currency={currency}',headers=self.headers['finance'])
+        self.assertEqual(r.status_code,200,r.text)
+        return r.json()
+
+    def save_plan(self,items,scenario='A',month='2026-10'):
+        r=self.post('finance','/api/cash-plan',{'company_id':self.company,'month':month,'currency':'UZS','scenario':scenario,
+            'version':0,'items':items,'reason':'Synthetic financial plan regression'})
+        self.assertEqual(r.status_code,200,r.text)
+
+    def test_partial_plan_summary_never_claims_full_coverage(self):
+        self.save_plan([{'category_id':self.category,'kind':'out','amount':'100'}])
+        r=self.ledger('in','100');self.assertEqual(r.status_code,200,r.text)
+        report=self.report();summary=self.group_report()
+        expected_missing=sum(row['kind']=='out' and row['plan'][9] is None for row in report['rows'])
+        self.assertGreater(expected_missing,0)
+        self.assertIsNone(report['plan_totals'][9])
+        self.assertEqual(summary['expense_plan'],'100.00') # Existing API field keeps the known sum.
+        self.assertFalse(summary['expense_plan_complete'])
+        self.assertEqual(summary['expense_plan_defined_rows'],1)
+        self.assertEqual(summary['expense_plan_missing_rows'],expected_missing)
+        self.assertIsNone(summary['expense_plan_total'])
+        self.assertIsNone(summary['expense_plan_remaining'])
+        self.assertIsNone(summary['expense_plan_coverage_percent'])
+        self.assertIn('частично задано 100.00',summary['text'])
+        self.assertIn('Полный план и покрытие не определены',summary['text'])
+        self.assertNotIn('100.0%',summary['text'])
+
+    def test_missing_plan_summary_distinguishes_undefined_from_zero(self):
+        summary=self.group_report()
+        self.assertEqual(summary['expense_plan'],'0.00')
+        self.assertFalse(summary['expense_plan_complete'])
+        self.assertEqual(summary['expense_plan_defined_rows'],0)
+        self.assertGreater(summary['expense_plan_missing_rows'],0)
+        self.assertIsNone(summary['expense_plan_total'])
+        self.assertIsNone(summary['expense_plan_coverage_percent'])
+        self.assertIn('План расходов: данных нет',summary['text'])
+
+    def test_complete_zero_plan_summary_is_an_explicit_zero(self):
+        rows=self.report()['rows']
+        self.save_plan([{'category_id':row['category_id'],'kind':row['kind'],'amount':'0'} for row in rows])
+        summary=self.group_report()
+        self.assertEqual(self.report()['plan_totals'][9],'0.00')
+        self.assertEqual(summary['expense_plan'],'0.00')
+        self.assertTrue(summary['expense_plan_complete'])
+        self.assertEqual(summary['expense_plan_missing_rows'],0)
+        self.assertEqual(summary['expense_plan_defined_rows'],sum(row['kind']=='out' for row in rows))
+        self.assertEqual(summary['expense_plan_total'],'0.00')
+        self.assertEqual(summary['expense_plan_remaining'],'0.00')
+        self.assertIsNone(summary['expense_plan_coverage_percent'])
+        self.assertIn('План расходов: 0.00 UZS',summary['text'])
+        self.assertIn('покрытие не требуется',summary['text'])
+        self.assertNotIn('данных нет',summary['text'])
+
+    def test_complete_expense_plan_coverage_is_scoped_by_scenario_and_currency(self):
+        rows=self.report()['rows']
+        items=[{'category_id':row['category_id'],'kind':'out','amount':'1000' if row['category_id']==self.category else '0'}
+            for row in rows if row['kind']=='out']
+        self.save_plan(items,scenario='B')
+        self.save_plan([{'category_id':self.category,'kind':'out','amount':'2000'}],scenario='A')
+        r=self.ledger('in','500');self.assertEqual(r.status_code,200,r.text)
+        summary=self.group_report('B')
+        self.assertTrue(summary['expense_plan_complete'])
+        self.assertEqual(summary['expense_plan_total'],'1000.00')
+        self.assertEqual(summary['expense_plan_remaining'],'500.00')
+        self.assertEqual(summary['expense_plan_coverage_percent'],50.0)
+        self.assertIn('покрытие 50.0%',summary['text'])
+        # Undefined income plans do not hide the fully defined expense total.
+        self.assertIsNone(self.report('B')['plan_totals'][9])
+        self.assertFalse(self.group_report('A')['expense_plan_complete'])
+        self.assertFalse(self.group_report('B','USD')['expense_plan_complete'])
+        self.assertIsNone(self.group_report('B','USD')['expense_plan_total'])
+
+    def test_expense_plan_completeness_includes_other_months_extra_directions(self):
+        standard=[row for row in self.report()['rows'] if row['kind']=='out']
+        self.save_plan([{'category_id':self.income,'kind':'out','amount':'20'}],month='2026-09')
+        self.save_plan([{'category_id':row['category_id'],'kind':'out','amount':'0'} for row in standard])
+        summary=self.group_report();report=self.report()
+        extra=next(row for row in report['rows'] if row['category_id']==self.income and row['kind']=='out')
+        self.assertIsNone(extra['plan'][9])
+        self.assertFalse(summary['expense_plan_complete'])
+        self.assertEqual(summary['expense_plan_missing_rows'],1)
+        self.assertIsNone(summary['expense_plan_total'])
+        self.assertIn('частично задано 0.00',summary['text'])
+
+    def test_expense_plan_completeness_includes_recorded_expense_directions(self):
+        standard=[row for row in self.report()['rows'] if row['kind']=='out']
+        r=self.post('finance','/api/ledger',{'account_id':self.account,'category_id':self.income,'kind':'out','amount':'20',
+            'date':'2026-10-06','reference':'EXTRA-OUT-DIRECTION','note':'Synthetic extra cash flow direction'})
+        self.assertEqual(r.status_code,200,r.text)
+        self.save_plan([{'category_id':row['category_id'],'kind':'out','amount':'0'} for row in standard])
+        summary=self.group_report()
+        self.assertFalse(summary['expense_plan_complete'])
+        self.assertEqual(summary['expense_plan_missing_rows'],1)
+        self.assertIsNone(summary['expense_plan_coverage_percent'])
+
+    def test_reversal_allocates_free_reference_among_existing_and_reversed_documents(self):
+        r=self.ledger('in','100');self.assertEqual(r.status_code,200,r.text);original=r.json()['id']
+        base=f'REV-{original}'
+        r=self.ledger('in','40',reference=base);self.assertEqual(r.status_code,200,r.text);first=r.json()['id']
+        r=self.ledger('in','30',reference=base+'-1');self.assertEqual(r.status_code,200,r.text);second=r.json()['id']
+        r=self.reverse(first);self.assertEqual(r.status_code,200,r.text)
+        # Even a corrected document retains its number. Allocation must skip it.
+        r=self.reverse(original);self.assertEqual(r.status_code,200,r.text);inverse=r.json()['id']
+        with unit() as s:
+            self.assertEqual(s.get(Ledger,inverse).reference,base+'-2')
+            self.assertEqual(s.get(Ledger,inverse).reversal_of,original)
+            self.assertEqual(s.get(Ledger,first).reference,base)
+        self.assertEqual(self.funds()['actual'],103000)
+        self.assertEqual(self.report()['totals'][9],'30.00')
+        count=self.ledger_count()
+        r=self.reverse(original);self.assertEqual(r.status_code,409,r.text)
+        self.assertEqual(self.ledger_count(),count)
+        r=self.reverse(second);self.assertEqual(r.status_code,200,r.text)
+        self.assertEqual(self.funds()['actual'],100000)
+
+    def test_transfer_reversal_reference_is_allocated_on_original_recipient(self):
+        target=self.new_account('Synthetic transfer recipient','0')
+        r=self.ledger('transfer','200',target=target);self.assertEqual(r.status_code,200,r.text);original=r.json()['id']
+        base=f'REV-{original}'
+        r=self.ledger('in','50',account=target,reference=base);self.assertEqual(r.status_code,200,r.text)
+        r=self.reverse(original);self.assertEqual(r.status_code,200,r.text)
+        with unit() as s:
+            inverse=s.get(Ledger,r.json()['id'])
+            self.assertEqual((inverse.account_id,inverse.to_account_id,inverse.reference),(target,self.account,base+'-1'))
+        self.assertEqual(self.funds()['actual'],100000)
+        self.assertEqual(self.funds(account=target)['actual'],5000)
+        self.assertEqual(self.report()['totals'][9],'50.00')
+
+    def test_request_payment_and_reversal_keep_budget_calendar_and_cashflow_consistent(self):
+        rid=self.approved_request('600')
+        def dashboard():
+            r=self.clients['finance'].get('/api/dashboard?currency=UZS&days=30',headers=self.headers['finance'])
+            self.assertEqual(r.status_code,200,r.text);return r.json()
+        def outgoing(data):return next(row['outgoing'] for row in data['forecast'] if row['date']=='2026-10-20')
+        self.assertEqual(outgoing(dashboard()),'600.00')
+        r=self.ledger('out','600',request=rid);self.assertEqual(r.status_code,200,r.text);lid=r.json()['id']
+        after=dashboard()
+        self.assertEqual((after['balance'],after['fact_out'],outgoing(after)),('400.00','600.00','0.00'))
+        self.assertEqual(self.report()['totals'][9],'-600.00')
+        with unit() as s:
+            budget=budget_state(s,self.category,'2026-10','UZS')
+            self.assertEqual((budget['spent'],budget['reserved']),(60000,0))
+        r=self.reverse(lid);self.assertEqual(r.status_code,200,r.text)
+        restored=dashboard()
+        self.assertEqual((restored['balance'],restored['fact_out'],outgoing(restored)),('1000.00','0.00','600.00'))
+        self.assertEqual(self.report()['totals'][9],'0.00')
+        self.assertEqual(self.row(rid)['status'],'approved')
+        with unit() as s:
+            budget=budget_state(s,self.category,'2026-10','UZS')
+            self.assertEqual((budget['spent'],budget['reserved']),(0,60000))
 
 
 if __name__=='__main__':unittest.main()

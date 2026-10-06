@@ -25,6 +25,21 @@ def effective_cashflows(s):
     """
     reversed_ids=select(Ledger.reversal_of).where(Ledger.reversal_of.is_not(None))
     return select(Ledger).where(Ledger.reversal_of.is_(None),Ledger.id.not_in(reversed_ids))
+
+def reversal_reference(s, account_id, ledger_id):
+    """Allocate a free document number, including conflicts retained in history.
+
+    Call inside the write transaction: its shared lock serializes allocation
+    with manual operations and imports. The unique ledger constraint remains.
+    """
+    base=f'REV-{ledger_id}'
+    used=set(s.scalars(select(Ledger.reference).where(
+        Ledger.account_id==account_id,Ledger.reference.like(base+'%'))))
+    reference=base;suffix=0
+    while reference in used:
+        suffix+=1;reference=f'{base}-{suffix}'
+    return reference
+
 def get(s,cls,id):
     value=s.get(cls,id)
     if not value:raise HTTPException(404,'Запись не найдена.')
