@@ -25,8 +25,6 @@ if os.getenv('TEST_DATABASE_URL'):
         raise RuntimeError('Test database must start with zuma_test_')
     os.environ['DATABASE_URL'] = os.environ['TEST_DATABASE_URL']
 BOT = ('archive-test-bot', 'test-only-archive-secret-' + 'x' * 32)
-os.environ['BOT_CLIENT_ID'], os.environ['BOT_CLIENT_SECRET'] = BOT
-os.environ['BOT_REPORT_GROUPS'] = ''
 
 from fastapi.testclient import TestClient
 from openpyxl import Workbook
@@ -63,6 +61,10 @@ def tearDownModule():
 
 class ReportArchiveTests(unittest.TestCase):
     def setUp(self):
+        self.bot_environment = patch.dict(os.environ, {
+            'BOT_CLIENT_ID': BOT[0], 'BOT_CLIENT_SECRET': BOT[1], 'BOT_REPORT_GROUPS': ''})
+        self.bot_environment.start()
+        self.addCleanup(self.bot_environment.stop)
         clock.FROZEN = date(2026, 10, 7)
         Base.metadata.drop_all(engine)
         initialize()

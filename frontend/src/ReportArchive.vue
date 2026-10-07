@@ -110,7 +110,7 @@ async function save() {
       <form class="card-b" @submit.prevent="save">
         <p class="sub archive-explanation">Выберите PDF и Excel одного отчёта. Готовая версия сохраняется в истории; для обновления загрузите новую пару файлов.</p>
         <div class="archive-fields">
-          <label class="archive-title">Название<input v-model="form.title" required minlength="2" maxlength="160" placeholder="Бизнес-план — 36 месяцев" :disabled="saving||metadataFrozen"></label>
+          <label class="archive-title">Название<input v-model="form.title" required minlength="1" maxlength="160" placeholder="Бизнес-план — 36 месяцев" :disabled="saving||metadataFrozen"></label>
           <label>Начало периода<input v-model="form.period_start" required type="date" min="2000-01-01" max="2100-12-31" :disabled="saving||metadataFrozen"></label>
           <label>Конец периода<input v-model="form.period_end" required type="date" :min="form.period_start||'2000-01-01'" max="2100-12-31" :disabled="saving||metadataFrozen"></label>
         </div>
