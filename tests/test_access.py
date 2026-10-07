@@ -550,6 +550,25 @@ class AccessTests(base.SiteTests):
         states = {x['id']: x['state'] for x in self.client.get('/api/delegations', headers=self.h).json()}
         self.assertEqual({states[i] for i in ids.values()}, {'revoked'})
 
+    def test_a_delegation_left_behind_by_stale_data_gives_no_rights(self):
+        """Заменяемый отключён или сменил роль мимо центра администрирования (восстановленная копия,
+        правка в базе): замещение не отозвано, но прав не даёт; администратор видит «stale» и отменяет."""
+        self.staff('UZGERMED', 'director', 'stale_boss')[0].close()
+        self.staff('UZGERMED', 'employee', 'stale_deputy')[0].close()
+        r = self.substitute('stale_deputy', 'stale_boss', 'director');self.assertEqual(r.status_code, 200, r.text)
+        did, boss = r.json()['id'], self.user_id('stale_boss')
+        state = lambda: next(x['state'] for x in self.client.get('/api/delegations', headers=self.h).json() if x['id'] == did)
+        self.assertEqual((len(self.acting_roles('stale_deputy')), state()), (1, 'active'))
+        with unit(True) as s: s.get(User, boss).active = False
+        self.assertEqual((self.acting_roles('stale_deputy'), state()), ([], 'stale'))
+        with unit(True) as s: s.get(User, boss).active = True
+        self.assertEqual((len(self.acting_roles('stale_deputy')), state()), (1, 'active'))
+        with unit(True) as s: s.get(CompanyUser, (self.company, boss)).role = 'cashier'
+        self.assertEqual((self.acting_roles('stale_deputy'), state()), ([], 'stale'))
+        with unit() as s: self.assertIsNone(s.get(Delegation, did).revoked_at)
+        self.assertEqual(self.client.post(f'/api/delegations/{did}/revoke', json={'reason': 'Основание замещения утрачено'}, headers=self.h).status_code, 200)
+        self.assertEqual(state(), 'revoked')
+
     def test_archiving_a_holding_admin_removes_only_his_telegram_summary_groups(self):
         self.make_user('admin', 'tg_admin')[0].close()
         uid, me = self.user_id('tg_admin'), self.client.get('/api/me').json()['user']['id']

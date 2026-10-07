@@ -26,7 +26,7 @@ from sqlalchemy import delete, func, insert, or_, select
 
 from .company_scope import SERVICE_CODE
 from .db import (Account, Audit, Budget, Category, Company, CompanyUser, Delegation, Ledger, LoginAttempt, PaymentRequest,
-                 Setting, TelegramGroup, TelegramLink, TelegramLinkCode, User, now, unit)
+                 Setting, TelegramGroup, TelegramGroupCode, TelegramLink, TelegramLinkCode, User, now, unit)
 from .security import COMPANY_ROLES, PERMS, client_ip, digest, login_limited, pay_right, record_failure, session_user
 from .services import (account_balance, all_participants, approval_stage, budget_state, effective_cashflows, funds_state, log,
                        money, participants, round_participants, route_complete)
@@ -301,19 +301,33 @@ def company_role_of(user, company, members):
     role = assigned.get(user.id)
     if role not in COMPANY_ROLES:
         return None
-    # Сотрудник действует, только пока назначен ровно в одну компанию (access.access_state):
-    # при конфликте назначений напоминаний нет, как нет и доступа на сайте.
-    if user.role != 'admin' and sum(1 for people in members.get('_valid', {}).values() if user.id in people) > 1:
-        return None
-    return role
+    return role if can_open(user, company, members) else None
+
+
+def can_open(user, company, members):
+    """Whether the site lets the user select this company at all (company_scope.available_companies):
+    a holding administrator any active company, a founder none for acting, staff exactly the one
+    business company of their single valid assignment. Assignments in several companies suspend
+    access until an administrator decides (access.staff_company_ids), so no reminder goes out either."""
+    if user.role == 'founder':
+        return False
+    if user.role == 'admin':
+        return True
+    if company.code == SERVICE_CODE:
+        return False
+    mine = [cid for cid, people in members.get('_valid', {}).items() if user.id in people]
+    return mine == [company.id]
 
 
 def roles_in(user, company, members, acting):
     """Роли, в которых пользователь может действовать в компании: своя роль (company_role_of) и
-    действующие замещения (ВрИО) в этой компании, как в security.scope_user. Учредитель не действует."""
+    действующие замещения (ВрИО) в этой компании, как в security.scope_user. Учредитель не действует.
+    Замещение считается только там, куда сотрудник может войти на сайте: назначение ВрИО проверяет
+    это при создании (requests_api.add_delegation), но потом сотрудника могли назначить во вторую
+    компанию или убрать из этой, и сайт закрывает ему доступ раньше, чем истекает срок ВрИО."""
     own = company_role_of(user, company, members)
     roles = {own} if own else set()
-    if user.role != 'founder':
+    if can_open(user, company, members):
         roles |= acting.get((company.id, user.id), set())
     return roles
 
@@ -348,12 +362,16 @@ def responsible(r, account, company, users, members, acting=None, past=None):
 
 
 def acting_roles(s):
-    """Действующие замещения (ВрИО) на сегодня: (компания, пользователь) -> роли."""
+    """Действующие замещения (ВрИО) на сегодня: (компания, пользователь) -> роли.
+    Критерий тот же, что у сайта (access.delegation_in_force): заменяемый активен и держит эту роль,
+    заместитель допущен в компанию. Запись, оставшаяся после правки мимо сайта или восстановления
+    из копии, напоминаний не даёт."""
+    from .access import delegation_in_force
     current = tashkent_today()
     acting = {}
     for d in s.scalars(select(Delegation).where(Delegation.revoked_at.is_(None), Delegation.starts_on <= current,
                                                 Delegation.ends_on >= current)):
-        if d.role in COMPANY_ROLES:
+        if d.role in COMPANY_ROLES and delegation_in_force(s, d, current):
             acting.setdefault((d.company_id, d.user_id), set()).add(d.role)
     return acting
 
@@ -411,7 +429,7 @@ def pending_items(s, user_id=None):
                           'stage': stage, 'stage_label': STAGE_LABELS[stage],
                           'assignee_user_id': u.id, 'assignee_telegram_id': links[u.id],
                           'stage_entered_at': utc_iso(since),
-                          'company': company.name, 'amount': money(r.amount), 'currency': account.currency,
+                          'company': company.name, 'company_code': company.code, 'amount': money(r.amount), 'currency': account.currency,
                           'purpose': purpose, 'url': url})
     return items
 
@@ -466,8 +484,11 @@ def access_check(request: Request, chat_id: int | None = Query(default=None, gt=
     result = {'checked_at': utc_iso(now()), 'group': None, 'user': None}
     with unit() as s:
         if chat_id is not None:
-            state = group_state(s, chat_id, None)
-            result['group'] = {'chat_id': chat_id, 'allowed': state['connected'], 'companies': state['companies']}
+            # The same scope as the summary and the group list carry: a stored group left without
+            # active companies is not allowed, and scope_id lets the bot compare with its snapshot.
+            group = report_groups(s).get(chat_id)
+            codes, scope_id = group_scope(s, chat_id, group) if group else ([], None)
+            result['group'] = {'chat_id': chat_id, 'allowed': bool(codes), 'companies': codes, 'scope_id': scope_id}
         if telegram_user_id is not None:
             user = linked_user(s, telegram_user_id)
             if user is None:
@@ -484,6 +505,94 @@ def access_check(request: Request, chat_id: int | None = Query(default=None, gt=
 
 
 # ---------------------------------------------------------------- summary groups connected from Telegram
+
+class GroupCodeIn(BaseModel):
+    model_config = ConfigDict(extra='forbid', str_strip_whitespace=True)
+    chat_id: int = Field(gt=-2**63, lt=0)
+    company_code: str = Field(min_length=1, max_length=40)
+
+
+class GroupRegisterIn(BaseModel):
+    model_config = ConfigDict(extra='forbid', str_strip_whitespace=True)
+    code: str = Field(max_length=128)
+    chat_id: int = Field(gt=-2**63, lt=0)
+    title: str = Field(default='', max_length=255)
+    telegram_user_id: int = Field(gt=0, lt=2**53)
+
+
+GROUP_CODE_REFUSAL = 'Код регистрации не найден, истёк или не подходит для этой группы.'
+
+
+def group_code_hash(code):
+    return digest('telegram-group-registration:' + code.strip().upper())
+
+
+def check_registration_scope(s, chat_id, company_code):
+    """Never replace server settings or switch a connected group to a different company.
+    Called under the write guard on both issuance and consumption, so a concurrent change
+    cannot widen the group scope between the two steps."""
+    if chat_id in config_groups():
+        raise HTTPException(409, 'Эта группа задана в настройках сервера (BOT_REPORT_GROUPS).')
+    group = report_groups(s).get(chat_id)
+    if group is not None and group['companies'] != {company_code}:
+        raise HTTPException(409, 'Группа уже подключена к другой компании. Сначала отключите её на сайте.')
+
+
+@router.post('/api/admin/telegram-group-codes')
+def issue_group_registration_code(data: GroupCodeIn, request: Request):
+    """A site administrator authorizes one group and one company for ten minutes.
+    No personal Telegram link is needed; the plaintext code is returned only here."""
+    with unit(True) as s:
+        user, _ = session_user(s, request, 'users')
+        require_holding_admin(user)
+        company = chosen_companies(s, [data.company_code])[0]
+        check_registration_scope(s, data.chat_id, company.code)
+        code = ''.join(secrets.choice(CODE_ALPHABET) for _ in range(20))
+        expires_at = now() + CODE_TTL
+        s.execute(delete(TelegramGroupCode).where(TelegramGroupCode.chat_id == data.chat_id))
+        s.add(TelegramGroupCode(code_hash=group_code_hash(code), chat_id=data.chat_id,
+                               company_id=company.id, issued_by=user.id, expires_at=expires_at))
+        journal_group(s, {company.code}, 'Выдан код регистрации Telegram-группы', data.chat_id,
+                      'Одноразовый код выдан на 10 минут', user.id)
+        return {'code': code, 'chat_id': data.chat_id, 'company_code': company.code,
+                'company_name': company.name, 'expires_at': utc_iso(expires_at)}
+
+
+@router.post('/api/bot/v1/report-groups/register')
+def register_report_group(data: GroupRegisterIn, request: Request):
+    """Consume an authorization from the site. The authenticated bot verifies that the
+    Telegram actor is an administrator/owner of this chat; that actor need not have a site
+    account or personal Telegram link. The site authority belongs to the code issuer."""
+    authenticate_bot(request)
+    code = data.code.upper()
+    if not re.fullmatch('[' + CODE_ALPHABET + ']{20}', code):
+        raise HTTPException(403, GROUP_CODE_REFUSAL)
+    with unit(True) as s:
+        pending = s.get(TelegramGroupCode, group_code_hash(code))
+        if pending is None or pending.expires_at <= now() or pending.chat_id != data.chat_id:
+            raise HTTPException(403, GROUP_CODE_REFUSAL)
+        issuer = s.get(User, pending.issued_by)
+        company = s.get(Company, pending.company_id)
+        if (issuer is None or not issuer.active or issuer.role != 'admin' or issuer.must_change_password
+                or company is None or not company.active or company.code.upper() == SERVICE_CODE):
+            raise HTTPException(403, GROUP_CODE_REFUSAL)
+        check_registration_scope(s, data.chat_id, company.code)
+        # A forwarded code must not be copied into the stored title or audit text.
+        title = re.sub(re.escape(code), '[код скрыт]', data.title, flags=re.IGNORECASE)
+        title = mask_digits(title, 255)
+        row = s.get(TelegramGroup, data.chat_id)
+        if row is None:
+            row = TelegramGroup(chat_id=data.chat_id, title=title, companies=company.code,
+                                added_by=issuer.id, added_at=now())
+            s.add(row)
+        else:
+            row.title, row.companies = title, company.code
+            row.added_by, row.added_at = issuer.id, now()
+        s.delete(pending)
+        journal_group(s, {company.code}, 'Telegram-группа зарегистрирована', data.chat_id,
+                      'Подключена одноразовым кодом; компания: ' + company.code, issuer.id)
+        return {'registered': True, 'chat_id': data.chat_id,
+                'companies': [company.code], 'company_names': [company.name]}
 
 class GroupIn(BaseModel):
     model_config = ConfigDict(extra='forbid', str_strip_whitespace=True)
@@ -901,6 +1010,7 @@ def revoke_telegram_link_code(data: RevokeIn, request: Request):
 def revoke_telegram(s, user_id):
     """Remove a user's Telegram link and pending codes, e.g. together with their sessions."""
     s.execute(delete(TelegramLinkCode).where(TelegramLinkCode.user_id == user_id))
+    s.execute(delete(TelegramGroupCode).where(TelegramGroupCode.issued_by == user_id))
     return s.execute(delete(TelegramLink).where(TelegramLink.user_id == user_id)).rowcount > 0
 
 

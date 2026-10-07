@@ -1665,14 +1665,26 @@ class SiteTests(unittest.TestCase):
         self.post('/api/budgets',{'category_id':cat,'month':self.month,'currency':'UZS','amount':'100','mode':'hard','reason':'Лимит снижен после утверждения','source':'test'})
         r=self.post('/api/ledger',self.pay_body(second,category_id=cat,amount='400',note=long_note),*book)
         self.assertEqual(r.status_code,409,r.text);self.assertIn('пересмотреть бюджет',r.text)
-        # Money that disappeared after approval also stops the payment with the same hint.
+        # New corrections cannot remove approved money. Old data with a
+        # shortage must still stop payment and let the payer return to finance.
         small=self.post('/api/accounts',{'name':'Малый счёт','kind':'bank','currency':'UZS','opening':'1000','opening_date':str(today()-timedelta(days=10))}).json()['id']
         third=self.request('800','Заявка на малый остаток',account=small).json()['id']
         self.assertEqual(self.approve(third).status_code,200)
         edit={'name':'Малый счёт','kind':'bank','currency':'UZS','opening':'700','opening_date':str(today()-timedelta(days=10)),'allow_overdraft':False,'reason':'Уточнён начальный остаток'}
-        self.assertEqual(self.post(f'/api/accounts/{small}',edit).status_code,200)
+        version=state(third)['version']
+        corrected=self.post(f'/api/accounts/{small}',edit)
+        self.assertEqual(corrected.status_code,409,corrected.text)
+        self.assertIn('финансовому директору',corrected.text)
+        with unit() as s:self.assertEqual(s.get(Account,small).opening,100000)
+        self.assertEqual((state(third)['status'],state(third)['version']),('approved',version))
+        # Explicitly represent an old correction restored from a previous DB;
+        # the current account-edit API is not allowed to create this state.
+        with unit(True) as s:s.get(Account,small).opening=70000
         r=self.post('/api/ledger',self.pay_body(third,account_id=small,amount='800',note=long_note),*book)
         self.assertEqual(r.status_code,409,r.text);self.assertIn('Недостаточно доступных средств',r.text);self.assertIn('финансовому директору',r.text)
+        returned=self.post(f'/api/requests/{third}/decision',{'action':'return_finance','note':'Нехватка фактических денег после прежней корректировки'},*book)
+        self.assertEqual(returned.status_code,200,returned.text)
+        self.assertEqual((state(third)['status'],state(third)['approval_stage']),('pending','finance'))
 
     def test_89_reject_is_gone_and_old_rejected_requests_are_read_only(self):
         rid=self.request('600').json()['id'];self.assertEqual(self.finance_approve(rid).status_code,200)
@@ -1748,11 +1760,20 @@ class SiteTests(unittest.TestCase):
         with unit(True) as s:
             for i,due in ((x,today()-timedelta(days=5)),(y,today())):
                 r=s.get(PaymentRequest,i);r.due_date=due;r.approved_at=now()-timedelta(days=10)
-        # A manual expense can no longer take the reservation, so the shortfall comes from a corrected opening balance.
+        # Neither a manual expense nor a new opening correction can take the
+        # reservation; payment must also reject shortages in legacy data.
         spend={'account_id':acc,'category_id':self.cat,'kind':'out','amount':'400','date':str(today()-timedelta(days=1)),'reference':'LATE-OUT','note':'Расход без заявки задним числом'}
         r=self.post('/api/ledger',spend);self.assertEqual(r.status_code,409,r.text);self.assertIn('Недостаточно доступных средств',r.text)
         edit={'name':'Счёт с резервом','kind':'bank','currency':'UZS','opening':'600','opening_date':str(today()-timedelta(days=20)),'allow_overdraft':False,'reason':'Уточнён начальный остаток счёта'}
-        self.assertEqual(self.post(f'/api/accounts/{acc}',edit).status_code,200)
+        version=self.row(y)['version']
+        corrected=self.post(f'/api/accounts/{acc}',edit)
+        self.assertEqual(corrected.status_code,409,corrected.text)
+        self.assertIn('финансовому директору',corrected.text)
+        with unit() as s:self.assertEqual(s.get(Account,acc).opening,100000)
+        self.assertEqual((self.row(y)['status'],self.row(y)['version']),('approved',version))
+        # Explicit legacy fixture: an older version accepted this correction.
+        # Current API checks must not be weakened to arrange a payment test.
+        with unit(True) as s:s.get(Account,acc).opening=60000
         pay=lambda d,ref:self.post('/api/ledger',{'account_id':acc,'category_id':self.cat,'kind':'out','amount':'600','date':d,'reference':ref,'request_id':y},*book)
         r=pay(self.date,'LATE-TODAY');self.assertEqual(r.status_code,409,r.text);self.assertIn('Недостаточно доступных средств',r.text)
         r=pay(str(today()-timedelta(days=6)),'LATE-BACK');self.assertEqual(r.status_code,409,r.text);self.assertIn('финансовому директору',r.text)
@@ -1802,13 +1823,22 @@ class SiteTests(unittest.TestCase):
 
     def test_97_early_payment_cannot_take_money_reserved_for_an_earlier_due_request(self):
         book=self.make_user('accountant','early_book')
-        acc=self.post('/api/accounts',{'name':'Счёт очередности','kind':'bank','currency':'UZS','opening':'150','opening_date':str(today()-timedelta(days=5))}).json()['id']
+        acc=self.post('/api/accounts',{'name':'Счёт очередности','kind':'bank','currency':'UZS','opening':'200','opening_date':str(today()-timedelta(days=5))}).json()['id']
         late=self.request('100','Заявка с поздним сроком',account=acc,date=str(today()+timedelta(days=10))).json()['id']
         soon=self.request('100','Заявка с ранним сроком',account=acc,date=str(today()+timedelta(days=5))).json()['id']
         for i in (late,soon):self.assertEqual(self.approve(i).status_code,200)
+        # A legacy correction could leave both approvals against only 150.
+        # The current API prevents creating this state; payment must still
+        # protect old approvals restored from an earlier database version.
+        with unit(True) as s:s.get(Account,acc).opening=15000
         pay=lambda rid,ref:self.post('/api/ledger',{'account_id':acc,'category_id':self.cat,'kind':'out','amount':'100','date':self.date,'reference':ref,'request_id':rid},*book)
         r=pay(late,'EARLY-LATE');self.assertEqual(r.status_code,409,r.text);self.assertIn('финансовому директору',r.text)
         self.assertIn('Недостаточно доступных средств',r.text)
+        self.assertEqual(pay(soon,'EARLY-SOON-BLOCKED').status_code,409)
+        # Even the earlier payment must protect the later reservation. Return
+        # that obligation explicitly before paying the fully funded request.
+        returned=self.post(f'/api/requests/{late}/decision',{'action':'return_finance','note':'Возврат поздней заявки из-за нехватки покрытия'},*book)
+        self.assertEqual(returned.status_code,200,returned.text)
         self.assertEqual(pay(soon,'EARLY-SOON').status_code,200)
 
     def test_98_another_months_accepted_overrun_is_not_borrowed(self):
@@ -2909,11 +2939,23 @@ class SiteTests(unittest.TestCase):
     def test_142_channel_payers_see_transfers_into_their_own_accounts(self):
         cashier=self.make_user('cashier','till_keeper');book=self.make_user('accountant','bank_keeper')
         till=self.post('/api/accounts',{'name':'Касса офиса','kind':'cash','currency':'UZS','opening':'50000','opening_date':str(today()-timedelta(days=5))}).json()['id']
-        self.assertEqual(self.ledger('300','out',reference='BANK-ONLY').status_code,200)
+        bank_only=self.ledger('300','out',reference='BANK-ONLY')
+        self.assertEqual(bank_only.status_code,200)
+        bank_document=self.client.post(f"/api/ledger/{bank_only.json()['id']}/document",content=PDF,headers={**self.h,'X-Filename':'bank.pdf','Content-Type':'application/pdf'})
+        self.assertEqual(bank_document.status_code,200,bank_document.text)
         moves=[('TOP-UP',self.acc,till),('HAND-IN',till,self.acc)]
         for ref,src,dst in moves:
             r=self.post('/api/ledger',{'account_id':src,'to_account_id':dst,'category_id':None,'kind':'transfer','amount':'1000','date':self.date,'reference':ref,'note':'Перевод между своими счетами'})
             self.assertEqual(r.status_code,200,r.text)
+            document=self.client.post(f"/api/ledger/{r.json()['id']}/document",content=PDF,headers={**self.h,'X-Filename':'transfer.pdf','Content-Type':'application/pdf'})
+            self.assertEqual(document.status_code,200,document.text)
+            for client,headers in (cashier,book):
+                listed=client.get(f"/api/documents?ledger_id={r.json()['id']}",headers=headers)
+                self.assertEqual(listed.status_code,200,listed.text)
+                self.assertEqual([d['id'] for d in listed.json()],[document.json()['id']])
+                self.assertEqual(client.get(document.json()['url'],headers=headers).status_code,200)
+        self.assertEqual(cashier[0].get(bank_document.json()['url'],headers=cashier[1]).status_code,404)
+        self.assertEqual(book[0].get(bank_document.json()['url'],headers=book[1]).status_code,200)
         seen=lambda who:sorted(x['reference'] for x in who[0].get('/api/ledger',headers=who[1]).json())
         # The cashier sees every movement of the till, including the top-up stored on the bank account, and nothing bank-only.
         self.assertEqual(seen(cashier),['HAND-IN','TOP-UP'])

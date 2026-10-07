@@ -195,19 +195,24 @@ class BotApiTests(unittest.TestCase):
         chat=-1005556000001
         self.assertEqual(self.connect(chat,['ZUMA'],556003).status_code,200)
         r=check(chat_id=chat,telegram_user_id=556001).json()
-        self.assertEqual(r['group'],{'chat_id':chat,'allowed':True,'companies':['ZUMA']})
+        self.assertEqual(r['group'],{'chat_id':chat,'allowed':True,'companies':['ZUMA'],'scope_id':self.scope(chat).json()['scope_id']})
         self.assertEqual(r['user'],{'linked':True,'user_id':finance['id'],'is_admin':False,'companies':['UZGERMED']})
         self.assertTrue(r['checked_at'])
         self.assertEqual(check(telegram_user_id=556002).json()['user'],{'linked':True,'user_id':founder['id'],'is_admin':False,'companies':['UZGERMED','ZUMA']})
         self.assertEqual(check(telegram_user_id=556003).json()['user']['is_admin'],True)
-        self.assertEqual(check(chat_id=GROUP).json()['group'],{'chat_id':GROUP,'allowed':True,'companies':['UZGERMED']})
+        self.assertEqual(check(chat_id=GROUP).json()['group'],{'chat_id':GROUP,'allowed':True,'companies':['UZGERMED'],'scope_id':self.groups()[GROUP]['scope_id']})
         self.assertEqual(check(telegram_user_id=556999).json()['user'],{'linked':False,'user_id':None,'is_admin':False,'companies':[]})
         # A change of rights is visible at once: the link is gone and the group of a disconnected chat is not allowed.
         self.assertEqual(self.post(f'/api/users/{finance["id"]}/password',{'password':PASSWORD+'x'}).status_code,200)
         self.assertEqual(check(telegram_user_id=556001).json()['user']['linked'],False)
         self.assertEqual(self.disconnect(chat,556003).status_code,200)
-        self.assertEqual(check(chat_id=chat).json()['group'],{'chat_id':chat,'allowed':False,'companies':[]})
+        self.assertEqual(check(chat_id=chat).json()['group'],{'chat_id':chat,'allowed':False,'companies':[],'scope_id':None})
         self.assertEqual([a.action for a in self.audit_rows('Бот: настройки группы')],[])
+        # A group whose only company is switched off stays registered but is not allowed, as in the summary.
+        self.assertEqual(self.connect(chat,['ZUMA'],556003).status_code,200)
+        with unit(True) as s:s.scalar(select(Company).where(Company.code=='ZUMA')).active=False
+        self.assertEqual(check(chat_id=chat).json()['group'],{'chat_id':chat,'allowed':False,'companies':[],'scope_id':None})
+        self.assertEqual(self.summary(chat=chat).status_code,403)
 
     def test_bot_api_is_off_until_configured_with_a_long_secret(self):
         saved=os.environ['BOT_CLIENT_SECRET']
@@ -386,6 +391,7 @@ class BotApiTests(unittest.TestCase):
         self.assertEqual([(i['request_id'],i['stage'],i['assignee_user_id'],i['assignee_telegram_id']) for i in items],
                          [(rid,'check',accountant['id'],1003),(rid,'check',book['id'],1008)])
         item=items[0]
+        self.assertEqual((item['company'],item['company_code']),('UZGERMED','UZGERMED'))  # the code is what /access lists
         self.assertEqual((item['number'],item['status'],item['stage_label'],item['amount'],item['currency'],item['company'],item['url']),
                          (f'CF-{rid:05d}','pending','Проверка реквизитов расчётным бухгалтером','600.00','UZS','UZGERMED',''))
         self.assertTrue(item['purpose'].startswith(self.cat_name+': Оплата по договору ••6789'))
@@ -1031,6 +1037,53 @@ class BotApiTests(unittest.TestCase):
         self.assertIn(deputy['id'],[i['assignee_user_id'] for i in self.pending() if i['request_id']==second])
         self.assertEqual(self.post(f"/api/delegations/{d.json()['id']}/revoke",{'reason':'Директор вернулся из отпуска'}).status_code,200)
         self.assertEqual([i['assignee_user_id'] for i in self.pending() if i['request_id']==second],[director['id']])
+
+    def test_acting_role_counts_only_while_the_site_lets_the_deputy_in(self):
+        """A delegation outlives the deputy's access: a second assignment (conflict) or the loss of the
+        assignment closes the company on the site, so the bot API must stop the reminder as well."""
+        author=self.make_user('employee','author');finance=self.make_user('finance','fin')
+        director=self.make_user('director','boss');deputy=self.make_user('employee','deputy')
+        for user,tg in ((finance,1101),(director,1102),(deputy,1103)):self.link(user,tg)
+        d=self.post('/api/delegations',{'user_id':deputy['id'],'replaced_user_id':director['id'],'role':'director','starts_on':str(self.today),
+                                        'ends_on':str(self.today+timedelta(days=5)),'reason':'Отпуск директора по графику'})
+        self.assertEqual(d.status_code,200,d.text)
+        rid=self.new_request(author,'600');self.check(rid);self.decide(finance,rid)
+        waiting=lambda:sorted(i['assignee_user_id'] for i in self.pending() if i['request_id']==rid)
+        self.assertEqual(waiting(),sorted([director['id'],deputy['id']]))
+        # A second valid assignment: the site suspends the deputy (access_state 'conflict') and so does the bot.
+        uz,zu=self.companies['UZGERMED'],self.companies['ZUMA']
+        with unit(True) as s:s.add(CompanyUser(company_id=zu,user_id=deputy['id'],role='accountant'))
+        self.assertEqual(waiting(),[director['id']])
+        self.assertEqual(self.tg_user(1103).json()['items'],[])
+        self.assertEqual(self.client.get('/api/bot/v1/access',params={'telegram_user_id':1103},auth=BOT).json()['user']['companies'],[])
+        with unit(True) as s:s.delete(s.get(CompanyUser,(zu,deputy['id'])))
+        self.assertEqual(waiting(),sorted([director['id'],deputy['id']]))
+        # The assignment in the request's company is removed while the delegation still runs: no access, no reminder.
+        with unit(True) as s:s.get(CompanyUser,(uz,deputy['id'])).role=None
+        self.assertEqual(waiting(),[director['id']])
+        self.assertEqual([i['stage'] for i in self.tg_user(1103).json()['items']],[])
+
+    def test_stale_delegation_of_a_disabled_or_reassigned_replaced_user_gives_no_reminder(self):
+        """The replaced director is switched off or moved to another role directly in the database
+        (a restored copy, a manual edit): the delegation is not revoked, but the site refuses it and
+        so must the bot API — one criterion (access.delegation_in_force) on both sides."""
+        author=self.make_user('employee','author');finance=self.make_user('finance','fin')
+        director=self.make_user('director','boss');deputy=self.make_user('employee','deputy')
+        for user,tg in ((finance,1201),(director,1202),(deputy,1203)):self.link(user,tg)
+        d=self.post('/api/delegations',{'user_id':deputy['id'],'replaced_user_id':director['id'],'role':'director','starts_on':str(self.today),
+                                        'ends_on':str(self.today+timedelta(days=5)),'reason':'Отпуск директора по графику'})
+        self.assertEqual(d.status_code,200,d.text)
+        rid=self.new_request(author,'600');self.check(rid);self.decide(finance,rid)
+        waiting=lambda:sorted(i['assignee_user_id'] for i in self.pending() if i['request_id']==rid)
+        self.assertEqual(waiting(),sorted([director['id'],deputy['id']]))
+        with unit(True) as s:s.get(User,director['id']).active=False
+        self.assertEqual(waiting(),[])
+        with unit(True) as s:s.get(User,director['id']).active=True
+        self.assertEqual(waiting(),sorted([director['id'],deputy['id']]))
+        with unit(True) as s:s.get(CompanyUser,(self.companies['UZGERMED'],director['id'])).role='cashier'
+        self.assertEqual(waiting(),[])
+        self.assertEqual(self.tg_user(1203).json()['items'],[])
+        with unit() as s:self.assertIsNone(s.get(Delegation,d.json()['id']).revoked_at)  # nothing rewritten behind the administrator
 
     def test_payer_who_took_part_in_an_earlier_round_is_not_reminded(self):
         author=self.make_user('employee','author');finance=self.make_user('finance','fin');director=self.make_user('director','boss')
