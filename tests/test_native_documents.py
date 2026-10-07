@@ -183,6 +183,23 @@ class NativeDocumentTests(unittest.TestCase):
         data['Поток_нал']['M83']='#REF!'
         with self.assertRaises(ValueError):patch_business_docx(raw,data)
 
+    def test_first_year_cumulative_cash_uses_row32_and_missing_or_error_blocks(self):
+        raw=change_xml(template(),lambda xml:xml.replace(b'</w:body>',('<w:p/>'*(538-147)+paragraph(POSITIVE_CASH_TEXT)+'</w:body>').encode()))
+        data=values();data['Поток_нал']={cell:1 for cell in CASH_FLOW_CELLS+CUMULATIVE_CASH_CELLS}
+        targets={s['cell'] for s in report_sources(raw) if s['sheet']=='Поток_нал'}
+        self.assertTrue({'C32','N32','B58','M58','B83','M83'}.issubset(targets))
+        self.assertFalse(any(cell.endswith('30') for cell in targets))
+        self.assertEqual(len(targets),72)
+        # Positive net cash in row30 cannot stand in for cumulative row32.
+        data['Поток_нал'].update({column+'30':1 for column in 'CDEFGHIJKLMN'})
+        del data['Поток_нал']['C32']
+        with self.assertRaisesRegex(ValueError,'C32'):patch_business_docx(raw,data)
+        data['Поток_нал']['C32']='#REF!'
+        with self.assertRaises(ValueError):patch_business_docx(raw,data)
+        data['Поток_нал']['C32']=-1
+        _,meta=patch_business_docx(raw,data)
+        self.assertTrue(any(e['kind']=='narrative' and e['paragraph']==538 for e in meta['edits']))
+
     def test_pdf_copy_keeps_headings_blank_bridge_and_header_not_body_rows(self):
         heading='<w:p><w:pPr><w:pStyle w:val="H1"/><w:keepNext w:val="0"/></w:pPr><w:r><w:t>8. Synthetic chapter</w:t></w:r></w:p>'
         blank='<w:p><w:pPr/></w:p>'

@@ -42,7 +42,7 @@ POSITIVE_CASH_PARAGRAPH = 538
 POSITIVE_CASH_TEXT = 'Поток наличности в целом по проекту на протяжении всего горизонта планирования будет положительным. Кумулятивный поток наличности на протяжении всего периода будет положительным.'
 PROFIT_CELLS = tuple(column+str(row) for row in (18,41,64) for column in 'BCDEFGHIJKLM')
 CASH_FLOW_CELLS = tuple(column+str(row) for row,columns in ((27,'CDEFGHIJKLMN'),(55,'BCDEFGHIJKLM'),(80,'BCDEFGHIJKLM')) for column in columns)
-CUMULATIVE_CASH_CELLS = tuple(column+str(row) for row,columns in ((30,'CDEFGHIJKLMN'),(58,'BCDEFGHIJKLM'),(83,'BCDEFGHIJKLM')) for column in columns)
+CUMULATIVE_CASH_CELLS = tuple(column+str(row) for row,columns in ((32,'CDEFGHIJKLMN'),(58,'BCDEFGHIJKLM'),(83,'BCDEFGHIJKLM')) for column in columns)
 
 
 def _tag_end(raw,start):
