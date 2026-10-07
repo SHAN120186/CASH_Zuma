@@ -240,6 +240,33 @@ class BusinessProjectTests(unittest.TestCase):
             self.assertEqual(s.scalar(select(func.count()).select_from(BusinessGeneration)), 1)
             self.assertEqual(s.scalar(select(func.count()).select_from(Ledger)), 0)
 
+    def test_native_generator_update_creates_a_new_immutable_report_without_reusing_old_word_conclusions(self):
+        project, source, word = self.native_complete_folder()
+        stack, patched, rendered, _ = self.native_renderers(word)
+        with stack:
+            with patch('app.native_projects.GENERATOR_VERSION', '1.0'):
+                before = self.native_generate(project).json()
+            old_archive = before['generations'][0]['business_archive']['id']
+            path = f'/api/report-archives/{old_archive}/files/pdf?company_id={self.cid}'
+            old_bytes = self.client.get(path, headers=self.headers).content
+            with patch('app.native_projects.GENERATOR_VERSION', '1.1'):
+                response = self.native_generate(before)
+                self.assertEqual(response.status_code, 200, response.text)
+                after = response.json()
+                retry = self.native_generate(after)
+                self.assertEqual(retry.status_code, 200, retry.text)
+                self.assertEqual(retry.json()['current_generation_id'], after['current_generation_id'])
+            self.assertNotEqual(before['current_generation_id'], after['current_generation_id'])
+            self.assertEqual(len(after['generations']), 2)
+            self.assertEqual(patched.call_count, 2)
+            self.assertEqual(rendered.call_count, 2)
+            self.assertEqual(self.client.get(path, headers=self.headers).content, old_bytes)
+        self.assertEqual(self.client.get(after['files'][0]['download_url'], headers=self.headers).content, source)
+        with unit() as s:
+            versions = [json.loads(g.result_json)['native_generator'] for g in s.scalars(
+                select(BusinessGeneration).order_by(BusinessGeneration.id))]
+            self.assertEqual(versions, ['1.0', '1.1'])
+
     def test_native_parameter_or_source_change_creates_new_immutable_report_versions(self):
         project, _, word = self.native_complete_folder()
         stack, _, rendered, _ = self.native_renderers(word)

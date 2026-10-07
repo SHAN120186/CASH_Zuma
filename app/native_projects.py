@@ -18,6 +18,7 @@ from sqlalchemy import select, func
 from uuid import NAMESPACE_URL, uuid5
 
 router = APIRouter()
+GENERATOR_VERSION = '1.1'
 
 
 class NativeIn(BaseModel):
@@ -180,7 +181,7 @@ def generate_native(data: NativeGenerateIn, request: Request, id: int = Path(gt=
     if len(templates) != 1:
         raise HTTPException(422, 'Добавьте в папку один исходный Word с именем «Бизнес-план» или «Лекарство_производство». Он задаёт оформление PDF.')
     inputs = {'title':title,'start':data.start.isoformat(),'months':36,'currency':'USD','native_overrides':data.overrides}
-    signature = hashlib.sha256(dump({'native_generator':'1.0','revision':data.revision,'inputs':inputs,
+    signature = hashlib.sha256(dump({'native_generator':GENERATOR_VERSION,'revision':data.revision,'inputs':inputs,
                                     'sources':source_manifest}).encode()).hexdigest()
     with unit() as s:
         user, _ = authorize(s, request, 'import', company_id=company_id)
@@ -213,7 +214,8 @@ def generate_native(data: NativeGenerateIn, request: Request, id: int = Path(gt=
     end = date(data.start.year + 3, data.start.month, 1)
     from datetime import timedelta
     result = {'period_start':data.start.isoformat(),'period_end':(end-timedelta(days=1)).isoformat(),
-              'native':True,'metrics':{'npv':fresh['values']['ВНД']['D6'],'irr_annual':fresh['values']['ВНД']['E6']}}
+              'native':True,'native_generator':GENERATOR_VERSION,
+              'metrics':{'npv':fresh['values']['ВНД']['D6'],'irr_annual':fresh['values']['ВНД']['E6']}}
     with unit(True) as s:
         user, company = authorize(s, request, 'import', company_id=company_id)
         project = get(s, BusinessProject, id)
