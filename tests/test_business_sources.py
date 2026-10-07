@@ -1,5 +1,6 @@
 """Synthetic source fixtures; never use uploaded business data in this suite."""
 from io import BytesIO
+from decimal import Decimal
 import json
 from pathlib import Path
 import sys
@@ -11,6 +12,7 @@ from openpyxl import Workbook
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from app.business_sources import extract_sources, PARAMETER_LABELS, NORMALIZED_HEADERS
+from app.business_model import validate_model
 
 
 def model(months=2):
@@ -258,6 +260,34 @@ class BusinessSourceTests(unittest.TestCase):
         result = extract_sources([upload("synthetic_profile.xlsx", workbook_bytes(workbook))])
         self.assertTrue(all("unit_cost" not in product and "quantities" not in product for product in result["inputs"]["products"]))
         self.assertTrue(any(issue["code"] == "utilization_formula" for issue in result["issues"]))
+
+    def test_repeating_profile_quantities_validate_without_rounding_explicit_inputs(self):
+        workbook = synthetic_profile()
+        for row in range(8, 48):
+            workbook["План производства"][f"C{row}"] = 100001
+            workbook["План производства"][f"D{row}"] = 200003
+        result = extract_sources([upload("synthetic_profile.xlsx", workbook_bytes(workbook))])
+        products = result["inputs"]["products"]
+        complete = model(36)
+        complete["products"] = products
+        self.assertFalse(validate_model(complete), validate_model(complete))
+        self.assertEqual(products[0]["quantities"][0], "6250.08333333333")
+        self.assertTrue(all(Decimal(value).as_tuple().exponent >= -12 for product in products for value in product["quantities"]))
+        evidence = next(item for item in result["evidence"] if item["field"] == "products[0].quantities")
+        self.assertNotEqual(evidence["value"][0], products[0]["quantities"][0])
+        self.assertIn("ROUND_HALF_EVEN", evidence["note"])
+        policies = [issue for issue in result["issues"] if issue["code"] == "volume_policy"]
+        self.assertEqual(len(policies), 1)
+        self.assertTrue(policies[0]["requires_confirmation"])
+        self.assertIn("15 значащих цифр", policies[0]["message"])
+        self.assertFalse(any(issue["code"] == "missing_or_invalid" and issue["field"].startswith("products[") for issue in result["issues"]))
+        explicit = model()
+        explicit["products"][0]["price"] = "9.123456789012345"
+        json_result = extract_sources([upload("project.json", json.dumps(explicit).encode())])
+        excel_result = extract_sources([upload("inputs.xlsx", workbook_bytes(normalised_book(explicit)))])
+        for extracted in (json_result, excel_result):
+            self.assertEqual(extracted["inputs"]["products"][0]["price"], explicit["products"][0]["price"])
+            self.assertTrue(any(issue["field"] == "products[0].price" and issue["code"] == "missing_or_invalid" for issue in extracted["issues"]))
 
     def test_explicit_optional_narratives_from_json_excel_and_named_text(self):
         data = model()

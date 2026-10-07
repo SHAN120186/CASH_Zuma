@@ -7,7 +7,7 @@ reconstructed. Uploaded originals and complete accounting tables are not returne
 from __future__ import annotations
 
 from datetime import date, datetime, timedelta
-from decimal import Decimal, InvalidOperation, localcontext
+from decimal import Decimal, InvalidOperation, ROUND_HALF_EVEN, localcontext
 from io import BytesIO
 import ast
 import json
@@ -127,6 +127,23 @@ def _number(value: Decimal | int | float) -> str:
         context.prec = 50
         result = Decimal(str(value)).quantize(Decimal("0.000000000001"))
     return format(result, "f").rstrip("0").rstrip(".") if result else "0"
+
+
+def _raw_number(value: Decimal) -> str:
+    """Keep explicit source precision for validation instead of rounding it."""
+    text = format(value, "f")
+    return text.rstrip("0").rstrip(".") if "." in text else text
+
+
+def _profile_quantity(value: Decimal) -> str:
+    """Round only reconstructed quantities to the engine's Excel precision."""
+    if not value:
+        return "0"
+    places = min(12, max(0, 15 - value.adjusted() - 1))
+    with localcontext() as context:
+        context.prec = 50
+        rounded = value.quantize(Decimal(1).scaleb(-places), rounding=ROUND_HALF_EVEN)
+    return _raw_number(rounded)
 
 
 def _issue(result: dict, field: str, code: str, message: str, source: dict | None = None,
@@ -256,6 +273,7 @@ def _xlsx(content: bytes) -> tuple[dict, list[str]]:
                 formula = node.find("s:f", NS)
                 raw_value = node.find("s:v", NS)
                 value = raw_value.text if raw_value is not None else None
+                numeric_text = None
                 if kind == "s" and value is not None:
                     index = int(value)
                     if not 0 <= index < len(strings):
@@ -269,6 +287,7 @@ def _xlsx(content: bytes) -> tuple[dict, list[str]]:
                     number = _decimal(value)
                     if number is None:
                         raise SourceReadError("Нечисловое значение числовой ячейки.")
+                    numeric_text = _raw_number(number)
                     value = _number(number)
                 style_index = int(node.attrib.get("s", "0"))
                 is_date, is_percent = styles[style_index] if style_index < len(styles) else (False, False)
@@ -276,11 +295,14 @@ def _xlsx(content: bytes) -> tuple[dict, list[str]]:
                     numeric = _decimal(value)
                     if numeric is not None and 0 <= numeric < 100000:
                         value = (epoch + timedelta(days=float(numeric))).date().isoformat()
+                        numeric_text = None
                 if isinstance(value, str) and len(value) > MAX_TEXT:
                     raise SourceReadError("Слишком длинное значение ячейки.")
                 if formula is not None or value is not None:
                     cells[address] = {"value": value, "formula": None if formula is None else "=" + (formula.text or ""),
                                       "error": kind == "e", "percent": is_percent}
+                    if numeric_text is not None:
+                        cells[address]["numeric_text"] = numeric_text
                     if formula is not None and formula.attrib.get("t") == "shared":
                         shared_id = formula.attrib.get("si")
                         cells[address]["shared_id"] = shared_id
@@ -310,7 +332,7 @@ def _explicit(result: dict, cells: dict, address: str, field: str, name: str, sh
         _issue(result, field, "formula_input", "Введите явное исходное значение: произвольная формула Excel не исполняется.", source)
         _evidence(result, field, cell.get("value"), source, "excel_saved_cache", "needs_confirmation")
         return None
-    value = cell.get("value")
+    value = cell.get("numeric_text", cell.get("value"))
     if value not in (None, ""):
         _evidence(result, field, value, source)
     return value
@@ -330,13 +352,13 @@ def _parse_value(value: Any, field: str, percent: bool = False) -> Any:
             return [part.strip().replace(",", ".") for part in text.split(";")]
         if field in ("tax_rate", "discount_rate") and text.endswith("%"):
             numeric = _decimal(text[:-1])
-            return None if numeric is None else _number(numeric / 100)
+            return None if numeric is None else _raw_number(numeric / 100)
         if field not in ("title", "currency", "start", "name", "unit"):
             numeric = _decimal(text)
             if numeric is not None:
                 if field in ("months", "life_months", "commissioning_month") and numeric == numeric.to_integral():
                     return int(numeric)
-                return _number(numeric)
+                return _raw_number(numeric)
         return text
     return value
 
@@ -631,7 +653,7 @@ def _uzgermed(result: dict, sheets: dict, name: str) -> dict | None:
         if value is not None:
             _evidence(result, field, _number(value), _source(name, sheet, cell), "profile_input", "needs_confirmation")
     _issue(result, "products.price", "price_factor_vat", "Подтвердите ценовой коэффициент и НДС. Цена модели включает коэффициент ВНД!W41; кандидат без НДС рассчитан делением на 1 + НДС.", _source(name, "ВНД", "W41"))
-    _issue(result, "products.quantities", "volume_policy", "Подтвердите объёмы: модель повторяет среднее за два года по месяцам с загрузкой, отдельного плана продаж по каждому из 36 месяцев нет.", _source(name, "План производства", "C8:E47"))
+    _issue(result, "products.quantities", "volume_policy", "Подтвердите объёмы: модель повторяет среднее за два года по месяцам с загрузкой, отдельного плана продаж по каждому из 36 месяцев нет. Восстановленные месячные объёмы округлены до 15 значащих цифр и не более 12 знаков после запятой; значения до округления сохранены в источниках.", _source(name, "План производства", "C8:E47"))
     utilisation = sheets["Производ. с учетом загрузки"]
     initial = _decimal(_cell_value(utilisation, "B19"))
     addition = _decimal(_cell_value(utilisation, "Q19"))
@@ -686,9 +708,12 @@ def _uzgermed(result: dict, sheets: dict, name: str) -> dict | None:
         rule = (products.get(f"E{row}", {}).get("formula") or "").replace(" ", "").upper()
         expected = f"=IF(C{row}=0,D{row}/12,AVERAGEA(C{row}:D{row})/12)"
         if rule == expected and first is not None and second is not None and initial is not None and addition is not None and utilisation_verified:
-            base = second / 12 if first == 0 else (first + second) / 24
-            entry["quantities"] = [_number(base * (initial + addition * month / 12)) for month in range(36)]
-            _evidence(result, prefix + ".quantities", entry["quantities"], _source(name, "План производства", f"C{row}:E{row}"), "reconstructed_profile_arithmetic", "needs_confirmation")
+            with localcontext() as context:
+                context.prec = 50
+                base = second / 12 if first == 0 else (first + second) / 24
+                candidates = [base * (initial + addition * month / 12) for month in range(36)]
+                entry["quantities"] = [_profile_quantity(value) for value in candidates]
+            _evidence(result, prefix + ".quantities", [_raw_number(value) for value in candidates], _source(name, "План производства", f"C{row}:E{row}"), "reconstructed_profile_arithmetic", "needs_confirmation", "Значения до округления. В расчётных входах применяется Decimal ROUND_HALF_EVEN: до 15 значащих цифр и до 12 знаков после запятой; цены и суммы явных входов не округляются.")
         else:
             _issue(result, prefix + ".quantities", "quantity_formula", "Объём не извлечён: проверьте годовые числа и правило месячной загрузки.", _source(name, "План производства", f"C{row}:E{row}"))
         inputs["products"].append(entry)
