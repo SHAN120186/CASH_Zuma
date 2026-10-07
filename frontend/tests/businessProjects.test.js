@@ -16,6 +16,20 @@ const completeInputs = () => ({title: 'Synthetic project', start: '2027-01-01', 
   receivable_days: '0', inventory_days: '0', payable_days: '0', fixed_costs: '0', equity: '0',
   products: [{name: 'A', unit: 'pack', price: '10', unit_cost: '2', quantities: ['1', '2', '3']}], assets: [], loans: []});
 
+test('folder trash deletes the selected company revision and exposes reversible recovery',async t=>{
+  let project={id:1,company_id:2,revision:3,title:'Synthetic folder',status:'draft',can_delete:true,can_edit:true};const calls=[];
+  const view=mount(component,{company,api:async(url,options={})=>{calls.push({url,...options});if(options.method){project={...project,status:options.method==='DELETE'?'deleted':'draft',can_restore:options.method==='DELETE',can_delete:options.method!=='DELETE'};return project;}return{items:[project],can_upload:true};}});t.after(view.unmount);
+  await settle();assert.ok(button(view.container,'Удалить папку'));await view.state.changeProjectState(project);await settle();
+  assert.equal(calls.find(call=>call.method==='DELETE').url,'/api/business-projects/1?company_id=2&expected_revision=3');
+  assert.equal(button(view.container,'Восстановить'),undefined);view.state.showDeleted=true;await settle();assert.ok(button(view.container,'Восстановить'));
+  await view.state.changeProjectState(project,true);await settle();assert.equal(calls.find(call=>call.method==='POST').url,'/api/business-projects/1/restore?company_id=2&expected_revision=3');assert.ok(button(view.container,'Удалить папку'));
+});
+test('native model hides the generic calculation form and misleading generic generation metrics',async t=>{
+  const project={id:1,company_id:2,revision:1,can_edit:true,title:'Native folder',status:'needs_data',files:[],inputs:{},extraction:{},validation:[],native_model:{supported:true,parameters:[],metrics:[]},generations:[{id:1,metrics:{npv:'999'}}]};
+  const view=mount(component,{company,api:async url=>url.includes('/1?')?project:{items:[project],can_upload:true}});t.after(view.unmount);await settle();await view.state.openProject(project);await settle();
+  assert.equal(find(view.container,n=>n.tag==='form'),undefined);assert.doesNotMatch(text(view.container),/NPV проекта|осталось заполнить/);
+});
+
 test('original report downloads retain the supplied document and reject another company or an unrelated URL', () => {
   const doc = (id, filename) => ({id, filename, download_url: `/api/business-projects/1/sources/${id}/download?company_id=2`});
   const project = {id: 1, company_id: 2, can_edit: true, files: [doc(3, 'Лекарство_производство_ООО_UZGERMED_PHARM_36м_Долл_.xlsx'), doc(4, 'Бизнес-план.docx'), doc(5, 'UZGERMED_PHARM_36m.pdf'), doc(6, 'Договор.pdf')]};

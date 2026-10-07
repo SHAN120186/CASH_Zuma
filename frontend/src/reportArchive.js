@@ -35,6 +35,7 @@ export function filterProblem(filters) {
 export function archiveUrl(companyId, filters = {}) {
   const params = new URLSearchParams({company_id: String(companyId)});
   for (const key of ['date_from', 'date_to', 'uploaded_on']) if (filters[key]) params.set(key, filters[key]);
+  if (filters.include_deleted) params.set('include_deleted', 'true');
   return '/api/report-archives?' + params;
 }
 

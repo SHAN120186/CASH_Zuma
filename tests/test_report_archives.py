@@ -156,6 +156,93 @@ class ReportArchiveTests(unittest.TestCase):
                                    params={**params, 'telegram_user_id': telegram_id}, auth=BOT)
         return (client or self.client).get(path, params=params)
 
+    def remove(self, record, client=None, headers=None, company=None, **params):
+        company = company or self.cid
+        return (client or self.client).delete(f"/api/report-archives/{record['id']}",
+            params={'company_id': company, 'expected_version': record['version'], **params},
+            headers={**(headers or self.headers), 'X-Company-ID': str(company)})
+
+    def restore(self, record, client=None, headers=None, company=None, **params):
+        company = company or self.cid
+        return (client or self.client).post(f"/api/report-archives/{record['id']}/restore",
+            params={'company_id': company, 'expected_version': record['version'], **params},
+            headers={**(headers or self.headers), 'X-Company-ID': str(company)})
+
+    def test_delete_restore_hides_report_from_site_and_bot_preserves_version_date_bytes_and_ledger(self):
+        rid = self.ready()
+        record = self.listing().json()['items'][0]
+        self.assertTrue(record['can_delete'])
+        deleted = self.remove(record)
+        self.assertEqual(deleted.status_code, 200, deleted.text)
+        self.assertEqual(deleted.json()['status'], 'deleted')
+        self.assertFalse(deleted.json()['can_download'])
+        self.assertTrue(deleted.json()['can_restore'])
+        self.assertEqual(self.listing().json()['items'], [])
+        for params in ({}, {'include_drafts': True}, {'include_deleted': True, 'include_drafts': True}):
+            self.assertEqual(self.listing(bot=True, **params).json()['items'], [])
+        self.assertEqual([r['id'] for r in self.listing(include_deleted=True).json()['items']], [rid])
+        for bot in (False, True):
+            self.assertEqual(self.download(rid, bot=bot).status_code, 404)
+            self.assertEqual(self.upload(rid, 'pdf', bot=bot).status_code, 409)
+        self.assertEqual(self.remove(record).status_code, 200)
+        restored = self.restore(deleted.json())
+        self.assertEqual(restored.status_code, 200, restored.text)
+        self.assertEqual(restored.json()['status'], 'ready')
+        self.assertEqual(restored.json()['version'], record['version'])
+        self.assertEqual(restored.json()['uploaded_at'], record['uploaded_at'])
+        for format, content in (('pdf', PDF), ('xlsx', XLSX)):
+            self.assertEqual(self.download(rid, format, bot=True).content, content)
+        with unit() as s:
+            self.assertEqual(s.scalar(select(func.count()).select_from(ReportArchiveFile)), 2)
+            self.assertEqual(s.scalar(select(func.count()).select_from(ReportArchive)), 1)
+            self.assertEqual(s.scalar(select(func.count()).select_from(Ledger)), 0)
+
+    def test_deleted_partial_archive_restores_draft_without_publishing_and_version_is_not_reused(self):
+        record = self.create().json()
+        record = self.upload(record['id'], 'pdf').json()
+        deleted = self.remove(record).json()
+        self.assertEqual(self.create().json()['version'], record['version'] + 1)
+        restored = self.restore(deleted)
+        self.assertEqual(restored.status_code, 200, restored.text)
+        self.assertEqual(restored.json()['status'], 'draft')
+        self.assertEqual(restored.json()['formats'], ['pdf'])
+        self.assertTrue(restored.json()['can_upload'])
+        self.assertEqual(self.download(record['id'], bot=True).status_code, 404)
+        self.assertEqual(self.upload(record['id'], 'xlsx').json()['status'], 'ready')
+
+    def test_delete_restore_and_trash_are_author_import_company_and_version_scoped(self):
+        rid = self.ready()
+        record = self.listing().json()['items'][0]
+        _, peer, peer_headers = self.user('archive_delete_peer')
+        _, investor, investor_headers = self.user('archive_delete_reader', role='investor', telegram_id=10003)
+        for client, headers in ((peer, peer_headers), (investor, investor_headers)):
+            self.assertEqual(self.remove(record, client, headers).status_code, 403)
+            self.assertEqual(self.restore(record, client, headers).status_code, 403)
+        anonymous = TestClient(app)
+        self.clients.append(anonymous)
+        self.assertEqual(self.remove(record, anonymous).status_code, 401)
+        self.assertEqual(self.remove(record, expected_version=record['version']+1).status_code, 409)
+        self.assertEqual(self.remove(record, company=self.companies['ZUMA']).status_code, 404)
+        deleted = self.remove(record).json()
+        for client in (peer, investor):
+            self.assertEqual(self.listing(client=client, include_deleted=True).json()['items'], [])
+            self.assertEqual(self.download(rid, client=client).status_code, 404)
+        self.assertEqual(self.restore(deleted, expected_version=record['version']+1).status_code, 409)
+        self.assertEqual(self.restore(deleted, company=self.companies['ZUMA']).status_code, 404)
+
+    def test_delete_then_restore_during_archive_upload_cancels_streamed_write(self):
+        record = self.create().json()
+        def change_lifecycle(raw, filename, format):
+            result = valid_file(raw, filename, format)
+            self.assertEqual(self.restore(self.remove(record).json()).status_code, 200)
+            return result
+        with patch('app.report_archives.valid_file', side_effect=change_lifecycle):
+            response = self.upload(record['id'], 'pdf')
+        self.assertEqual(response.status_code, 409, response.text)
+        with unit() as s:
+            self.assertEqual(s.get(ReportArchive, record['id']).status, 'draft')
+            self.assertEqual(s.scalar(select(func.count()).select_from(ReportArchiveFile)), 0)
+
     def test_pair_is_private_until_complete_and_durable_in_database(self):
         record = self.create().json()
         self.assertEqual(record['formats'], [])

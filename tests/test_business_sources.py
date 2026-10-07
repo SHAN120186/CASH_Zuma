@@ -11,7 +11,7 @@ import zipfile
 from openpyxl import Workbook
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-from app.business_sources import extract_sources, PARAMETER_LABELS, NORMALIZED_HEADERS
+from app.business_sources import extract_sources, PARAMETER_LABELS, NORMALIZED_HEADERS, _decimal, _raw_number, _xlsx, SourceReadError
 from app.business_model import validate_model
 
 
@@ -96,6 +96,37 @@ def synthetic_profile():
 
 
 class BusinessSourceTests(unittest.TestCase):
+    def test_numeric_formatting_is_bounded_before_fixed_point_expansion(self):
+        for token in ('1e-1000000000','-1e-309','1e1000000000','1' * 4097):
+            self.assertIsNone(_decimal(token),token[:30])
+        for token in ('0e-1000000000','-0e1000000000'):
+            self.assertEqual(_raw_number(_decimal(token)),'0')
+        tiny=_decimal('2.2250738585072014e-308')
+        self.assertIsNotNone(tiny)
+        self.assertLessEqual(len(_raw_number(tiny)),326)
+        precise='0.1234567890123456789012345678901234567890123456789012345'
+        self.assertEqual(_raw_number(_decimal(precise)),precise)
+        with self.assertRaises(SourceReadError):_raw_number(Decimal('1e-1000000000'))
+        with self.assertRaises(SourceReadError):_raw_number(Decimal('NaN'))
+
+    def test_compact_numeric_attack_is_rejected_during_sparse_xlsx_reading(self):
+        workbook=Workbook();workbook.active['A1']=1
+        original=workbook_bytes(workbook)
+        for token in ('1e-1000000000','1e1000000000','0e-1000000000','2.2250738585072014e-308'):
+            stream=BytesIO()
+            with zipfile.ZipFile(BytesIO(original)) as source,zipfile.ZipFile(stream,'w') as target:
+                for item in source.infolist():
+                    content=source.read(item)
+                    if item.filename=='xl/worksheets/sheet1.xml':content=content.replace(b'<v>1</v>',('<v>'+token+'</v>').encode())
+                    target.writestr(item,content)
+            if token.startswith('1e'):
+                # Formatting must not run at all for rejected exponents.
+                with patch('app.business_sources._raw_number',side_effect=AssertionError('unsafe expansion reached')):
+                    with self.assertRaises(SourceReadError):_xlsx(stream.getvalue())
+            else:
+                sheets,_=_xlsx(stream.getvalue())
+                self.assertLess(len(sheets['Sheet']['A1']['numeric_text']),327)
+
     def test_json_inputs_are_explicit_and_no_path_is_read(self):
         source = upload("project.json", json.dumps(model()).encode())
         source["path"] = "C:/file/that/does/not/exist"

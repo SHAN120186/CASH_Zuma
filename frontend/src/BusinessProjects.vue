@@ -1,6 +1,7 @@
 <script setup>
 import {ref, computed, watch, onMounted, onUnmounted} from 'vue';
 import AppIcon from './AppIcon.vue';
+import NativeWorkbook from './NativeWorkbook.vue';
 import {archiveFileUrl, uploadLabel} from './reportArchive.js';
 import {formatCents, toCents} from './overview/format.js';
 import {SOURCE_ACCEPT, BUSINESS_SCALARS, NARRATIVE_FIELDS, prepareSources, sourceSize, projectUrl, templateUrl,
@@ -15,11 +16,13 @@ const state = ref(null), current = ref(null), action = ref(''), step = ref('');
 const header = ref({title: '', start: '', months: 36, currency: ''});
 const form = ref(formFromInputs()), selected = ref([]), ignored = ref([]), selectionProblems = ref([]), totalSize = ref(0);
 const modelForm = ref(null);
+const showDeleted = ref(false);
 const confirmed = ref(false), loadedSnapshot = ref('');
 let active = true, listRequest = 0, detailRequest = 0;
 const busy = computed(() => !!action.value), editing = computed(() => !!state.value);
 const uploadRequirement = computed(() => headerProblem(header.value));
-const canEdit = computed(() => !!current.value?.can_edit);
+const canEdit = computed(() => !!current.value?.can_edit && current.value.status !== 'deleted');
+const visibleProjects = computed(() => projects.value.filter(project => showDeleted.value || project.status !== 'deleted'));
 const originalReports = computed(() => originalReportFiles(current.value, props.company.id));
 const review = computed(() => projectReview(current.value?.extraction, current.value?.validation));
 const sourceProblems = computed(() => review.value.checks);
@@ -53,7 +56,7 @@ const financialSchedules = computed(() => scheduleEntries.value.filter(entry => 
 const loanSchedules = computed(() => scheduleEntries.value.filter(entry => entry.key.startsWith('l')));
 const productSchedules = computed(() => scheduleEntries.value.filter(entry => !financialSchedules.value.includes(entry) && !loanSchedules.value.includes(entry)));
 const reviewProducts = computed(() => form.value.products.length <= 5 || validation.value.some(issue => String(issue.field || '').startsWith('products')));
-const statusLabel = project => project.status === 'ready' ? 'Отчёты готовы' : project.status === 'needs_data' ? 'Нужны параметры' : 'Папка проекта';
+const statusLabel = project => project.status === 'deleted' ? 'Удалена · можно восстановить' : project.status === 'ready' ? 'Отчёты готовы' : project.status === 'needs_data' ? 'Нужны параметры' : 'Папка проекта';
 const money = value => formatCents(toCents(value), 'USD');
 const ratio = value => value == null ? '—' : new Intl.NumberFormat('ru-RU', {maximumFractionDigits: 2}).format(Number(value) * 100) + '%';
 
@@ -65,7 +68,7 @@ onUnmounted(() => {active = false; listRequest++; detailRequest++; emit('editing
 async function loadProjects() {
   const request = ++listRequest; listLoading.value = true;
   try {
-    const response = await props.api(projectUrl(props.company.id));
+    const response = await props.api(projectUrl(props.company.id) + '&include_deleted=true');
     if (!active || request !== listRequest) return;
     projects.value = (response.items || []).filter(project => project.company_id === props.company.id);
     canUpload.value = !!response.can_upload;
@@ -104,6 +107,21 @@ async function openProject(project) {
   finally {if (active && request === detailRequest) action.value = '';}
 }
 function closeProject() {if (busy.value) return; state.value = null; current.value = null; selected.value = []; error.value = ''; notice.value = ''; loadProjects();}
+async function changeProjectState(project, restore = false) {
+  if (busy.value || project.company_id !== props.company.id || !(restore ? project.can_restore : project.can_delete)) return;
+  const companyId = props.company.id;
+  action.value = restore ? 'restore' : 'delete'; error.value = ''; notice.value = '';
+  try {
+    const path = `/api/business-projects/${project.id}${restore ? '/restore' : ''}?company_id=${companyId}&expected_revision=${project.revision}`;
+    const detail = await props.api(path, {method: restore ? 'POST' : 'DELETE'});
+    if (!active || companyId !== props.company.id) return;
+    assertProject(detail, companyId, project.id);
+    if (current.value?.id === project.id) {state.value = null; current.value = null; selected.value = [];}
+    notice.value = restore ? 'Папка и её отчёты восстановлены.' : 'Папка и её отчёты удалены из списка и бота. Для возврата включите «Показать удалённые» и нажмите «Восстановить».';
+    await loadProjects(); emit('generated');
+  } catch (e) {if (active && e.name !== 'AbortError') {error.value = e.message; await loadProjects();}}
+  finally {if (active) action.value = '';}
+}
 function chooseSources(event) {
   const result = prepareSources(event.target.files || []); event.target.value = '';
   selected.value = result.files; ignored.value = result.ignored; selectionProblems.value = result.problems; totalSize.value = result.total;
@@ -195,22 +213,27 @@ function scheduleField(entry, month = null) {
       <div class="bp-actions"><a class="button secondary" :href="templateUrl(company.id)"><AppIcon name="download"/> Шаблон исходных данных · Excel</a><button class="ghost" :disabled="busy||listLoading" @click="loadProjects"><AppIcon name="refresh"/> Обновить папки</button></div>
       <p v-if="error" class="error" role="alert">{{error}}</p><p v-if="notice" class="notice" role="status">{{notice}}</p>
       <p v-if="listLoading" class="loading" role="status">Загружаем проекты…</p>
-      <div v-if="projects.length" class="bp-project-list"><button v-for="project in projects" :key="project.id" class="secondary bp-project" :class="{selected:current?.id===project.id}" :disabled="busy||editing" @click="openProject(project)"><span><b>{{project.title}}</b><small>{{statusLabel(project)}} · версия исходных данных {{project.revision}}</small></span><AppIcon name="arrow"/></button></div>
+      <label v-if="canUpload" class="bp-actions"><input v-model="showDeleted" type="checkbox" :disabled="busy"> Показать удалённые папки</label>
+      <div v-if="visibleProjects.length" class="bp-project-list"><div v-for="project in visibleProjects" :key="project.id" class="bp-project-row"><button class="secondary bp-project" :class="{selected:current?.id===project.id}" :disabled="busy||editing" @click="openProject(project)"><span><b>{{project.title}}</b><small>{{statusLabel(project)}} · версия исходных данных {{project.revision}}</small></span><AppIcon name="arrow"/></button><button v-if="project.can_delete" class="secondary tiny" :disabled="busy||editing" @click="changeProjectState(project)">Удалить папку и её отчёты</button><button v-if="project.can_restore" class="secondary tiny" :disabled="busy||editing" @click="changeProjectState(project,true)">Восстановить</button></div></div>
       <p v-else-if="!listLoading&&!editing" class="sub">Папок пока нет. Начните с новой папки или заполненного Excel-шаблона.</p>
 
       <div v-if="editing" class="bp-workspace">
         <div class="section-head"><h3>{{current?current.title:'Новая папка проекта'}}</h3><button class="secondary tiny" :disabled="busy" @click="closeProject">{{changed?'Закрыть без сохранения параметров':'Закрыть проект'}}</button></div>
+        <div v-if="current?.can_delete||current?.can_restore" class="bp-actions"><button v-if="current.can_delete" class="secondary tiny" :disabled="busy" @click="changeProjectState(current)">Удалить папку и её отчёты</button><button v-if="current.can_restore" class="secondary tiny" :disabled="busy" @click="changeProjectState(current,true)">Восстановить папку и отчёты</button></div>
+        <p v-if="current?.status==='deleted'" class="warning">Папка удалена. Для нового расчёта сначала восстановите её. Исходные файлы сохранены.</p>
         <p v-if="current&&!canEdit" class="sub">Просмотр проекта и готовых отчётов. Изменять исходные данные может автор папки с правом импорта.</p>
         <div v-if="!current||canEdit" class="bp-upload-area">
           <div class="bp-fields">
             <label class="bp-wide">Название проекта <span class="bp-required-tag">Обязательно</span><input v-model="header.title" maxlength="160" :disabled="busy||!!state.createFields||!!current" placeholder="Производство лекарственных препаратов"><small>Заполнится из имени папки, если своё название ещё не указано.</small></label>
-            <label>Начало прогноза <span class="bp-required-tag">Обязательно</span><input type="month" :value="header.start.slice(0,7)" min="2000-01" max="2100-12" :disabled="busy" @input="setStart(header,$event)"><small>Выберите первый месяц расчёта. Дата загрузки и дата баланса не заменяют начало прогноза.</small></label>
-            <label>Прогноз, месяцев<input v-model="header.months" type="number" min="1" max="60" step="1" :disabled="busy"><small>От 1 до 60; по умолчанию 36 месяцев</small></label>
-            <label>Валюта модели<select v-model="header.currency" :disabled="busy"><option value="">Определить из источников</option><option>USD</option><option>UZS</option><option>EUR</option></select></label>
+            <template v-if="!current?.native_model">
+              <label>Начало прогноза <span class="bp-required-tag">Обязательно</span><input type="month" :value="header.start.slice(0,7)" min="2000-01" max="2100-12" :disabled="busy" @input="setStart(header,$event)"><small>Выберите первый месяц расчёта. Дата загрузки и дата баланса не заменяют начало прогноза.</small></label>
+              <label>Прогноз, месяцев<input v-model="header.months" type="number" min="1" max="60" step="1" :disabled="busy"><small>От 1 до 60; по умолчанию 36 месяцев</small></label>
+              <label>Валюта модели<select v-model="header.currency" :disabled="busy"><option value="">Определить из источников</option><option>USD</option><option>UZS</option><option>EUR</option></select></label>
+            </template>
           </div>
-          <p class="sub bp-note">Начало прогноза задаётся отдельно от даты загрузки. При добавлении новых источников анализ заново проверит финансовые параметры; готовые версии останутся в истории.</p>
+          <p class="sub bp-note">{{current?.native_model?'Оригинальная модель: 36 месяцев, USD. Период для поиска отчётов выбирается ниже, перед формированием.':'Начало прогноза задаётся отдельно от даты загрузки.'}} При добавлении новых источников анализ заново проверит финансовые параметры; готовые версии останутся в истории.</p>
           <div class="bp-actions"><label class="button"><AppIcon name="import"/> Выбрать папку<input type="file" webkitdirectory multiple :accept="SOURCE_ACCEPT" hidden :disabled="busy" @change="chooseSources"></label><label class="button secondary"><AppIcon name="file"/> Выбрать отдельные файлы<input type="file" multiple :accept="SOURCE_ACCEPT" hidden :disabled="busy" @change="chooseSources"></label></div>
-          <p class="sub bp-note">PDF, XLSX, XLTX, DOCX, CSV, TXT, JSON, ZIP, PNG и JPEG. До 100 файлов, 20 МБ на файл и 100 МБ на папку. Формулы Excel не выполняются; изображения и договоры сохраняются как источники.</p>
+          <p class="sub bp-note">PDF, XLSX, XLTX, DOCX, CSV, TXT, JSON, ZIP, PNG и JPEG. До 100 файлов, 20 МБ на файл и 100 МБ на папку. Поддерживаемый оригинальный Excel пересчитывается по своим формулам; изображения и договоры сохраняются как источники.</p>
           <p v-for="problem in selectionProblems" :key="problem" class="error" role="alert">{{problem}}</p>
           <details v-if="ignored.length" class="bp-details"><summary>Пропущены служебные файлы: {{ignored.length}}</summary><ul><li v-for="item in ignored" :key="item.name">{{item.name}} — {{item.reason}}</li></ul></details>
           <details v-if="selected.length" class="bp-details" :open="selected.some(item=>!state.uploaded.has(item.key))"><summary>Выбрано {{selected.length}} файлов · {{sourceSize(totalSize)}}</summary><ul class="bp-files"><li v-for="item in selected" :key="item.key"><span>{{item.relativePath}}</span><small>{{sourceSize(item.size)}} {{state.uploaded.has(item.key)?'· загружен':''}}</small></li></ul></details>
@@ -218,16 +241,18 @@ function scheduleField(entry, month = null) {
           <p v-if="selected.length&&uploadRequirement" class="warning" role="status">Перед загрузкой: {{uploadRequirement}}</p>
           <button :disabled="busy||!selected.length||selectionProblems.length>0||!!uploadRequirement" @click="upload"><AppIcon name="import"/> {{current?'Добавить файлы и выполнить анализ':'Загрузить папку и сформировать отчёты'}}</button>
         </div>
-        <p v-if="busy" class="loading bp-progress" role="status">{{step||'Загружаем проект…'}}</p>
+        <p v-if="busy" class="loading bp-progress" role="status">{{step||(action==='native'?'Работаем с оригинальными Word и Excel…':'Загружаем проект…')}}</p>
 
         <template v-if="current">
           <section v-if="originalReports.length" class="bp-required-guide" aria-labelledby="bp-original-title">
             <h3 id="bp-original-title">Готовый бизнес-план из вашей папки</h3>
             <p class="sub bp-note">Загруженные документы сохраняют свои разделы, таблицы, оформление, формулы и исходные суммы. Скачивание выдаёт исходный файл. Изменения параметров ниже попадут в отдельный новый расчёт.</p>
             <div class="bp-original-list"><article v-for="file in originalReports" :key="file.id" class="bp-required-item"><b>{{file.filename}}</b><a class="button secondary" :href="file.downloadUrl"><AppIcon name="download"/> Скачать исходный {{file.format}}</a></article></div>
-            <p v-if="!originalReports.some(file=>file.format==='PDF')" class="sub bp-note">Для PDF с тем же оформлением добавьте PDF, экспортированный из исходного Word. Его можно загрузить кнопкой «Выбрать отдельные файлы»; сохраните в имени «бизнес-план» или имя исходного образца.</p>
+            <p v-if="!originalReports.some(file=>file.format==='PDF')" class="sub bp-note">{{current.native_model?'Для нового PDF выполните пересчёт оригинала и нажмите «Сформировать бизнес-план и ТЭО по оригиналу». PDF будет подготовлен по Word из этой папки.':'Для PDF с исходным оформлением добавьте PDF, экспортированный из исходного Word, через «Выбрать отдельные файлы».'}}</p>
           </section>
           <details class="bp-details"><summary>Исходные файлы проекта · {{current.files?.length||0}}</summary><ul class="bp-files"><li v-for="file in current.files||[]" :key="file.relative_path"><span>{{file.relative_path||file.filename}}</span><small>{{sourceSize(file.size||0)}} <a v-if="canEdit&&file.download_url" :href="file.download_url">Скачать исходник</a></small></li></ul></details>
+          <NativeWorkbook v-if="current.native_model" :api="api" :company="company" :project="current" @updated="setProject($event,true)" @generated="emit('generated');loadProjects()" @working="action=$event?'native':''"/>
+          <template v-if="!current.native_model">
           <section v-if="canEdit&&action!=='upload'" class="bp-required-guide" aria-labelledby="bp-required-title">
             <h3 id="bp-required-title">Обязательные поля · {{remainingRequirements.length ? 'осталось заполнить ' + remainingRequirements.length + ' разделов' : 'все поля заполнены'}}</h3>
             <p class="sub bp-note">1. Выберите месяц начала и валюту. 2. Заполните поля ниже по документам. 3. Проверьте расхождения источников и подтвердите проверку. 4. Нажмите «Рассчитать бизнес-план и ТЭО».</p>
@@ -323,7 +348,8 @@ function scheduleField(entry, month = null) {
           </details>
           </template>
 
-          <div v-if="latest" class="bp-results">
+          </template>
+          <div v-if="latest&&!current.native_model" class="bp-results">
             <h3>Готовые отчёты · версия исходных данных {{latest.revision}}</h3><p class="sub">{{latest.business_archive?.title||current.title}}</p><p class="sub">{{uploadLabel(latest.created_at)}} · суммы в валюте, указанной в файлах этой версии</p>
             <div class="bp-metrics"><div><small>NPV проекта</small><b>{{money(latest.metrics?.npv)}}</b></div><div><small>IRR годовая</small><b>{{ratio(latest.metrics?.irr_annual)}}</b></div><div><small>Окупаемость, мес.</small><b>{{latest.metrics?.payback_months==null?'Не определена':money(latest.metrics.payback_months)}}</b></div><div><small>Минимум денег</small><b>{{money(latest.metrics?.minimum_cash)}}</b></div></div>
             <p v-if="latest.metrics?.irr_reason" class="sub bp-note">{{latest.metrics.irr_reason}}</p><p v-if="String(latest.metrics?.minimum_cash||'').startsWith('-')" class="warning">В прогнозе есть недостаток денег. Проверьте финансирование и сроки расходов в отчётах.</p>

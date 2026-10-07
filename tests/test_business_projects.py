@@ -6,6 +6,7 @@ import os
 import sys
 import tempfile
 import unittest
+from contextlib import ExitStack
 from pathlib import Path
 from unittest.mock import patch
 from urllib.parse import quote
@@ -33,6 +34,9 @@ from app.db import (Base, BusinessGeneration, BusinessProject, BusinessSourceFil
                     User, engine, initialize, unit)
 from app.main import app
 from app.security import hash_password
+
+sys.path.insert(0, str(ROOT / 'tests'))
+from test_native_uzgermed import fixture as native_fixture
 
 PASSWORD = 'SyntheticProjectTests_7731!'
 HASH = hash_password(PASSWORD)
@@ -148,6 +152,444 @@ class BusinessProjectTests(unittest.TestCase):
         return self.client.post(f"/api/business-projects/{project['id']}/generate", params={'company_id': self.cid},
                                 headers=self.headers, json={'revision': project['revision'], 'inputs': inputs or model(),
                                                            'confirm_sources': confirmed})
+
+    def remove(self, project, client=None, headers=None, **params):
+        return (client or self.client).delete(f"/api/business-projects/{project['id']}",
+            params={'company_id': self.cid, 'expected_revision': project['revision'], **params},
+            headers=headers or self.headers)
+
+    def restore(self, project, client=None, headers=None, **params):
+        return (client or self.client).post(f"/api/business-projects/{project['id']}/restore",
+            params={'company_id': self.cid, 'expected_revision': project['revision'], **params},
+            headers=headers or self.headers)
+
+    def native_folder(self, changes=None):
+        project, _ = self.create()
+        source = native_fixture({('Стоим_проекта', 'B38'): (7, None),
+                                 ('ВНД', 'D6'): (14, "'Стоим_проекта'!B38*2"),
+                                 **(changes or {})})
+        response = self.upload(project, source, 'Synthetic/native.xlsx')
+        self.assertEqual(response.status_code, 200, response.text)
+        return response.json(), source
+
+    def native_preview(self, project, overrides=None, client=None, headers=None, **params):
+        return (client or self.client).post(f"/api/business-projects/{project['id']}/native/preview",
+            params={'company_id': self.cid, **params}, headers=headers or self.headers,
+            json={'revision': project['revision'], 'overrides': overrides or {}})
+
+    def native_download(self, project, client=None, headers=None, **params):
+        return (client or self.client).get(f"/api/business-projects/{project['id']}/native.xlsx",
+            params={'company_id': self.cid, 'revision': project['revision'], **params},
+            headers=headers or self.headers)
+
+    def native_generate(self, project, overrides=None, start='2027-01-01', client=None, headers=None, **params):
+        return (client or self.client).post(f"/api/business-projects/{project['id']}/native/generate",
+            params={'company_id': self.cid, **params}, headers=headers or self.headers,
+            json={'revision': project['revision'], 'start': start, 'overrides': overrides or {}})
+
+    def native_complete_folder(self, changes=None):
+        project, source = self.native_folder(changes)
+        word = synthetic_source('.docx')
+        uploaded = self.upload(project, word, 'Synthetic/Бизнес-план.docx')
+        self.assertEqual(uploaded.status_code, 200, uploaded.text)
+        return uploaded.json(), source, word
+
+    def native_renderers(self, word, pdf_side_effect=None):
+        stack = ExitStack()
+        self.addCleanup(stack.close)
+        patched = stack.enter_context(patch('app.native_documents.patch_business_docx', return_value=(word, {})))
+        rendered = stack.enter_context(patch('app.native_renderer.docx_to_pdf',
+            return_value=b'%PDF-1.4\nSynthetic native business plan\n%%EOF\n', side_effect=pdf_side_effect))
+        teo = stack.enter_context(patch('app.native_teo.build_teo_pdf',
+            return_value=b'%PDF-1.4\nSynthetic native TEO\n%%EOF\n'))
+        return stack, patched, rendered, teo
+
+    def test_native_generation_publishes_four_private_files_from_fresh_model_and_retries_without_rendering(self):
+        project, source, word = self.native_complete_folder()
+        stack, patched, rendered, teo = self.native_renderers(word)
+        with stack:
+            response = self.native_generate(project, {'Стоим_проекта!B38': 8})
+            self.assertEqual(response.status_code, 200, response.text)
+            ready = response.json()
+            self.assertEqual(ready['status'], 'ready')
+            self.assertEqual(len(ready['generations']), 1)
+            generation = ready['generations'][0]
+            self.assertEqual(generation['metrics']['npv'], 16)
+            self.assertEqual(generation['business_archive']['period_start'], '2027-01-01')
+            self.assertEqual(generation['business_archive']['period_end'], '2029-12-31')
+            again = self.native_generate(ready, {'Стоим_проекта!B38': 8})
+            self.assertEqual(again.status_code, 200, again.text)
+            self.assertEqual(again.json()['current_generation_id'], ready['current_generation_id'])
+            patched.assert_called_once()
+            rendered.assert_called_once_with(word)
+            teo.assert_called_once()
+        files = {f['filename']: f for f in ready['files']}
+        self.assertEqual(self.client.get(files['native.xlsx']['download_url']).content, source)
+        self.assertEqual(self.client.get(files['Бизнес-план.docx']['download_url']).content, word)
+        for archive in (generation['business_archive'], generation['teo_archive']):
+            self.assertEqual(archive['status'], 'ready')
+            for fmt in ('pdf', 'xlsx'):
+                response = self.client.get(f"/api/bot/v1/report-archives/{archive['id']}/files/{fmt}",
+                    params={'company_id': self.cid, 'telegram_user_id': 88101}, auth=BOT)
+                self.assertEqual(response.status_code, 200, response.text[:100])
+                self.assertTrue(response.content.startswith(b'%PDF-' if fmt == 'pdf' else b'PK'))
+                self.assertEqual(response.headers['Cache-Control'], 'no-store')
+        with unit() as s:
+            self.assertEqual(s.scalar(select(func.count()).select_from(ReportArchive)), 2)
+            self.assertEqual(s.scalar(select(func.count()).select_from(ReportArchiveFile)), 4)
+            self.assertEqual(s.scalar(select(func.count()).select_from(BusinessGeneration)), 1)
+            self.assertEqual(s.scalar(select(func.count()).select_from(Ledger)), 0)
+
+    def test_native_parameter_or_source_change_creates_new_immutable_report_versions(self):
+        project, _, word = self.native_complete_folder()
+        stack, _, rendered, _ = self.native_renderers(word)
+        with stack:
+            first = self.native_generate(project, {'Стоим_проекта!B38': 8}).json()
+            second = self.native_generate(first, {'Стоим_проекта!B38': 9})
+            self.assertEqual(second.status_code, 200, second.text)
+            second = second.json()
+            self.assertNotEqual(second['current_generation_id'], first['current_generation_id'])
+            self.assertEqual(len(second['generations']), 2)
+            self.assertEqual(second['generations'][0]['metrics']['npv'], 18)
+            changed_source = native_fixture({('Стоим_проекта', 'B38'): (8, None),
+                                            ('ВНД', 'D6'): (16, "'Стоим_проекта'!B38*2")})
+            updated = self.upload(second, changed_source, 'Synthetic/native.xlsx')
+            self.assertEqual(updated.status_code, 200, updated.text)
+            third = self.native_generate(updated.json(), {'Стоим_проекта!B38': 9})
+            self.assertEqual(third.status_code, 200, third.text)
+            self.assertEqual(len(third.json()['generations']), 3)
+            self.assertNotEqual(third.json()['current_generation_id'], second['current_generation_id'])
+            self.assertEqual(rendered.call_count, 3)
+        with unit() as s:
+            self.assertEqual(s.scalar(select(func.count()).select_from(ReportArchive)), 6)
+            self.assertEqual(s.scalar(select(func.count()).select_from(ReportArchiveFile)), 12)
+            self.assertEqual(s.scalar(select(func.count()).select_from(Ledger)), 0)
+
+    def test_native_generation_checks_owner_company_revision_template_calendar_and_safe_parameters(self):
+        incomplete, _ = self.native_folder()
+        self.assertEqual(self.native_generate(incomplete).status_code, 422)
+        project, _, word = self.native_complete_folder()
+        peer, peer_headers = self.actor('native_gen_peer', 'finance')
+        reader, reader_headers = self.actor('native_gen_reader', 'investor')
+        for client, headers in ((peer, peer_headers), (reader, reader_headers)):
+            self.assertEqual(self.native_generate(project, client=client, headers=headers).status_code, 403)
+        anonymous = TestClient(app)
+        self.clients.append(anonymous)
+        self.assertEqual(self.native_generate(project, client=anonymous).status_code, 401)
+        self.assertEqual(self.native_generate({**project, 'revision': project['revision']+1}).status_code, 409)
+        foreign = {**self.headers, 'X-Company-ID': str(self.other)}
+        self.assertEqual(self.native_generate(project, headers=foreign, company_id=self.other).status_code, 404)
+        stack, patched, rendered, teo = self.native_renderers(word)
+        with stack:
+            for start in ('1999-01-01', '2098-01-01', '2027-01-02', 'not-a-date'):
+                self.assertEqual(self.native_generate(project, start=start).status_code, 422)
+            self.assertEqual(self.native_generate(project, {'ВНД!D6': 100}).status_code, 422)
+            self.assertEqual(self.native_generate(project, {'РКЛ!AA7': 3}).status_code, 422)
+            patched.assert_not_called()
+            rendered.assert_not_called()
+            teo.assert_not_called()
+        with unit() as s:
+            self.assertEqual(s.scalar(select(func.count()).select_from(ReportArchive)), 0)
+
+    def test_native_generation_blocks_core_error_but_retains_unrelated_errors_as_evidence(self):
+        blocked, _, word = self.native_complete_folder({('ВНД', 'D6'): ('#REF!', '#REF!')})
+        unrelated, _, _ = self.native_complete_folder({('РКЛ', 'AB14'): ('#REF!', '#REF!')})
+        stack, _, rendered, _ = self.native_renderers(word)
+        with stack:
+            response = self.native_generate(blocked)
+            self.assertEqual(response.status_code, 422, response.text)
+            rendered.assert_not_called()
+            response = self.native_generate(unrelated)
+            self.assertEqual(response.status_code, 200, response.text)
+            self.assertFalse(response.json()['native_model']['preview']['blocked'])
+            self.assertEqual(response.json()['native_model']['preview']['error_count'], 1)
+            self.assertEqual(len(response.json()['generations']), 1)
+            rendered.assert_called_once()
+        with unit() as s:
+            self.assertEqual(s.scalar(select(func.count()).select_from(BusinessGeneration)), 1)
+            self.assertEqual(s.scalar(select(func.count()).select_from(ReportArchive)), 2)
+
+    def test_native_generation_rechecks_lifecycle_and_permission_after_pdf_rendering(self):
+        project, _, word = self.native_complete_folder()
+        def delete_restore_during_render(_):
+            self.assertEqual(self.restore(self.remove(project).json()).status_code, 200)
+            return b'%PDF-1.4\nSynthetic native test\n%%EOF\n'
+        stack, _, _, _ = self.native_renderers(word, delete_restore_during_render)
+        with stack:
+            self.assertEqual(self.native_generate(project).status_code, 409)
+        def revoke_during_render(_):
+            with unit(True) as s:
+                s.get(CompanyUser, (self.cid, self.uid)).role = 'investor'
+            return b'%PDF-1.4\nSynthetic native test\n%%EOF\n'
+        stack, _, _, _ = self.native_renderers(word, revoke_during_render)
+        with stack:
+            self.assertEqual(self.native_generate(project).status_code, 403)
+        with unit() as s:
+            self.assertEqual(s.scalar(select(func.count()).select_from(BusinessGeneration)), 0)
+            self.assertEqual(s.scalar(select(func.count()).select_from(ReportArchiveFile)), 0)
+            self.assertEqual(s.scalar(select(func.count()).select_from(Ledger)), 0)
+
+    def test_native_original_model_uses_source_profile_without_generic_requirements_or_reports(self):
+        project, _ = self.native_folder()
+        self.assertTrue(project['native_model']['supported'])
+        self.assertEqual(project['native_model']['sheet_count'], 11)
+        self.assertEqual(project['validation'], [])
+        reviewed = self.analyse(project)
+        self.assertEqual(reviewed.status_code, 200, reviewed.text)
+        self.assertEqual(reviewed.json()['generations'], [])
+        self.assertEqual(reviewed.json()['validation'], [])
+        self.assertEqual(self.generate(reviewed.json()).status_code, 409)
+        self.assertEqual(self.native_download(reviewed.json()).status_code, 409)
+        with unit() as s:
+            self.assertEqual(s.scalar(select(func.count()).select_from(ReportArchive)), 0)
+            self.assertEqual(s.scalar(select(func.count()).select_from(Ledger)), 0)
+
+    def test_native_preview_recalculates_changed_input_preserves_original_and_native_print_styles(self):
+        project, original = self.native_folder()
+        response = self.native_preview(project, {'Стоим_проекта!B38': 8})
+        self.assertEqual(response.status_code, 200, response.text)
+        profile = response.json()['native_model']
+        self.assertFalse(profile['preview']['blocked'], profile['preview'])
+        npv = next(m for m in profile['metrics'] if m['key'] == 'ВНД!D6')
+        self.assertEqual(npv['original'], 14)
+        self.assertEqual(npv['calculated'], 16)
+        downloaded = self.native_download(response.json())
+        self.assertEqual(downloaded.status_code, 200, downloaded.text[:100])
+        self.assertEqual(downloaded.headers['Cache-Control'], 'no-store')
+        self.assertEqual(downloaded.headers['X-Content-Type-Options'], 'nosniff')
+        self.assertIn(quote('Пересчитано_'), downloaded.headers['Content-Disposition'])
+        self.assertEqual(self.client.get(project['files'][0]['download_url']).content, original)
+        with ZipFile(io.BytesIO(original)) as before, ZipFile(io.BytesIO(downloaded.content)) as after:
+            self.assertEqual(after.read('xl/styles.xml'), before.read('xl/styles.xml'))
+            self.assertEqual(after.read('xl/printerSettings/printerSettings1.bin'), before.read('xl/printerSettings/printerSettings1.bin'))
+            for name in before.namelist():
+                if name.startswith('xl/worksheets/'):
+                    self.assertIn(b'orientation="landscape"', after.read(name))
+                    self.assertIn(b'paperSize="9"', after.read(name))
+                    if b'ht="24"' in before.read(name):
+                        self.assertIn(b'ht="24"', after.read(name))
+        with unit() as s:
+            self.assertEqual(s.scalar(select(func.count()).select_from(BusinessGeneration)), 0)
+            self.assertEqual(s.scalar(select(func.count()).select_from(ReportArchiveFile)), 0)
+            self.assertEqual(s.scalar(select(func.count()).select_from(Ledger)), 0)
+
+    def test_native_preview_and_download_enforce_owner_permission_company_and_revision(self):
+        project, _ = self.native_folder()
+        peer, peer_headers = self.actor('native_peer', 'finance')
+        investor, investor_headers = self.actor('native_reader', 'investor')
+        for client, headers in ((peer, peer_headers), (investor, investor_headers)):
+            self.assertEqual(self.native_preview(project, client=client, headers=headers).status_code, 403)
+            self.assertEqual(self.native_download(project, client=client, headers=headers).status_code, 403)
+            viewed = client.get(f"/api/business-projects/{project['id']}", params={'company_id': self.cid}).json()
+            self.assertNotIn('native_model', viewed)
+        anonymous = TestClient(app)
+        self.clients.append(anonymous)
+        self.assertEqual(self.native_preview(project, client=anonymous).status_code, 401)
+        self.assertEqual(self.native_download(project, client=anonymous).status_code, 401)
+        stale = {**project, 'revision': project['revision']+1}
+        self.assertEqual(self.native_preview(stale).status_code, 409)
+        self.assertEqual(self.native_download(stale).status_code, 409)
+        foreign = {**self.headers, 'X-Company-ID': str(self.other)}
+        self.assertEqual(self.native_preview(project, headers=foreign, company_id=self.other).status_code, 404)
+        self.assertEqual(self.native_download(project, headers=foreign, company_id=self.other).status_code, 404)
+
+    def test_native_overrides_cannot_edit_formulas_or_unknown_cells_and_check_numbers_and_ranges(self):
+        project, _ = self.native_folder()
+        for overrides in ({'ВНД!D6': 3}, {'Unknown!A1': 3}, {'Стоим_проекта!B38': '8'},
+                          {'Стоим_проекта!B38': True}, {'Стоим_проекта!B38': 0},
+                          {'Раб_капит!B7': 0}):
+            with self.subTest(overrides=overrides):
+                response = self.native_preview(project, overrides)
+                self.assertEqual(response.status_code, 422, response.text)
+        formula_project, _ = self.native_folder({('Стоим_проекта', 'B38'): (7, '3+4')})
+        self.assertEqual(self.native_preview(formula_project, {'Стоим_проекта!B38': 8}).status_code, 422)
+
+    def test_native_readonly_credit_conditions_reject_overrides_before_calculation_or_publication(self):
+        project, source, word = self.native_complete_folder()
+        controls = {item['key']: item for item in project['native_model']['parameters']}
+        keys = ('РКЛ!AA7', 'РКЛ!AA8', 'РКЛ!AA10')
+        for key in keys:
+            self.assertFalse(controls[key]['editable'])
+            self.assertIsNotNone(controls[key]['value'])
+        stack, patched, rendered, teo = self.native_renderers(word)
+        with stack:
+            for key in keys:
+                for value in (controls[key]['value'], controls[key]['value'] + 1):
+                    with self.subTest(key=key, value=value):
+                        self.assertEqual(self.native_preview(project, {key: value}).status_code, 422)
+                        self.assertEqual(self.native_generate(project, {key: value}).status_code, 422)
+            patched.assert_not_called()
+            rendered.assert_not_called()
+            teo.assert_not_called()
+        files = {item['filename']: item for item in project['files']}
+        self.assertEqual(self.client.get(files['native.xlsx']['download_url']).content, source)
+        with unit() as s:
+            self.assertEqual(s.scalar(select(func.count()).select_from(BusinessGeneration)), 0)
+            self.assertEqual(s.scalar(select(func.count()).select_from(ReportArchiveFile)), 0)
+
+    def test_native_preview_exposes_dependent_formula_error_and_never_publishes_a_financial_report(self):
+        project, original = self.native_folder({('ВНД', 'D6'): ('#REF!', '#REF!')})
+        response = self.native_preview(project)
+        self.assertEqual(response.status_code, 200, response.text)
+        preview = response.json()['native_model']['preview']
+        self.assertTrue(preview['blocked'])
+        self.assertIn('ВНД!D6', preview['dependent_errors'])
+        self.assertGreater(preview['error_count'], 0)
+        downloaded = self.native_download(response.json())
+        self.assertEqual(downloaded.status_code, 200)
+        self.assertIn(quote('Проверка_ошибок_'), downloaded.headers['Content-Disposition'])
+        self.assertEqual(self.client.get(project['files'][0]['download_url']).content, original)
+        with unit() as s:
+            self.assertEqual(s.scalar(select(func.count()).select_from(ReportArchive)), 0)
+            self.assertEqual(s.scalar(select(func.count()).select_from(BusinessGeneration)), 0)
+
+    def test_native_preview_and_download_recheck_delete_restore_lifecycle_after_calculation(self):
+        project, _ = self.native_folder()
+        from app.native_workbook import recalculate
+        def change_lifecycle(*args, **kwargs):
+            output = recalculate(*args, **kwargs)
+            self.assertEqual(self.restore(self.remove(project).json()).status_code, 200)
+            return output
+        with patch('app.native_workbook.recalculate', side_effect=change_lifecycle):
+            self.assertEqual(self.native_preview(project).status_code, 409)
+        current = self.client.get(f"/api/business-projects/{project['id']}", params={'company_id': self.cid}).json()
+        self.assertIsNone(current['native_model'].get('preview'))
+        reviewed = self.native_preview(current).json()
+        with patch('app.native_workbook.recalculate', side_effect=change_lifecycle):
+            self.assertEqual(self.native_download(reviewed).status_code, 409)
+        with unit() as s:
+            self.assertEqual(s.scalar(select(func.count()).select_from(ReportArchive)), 0)
+            self.assertEqual(s.scalar(select(func.count()).select_from(Ledger)), 0)
+
+    def test_delete_restore_retains_original_sources_parameters_and_generated_bytes(self):
+        project = self.ready()
+        generation = project['generations'][0]
+        archive_ids = [generation[k]['id'] for k in ('business_archive', 'teo_archive')]
+        with unit() as s:
+            original = s.get(BusinessProject, project['id'])
+            state = (original.inputs_json, original.extraction_json, original.current_fingerprint)
+            source_bytes = [bytes(f.content) for f in s.scalars(select(BusinessSourceFile))]
+            report_bytes = [bytes(f.content) for f in s.scalars(select(ReportArchiveFile))]
+        deleted = self.remove(project)
+        self.assertEqual(deleted.status_code, 200, deleted.text)
+        self.assertEqual(deleted.json()['status'], 'deleted')
+        self.assertFalse(deleted.json()['can_edit'])
+        self.assertTrue(deleted.json()['can_restore'])
+        self.assertEqual(deleted.json()['revision'], project['revision'])
+        self.assertEqual(self.client.get('/api/business-projects', params={'company_id': self.cid}).json()['items'], [])
+        self.assertEqual(self.client.get('/api/report-archives', params={'company_id': self.cid}).json()['items'], [])
+        for archive_id in archive_ids:
+            self.assertEqual(self.client.get(f'/api/report-archives/{archive_id}/files/pdf',
+                params={'company_id': self.cid}).status_code, 404)
+            self.assertEqual(self.client.get(f'/api/bot/v1/report-archives/{archive_id}/files/pdf',
+                params={'company_id': self.cid, 'telegram_user_id': 88101}, auth=BOT).status_code, 404)
+            blocked = self.client.post(f'/api/report-archives/{archive_id}/restore',
+                params={'company_id': self.cid, 'expected_version': generation['business_archive' if archive_id == archive_ids[0] else 'teo_archive']['version']},
+                headers=self.headers)
+            self.assertEqual(blocked.status_code, 409)
+        self.assertEqual(self.client.get(project['files'][0]['download_url']).content, source_bytes[0])
+        self.assertEqual(self.upload(project).status_code, 409)
+        self.assertEqual(self.analyse(project).status_code, 409)
+        self.assertEqual(self.generate(project).status_code, 409)
+        self.assertEqual(self.remove(project).status_code, 200)
+        restored = self.restore(deleted.json())
+        self.assertEqual(restored.status_code, 200, restored.text)
+        self.assertEqual(restored.json()['status'], 'ready')
+        self.assertEqual(restored.json()['current_generation_id'], project['current_generation_id'])
+        self.assertEqual(restored.json()['revision'], project['revision'])
+        with unit() as s:
+            restored_project = s.get(BusinessProject, project['id'])
+            self.assertEqual((restored_project.inputs_json, restored_project.extraction_json,
+                              restored_project.current_fingerprint), state)
+            self.assertEqual([bytes(f.content) for f in s.scalars(select(BusinessSourceFile))], source_bytes)
+            self.assertEqual([bytes(f.content) for f in s.scalars(select(ReportArchiveFile))], report_bytes)
+            self.assertEqual(s.scalar(select(func.count()).select_from(BusinessGeneration)), 1)
+            self.assertEqual(s.scalar(select(func.count()).select_from(Ledger)), 0)
+        self.assertEqual(self.generate(restored.json()).json()['current_generation_id'], project['current_generation_id'])
+
+    def test_delete_restore_returns_each_prior_project_status_and_keeps_explicitly_removed_archive_deleted(self):
+        draft, _ = self.create()
+        self.assertEqual(self.restore(self.remove(draft).json()).json()['status'], 'draft')
+        partial = model()
+        del partial['opening_cash']
+        needs = self.analyse(self.upload(draft, json.dumps(partial).encode()).json()).json()
+        self.assertEqual(needs['status'], 'needs_data')
+        restored = self.restore(self.remove(needs).json()).json()
+        self.assertEqual(restored['status'], 'needs_data')
+        self.assertEqual(restored['inputs'], needs['inputs'])
+        ready = self.ready()
+        archive = ready['generations'][0]['business_archive']
+        removed = self.client.delete(f"/api/report-archives/{archive['id']}",
+            params={'company_id': self.cid, 'expected_version': archive['version']}, headers=self.headers)
+        self.assertEqual(removed.status_code, 200)
+        restored = self.restore(self.remove(ready).json()).json()
+        self.assertEqual(restored['status'], 'ready')
+        archives = restored['generations'][0]
+        self.assertEqual(archives['business_archive']['status'], 'deleted')
+        self.assertEqual(archives['teo_archive']['status'], 'ready')
+
+    def test_deleted_projects_are_owner_only_and_delete_restore_require_permission_company_and_revision(self):
+        project = self.ready()
+        peer, peer_headers = self.actor('delete_peer', 'finance')
+        investor, investor_headers = self.actor('delete_reader', 'investor')
+        for client, headers in ((peer, peer_headers), (investor, investor_headers)):
+            self.assertEqual(self.remove(project, client, headers).status_code, 403)
+            self.assertEqual(self.restore(project, client, headers).status_code, 403)
+        self.assertEqual(self.remove(project, expected_revision=project['revision']+1).status_code, 409)
+        foreign_headers = {**self.headers, 'X-Company-ID': str(self.other)}
+        self.assertEqual(self.remove(project, headers=foreign_headers, company_id=self.other).status_code, 404)
+        anonymous = TestClient(app)
+        self.clients.append(anonymous)
+        self.assertEqual(self.remove(project, anonymous, {}).status_code, 401)
+        deleted = self.remove(project).json()
+        owner_items = self.client.get('/api/business-projects',
+            params={'company_id': self.cid, 'include_deleted': True}).json()['items']
+        self.assertEqual([p['id'] for p in owner_items], [project['id']])
+        for client in (peer, investor):
+            self.assertEqual(client.get('/api/business-projects',
+                params={'company_id': self.cid, 'include_deleted': True}).json()['items'], [])
+            self.assertEqual(client.get(f"/api/business-projects/{project['id']}",
+                params={'company_id': self.cid}).status_code, 404)
+        self.assertEqual(self.restore(deleted, expected_revision=deleted['revision']+1).status_code, 409)
+        self.assertEqual(self.restore(deleted, headers=foreign_headers, company_id=self.other).status_code, 404)
+
+    def test_deletion_during_rendering_cannot_republish_or_restore_deleted_project(self):
+        project, _ = self.create()
+        project = self.upload(project).json()
+        from app.business_exports import build_documents
+        def remove_during_render(*args):
+            output = build_documents(*args)
+            self.assertEqual(self.remove(project).status_code, 200)
+            return output
+        with patch('app.business_exports.build_documents', side_effect=remove_during_render):
+            self.assertEqual(self.analyse(project).status_code, 409)
+        with unit() as s:
+            self.assertEqual(s.get(BusinessProject, project['id']).status, 'deleted')
+            self.assertEqual(s.scalar(select(func.count()).select_from(BusinessGeneration)), 0)
+            self.assertEqual(s.scalar(select(func.count()).select_from(ReportArchiveFile)), 0)
+
+    def test_delete_then_restore_during_rendering_or_streaming_cancels_old_write(self):
+        project, _ = self.create()
+        project = self.upload(project).json()
+        from app.business_exports import build_documents
+        def lifecycle_during_render(*args):
+            output = build_documents(*args)
+            self.assertEqual(self.restore(self.remove(project).json()).status_code, 200)
+            return output
+        with patch('app.business_exports.build_documents', side_effect=lifecycle_during_render):
+            self.assertEqual(self.analyse(project).status_code, 409)
+        from app.business_projects import validate_source
+        def lifecycle_during_stream(raw, filename):
+            result = validate_source(raw, filename)
+            self.assertEqual(self.restore(self.remove(project).json()).status_code, 200)
+            return result
+        with patch('app.business_projects.validate_source', side_effect=lifecycle_during_stream):
+            changed = json.dumps({**model(), 'opening_cash': 999}).encode()
+            self.assertEqual(self.upload(project, changed).status_code, 409)
+        with unit() as s:
+            self.assertEqual(s.get(BusinessProject, project['id']).status, 'draft')
+            self.assertEqual(s.get(BusinessProject, project['id']).revision, project['revision'])
+            self.assertEqual(s.scalar(select(func.count()).select_from(BusinessGeneration)), 0)
 
     def test_folder_automatically_calculates_two_private_report_pairs_without_ledger(self):
         project = self.ready()

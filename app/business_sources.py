@@ -35,6 +35,8 @@ MAX_SHEETS = 64
 MAX_CELLS = 200_000
 MAX_ROWS = 10_000
 MAX_TEXT = 120_000
+MAX_NUMERIC_TEXT = 4096
+MIN_NUMERIC_EXPONENT = -308
 MAX_PDF_PAGES = 100
 MAX_NARRATIVE = 16_000
 NS = {"s": "http://schemas.openxmlformats.org/spreadsheetml/2006/main"}
@@ -114,8 +116,15 @@ def _decimal(value: Any) -> Decimal | None:
     if isinstance(value, bool) or value is None:
         return None
     try:
-        parsed = Decimal(str(value).strip().replace("\u00a0", "").replace(" ", "").replace(",", "."))
-        return parsed if parsed.is_finite() and abs(parsed) <= Decimal("1e15") else None
+        token = str(value).strip().replace("\u00a0", "").replace(" ", "").replace(",", ".")
+        if len(token) > MAX_NUMERIC_TEXT:
+            return None
+        parsed = Decimal(token)
+        # Check the exponent before fixed-point formatting. A tiny compact
+        # token such as 1e-1000000000 must not allocate a billion-byte string.
+        # Zero has no magnitude and remains valid regardless of its exponent.
+        return parsed if (parsed.is_finite() and parsed.copy_abs() <= Decimal("1e15") and
+                          (parsed.is_zero() or parsed.adjusted() >= MIN_NUMERIC_EXPONENT)) else None
     except (InvalidOperation, ValueError):
         return None
 
@@ -131,6 +140,14 @@ def _number(value: Decimal | int | float) -> str:
 
 def _raw_number(value: Decimal) -> str:
     """Keep explicit source precision for validation instead of rounding it."""
+    if not value.is_finite():
+        raise SourceReadError("Числовое значение выходит за допустимый диапазон Excel.")
+    if not value:
+        return "0"
+    parts = value.as_tuple()
+    size = len(parts.digits) + max(0, parts.exponent) if parts.exponent >= 0 else max(len(parts.digits), 1 - parts.exponent) + 1
+    if value.adjusted() < MIN_NUMERIC_EXPONENT or size + parts.sign > MAX_NUMERIC_TEXT:
+        raise SourceReadError("Числовое значение выходит за допустимый диапазон Excel.")
     text = format(value, "f")
     return text.rstrip("0").rstrip(".") if "." in text else text
 

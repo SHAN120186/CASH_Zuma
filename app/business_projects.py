@@ -20,12 +20,13 @@ from defusedxml import ElementTree as ET
 from fastapi import APIRouter, HTTPException, Path, Query, Request
 from fastapi.responses import Response
 from pydantic import BaseModel, ConfigDict, Field, field_validator
-from sqlalchemy import func, select
+from sqlalchemy import func, or_, select
 
 from .db import (BusinessGeneration, BusinessProject, BusinessSourceFile, ReportArchive,
                  ReportArchiveFile, now, unit)
 from .main import get, log
-from .report_archives import authorize, MIMES, valid_file
+from .report_archives import (authorize, delete_archive_record, restore_archive_record,
+                             MIMES, valid_file)
 from .security import perms_of
 from .business_model import calculate_model, validate_model, ModelValidationError
 
@@ -88,9 +89,17 @@ def own(project, user):
         raise HTTPException(403, 'Изменять исходные файлы и параметры может автор проекта.')
 
 
-def revision_ok(project, revision):
+def active(project):
+    if project.status == 'deleted':
+        raise HTTPException(409, 'Папка проекта удалена. Сначала восстановите её.')
+
+
+def revision_ok(project, revision, expected_updated_at=None):
+    active(project)
     if project.revision != revision:
         raise HTTPException(409, 'Папка проекта изменилась. Обновите её и проверьте новые исходные данные.')
+    if expected_updated_at is not None and project.updated_at != expected_updated_at:
+        raise HTTPException(409, 'Проект изменён, удалён или восстановлен во время расчёта. Обновите папку проекта.')
 
 
 def sources(s, project_id):
@@ -111,11 +120,14 @@ def archive_meta(s, id):
 
 
 def summary(s, project, user):
+    owner = project.created_by == user.id and 'import' in perms_of(user)
     return {'id': project.id, 'company_id': project.company_id, 'title': project.title,
             'status': project.status, 'revision': project.revision,
             'source_count': s.scalar(select(func.count()).select_from(BusinessSourceFile)
                                      .where(BusinessSourceFile.project_id == project.id)),
-            'can_edit': project.created_by == user.id and 'import' in perms_of(user),
+            'can_edit': owner and project.status != 'deleted',
+            'can_delete': owner and project.status != 'deleted',
+            'can_restore': owner and project.status == 'deleted',
             'created_at': timestamp(project.created_at), 'updated_at': timestamp(project.updated_at)}
 
 
@@ -139,9 +151,11 @@ def source_issues(extraction, inputs):
 
 def detail(s, project, user):
     result = summary(s, project, user)
+    if project.status == 'deleted' and not result['can_restore']:
+        raise HTTPException(404, 'Папка проекта не найдена.')
     # Raw input documents are restricted to their author/importer. Published
     # financial results remain available through existing report permissions.
-    editable = result['can_edit']
+    editable = result['can_edit'] or result['can_restore']
     records = sources(s, project.id)
     result['files'] = [{**m, 'id': f.id, 'uploaded_at': timestamp(f.uploaded_at),
                         **({'download_url': f'/api/business-projects/{project.id}/sources/{f.id}/download?company_id={project.company_id}'}
@@ -150,8 +164,11 @@ def detail(s, project, user):
     result['inputs'] = json.loads(project.inputs_json) if editable else {}
     result['extraction'] = json.loads(project.extraction_json) if editable else {}
     if editable:
+        from .native_projects import project_native_model
+        result['native_model'] = project_native_model(records, result['extraction'])
+    if editable:
         result['extraction']['issues'] = current_source_issues(result['extraction'], result['inputs'])
-    result['validation'] = validate_model(result['inputs']) if editable else []
+    result['validation'] = validate_model(result['inputs']) if editable and not result.get('native_model') else []
     if editable and project.status != 'ready':
         result['validation'] += result['extraction'].get('calculation_issues', [])
     result['validation'] += source_issues(result['extraction'], result['inputs']) if editable and project.status != 'ready' else []
@@ -167,6 +184,7 @@ def detail(s, project, user):
         if current and gen.id == current.id:
             result['current_generation_id'] = gen.id
         result['generations'].append({'id': gen.id, 'revision': gen.revision,
+                                     'native': bool(json.loads(gen.result_json).get('native')),
                                      'created_at': timestamp(gen.created_at),
                                      'business_archive': archive_meta(s, gen.business_archive_id),
                                      'teo_archive': archive_meta(s, gen.teo_archive_id),
@@ -175,12 +193,69 @@ def detail(s, project, user):
 
 
 @router.get('/api/business-projects')
-def list_projects(request: Request, company_id: int = Query(gt=0)):
+def list_projects(request: Request, company_id: int = Query(gt=0), include_deleted: bool = False):
     with unit() as s:
         user, company = authorize(s, request, 'export', company_id=company_id)
-        records = s.scalars(select(BusinessProject).where(BusinessProject.company_id == company.id)
-                            .order_by(BusinessProject.updated_at.desc()))
+        q = select(BusinessProject).where(BusinessProject.company_id == company.id)
+        if include_deleted and 'import' in perms_of(user):
+            q = q.where(or_(BusinessProject.status != 'deleted', BusinessProject.created_by == user.id))
+        else:
+            q = q.where(BusinessProject.status != 'deleted')
+        records = s.scalars(q.order_by(BusinessProject.updated_at.desc()))
         return {'items': [summary(s, p, user) for p in records], 'can_upload': 'import' in perms_of(user)}
+
+
+@router.delete('/api/business-projects/{id}')
+def delete_project(request: Request, id: int = Path(gt=0), company_id: int = Query(gt=0),
+                   expected_revision: int = Query(ge=0)):
+    with unit(True) as s:
+        user, company = authorize(s, request, 'import', company_id=company_id)
+        project = get(s, BusinessProject, id)
+        own(project, user)
+        if project.revision != expected_revision:
+            raise HTTPException(409, 'Папка проекта изменилась. Обновите её перед удалением.')
+        if project.status != 'deleted':
+            deleted_archives = []
+            generations = s.scalars(select(BusinessGeneration).where(
+                BusinessGeneration.project_id == id, BusinessGeneration.company_id == company.id))
+            for generation in generations:
+                for archive_id in (generation.business_archive_id, generation.teo_archive_id):
+                    archive = get(s, ReportArchive, archive_id)
+                    if delete_archive_record(s, archive, user):
+                        deleted_archives.append(archive_id)
+            extraction = json.loads(project.extraction_json)
+            extraction['_deleted_state'] = {'status': project.status, 'archive_ids': deleted_archives}
+            project.extraction_json = dump(extraction)
+            project.status, project.updated_at = 'deleted', now()
+            log(s, user, 'Удалена папка бизнес-плана', 'business_project', id,
+                f'Ревизия {project.revision}; отчётов {len(deleted_archives)}; исходники сохранены')
+        s.flush()
+        return detail(s, project, user)
+
+
+@router.post('/api/business-projects/{id}/restore')
+def restore_project(request: Request, id: int = Path(gt=0), company_id: int = Query(gt=0),
+                    expected_revision: int = Query(ge=0)):
+    with unit(True) as s:
+        user, _ = authorize(s, request, 'import', company_id=company_id)
+        project = get(s, BusinessProject, id)
+        own(project, user)
+        if project.revision != expected_revision:
+            raise HTTPException(409, 'Папка проекта изменилась. Обновите список перед восстановлением.')
+        if project.status == 'deleted':
+            extraction = json.loads(project.extraction_json)
+            deleted_state = extraction.pop('_deleted_state', {})
+            prior_status = deleted_state.get('status')
+            if prior_status not in ('draft', 'needs_data', 'ready'):
+                raise HTTPException(409, 'Не удалось определить прежнее состояние проекта.')
+            for archive_id in deleted_state.get('archive_ids', []):
+                restore_archive_record(s, get(s, ReportArchive, archive_id), user)
+            project.status, project.updated_at = prior_status, now()
+            project.extraction_json = dump(extraction)
+            log(s, user, 'Восстановлена папка бизнес-плана', 'business_project', id,
+                f'Ревизия {project.revision}; состояние {prior_status}')
+        s.flush()
+        return detail(s, project, user)
 
 
 @router.post('/api/business-projects')
@@ -321,7 +396,10 @@ async def put_source(request: Request, id: int = Path(gt=0), company_id: int = Q
         raise HTTPException(422, 'Имя файла не совпадает с путём в папке.')
     with unit() as s:
         user, _ = authorize(s, request, 'import', company_id=company_id)
-        own(get(s, BusinessProject, id), user)
+        project = get(s, BusinessProject, id)
+        own(project, user)
+        active(project)
+        updated_at = project.updated_at
     raw = bytearray()
     async for chunk in request.stream():
         if len(raw)+len(chunk) > MAX_FILE:
@@ -334,6 +412,9 @@ async def put_source(request: Request, id: int = Path(gt=0), company_id: int = Q
         user, company = authorize(s, request, 'import', company_id=company_id)
         project = get(s, BusinessProject, id)
         own(project, user)
+        active(project)
+        if project.updated_at != updated_at:
+            raise HTTPException(409, 'Проект изменён, удалён или восстановлен во время загрузки. Обновите папку проекта.')
         current = s.scalar(select(BusinessSourceFile).where(BusinessSourceFile.project_id == id,
                                                             BusinessSourceFile.relative_path == relative_path))
         if current and current.sha256 == sha:
@@ -390,10 +471,12 @@ def snapshot(request, id, company_id, revision):
         records = sources(s, id)
         if not records:
             raise HTTPException(422, 'Сначала загрузите исходные файлы в папку проекта.')
-        return expanded_sources(records), manifest(records), json.loads(project.extraction_json), project.title
+        return (expanded_sources(records), manifest(records), json.loads(project.extraction_json),
+                project.title, project.updated_at)
 
 
-def persist_generation(request, id, company_id, revision, inputs, extraction, source_manifest, confirmed=False):
+def persist_generation(request, id, company_id, revision, inputs, extraction, source_manifest, confirmed=False,
+                       expected_updated_at=None):
     # User changes have their own provenance rather than inheriting a source
     # citation whose value was replaced in the calculation form.
     extraction = {**extraction, 'manual_fields': [key for key, value in inputs.items()
@@ -415,7 +498,7 @@ def persist_generation(request, id, company_id, revision, inputs, extraction, so
             user, _ = authorize(s, request, 'import', company_id=company_id)
             project = get(s, BusinessProject, id)
             own(project, user)
-            revision_ok(project, revision)
+            revision_ok(project, revision, expected_updated_at)
             project.inputs_json, project.extraction_json = dump(inputs), dump(extraction)
             project.status, project.updated_at = 'needs_data', now()
             project.current_fingerprint = ''
@@ -426,7 +509,7 @@ def persist_generation(request, id, company_id, revision, inputs, extraction, so
         user, _ = authorize(s, request, 'import', company_id=company_id)
         project = get(s, BusinessProject, id)
         own(project, user)
-        revision_ok(project, revision)
+        revision_ok(project, revision, expected_updated_at)
         if s.scalar(select(BusinessGeneration.id).where(BusinessGeneration.project_id == id,
                                                         BusinessGeneration.fingerprint == signature)):
             project.inputs_json, project.extraction_json = dump(inputs), dump(extraction)
@@ -444,7 +527,7 @@ def persist_generation(request, id, company_id, revision, inputs, extraction, so
         user, company = authorize(s, request, 'import', company_id=company_id)
         project = get(s, BusinessProject, id)
         own(project, user)
-        revision_ok(project, revision)
+        revision_ok(project, revision, expected_updated_at)
         existing = s.scalar(select(BusinessGeneration).where(BusinessGeneration.project_id == id,
                                                             BusinessGeneration.fingerprint == signature))
         if not existing:
@@ -478,18 +561,38 @@ def persist_generation(request, id, company_id, revision, inputs, extraction, so
 
 @router.post('/api/business-projects/{id}/analyse')
 def analyse_project(data: AnalyseIn, request: Request, id: int = Path(gt=0), company_id: int = Query(gt=0)):
-    files, source_manifest, _, title = snapshot(request, id, company_id, data.revision)
+    files, source_manifest, _, title, updated_at = snapshot(request, id, company_id, data.revision)
+    from .native_projects import native_candidate
+    candidate = native_candidate(files)
+    if candidate:
+        # Keep the supplied workbook's assumptions and layout. Generic defaults
+        # cannot replace an established financial model merely because its
+        # sources contain similar labels.
+        with unit(True) as s:
+            user, _ = authorize(s, request, 'import', company_id=company_id)
+            project = get(s, BusinessProject, id)
+            own(project, user)
+            revision_ok(project, data.revision, updated_at)
+            project.extraction_json = dump({'native': candidate['profile'], 'issues': [], 'inputs': {}})
+            project.inputs_json = dump({'title': title, **data.overrides})
+            project.status, project.updated_at = 'needs_data', now()
+            project.current_fingerprint = ''
+            return detail(s, project, user)
     from .business_sources import extract_sources
     extraction = extract_sources(files)
     inputs = {**extraction.get('inputs', {}), **data.overrides}
     inputs.setdefault('title', title)
-    return persist_generation(request, id, company_id, data.revision, inputs, extraction, source_manifest)
+    return persist_generation(request, id, company_id, data.revision, inputs, extraction, source_manifest,
+                              expected_updated_at=updated_at)
 
 
 @router.post('/api/business-projects/{id}/generate')
 def generate_project(data: GenerateIn, request: Request, id: int = Path(gt=0), company_id: int = Query(gt=0)):
-    _, source_manifest, extraction, _ = snapshot(request, id, company_id, data.revision)
+    files, source_manifest, extraction, _, updated_at = snapshot(request, id, company_id, data.revision)
+    from .native_projects import native_candidate
+    if native_candidate(files):
+        raise HTTPException(409, 'В папке есть оригинальная финансовая модель. Используйте «Пересчитать оригинал и проверить цифры», чтобы сохранить её формулы и оформление.')
     if not extraction:
         raise HTTPException(409, 'Сначала проверьте исходные файлы кнопкой анализа папки.')
     return persist_generation(request, id, company_id, data.revision, data.inputs, extraction, source_manifest,
-                              confirmed=data.confirm_sources)
+                              confirmed=data.confirm_sources, expected_updated_at=updated_at)

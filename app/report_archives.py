@@ -24,7 +24,8 @@ from sqlalchemy import func, or_, select
 from .bot_api import authenticate_bot, linked_user
 from .clock import LOCAL_TZ
 from .company_scope import SERVICE_CODE, active_delegations, available_companies
-from .db import Company, CompanyUser, ReportArchive, ReportArchiveFile, now, unit
+from .db import (Audit, BusinessGeneration, BusinessProject, Company, CompanyUser,
+                 ReportArchive, ReportArchiveFile, now, unit)
 from .security import act_with_right, client_ip, perms_of, scope_user, session_user
 from .services import get, log
 
@@ -115,13 +116,62 @@ def authorize(s, request, permission, telegram_user_id=None, company_id=None, ar
 
 def record_json(s, record, company, user):
     formats = list(s.scalars(select(ReportArchiveFile.format).where(ReportArchiveFile.archive_id == record.id)))
+    owner = record.created_by == user.id and 'import' in perms_of(user)
+    deleted_project = deleted_project_id(s, record) if record.status == 'deleted' else None
     return {'id': record.id, 'title': record.title, 'company_id': company.id,
             'company_code': company.code, 'company_name': company.name,
             'period_start': str(record.period_start), 'period_end': str(record.period_end),
             'uploaded_at': record.uploaded_at.replace(tzinfo=timezone.utc).isoformat(),
             'formats': [f for f in ('pdf', 'xlsx') if f in formats], 'status': record.status,
             'version': record.version,
-            'can_upload': record.status == 'draft' and record.created_by == user.id and 'import' in perms_of(user)}
+            'can_upload': record.status == 'draft' and owner,
+            'can_delete': record.status != 'deleted' and owner,
+            'can_restore': record.status == 'deleted' and owner and deleted_project is None,
+            'can_download': record.status == 'ready' or (record.status == 'draft' and record.created_by == user.id),
+            'deleted_with_project': deleted_project is not None,
+            'restore_project_id': deleted_project}
+
+
+def deleted_project_id(s, record):
+    return s.scalar(select(BusinessProject.id).join(BusinessGeneration,
+        BusinessGeneration.project_id == BusinessProject.id).where(
+        BusinessProject.company_id == record.company_id, BusinessProject.status == 'deleted',
+        or_(BusinessGeneration.business_archive_id == record.id,
+            BusinessGeneration.teo_archive_id == record.id)).limit(1))
+
+
+def archive_lifecycle(s, id):
+    # This epoch is independent of the immutable published version/upload date.
+    # It also detects delete -> restore while an upload is being streamed.
+    return s.scalar(select(func.max(Audit.id)).where(Audit.entity == 'report_archive',
+        Audit.entity_id == str(id), Audit.action.in_(['Удалён отчёт', 'Восстановлен отчёт']))) or 0
+
+
+def delete_archive_record(s, record, user):
+    if record.status == 'deleted':
+        return False
+    record.status = 'deleted'
+    log(s, user, 'Удалён отчёт', 'report_archive', record.id, f'Версия {record.version}; файлы сохранены')
+    return True
+
+
+def restore_archive_record(s, record, user):
+    if record.status != 'deleted':
+        return False
+    formats = set(s.scalars(select(ReportArchiveFile.format).where(ReportArchiveFile.archive_id == record.id)))
+    record.status = 'ready' if formats == {'pdf', 'xlsx'} else 'draft'
+    log(s, user, 'Восстановлен отчёт', 'report_archive', record.id, f'Версия {record.version}')
+    return True
+
+
+def own_archive(record, user):
+    if record.created_by != user.id:
+        raise HTTPException(403, 'Удалять и восстанавливать отчёт может только его автор.')
+
+
+def archive_version_ok(record, expected_version):
+    if record.version != expected_version:
+        raise HTTPException(409, 'Версия отчёта не совпадает. Обновите список отчётов.')
 
 
 @router.get('/api/bot/v1/report-archive-companies')
@@ -150,6 +200,7 @@ def bot_companies(request: Request, telegram_user_id: int = Query(gt=0, lt=2**53
 @router.get('/api/bot/v1/report-archives')
 def list_archives(request: Request, company_id: int = Query(gt=0), date_from: date | None = None,
                   date_to: date | None = None, uploaded_on: date | None = None, include_drafts: bool = False,
+                  include_deleted: bool = False,
                   telegram_user_id: TelegramId = Query(default=None, gt=0, lt=2**53)):
     if date_from and date_to and date_from > date_to:
         raise HTTPException(422, 'Начало фильтра должно быть не позже конца.')
@@ -165,6 +216,8 @@ def list_archives(request: Request, company_id: int = Query(gt=0), date_from: da
             q = q.where(or_(ReportArchive.status == 'ready', ReportArchive.created_by == user.id))
         else:
             q = q.where(ReportArchive.status == 'ready')
+        if not (include_deleted and can_upload and not is_bot(request)):
+            q = q.where(ReportArchive.status != 'deleted')
         if date_from:
             q = q.where(ReportArchive.period_end >= date_from)
         if date_to:
@@ -174,6 +227,34 @@ def list_archives(request: Request, company_id: int = Query(gt=0), date_from: da
             q = q.where(ReportArchive.uploaded_at >= start, ReportArchive.uploaded_at < start + timedelta(days=1))
         return {'items': [record_json(s, r, company, user) for r in s.scalars(q.order_by(ReportArchive.version.desc()))],
                 'can_upload': can_upload}
+
+
+@router.delete('/api/report-archives/{id}')
+def delete_archive(request: Request, id: int = Path(gt=0), company_id: int = Query(gt=0),
+                   expected_version: int = Query(ge=1)):
+    with unit(True) as s:
+        user, company = authorize(s, request, 'import', company_id=company_id)
+        record = get(s, ReportArchive, id)
+        own_archive(record, user)
+        archive_version_ok(record, expected_version)
+        delete_archive_record(s, record, user)
+        s.flush()
+        return record_json(s, record, company, user)
+
+
+@router.post('/api/report-archives/{id}/restore')
+def restore_archive(request: Request, id: int = Path(gt=0), company_id: int = Query(gt=0),
+                    expected_version: int = Query(ge=1)):
+    with unit(True) as s:
+        user, company = authorize(s, request, 'import', company_id=company_id)
+        record = get(s, ReportArchive, id)
+        own_archive(record, user)
+        archive_version_ok(record, expected_version)
+        if deleted_project_id(s, record) is not None:
+            raise HTTPException(409, 'Сначала восстановите папку проекта, к которой относится отчёт.')
+        restore_archive_record(s, record, user)
+        s.flush()
+        return record_json(s, record, company, user)
 
 
 @router.post('/api/report-archives')
@@ -260,7 +341,11 @@ async def upload_file(request: Request, format: Literal['pdf', 'xlsx'], id: int 
         authenticate_bot(request)
     with unit() as s:
         user, _ = authorize(s, request, 'import', telegram_user_id, company_id, archive_id=id)
-        own_draft(get(s, ReportArchive, id), user)
+        record = get(s, ReportArchive, id)
+        own_draft(record, user)
+        if record.status == 'deleted':
+            raise HTTPException(409, 'Отчёт удалён. Сначала восстановите его.')
+        lifecycle = archive_lifecycle(s, id)
     raw = bytearray()
     async for chunk in request.stream():
         if len(raw) + len(chunk) > MAX_REPORT_SIZE:
@@ -273,6 +358,8 @@ async def upload_file(request: Request, format: Literal['pdf', 'xlsx'], id: int 
         user, company = authorize(s, request, 'import', telegram_user_id, company_id, archive_id=id)
         record = get(s, ReportArchive, id)
         own_draft(record, user)
+        if record.status == 'deleted' or archive_lifecycle(s, id) != lifecycle:
+            raise HTTPException(409, 'Отчёт удалён или восстановлен во время загрузки. Обновите список отчётов.')
         existing = s.scalar(select(ReportArchiveFile).where(ReportArchiveFile.archive_id == id, ReportArchiveFile.format == format))
         if existing and existing.sha256 == sha:
             return record_json(s, record, company, user)
@@ -303,7 +390,7 @@ def download_file(request: Request, format: Literal['pdf', 'xlsx'], id: int = Pa
     with unit() as s:
         user, _ = authorize(s, request, 'export', telegram_user_id, company_id, archive_id=id)
         record = get(s, ReportArchive, id)
-        if record.status != 'ready' and (is_bot(request) or record.created_by != user.id):
+        if record.status == 'deleted' or (record.status != 'ready' and (is_bot(request) or record.created_by != user.id)):
             raise HTTPException(404, 'Готовый отчёт не найден.')
         file = s.scalar(select(ReportArchiveFile).where(ReportArchiveFile.archive_id == id, ReportArchiveFile.format == format))
         if file is None:

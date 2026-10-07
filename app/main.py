@@ -897,3 +897,5 @@ from .report_archives import router as report_archives_router
 app.include_router(report_archives_router)
 from .business_projects import router as business_projects_router
 app.include_router(business_projects_router)
+from .native_projects import router as native_projects_router
+app.include_router(native_projects_router)

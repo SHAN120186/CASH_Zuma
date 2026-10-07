@@ -11,6 +11,7 @@ const filters = ref({date_from: '', date_to: '', uploaded_on: ''});
 const editor = ref(null), form = ref({title: '', period_start: '', period_end: ''}), files = ref({pdf: null, xlsx: null});
 const saving = ref(false), step = ref(''), formError = ref('');
 const businessEditing = ref(false);
+const showDeleted = ref(false), changingState = ref(false);
 let active = true, listRequest = 0;
 const savedFormats = computed(() => editor.value?.record?.formats || []);
 const metadataSaved = computed(() => !!editor.value?.record);
@@ -28,7 +29,7 @@ async function load() {
   const request = ++listRequest;
   loading.value = true; error.value = ''; items.value = []; canUpload.value = false;
   try {
-    const result = await props.api(archiveUrl(props.company.id, filters.value));
+    const result = await props.api(archiveUrl(props.company.id, {...filters.value, include_deleted:showDeleted.value}));
     if (!active || request !== listRequest) return;
     // The server also checks scope. A different company's response is never rendered.
     items.value = (result.items || []).filter(item => item.company_id === props.company.id);
@@ -37,6 +38,20 @@ async function load() {
   finally {if (active && request === listRequest) loading.value = false;}
 }
 function clearFilters() {filters.value = {date_from: '', date_to: '', uploaded_on: ''}; load();}
+async function changeArchiveState(record, restore = false) {
+  if (saving.value || changingState.value || record.company_id !== props.company.id || !(restore ? record.can_restore : record.can_delete)) return;
+  const companyId = props.company.id;
+  changingState.value = true; error.value = ''; notice.value = '';
+  try {
+    const path = `/api/report-archives/${record.id}${restore ? '/restore' : ''}?company_id=${companyId}&expected_version=${record.version ?? record.id}`;
+    const updated = await props.api(path, {method:restore ? 'POST' : 'DELETE'});
+    if (!active || companyId !== props.company.id) return;
+    if (updated.company_id !== companyId || updated.id !== record.id) throw Error('Сервер вернул другую версию отчёта. Обновите страницу.');
+    notice.value = restore ? 'Отчёт восстановлен и снова доступен в боте.' : 'Отчёт удалён из списка и бота. Его можно восстановить через «Показать удалённые».';
+    await load();
+  } catch (e) {if (active && e.name !== 'AbortError') {error.value = e.message;}}
+  finally {if (active) changingState.value = false;}
+}
 function open(record = null) {
   editor.value = createArchiveState(record);
   form.value = {title: record?.title || '', period_start: record?.period_start || '', period_end: record?.period_end || ''};
@@ -87,6 +102,7 @@ async function save() {
           <label>Дата загрузки<input v-model="filters.uploaded_on" type="date" min="2000-01-01" max="2100-12-31" :disabled="saving"><small>Ташкент · UTC+5</small></label>
           <button class="secondary" :disabled="loading||saving"><AppIcon name="search"/> Найти</button>
           <button class="ghost" type="button" :disabled="saving" @click="clearFilters">Сбросить</button>
+          <label v-if="canUpload" class="archive-trash"><span>Удалённые отчёты</span><span><input v-model="showDeleted" type="checkbox" :disabled="saving||changingState" @change="load"> Показать удалённые</span></label>
         </form>
         <p v-if="error" class="error" role="alert">{{error}}</p>
         <p v-if="loading" class="loading" role="status">Загружаем отчёты…</p>
@@ -97,10 +113,11 @@ async function save() {
               <td data-l="Отчёт"><span><b>{{record.title}}</b><small>Версия №{{record.version??record.id}}</small></span></td>
               <td data-l="Период в файлах">{{dateLabel(record.period_start)}} — {{dateLabel(record.period_end)}}</td>
               <td data-l="Загружен">{{uploadLabel(record.uploaded_at)}}</td>
-              <td data-l="Состояние"><span class="pill" :class="record.status==='ready'?'good':'warn'">{{record.status==='ready'?'Готов':'Черновик'}}</span></td>
+              <td data-l="Состояние"><span class="pill" :class="record.status==='ready'?'good':'warn'">{{record.status==='deleted'?'Удалён':record.status==='ready'?'Готов':'Черновик'}}</span></td>
               <td data-l="Файлы"><div class="archive-downloads">
                 <template v-if="record.status==='ready'"><a v-for="format in FORMATS" :key="format" class="button secondary tiny" :href="archiveFileUrl(record,format)"><AppIcon name="download"/> {{format==='pdf'?'PDF':'Excel'}}</a></template>
-                <template v-else><span class="sub">Не хватает: {{FORMATS.filter(format=>!record.formats.includes(format)).map(format=>format==='pdf'?'PDF':'Excel').join(', ')}}</span><button v-if="record.can_upload" class="secondary tiny" :disabled="saving||!!editor" @click="open(record)">Завершить загрузку</button></template>
+                <template v-else-if="record.status!=='deleted'"><span class="sub">Не хватает: {{FORMATS.filter(format=>!record.formats.includes(format)).map(format=>format==='pdf'?'PDF':'Excel').join(', ')}}</span><button v-if="record.can_upload" class="secondary tiny" :disabled="saving||!!editor" @click="open(record)">Завершить загрузку</button></template>
+                <button v-if="record.can_delete" class="secondary tiny" :disabled="saving||changingState||!!editor" @click="changeArchiveState(record)">Удалить отчёт</button><button v-if="record.can_restore" class="secondary tiny" :disabled="saving||changingState||!!editor" @click="changeArchiveState(record,true)">Восстановить</button><small v-if="record.deleted_with_project">Для возврата восстановите папку проекта №{{record.restore_project_id}}.</small>
               </div></td>
             </tr>
           </tbody></table>
