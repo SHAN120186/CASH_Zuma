@@ -14,7 +14,7 @@ with psycopg.connect(host=url.host,port=url.port,user=url.username,password=url.
     try:
         env={**os.environ,'TEST_DATABASE_URL':url.set(database=name).render_as_string(hide_password=False)}
         # Separate processes keep each suite's temporary filesystem isolated.
-        for suite in ('test_site.py', 'test_report_archives.py'):
+        for suite in ('test_site.py', 'test_report_archives.py', 'test_business_projects.py'):
             result=subprocess.run([sys.executable,str(ROOT/'tests'/suite)],env=env,cwd=ROOT)
             if result.returncode:
                 break

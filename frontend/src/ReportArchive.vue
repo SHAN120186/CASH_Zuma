@@ -1,6 +1,7 @@
 <script setup>
 import {ref, computed, onMounted, onUnmounted, watch} from 'vue';
 import AppIcon from './AppIcon.vue';
+import BusinessProjects from './BusinessProjects.vue';
 import {FORMATS, fileProblem, filterProblem, archiveUrl, archiveFileUrl, dateLabel, uploadLabel, createArchiveState, saveArchive} from './reportArchive.js';
 
 const props = defineProps({api: {type: Function, required: true}, company: {type: Object, required: true}, refresh: {type: Number, default: 0}});
@@ -9,13 +10,14 @@ const items = ref([]), canUpload = ref(false), loading = ref(false), error = ref
 const filters = ref({date_from: '', date_to: '', uploaded_on: ''});
 const editor = ref(null), form = ref({title: '', period_start: '', period_end: ''}), files = ref({pdf: null, xlsx: null});
 const saving = ref(false), step = ref(''), formError = ref('');
+const businessEditing = ref(false);
 let active = true, listRequest = 0;
 const savedFormats = computed(() => editor.value?.record?.formats || []);
 const metadataSaved = computed(() => !!editor.value?.record);
 const metadataFrozen = computed(() => metadataSaved.value || !!editor.value?.fields);
 const missingFormats = computed(() => FORMATS.filter(format => !savedFormats.value.includes(format)));
 
-watch(() => !!editor.value, value => emit('editing', value));
+watch(() => !!editor.value || businessEditing.value, value => emit('editing', value));
 watch(() => props.refresh, load);
 onUnmounted(() => {active = false; listRequest++; emit('editing', false);});
 onMounted(load);
@@ -70,11 +72,12 @@ async function save() {
 
 <template>
   <div class="report-archive">
+    <BusinessProjects :api="api" :company="company" :refresh="refresh" @editing="businessEditing=$event" @generated="load"/>
     <p v-if="notice" class="notice" role="status">{{notice}}</p>
     <section class="card">
       <div class="card-h">
-        <div><h3>Бизнес-планы · PDF и Excel</h3><p class="sub">{{company.name}} · история загруженных версий</p></div>
-        <button v-if="canUpload&&!editor" @click="open()" :disabled="loading"><AppIcon name="plus"/> Загрузить отчёт</button>
+        <div><h3>Архив готовых отчётов · PDF и Excel</h3><p class="sub">{{company.name}} · история загруженных и рассчитанных версий</p></div>
+        <button v-if="canUpload&&!editor&&!businessEditing" @click="open()" :disabled="loading"><AppIcon name="plus"/> Загрузить готовый отчёт</button>
       </div>
       <div class="card-b">
         <p class="sub archive-explanation">Каждая версия хранит готовые файлы и свой период. Дата загрузки сохраняется автоматически. Фильтр выбирает отчёты с пересекающимся периодом; содержимое файлов остаётся за весь указанный период.</p>
