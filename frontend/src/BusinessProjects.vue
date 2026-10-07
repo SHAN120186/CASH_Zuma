@@ -5,7 +5,7 @@ import {archiveFileUrl, uploadLabel} from './reportArchive.js';
 import {formatCents, toCents} from './overview/format.js';
 import {SOURCE_ACCEPT, BUSINESS_SCALARS, NARRATIVE_FIELDS, prepareSources, sourceSize, projectUrl, templateUrl,
   formFromInputs, inputsFromForm, monthLabels, resizeValues, createBusinessState, uploadProjectFolder, generateProject,
-  assertProject, fieldLabel, issueMessage, sourceIssues, evidenceRows, sourceLocation} from './businessProjects.js';
+  assertProject, fieldLabel, issueMessage, projectReview, evidenceRows, sourceLocation, folderProjectTitle, uploadFailureMessage} from './businessProjects.js';
 
 const props = defineProps({api: {type: Function, required: true}, company: {type: Object, required: true}, refresh: {type: Number, default: 0}});
 const emit = defineEmits(['editing', 'generated']);
@@ -17,9 +17,11 @@ const confirmed = ref(false), loadedSnapshot = ref('');
 let active = true, listRequest = 0, detailRequest = 0;
 const busy = computed(() => !!action.value), editing = computed(() => !!state.value);
 const canEdit = computed(() => !!current.value?.can_edit);
-const sourceProblems = computed(() => sourceIssues(current.value?.extraction));
+const review = computed(() => projectReview(current.value?.extraction, current.value?.validation));
+const sourceProblems = computed(() => review.value.checks);
 const needsConfirmation = computed(() => sourceProblems.value.some(issue => issue.code !== 'missing_or_invalid' && issue.requires_confirmation));
-const validation = computed(() => current.value?.validation || []);
+const validation = computed(() => review.value.fields);
+const referenceNotes = computed(() => review.value.references);
 const evidence = computed(() => evidenceRows(current.value?.extraction));
 const narratives = computed(() => current.value?.extraction?.narratives || []);
 const labels = computed(() => monthLabels(form.value.start, form.value.months));
@@ -37,6 +39,10 @@ const scheduleEntries = computed(() => {
   form.value.loans.forEach((loan, index) => {for (const [field, label] of [['drawdowns', 'Получение'], ['principal', 'Погашение основного долга'], ['interest', 'Проценты']]) entries.push({key: 'l' + index + field, label: `Кредит №${index + 1}${loan.name ? ' «' + loan.name + '»' : ''} · ${label}`, object: loan, field});});
   return entries;
 });
+const financialSchedules = computed(() => scheduleEntries.value.filter(entry => entry.object === form.value));
+const loanSchedules = computed(() => scheduleEntries.value.filter(entry => entry.key.startsWith('l')));
+const productSchedules = computed(() => scheduleEntries.value.filter(entry => !financialSchedules.value.includes(entry) && !loanSchedules.value.includes(entry)));
+const reviewProducts = computed(() => form.value.products.length <= 5 || validation.value.some(issue => String(issue.field || '').startsWith('products')));
 const statusLabel = project => project.status === 'ready' ? 'Отчёты готовы' : project.status === 'needs_data' ? 'Нужны параметры' : 'Папка проекта';
 const money = value => formatCents(toCents(value), 'USD');
 const ratio = value => value == null ? '—' : new Intl.NumberFormat('ru-RU', {maximumFractionDigits: 2}).format(Number(value) * 100) + '%';
@@ -91,6 +97,7 @@ function closeProject() {if (busy.value) return; state.value = null; current.val
 function chooseSources(event) {
   const result = prepareSources(event.target.files || []); event.target.value = '';
   selected.value = result.files; ignored.value = result.ignored; selectionProblems.value = result.problems; totalSize.value = result.total;
+  if (!String(header.value.title || '').trim()) header.value.title = folderProjectTitle(result.files);
   state.value.uploaded.clear(); error.value = ''; notice.value = '';
 }
 async function recoverConflict(e) {
@@ -116,7 +123,7 @@ async function upload() {
     notice.value = project.generations?.length && !project.validation?.length ? 'Бизнес-план и ТЭО сформированы. Скачайте PDF и Excel ниже.' : 'Папка изучена. Проверьте замечания и заполните недостающие параметры ниже.';
     if (project.generations?.length) emit('generated');
     await loadProjects();
-  } catch (e) {if (active && e.name !== 'AbortError') {error.value = e.message + ' Загруженные файлы остаются в папке. Повторная попытка продолжит этот проект.'; await recoverConflict(e);}}
+  } catch (e) {if (active && e.name !== 'AbortError') {error.value = uploadFailureMessage(e, workingState); await recoverConflict(e);}}
   finally {if (active) {action.value = ''; step.value = '';}}
 }
 async function generate() {
@@ -177,7 +184,7 @@ function reloadInputs() {if (!busy.value && current.value) setProject(current.va
           <p class="sub bp-note">PDF, XLSX, XLTX, DOCX, CSV, TXT, JSON, ZIP, PNG и JPEG. До 100 файлов, 20 МБ на файл и 100 МБ на папку. Формулы Excel не выполняются; изображения и договоры сохраняются как источники.</p>
           <p v-for="problem in selectionProblems" :key="problem" class="error" role="alert">{{problem}}</p>
           <details v-if="ignored.length" class="bp-details"><summary>Пропущены служебные файлы: {{ignored.length}}</summary><ul><li v-for="item in ignored" :key="item.name">{{item.name}} — {{item.reason}}</li></ul></details>
-          <details v-if="selected.length" class="bp-details" open><summary>Выбрано {{selected.length}} файлов · {{sourceSize(totalSize)}}</summary><ul class="bp-files"><li v-for="item in selected" :key="item.key"><span>{{item.relativePath}}</span><small>{{sourceSize(item.size)}} {{state.uploaded.has(item.key)?'· загружен':''}}</small></li></ul></details>
+          <details v-if="selected.length" class="bp-details" :open="selected.some(item=>!state.uploaded.has(item.key))"><summary>Выбрано {{selected.length}} файлов · {{sourceSize(totalSize)}}</summary><ul class="bp-files"><li v-for="item in selected" :key="item.key"><span>{{item.relativePath}}</span><small>{{sourceSize(item.size)}} {{state.uploaded.has(item.key)?'· загружен':''}}</small></li></ul></details>
           <p v-if="state.createUnknown" class="warning">Сервер мог создать папку. Повторите загрузку: она продолжится в том же проекте.</p>
           <button :disabled="busy||!selected.length||selectionProblems.length>0" @click="upload"><AppIcon name="import"/> {{current?'Добавить файлы и выполнить анализ':'Загрузить папку и сформировать отчёты'}}</button>
         </div>
@@ -186,10 +193,13 @@ function reloadInputs() {if (!busy.value && current.value) setProject(current.va
         <template v-if="current">
           <details class="bp-details"><summary>Исходные файлы проекта · {{current.files?.length||0}}</summary><ul class="bp-files"><li v-for="file in current.files||[]" :key="file.relative_path"><span>{{file.relative_path||file.filename}}</span><small>{{sourceSize(file.size||0)}}</small></li></ul></details>
           <div v-if="sourceProblems.length||validation.length" class="bp-review">
-            <h3>{{validation.length?'Что нужно заполнить и проверить':'Замечания к исходным файлам'}}</h3>
+            <h3>{{validation.length?'Для расчёта нужно заполнить '+validation.length+' параметров':'Проверьте условия расчёта'}}</h3>
+            <p v-if="form.products.length" class="sub bp-note">Распознано {{form.products.length}} позиций продукции. Недостающие параметры находятся в начале формы ниже.</p>
             <p v-if="current.status==='ready'&&current.extraction?.parameters_confirmed" class="sub bp-note">Финансовые параметры проверены и приняты в расчёт. Ниже сохранены замечания к первоначальным источникам.</p>
-            <ul><li v-for="(issue,index) in sourceProblems" :key="'s'+index"><b>{{fieldLabel(issue.field)}}</b>: {{issueMessage(issue)}}<small v-if="issue.source">{{sourceLocation(issue.source)}}</small></li><li v-for="(issue,index) in validation" :key="'v'+index"><b>{{fieldLabel(issue.field)}}</b>: {{issueMessage(issue)}}</li></ul>
+            <ul v-if="validation.length" class="bp-missing"><li v-for="(issue,index) in validation" :key="'v'+index"><b>{{fieldLabel(issue.field)}}</b>: {{issueMessage(issue)}}</li></ul>
+            <details v-if="sourceProblems.length" class="bp-details"><summary>Условия и расхождения, которые нужно проверить · {{sourceProblems.length}}</summary><ul><li v-for="(issue,index) in sourceProblems" :key="'s'+index"><b>{{fieldLabel(issue.field)}}</b>: {{issueMessage(issue)}}<small v-for="(source,sourceIndex) in issue.sources" :key="sourceIndex">{{sourceLocation(source)}}</small></li></ul></details>
           </div>
+          <details v-if="referenceNotes.length" class="bp-details"><summary>Справочные заметки по документам · {{referenceNotes.length}}</summary><ul><li v-for="(issue,index) in referenceNotes" :key="index"><b>{{fieldLabel(issue.field)}}</b>: {{issueMessage(issue)}}<small v-for="(source,sourceIndex) in issue.sources" :key="sourceIndex">{{sourceLocation(source)}}</small></li></ul></details>
           <details v-if="evidence.length" class="bp-details"><summary>Параметры, распознанные в источниках · {{evidence.length}}</summary><ul><li v-for="(item,index) in evidence" :key="index"><b>{{fieldLabel(item.field)}}</b><small>{{sourceLocation(item.source)}}<template v-if="item.note"> · {{item.note}}</template></small><span v-if="item.status==='needs_confirmation'" class="pill warn">Проверьте значение</span></li></ul></details>
           <details v-if="narratives.length" class="bp-details"><summary>Описание в исходных документах</summary><details v-for="(item,index) in narratives" :key="index" class="bp-details"><summary>{{item.filename||'Документ'}}</summary><p class="bp-reference">{{item.text}}</p></details></details>
 
@@ -209,9 +219,11 @@ function reloadInputs() {if (!busy.value && current.value) setProject(current.va
               </div>
               <p class="sub bp-note">Стоимость актива, вводимого в месяце прогноза, учитывается как CAPEX в этом месяце. Такой расход повторно не включайте в инвестиции до начала прогноза.</p>
 
-              <div class="section-head bp-form-head"><h3>Продукция · {{form.products.length}}</h3><button type="button" class="secondary tiny" :disabled="form.products.length>=200" @click="addRow('products')"><AppIcon name="plus"/> Добавить продукцию</button></div>
-              <div v-for="(product,index) in form.products" :key="index" class="bp-row-card"><div class="section-head"><b>Продукция №{{index+1}}</b><button type="button" class="ghost tiny" @click="form.products.splice(index,1)">Удалить строку</button></div><div class="bp-fields"><label>Название<input v-model="product.name" maxlength="160"></label><label>Единица измерения<input v-model="product.unit" maxlength="40" placeholder="упаковка"></label><label>Цена реализации<input v-model="product.price" type="text" inputmode="decimal"></label><label>Себестоимость единицы<input v-model="product.unit_cost" type="text" inputmode="decimal"></label></div><label class="bp-check"><input type="checkbox" :checked="product.capacity!=null" @change="product.capacity=$event.target.checked?'':null"> Указать производственную мощность</label><small>Объём реализации{{product.capacity!=null?' и мощность':''}} — в графиках ниже.</small></div>
-              <p v-if="!form.products.length" class="sub">Для расчёта добавьте хотя бы один препарат или другой продукт.</p>
+              <h3 class="bp-form-head">Постоянные расходы и взносы в капитал</h3><p class="sub">Укажите сумму на каждый месяц или отдельный график. Пустая сумма не означает ноль.</p>
+              <div v-for="entry in financialSchedules" :key="entry.key" class="bp-schedule">
+                <template v-if="!Array.isArray(entry.object[entry.field])"><label>{{entry.label}} · каждый месяц<input v-model="entry.object[entry.field]" type="text" inputmode="decimal"></label><button type="button" class="secondary tiny" @click="makeMonthly(entry)">По месяцам</button></template>
+                <details v-else class="bp-details"><summary>{{entry.label}} · график: {{entry.object[entry.field].length}} месяцев</summary><p v-if="entry.object[entry.field].length!==Number(form.months)" class="warning">Длина графика отличается от прогноза ({{form.months}} мес.). Уже введённые значения сохраняются до вашего выбора.<button type="button" class="secondary tiny" @click="makeMonthly(entry)">{{entry.object[entry.field].length>Number(form.months)?'Убрать последние '+(entry.object[entry.field].length-Number(form.months))+' значений':'Добавить пустые месяцы'}}</button></p><div class="bp-month-grid"><label v-for="(_,index) in entry.object[entry.field]" :key="index">{{labels[index]||'Месяц '+(index+1)}}<input v-model="entry.object[entry.field][index]" type="text" inputmode="decimal"></label></div><button type="button" class="ghost tiny" @click="entry.object[entry.field]=''">Заменить график одним ежемесячным значением</button></details>
+              </div>
 
               <div class="section-head bp-form-head"><h3>Основные средства · {{form.assets.length}}</h3><button type="button" class="secondary tiny" :disabled="form.assets.length>=200" @click="addRow('assets')"><AppIcon name="plus"/> Добавить актив</button></div>
               <label v-if="!form.assets.length" class="bp-check"><input v-model="form.no_assets" type="checkbox"> Основных средств в этой модели нет</label>
@@ -221,11 +233,22 @@ function reloadInputs() {if (!busy.value && current.value) setProject(current.va
               <label v-if="!form.loans.length" class="bp-check"><input v-model="form.no_loans" type="checkbox"> Кредитов в этой модели нет</label>
               <div v-for="(loan,index) in form.loans" :key="index" class="bp-row-card"><div class="section-head"><b>Кредит №{{index+1}}</b><button type="button" class="ghost tiny" @click="form.loans.splice(index,1);form.no_loans=false">Удалить строку</button></div><div class="bp-fields"><label>Название<input v-model="loan.name" maxlength="160"></label><label>Долг на начало прогноза<input v-model="loan.opening_balance" type="text" inputmode="decimal"></label></div><small>Получение, погашение и проценты задайте в графиках ниже. Процентную ставку вместо суммы процентов здесь не вводите.</small></div>
 
-              <h3 class="bp-form-head">Объёмы и помесячные графики</h3><p class="sub">Одно значение повторяется каждый месяц. Для сезонности, разовых взносов и кредитов используйте график по месяцам.</p>
-              <div v-for="entry in scheduleEntries" :key="entry.key" class="bp-schedule">
+              <h3 v-if="loanSchedules.length" class="bp-form-head">Помесячные графики кредитов</h3><p v-if="loanSchedules.length" class="sub">Одно значение повторяется каждый месяц. Для отдельных выдач и погашений используйте график по месяцам.</p>
+              <div v-for="entry in loanSchedules" :key="entry.key" class="bp-schedule">
                 <template v-if="!Array.isArray(entry.object[entry.field])"><label>{{entry.label}} · каждый месяц<input v-model="entry.object[entry.field]" type="text" inputmode="decimal"></label><button type="button" class="secondary tiny" @click="makeMonthly(entry)">По месяцам</button></template>
                 <details v-else class="bp-details"><summary>{{entry.label}} · график: {{entry.object[entry.field].length}} месяцев</summary><p v-if="entry.object[entry.field].length!==Number(form.months)" class="warning">Длина графика отличается от прогноза ({{form.months}} мес.). Уже введённые значения сохраняются до вашего выбора.<button type="button" class="secondary tiny" @click="makeMonthly(entry)">{{entry.object[entry.field].length>Number(form.months)?'Убрать последние '+(entry.object[entry.field].length-Number(form.months))+' значений':'Добавить пустые месяцы'}}</button></p><div class="bp-month-grid"><label v-for="(_,index) in entry.object[entry.field]" :key="index">{{labels[index]||'Месяц '+(index+1)}}<input v-model="entry.object[entry.field][index]" type="text" inputmode="decimal"></label></div><button type="button" class="ghost tiny" @click="entry.object[entry.field]=''">Заменить график одним ежемесячным значением</button></details>
               </div>
+
+              <details class="bp-details bp-products" :open="reviewProducts"><summary>Продукция · {{form.products.length}} · цены и объёмы</summary>
+              <div class="section-head bp-form-head"><h3>Продукция · {{form.products.length}}</h3><button type="button" class="secondary tiny" :disabled="form.products.length>=200" @click="addRow('products')"><AppIcon name="plus"/> Добавить продукцию</button></div>
+              <div v-for="(product,index) in form.products" :key="index" class="bp-row-card"><div class="section-head"><b>Продукция №{{index+1}}</b><button type="button" class="ghost tiny" @click="form.products.splice(index,1)">Удалить строку</button></div><div class="bp-fields"><label>Название<input v-model="product.name" maxlength="160"></label><label>Единица измерения<input v-model="product.unit" maxlength="40" placeholder="упаковка"></label><label>Цена реализации<input v-model="product.price" type="text" inputmode="decimal"></label><label>Себестоимость единицы<input v-model="product.unit_cost" type="text" inputmode="decimal"></label></div><label class="bp-check"><input type="checkbox" :checked="product.capacity!=null" @change="product.capacity=$event.target.checked?'':null"> Указать производственную мощность</label><small>Объём реализации{{product.capacity!=null?' и мощность':''}} — в графиках ниже.</small></div>
+              <p v-if="!form.products.length" class="sub">Для расчёта добавьте хотя бы один препарат или другой продукт.</p>
+              <h3 v-if="productSchedules.length" class="bp-form-head">Объёмы и помесячные графики</h3><p v-if="productSchedules.length" class="sub">Одно значение повторяется каждый месяц. Для сезонности используйте график по месяцам.</p>
+              <div v-for="entry in productSchedules" :key="entry.key" class="bp-schedule">
+                <template v-if="!Array.isArray(entry.object[entry.field])"><label>{{entry.label}} · каждый месяц<input v-model="entry.object[entry.field]" type="text" inputmode="decimal"></label><button type="button" class="secondary tiny" @click="makeMonthly(entry)">По месяцам</button></template>
+                <details v-else class="bp-details"><summary>{{entry.label}} · график: {{entry.object[entry.field].length}} месяцев</summary><p v-if="entry.object[entry.field].length!==Number(form.months)" class="warning">Длина графика отличается от прогноза ({{form.months}} мес.). Уже введённые значения сохраняются до вашего выбора.<button type="button" class="secondary tiny" @click="makeMonthly(entry)">{{entry.object[entry.field].length>Number(form.months)?'Убрать последние '+(entry.object[entry.field].length-Number(form.months))+' значений':'Добавить пустые месяцы'}}</button></p><div class="bp-month-grid"><label v-for="(_,index) in entry.object[entry.field]" :key="index">{{labels[index]||'Месяц '+(index+1)}}<input v-model="entry.object[entry.field][index]" type="text" inputmode="decimal"></label></div><button type="button" class="ghost tiny" @click="entry.object[entry.field]=''">Заменить график одним ежемесячным значением</button></details>
+              </div>
+              </details>
 
               <details class="bp-details"><summary>Описание проекта для бизнес-плана и ТЭО</summary><p class="sub bp-note">Укажите подтверждённые сведения. Пустые разделы останутся отмечены как требующие дополнения.</p><div class="bp-narratives"><label v-for="[field,label] in NARRATIVE_FIELDS" :key="field">{{label}}<textarea v-model="form[field]" maxlength="12000"></textarea></label></div></details>
               <label class="bp-check bp-confirm"><input v-model="confirmed" type="checkbox"> Я проверил финансовые параметры и замечания к источникам</label>

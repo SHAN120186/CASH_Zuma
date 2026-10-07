@@ -2,7 +2,8 @@ import {test} from 'node:test';
 import assert from 'node:assert/strict';
 import {compileComponent, mount, settle, text, all, find} from './helpers/mountVue.js';
 import {prepareSources, MAX_SOURCE_SIZE, MAX_FOLDER_SIZE, decimalShift, formFromInputs, inputsFromForm, resizeValues, monthLabels,
-  createBusinessState, uploadProjectFolder, generateProject, projectUrl, templateUrl, fieldLabel, sourceLocation, headerProblem} from '../src/businessProjects.js';
+  createBusinessState, uploadProjectFolder, generateProject, projectUrl, templateUrl, fieldLabel, sourceLocation, headerProblem,
+  folderProjectTitle, projectReview, uploadFailureMessage} from '../src/businessProjects.js';
 
 const header = {title: 'Synthetic project', start: '2027-01-01', months: 36, currency: ''};
 const file = (name, size = 12, path = 'Project/' + name, value = 'contents') => ({name, size, webkitRelativePath: path, value});
@@ -231,4 +232,98 @@ test('mounted reports follow the current calculation after restoring older param
   assert.equal(view.state.needsConfirmation, false);
   const downloads = all(view.container, node => node.tag === 'a' && node.props.href?.includes('/files/'));
   assert.equal(downloads[0].props.href, '/api/report-archives/10/files/pdf?company_id=2');
+});
+
+test('folder title is suggested only from a common selected folder and preflight errors never claim files were uploaded', async t => {
+  assert.equal(folderProjectTitle(prepareSources([file('a.xlsx', 12, 'Sample Folder/a.xlsx'), file('b.pdf', 12, 'Sample Folder/sub/b.pdf')]).files), 'Sample Folder');
+  assert.equal(folderProjectTitle([{relativePath: 'a.xlsx'}]), '');
+  assert.equal(folderProjectTitle([{relativePath: 'One/a.xlsx'}, {relativePath: 'Two/b.pdf'}]), '');
+  const service = backend();
+  const api = async (url, options) => options ? service.api(url, options) : {items: [], can_upload: true};
+  const view = mount(component, {company, api}); t.after(view.unmount);
+  await settle(); view.state.newProject();
+  view.state.chooseSources({target: {files: [file('a.xlsx', 12, 'Sample Folder/a.xlsx')], value: 'selected'}});
+  assert.equal(view.state.header.title, 'Sample Folder');
+  assert.equal(view.state.header.start, '');
+  await view.state.upload(); await settle();
+  assert.equal(service.calls.length, 0);
+  assert.equal(view.state.error, 'Выберите первый месяц прогноза.');
+  assert.doesNotMatch(view.state.error, /файлы.*(?:остаются|сохранены)/i);
+  view.state.header.title = 'Chosen title';
+  view.state.chooseSources({target: {files: [file('b.pdf', 12, 'Other Folder/b.pdf')], value: 'selected'}});
+  assert.equal(view.state.header.title, 'Chosen title');
+  const pending = createBusinessState(); pending.sourceUploadStarted = true;
+  assert.doesNotMatch(uploadFailureMessage(lost(), pending), /файлы.*(?:остаются|сохранены)/i);
+  pending.uploaded.add('source');
+  assert.match(uploadFailureMessage(lost(), pending), /Уже загруженные файлы сохранены/);
+});
+
+test('a forty-product source response keeps nine missing fields first, deduplicates history and collapses document notes', async t => {
+  const missing = ['opening_cash', 'opening_receivables', 'opening_inventory', 'opening_payables', 'initial_investment', 'fixed_costs', 'equity', 'assets', 'loans'];
+  const inputs = {...completeInputs(), months: 36, products: Array.from({length: 40}, (_, index) => ({name: `Sample product ${index + 1}`, unit: 'pack', price: '10', unit_cost: '2', quantities: Array(36).fill('5')}))};
+  for (const field of missing) delete inputs[field];
+  const checks = [{field: 'products.price', code: 'price_factor_vat', message: 'Подтвердите коэффициент и НДС.', requires_confirmation: true},
+    {field: 'products.quantities', code: 'volume_policy', message: 'Подтвердите объёмы.', requires_confirmation: true},
+    {field: 'fixed_costs', code: 'overhead_scope', message: 'Подтвердите состав расходов.', requires_confirmation: true}];
+  const extraction = {issues: [
+    ...Array.from({length: 4}, () => missing.map(field => ({field, code: 'missing_or_invalid', message: 'Историческое поле не заполнено.', requires_confirmation: true}))).flat(),
+    ...Array.from({length: 5}, () => checks).flat(),
+    ...Array.from({length: 12}, (_, index) => ({field: 'documents', code: 'pdf_financial_reconciliation', message: 'PDF используется как справочный источник.', requires_confirmation: false, source: {filename: `source-${index + 1}.pdf`}})),
+    ...Array.from({length: 7}, (_, index) => ({field: 'documents', code: 'supporting_workbook', message: 'Таблица используется для сверки.', requires_confirmation: false, source: {filename: `sheet-${index + 1}.xlsx`}})),
+  ], evidence: [], narratives: []};
+  const validation = [...missing.map(field => ({field, message: 'Заполните значение; пустое поле не равно нулю.'})),
+    ...checks.map(issue => ({field: issue.field, message: issue.message, code: 'source_issues', source_code: issue.code}))];
+  const project = {id: 1, company_id: 2, revision: 22, can_edit: true, title: 'Sample folder', status: 'needs_data', files: [], generations: [], inputs, extraction, validation};
+  const grouped = projectReview(extraction, validation);
+  assert.equal(grouped.fields.length, 9);
+  assert.equal(grouped.checks.length, 3);
+  assert.equal(grouped.references.length, 2);
+  assert.equal(grouped.references[0].sources.length, 12);
+  const view = mount(component, {company, api: async url => url.includes('/1?') ? structuredClone(project) : {items: [project], can_upload: true}});
+  t.after(view.unmount);
+  await settle(); await view.state.openProject(project); await settle();
+  assert.equal(view.state.validation.length, 9);
+  assert.equal(view.state.sourceProblems.length, 3);
+  assert.equal(view.state.needsConfirmation, true);
+  const missingList = find(view.container, node => node.tag === 'ul' && node.props.class === 'bp-missing');
+  assert.equal(all(missingList, node => node.tag === 'li').length, 9);
+  assert.doesNotMatch(text(view.container), /Историческое поле не заполнено/);
+  const products = find(view.container, node => node.tag === 'details' && String(node.props.class || '').includes('bp-products'));
+  assert.equal(products.props.open, false);
+  const notes = find(view.container, node => node.tag === 'details' && node.children.some(child => child.tag === 'summary' && text(child).includes('Справочные заметки')));
+  assert.notEqual(notes.props.open, true);
+  const content = text(view.container), productPosition = content.indexOf('Продукция · 40 · цены и объёмы');
+  assert.ok(content.indexOf('Постоянные расходы и взносы в капитал') < productPosition);
+  assert.ok(content.indexOf('Основные средства · 0') < productPosition);
+  assert.ok(content.indexOf('Кредиты · 0') < productPosition);
+  assert.equal(view.state.form.fixed_costs, '');
+  assert.equal(view.state.form.equity, '');
+  assert.equal(view.state.form.no_assets, false);
+  assert.equal(view.state.form.no_loans, false);
+  assert.deepEqual([...view.state.form.products[39].quantities], Array(36).fill('5'));
+  const confirmationOnly = projectReview({}, [{field: 'sources', code: 'source_issues', message: 'Проверьте источники.'}]);
+  assert.equal(confirmationOnly.fields.length, 0);
+  assert.equal(confirmationOnly.checks[0].requires_confirmation, true);
+});
+
+test('fatal or blocking source errors stay in required checks even without the confirmation flag', async t => {
+  for (const flags of [{severity: 'error'}, {severity: 'fatal'}, {severity: 'blocking'}, {blocking: true}]) {
+    const grouped = projectReview({issues: [{field: 'documents', code: 'parse_error', message: 'Не удалось прочитать источник.', requires_confirmation: false, ...flags}]});
+    assert.equal(grouped.checks.length, 1);
+    assert.equal(grouped.checks[0].requires_confirmation, true);
+    assert.equal(grouped.references.length, 0);
+  }
+  const fatal = {field: 'documents', code: 'parse_error', severity: 'fatal', message: 'Не удалось прочитать источник.', requires_confirmation: false};
+  const reference = {field: 'documents', code: 'narrative_reference', message: 'Справочный текст сохранён.', requires_confirmation: false};
+  const project = {id: 1, company_id: 2, revision: 1, can_edit: true, title: 'Sample project', status: 'needs_data', files: [], generations: [], inputs: completeInputs(),
+    extraction: {issues: [fatal, reference]}, validation: [{field: fatal.field, message: fatal.message, code: 'source_issues', source_code: fatal.code}]};
+  const view = mount(component, {company, api: async url => url.includes('/1?') ? structuredClone(project) : {items: [project], can_upload: true}});
+  t.after(view.unmount);
+  await settle(); await view.state.openProject(project); await settle();
+  assert.equal(view.state.validation.length, 0);
+  assert.equal(view.state.sourceProblems.length, 1);
+  assert.equal(view.state.referenceNotes.length, 1);
+  assert.equal(view.state.needsConfirmation, true);
+  assert.equal(button(view.container, 'Рассчитать бизнес-план').props.disabled, true);
+  assert.match(text(find(view.container, node => node.tag === 'div' && node.props.class === 'bp-review')), /Не удалось прочитать источник/);
 });

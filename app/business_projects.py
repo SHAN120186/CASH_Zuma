@@ -112,11 +112,22 @@ def summary(s, project, user):
             'created_at': timestamp(project.created_at), 'updated_at': timestamp(project.updated_at)}
 
 
-def source_issues(extraction):
-    return [{'field': str(i.get('field') or 'sources'), 'message': str(i.get('message') or 'Проверьте исходный документ.')}
-            for i in extraction.get('issues', [])
+def current_source_issues(extraction, inputs):
+    # Parser diagnostics describe the original documents. The owner may already
+    # have supplied a missing date or number in the form; validate those current
+    # values instead of repeating stale missing-input warnings from extraction.
+    invalid_start = any(i['field'] == 'start' for i in validate_model(inputs))
+    return [i for i in extraction.get('issues', [])
             if i.get('code') != 'missing_or_invalid' and
-            (i.get('requires_confirmation') or i.get('severity') in ('error', 'blocking'))]
+            not (i.get('code') == 'forecast_start' and not invalid_start)]
+
+
+def source_issues(extraction, inputs):
+    return [{'field': str(i.get('field') or 'sources'),
+             'message': str(i.get('message') or 'Проверьте исходный документ.'),
+             'code': 'source_issues', 'source_code': str(i.get('code') or 'source_confirmation')}
+            for i in current_source_issues(extraction, inputs)
+            if i.get('requires_confirmation') or i.get('severity') in ('error', 'blocking')]
 
 
 def detail(s, project, user):
@@ -128,10 +139,12 @@ def detail(s, project, user):
     editable = result['can_edit']
     result['inputs'] = json.loads(project.inputs_json) if editable else {}
     result['extraction'] = json.loads(project.extraction_json) if editable else {}
+    if editable:
+        result['extraction']['issues'] = current_source_issues(result['extraction'], result['inputs'])
     result['validation'] = validate_model(result['inputs']) if editable else []
     if editable and project.status != 'ready':
         result['validation'] += result['extraction'].get('calculation_issues', [])
-    result['validation'] += source_issues(result['extraction']) if editable and project.status != 'ready' else []
+    result['validation'] += source_issues(result['extraction'], result['inputs']) if editable and project.status != 'ready' else []
     result['generations'] = []
     result['current_generation_id'] = None
     generations = list(s.scalars(select(BusinessGeneration).where(BusinessGeneration.project_id == project.id)
@@ -355,7 +368,7 @@ def persist_generation(request, id, company_id, revision, inputs, extraction, so
                   'parameters_confirmed': confirmed}
     issues = validate_model(inputs)
     if not confirmed:
-        issues += source_issues(extraction)
+        issues += source_issues(extraction, inputs)
     extraction['calculation_issues'] = []
     result = None
     if not issues:

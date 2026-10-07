@@ -198,6 +198,38 @@ class BusinessProjectTests(unittest.TestCase):
         self.assertEqual(ready['status'], 'ready')
         self.assertTrue(ready['extraction']['parameters_confirmed'])
 
+    def test_supplied_calendar_and_completed_values_replace_stale_parser_warnings(self):
+        project, _ = self.create()
+        project = self.upload(project).json()
+        partial = model()
+        del partial['start']
+        del partial['opening_cash']
+        extraction = {'inputs': partial, 'evidence': [], 'documents': [], 'issues': [
+            {'field': 'start', 'code': 'forecast_start', 'message': 'Choose the forecast month',
+             'requires_confirmation': True},
+            {'field': 'opening_cash', 'code': 'missing_or_invalid', 'message': 'Original cash is missing',
+             'severity': 'error'},
+            {'field': 'products.price', 'code': 'price_factor_vat', 'message': 'Confirm the price basis',
+             'requires_confirmation': True}]}
+        with patch('app.business_sources.extract_sources', return_value=extraction):
+            reviewed = self.analyse(project, {'start': model()['start']}).json()
+        self.assertEqual(reviewed['status'], 'needs_data')
+        self.assertEqual(reviewed['inputs']['start'], model()['start'])
+        self.assertEqual(sum(i['field'] == 'opening_cash' for i in reviewed['validation']), 1)
+        self.assertFalse(any(i['field'] == 'start' for i in reviewed['validation']))
+        self.assertEqual([i['code'] for i in reviewed['extraction']['issues']], ['price_factor_vat'])
+        # A resolved date does not implicitly confirm a conflicting financial source.
+        completed = self.generate(reviewed).json()
+        self.assertEqual(completed['status'], 'needs_data')
+        self.assertEqual([i['code'] for i in completed['validation']], ['source_issues'])
+        self.assertEqual(completed['validation'][0]['source_code'], 'price_factor_vat')
+        self.assertEqual(self.generate(completed, confirmed=True).json()['status'], 'ready')
+
+        with patch('app.business_sources.extract_sources', return_value=extraction):
+            invalid = self.analyse(project, {'start': '2027-01-02'}).json()
+        self.assertTrue(any(i.get('code') == 'forecast_start' for i in invalid['extraction']['issues']))
+        self.assertTrue(any(i['field'] == 'start' for i in invalid['validation']))
+
     def test_anonymous_foreign_company_and_non_owner_cannot_change_source(self):
         project = self.ready()
         anonymous = TestClient(app)

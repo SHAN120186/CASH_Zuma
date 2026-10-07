@@ -21,7 +21,8 @@ const LABELS = Object.fromEntries([...BUSINESS_SCALARS, ...NARRATIVE_FIELDS, ['t
   ['price', 'Цена реализации'], ['unit_cost', 'Себестоимость единицы'], ['quantities', 'Объём реализации'], ['capacity', 'Мощность'],
   ['value', 'Стоимость'], ['life_months', 'Срок амортизации'], ['commissioning_month', 'Месяц ввода'],
   ['opening_balance', 'Остаток кредита на начало'], ['drawdowns', 'Получение кредита'], ['principal', 'Погашение основного долга'], ['interest', 'Проценты'],
-  ['sources', 'Исходные файлы'], ['model', 'Исходные данные'], ['products', 'Продукция'], ['assets', 'Активы'], ['loans', 'Кредиты']]);
+  ['sources', 'Исходные файлы'], ['documents', 'Документы'], ['narratives', 'Описание проекта'], ['source_issues', 'Проверка источников'],
+  ['model', 'Исходные данные'], ['products', 'Продукция'], ['assets', 'Активы'], ['loans', 'Кредиты']]);
 
 export function fieldLabel(field = '') {
   return String(field).split('.').map(part => {
@@ -56,6 +57,12 @@ export function prepareSources(selected = []) {
   if (total > MAX_FOLDER_SIZE) problems.push('Общий размер исходных файлов — не больше 100 МБ.');
   if (!files.length && !problems.length) problems.push('Выберите хотя бы один исходный файл.');
   return {files, ignored, problems, total};
+}
+
+export function folderProjectTitle(sources = []) {
+  const roots = sources.map(item => String(item.relativePath || item.webkitRelativePath || item.file?.webkitRelativePath || '').split('/'));
+  if (!roots.length || roots.some(parts => parts.length < 2 || !parts[0])) return '';
+  return roots.every(parts => parts[0] === roots[0][0]) ? roots[0][0].slice(0, 160) : '';
 }
 
 export const projectUrl = (companyId, id = null, action = '') => `/api/business-projects${id == null ? '' : '/' + id}${action ? '/' + action : ''}?company_id=${companyId}`;
@@ -135,7 +142,13 @@ export function headerProblem(header) {
 }
 
 export function createBusinessState(project = null) {
-  return {project, requestKey: createArchiveState().requestKey, createFields: null, createUnknown: false, uploaded: new Set()};
+  return {project, requestKey: createArchiveState().requestKey, createFields: null, createUnknown: false, uploaded: new Set(), sourceUploadStarted: false};
+}
+export function uploadFailureMessage(error, state) {
+  const message = error?.message || 'Загрузка не завершена.';
+  if (state?.uploaded?.size) return message + ' Уже загруженные файлы сохранены. Повторная попытка продолжит этот проект.';
+  if (state?.sourceUploadStarted) return message + ' Повторите загрузку: проверим файл и продолжим этот проект.';
+  return message;
 }
 export function assertProject(project, companyId, id = null) {
   if (!project || project.company_id !== companyId || (id != null && project.id !== id)) throw Error('Сервер вернул проект другой компании. Обновите список.');
@@ -164,6 +177,7 @@ export async function uploadProjectFolder(api, state, {companyId, header, source
   for (const [index, item] of sources.entries()) {
     check(); if (state.uploaded.has(item.key)) continue;
     onStep?.(`Загружаем ${index + 1} из ${sources.length}: ${item.relativePath}`);
+    state.sourceUploadStarted = true;
     const project = await api(projectUrl(companyId, state.project.id, 'sources') + '&expected_revision=' + state.project.revision, {
       method: 'PUT', body: item.file, headers: {'Content-Type': 'application/octet-stream', 'X-Filename': encodeURIComponent(item.name), 'X-Relative-Path': encodeURIComponent(item.relativePath)},
     });
@@ -196,6 +210,32 @@ export function sourceLocation(source) {
 }
 export function sourceIssues(extraction) {
   return Array.isArray(extraction?.issues) ? extraction.issues : [];
+}
+export function deduplicateIssues(issues = []) {
+  const byKey = new Map();
+  for (const entry of issues) {
+    const issue = typeof entry === 'string' ? {message: entry} : entry;
+    if (!issue || typeof issue !== 'object') continue;
+    const key = `${issue.field || ''}\u0000${issueMessage(issue)}`;
+    const item = byKey.get(key) || {...issue, sources: []};
+    const blocking = issue.blocking === true || ['error', 'fatal', 'blocking'].includes(String(issue.severity || '').toLowerCase());
+    item.requires_confirmation ||= !!issue.requires_confirmation || blocking;
+    for (const source of [...(Array.isArray(issue.sources) ? issue.sources : []), ...(issue.source ? [issue.source] : [])]) {
+      if (!item.sources.some(value => sourceLocation(value) === sourceLocation(source))) item.sources.push(source);
+    }
+    byKey.set(key, item);
+  }
+  return [...byKey.values()];
+}
+export function projectReview(extraction, validation = []) {
+  const current = deduplicateIssues(validation);
+  const fields = current.filter(issue => issue.code !== 'source_issues');
+  const source = deduplicateIssues(sourceIssues(extraction).filter(issue => issue?.code !== 'missing_or_invalid'));
+  const checks = deduplicateIssues([...source.filter(issue => issue.requires_confirmation),
+    ...current.filter(issue => issue.code === 'source_issues').map(issue => ({...issue, requires_confirmation: true}))]);
+  const checkKeys = new Set(checks.map(issue => `${issue.field || ''}\u0000${issueMessage(issue)}`));
+  const references = source.filter(issue => !issue.requires_confirmation && !checkKeys.has(`${issue.field || ''}\u0000${issueMessage(issue)}`));
+  return {fields, checks, references};
 }
 export function evidenceRows(extraction) {
   const evidence = extraction?.evidence;
