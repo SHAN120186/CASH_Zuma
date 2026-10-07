@@ -237,6 +237,37 @@ class ModelVersion(Base):
     source = Column(String(240), nullable=False)
     snapshot = Column(Text, nullable=False)
 
+class ReportArchive(Base):
+    """Private immutable pair of prepared PDF/XLSX reports; never a financial ledger."""
+    __tablename__ = 'report_archives'
+    id = Column(Integer, primary_key=True)
+    company_id = Column(Integer, ForeignKey('companies.id'), nullable=False)
+    title = Column(String(160), nullable=False)
+    period_start = Column(Date, nullable=False)
+    period_end = Column(Date, nullable=False)
+    request_key = Column(String(36), nullable=False)
+    version = Column(Integer, nullable=False)
+    status = Column(String(10), nullable=False, default='draft')
+    created_by = Column(Integer, ForeignKey('users.id'), nullable=False)
+    uploaded_at = Column(DateTime, nullable=False, default=now)
+    __table_args__ = (UniqueConstraint('company_id', 'request_key'),
+                      UniqueConstraint('company_id', 'version'))
+
+class ReportArchiveFile(Base):
+    """Bytes survive ephemeral hosting restarts and are only served after authorization."""
+    __tablename__ = 'report_archive_files'
+    id = Column(Integer, primary_key=True)
+    company_id = Column(Integer, ForeignKey('companies.id'), nullable=False)
+    archive_id = Column(Integer, ForeignKey('report_archives.id'), nullable=False)
+    format = Column(String(4), nullable=False)
+    filename = Column(String(220), nullable=False)
+    mime = Column(String(100), nullable=False)
+    sha256 = Column(String(64), nullable=False)
+    size = Column(Integer, nullable=False)
+    content = deferred(Column(LargeBinary, nullable=False))
+    created_at = Column(DateTime, nullable=False, default=now)
+    __table_args__ = (UniqueConstraint('archive_id', 'format'),)
+
 class Audit(Base):
     __tablename__ = 'audit_log'
     company_id = Column(Integer, ForeignKey('companies.id'), nullable=True)

@@ -45,7 +45,8 @@ async def safety(request,call_next):
     if request.method not in ('GET','HEAD','OPTIONS'):
         try:length=int(request.headers.get('content-length','0' if request.method=='DELETE' else '-1'))
         except ValueError:length=-1
-        limit=MAX_SIZE if request.url.path=='/api/model/upload' else 5*1024*1024 if request.url.path in ('/api/import/preview','/api/plan-import/preview') or request.url.path.endswith('/document') or '/documents' in request.url.path else 65536
+        archive_file=bool(re.fullmatch(r'/api/(?:bot/v1/)?report-archives/[0-9]+/files/(?:pdf|xlsx)',request.url.path))
+        limit=MAX_SIZE if request.url.path=='/api/model/upload' or archive_file else 5*1024*1024 if request.url.path in ('/api/import/preview','/api/plan-import/preview') or request.url.path.endswith('/document') or '/documents' in request.url.path else 65536
         if length<0 or length>limit:return JSONResponse({'detail':'Неверный размер запроса.'},status_code=413)
         origin=request.headers.get('origin')
         expected=PUBLIC_ORIGIN or str(request.base_url).rstrip('/')
@@ -870,3 +871,6 @@ app.include_router(bot_router)
 
 from .requests_api import router as requests_router
 app.include_router(requests_router)
+
+from .report_archives import router as report_archives_router
+app.include_router(report_archives_router)

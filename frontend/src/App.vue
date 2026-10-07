@@ -1,6 +1,7 @@
 <script setup>
 import {ref,computed,onMounted,onUnmounted,nextTick,watch} from 'vue';
 import CashFlowReport from './CashFlowReport.vue';
+import ReportArchive from './ReportArchive.vue';
 import AuditHistory from './AuditHistory.vue';
 import PeriodFilter from './PeriodFilter.vue';
 import AppIcon from './AppIcon.vue';
@@ -36,17 +37,17 @@ const reportAsOf=ref(new Date().toLocaleDateString('en-CA',{timeZone:'Asia/Tashk
 const boot=ref({accounts:[],companies:[],categories:[],roles:{}}),rows=ref([]),dash=ref(null),report=ref(null),preview=ref(null),search=ref(''),modal=ref(null),form=ref({}),formError=ref(''),saving=ref(false),documents=ref(null);
 const selectableCompanies=computed(()=>boot.value.companies.filter(c=>c.code!=='UNASSIGNED'));
 const importMode=ref('operations'),planMonthFrom=ref(1),planMonthTo=ref(12),planMappings=ref({}),planReason=ref('Загрузка планов расходов из проверенной книги Cash Flow');
-const allNav=[['home','◈','Обзор','view'],['report','▥','Cash Flow','export'],['accounts','▣','Банк и касса','view'],['ledger','⇄','Операции','ledger'],['requests','✓','Заявки','requests-view'],['calendar','▦','Календарь','view'],['budgets','◷','Бюджеты','view'],['import','↥','Импорт','import'],['categories','≡','Справочники','catalog'],['approval','✓','Согласование','approval_policy'],['users','♙','Пользователи','users'],['audit','⊞','Журнал','audit'],['profile','⚙','Профиль','']];
+const allNav=[['home','◈','Обзор','view'],['report','▥','Cash Flow','export'],['reports','▤','Отчёты / Бизнес-планы','export'],['accounts','▣','Банк и касса','view'],['ledger','⇄','Операции','ledger'],['requests','✓','Заявки','requests-view'],['calendar','▦','Календарь','view'],['budgets','◷','Бюджеты','view'],['import','↥','Импорт','import'],['categories','≡','Справочники','catalog'],['approval','✓','Согласование','approval_policy'],['users','♙','Пользователи','users'],['audit','⊞','Журнал','audit'],['profile','⚙','Профиль','']];
 const has=p=>p==='requests-view'?['request','view','pay_bank','pay_cash','request_check'].some(x=>user.value?.permissions.includes(x)):user.value?.permissions.includes(p), nav=computed(()=>allNav.filter(n=>!n[3]||has(n[3]))), title=computed(()=>allNav.find(n=>n[0]===page.value)?.[2]||'Казначейство');
 watch(()=>[company.value?.name,title.value],([name,section])=>{document.title=name?`${name} · ${section}`:'Cash Flow · Выбор компании'},{immediate:true});
 const status={pending:'На согласовании',approved:'Утверждена',paid:'Оплачена',draft:'Черновик',rejected:'Отклонена',returned:'На доработке',cancelled:'Закрыта без оплаты',expected:'Ожидается',received:'Получено'};
 const money=v=>{if(v==null)return '—';let s=String(v);if(currency.value==='UZS')s=s.replace(/\.00$/,'');const [a,b]=s.split('.');return a.replace(/\B(?=(\d{3})+(?!\d))/g,' ')+(b!==undefined?'.'+b:'')};
 const costGroups={fixed:'Постоянные затраты',variable:'Переменные затраты',other:'Прочие затраты'};
-const auditRefresh=ref(0),homeRefresh=ref(0);
+const auditRefresh=ref(0),homeRefresh=ref(0),reportArchiveRefresh=ref(0);
 const menuOpen=ref(false),helpOpen=ref(false);
 const initials=n=>String(n||'').split(/\s+/).filter(Boolean).map(x=>x[0]).join('').slice(0,2).toUpperCase();
-const showCurrency=computed(()=>!['approval','users','audit','categories','import','profile'].includes(page.value));
-const navGroups=[['Работа',['home','report','accounts','ledger','requests','calendar']],['Планирование',['budgets','import','approval']],['Администрирование',['categories','users','audit']]];
+const showCurrency=computed(()=>!['approval','users','audit','categories','import','profile','reports'].includes(page.value));
+const navGroups=[['Работа',['home','report','reports','accounts','ledger','requests','calendar']],['Планирование',['budgets','import','approval']],['Администрирование',['categories','users','audit']]];
 const navSections=computed(()=>navGroups.map(([label,ids])=>({label,items:nav.value.filter(n=>ids.includes(n[0]))})).filter(g=>g.items.length));
 async function setCurrency(c){if(currency.value===c)return;currency.value=c;await load()}
 const statusClass=r=>({pending:'warn',approved:'good',paid:'fact',draft:'gray',rejected:'bad',returned:'warn',cancelled:'gray'}[r.status]||'gray');
@@ -63,6 +64,7 @@ const budgetCounts=computed(()=>({'':rows.value.length,...Object.fromEntries(Obj
 const usage=r=>r.limit==null||Number(r.limit)===0?0:(Number(r.spent)+Number(r.reserved))/Number(r.limit);
 const importStep=computed(()=>preview.value?2:1);
 const helpSections=computed(()=>({
+ reports:[['Версии отчётов','Готовые PDF и Excel сохраняются парой с названием и периодом. Каждая новая загрузка — отдельная версия; прежние файлы остаются в истории.'],['Период и дата загрузки','Календарь периода ищет отчёты, чей период пересекается с выбранными датами. Он не пересчитывает и не сокращает содержимое файлов. Дата загрузки выбирает версии, добавленные в этот день по времени Ташкента.'],['Загрузка','Пользователь с правом импорта добавляет PDF и XLSX до 20 МБ каждый. После сбоя автор может завершить свой черновик; в Telegram появляются только версии с обоими файлами.']],
  home:[['Факт и план','«Факт» — подтверждённые операции и остатки на счетах: доступный остаток, график за 30 дней, доходы и расходы месяца, блок «Где находятся деньги». «План» — утверждённые платежи и ожидаемые поступления: прогноз остатка, ближайшие выплаты, план на 7 дней. Периоды разные, поэтому факт и план не вычитаются друг из друга.'],['Доступный остаток','Остаток на счетах минус утверждённые и ещё не оплаченные заявки со сроком по сегодня. Процент — изменение к тому же дню прошлого месяца. График показывает остаток на счетах на конец каждого из последних 30 дней: наведите курсор или выберите день стрелками, чтобы увидеть приход и расход.'],['Прогноз и минимальный резерв','«Прогноз остатка» строится на 7, 30 или 90 дней; горизонт общий с разделом «Календарь». Красная пунктирная линия — минимальный резерв; он указан внизу блока «Риски», изменить его может роль с правом на бюджеты. Если прогнозный остаток опускается ниже резерва или счёт уходит в минус, в «Рисках» появляется предупреждение с датой.'],['Как считается прогноз','Прогноз на конец дня: текущие остатки + ожидаемые поступления − утверждённые неоплаченные заявки. Проверяется также нехватка на каждом счёте; переводы между счетами автоматически не предполагаются. Отрицательный остаток требует проверки даже при разрешённом овердрафте: его лимит не задан. Просрочка отнесена на сегодня. Порядок платежей внутри дня не учитывается. Модель и бюджеты повторно не добавляются.'],['Заявки на согласовании','Согласующий видит блок «Ждут вашего решения» — заявки выбранной валюты, которые можно решить сейчас, и общую сумму на согласовании. Остальные роли видят сводку и ближайшие заявки. У каждой заявки показаны этапы: заявитель → проверка бухгалтера → финансовый директор → директор по политике статьи.']],
  report:[['Форма отчёта','Управленческая форма по прямому методу и структуре IAS 7: остаток на начало, операционная, инвестиционная и финансовая деятельность, чистое изменение, остаток на конец. Это управленческий отчёт, а не заявление о полном соответствии МСФО.'],['Режимы','«Факт» — только фактические операции. «План-факт» — для каждого месяца План, Факт и Отклонение. Отклонение = Факт − План: зелёное улучшает денежный поток, красное ухудшает.'],['Остатки не суммируются','В колонке «За период» остаток на начало берётся на начало периода, остаток на конец — на его конец. Потоки суммируются.'],['Единицы и выгрузка','Суммы можно показывать в миллионах, тысячах или точно. Excel и PDF формирует сервер по выбранным году, периоду и режиму.'],['«Не задан»','План не введён. Пока не заполнены все статьи, итог плана не определён. Введите ноль для статей без планируемых движений.'],['План платежей и бюджеты','План платежей задаётся отдельно от лимитов бюджета и не равен автоматически лимиту расходов. Виды деятельности Cash Flow не совпадают с группами затрат бюджета (постоянные, переменные, прочие).'],['Что не входит','Счета учитываются в своей валюте, внутренние переводы исключены. Ввод начальных остатков после начала года показан отдельно от денежного потока.']],
  accounts:[['Начальный остаток','Остаток на начало дня. Исправления вносятся с указанием причины и попадают в журнал. Валюта счёта с историей защищена от изменения.'],['Валюты','Каждый счёт ведётся в своей валюте. Суммы разных валют не складываются.'],['Архив','В архив можно убрать счёт с нулевым остатком и без незавершённых заявок. История сохраняется, счёт можно восстановить.']],
@@ -101,6 +103,7 @@ const modalFields=computed(()=>{const fields=modal.value?.fields||[];if(fields.s
 const categoryHint=computed(()=>{if(!modal.value?.fields.some(f=>f.key==='to_account_id')||form.value.kind==='transfer')return '';const c=boot.value.categories.find(c=>c.id===Number(form.value.category_id));return c&&c.type!==(form.value.kind==='in'?'income':'outcome')?'Проверьте статью: её тип не совпадает с направлением операции. Если это возврат, укажите пояснение в комментарии.':''});
 async function switchCurrency(value){currency.value=value;search.value='';listPage.value=1;await load()}
 const subtitles={home:'Факт, план и прогноз денежных средств в одном месте.',report:'Управленческая форма по прямому методу · структура IAS 7.',accounts:'Счета и касса по валютам. Суммы разных валют не складываются.',ledger:'Фактические поступления, расходы и переводы.',requests:'Заявки на оплату и этапы согласования.',calendar:'Поступления, выплаты и прогноз остатка по дням.',budgets:'Лимиты расходов по статьям и контроль превышения.',import:'Загрузка операций из CSV или Excel.',categories:'Статьи движения денег и виды деятельности.',approval:'Политика директора по статьям и календарь рабочих дней.',users:'Учётные записи холдинга, назначения в компаниях, ВрИО, архив и журнал доступа.',audit:'Кто, когда и что делал в системе.',profile:'Ваши данные, пароль и Telegram.'};
+subtitles.reports='Готовые PDF и Excel: период отчёта, дата загрузки и история версий.';
 const priorities={normal:'Обычный',high:'Высокий',urgent:'Срочный'};
 const scenario=ref('approved');
 const forecastRows=computed(()=>(dash.value?.forecast||[]).map(d=>scenario.value==='all'?{...d,opening:d.requested_opening,outgoing:d.requested_outgoing,balance:d.requested_balance,risk:d.requested_risk,account_shortfalls:d.requested_account_shortfalls,events:[...d.events,...d.pending_events]}:d));
@@ -154,6 +157,7 @@ const canDecide=r=>canDecideRequest(r);
 async function go(name){menuOpen.value=false;helpOpen.value=false;reportEditing.value=false;page.value=name;location.hash=name;search.value='';dateFrom.value='';dateTo.value='';requestStatus.value='';listPage.value=1;expandedRequest.value=null;receiptsOpen.value=false;rows.value=[];await load()}
 async function load(){if(!companyReady.value)return;const epoch=companyEpoch;busy.value=true;error.value='';try{
  if(page.value==='home')homeRefresh.value++;
+ if(page.value==='reports')reportArchiveRefresh.value++;
  if(page.value==='calendar')dash.value=await api(`/api/dashboard?currency=${currency.value}&days=${days.value}`);
  if(page.value==='accounts')rows.value=await api('/api/accounts?archived='+showArchive.value);
  if(['ledger','requests'].includes(page.value)){const requestId=++listRequestId;const requestedPage=page.value;const params=new URLSearchParams({paginated:'true',page:String(listPage.value),currency:currency.value,q:search.value});if(dateFrom.value)params.set('date_from',dateFrom.value);if(dateTo.value)params.set('date_to',dateTo.value);if(page.value==='requests'&&requestStatus.value)params.set('state',requestStatus.value);const data=await api(`/api/${page.value}?${params}`);if(requestId===listRequestId&&page.value===requestedPage){rows.value=data.items;listTotal.value=data.total;}}
@@ -306,6 +310,8 @@ onMounted(async()=>{try{const r=await api('/api/me');user.value=r.user;csrf.valu
 
     <!-- Обзор -->
     <OverviewPage v-if="page==='home'&&has('view')" :key="companyId" :api="api" :company-id="companyId" :company="company" :currency="currency" :today="boot.today" :refresh="homeRefresh" :has="has" :can-decide="canDecide" :days="days" :track="trkSteps" :marks="MK" @update:days="d=>days=d" @go="goWith" @edit-reserve="v=>reserve(v)"/>
+
+    <ReportArchive v-if="page==='reports'&&has('export')" :key="companyId" :api="api" :company="company" :refresh="reportArchiveRefresh" @editing="reportEditing=$event"/>
 
     <!-- Банк и касса -->
     <template v-if="page==='accounts'">
