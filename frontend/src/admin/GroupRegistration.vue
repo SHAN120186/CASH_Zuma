@@ -28,16 +28,16 @@ async function copy() {
 
 <template>
   <section class="card admin-group-registration">
-    <div class="card-h"><h3>Telegram: подключить группу одним кодом</h3></div>
+    <div class="card-h"><h3>Telegram: подключить группу к компании</h3></div>
     <div class="card-b">
-      <p class="sub">Добавьте бота в группу. Команда /id в группе покажет её ID. Выберите компанию, получите код и отправьте готовую команду в эту группу — личная привязка администратора к боту не нужна.</p>
+      <p class="sub">Каждая группа привязана ровно к одной компании. Добавьте бота в группу. Команда /id в группе покажет её ID. Выберите компанию, получите код и отправьте готовую команду в эту группу — личная привязка администратора к боту не нужна.</p>
       <form class="form-grid admin-form" @submit.prevent="create">
         <label>ID Telegram-группы<input v-model="chatId" type="text" inputmode="text" autocomplete="off" placeholder="Например, -1001234567890" :disabled="busy" required></label>
         <label>Компания группы<select v-model="companyCode" :disabled="busy" required>
           <option disabled value="">Выберите компанию</option>
           <option v-for="c in choices" :key="c.id" :value="c.code">{{ c.name }}</option>
         </select></label>
-        <p class="form-note wide">Сводку увидят все участники группы. Код действует 10 минут и один раз, только для выбранной группы и компании. Новый код отменяет предыдущий.</p>
+        <p class="form-note wide">Группа получает сводку только выбранной компании; её увидят все участники. Код действует 10 минут и один раз, только для выбранной группы и компании. Новый код отменяет предыдущий. Неизвестная или неподключённая группа не получает финансовую сводку. Чтобы сменить компанию подключённой группы, сначала отключите группу.</p>
         <div class="form-actions wide"><button :disabled="busy || !choices.length">{{ busy ? 'Готовим код…' : 'Получить код' }}</button></div>
       </form>
       <p v-if="error" class="error" role="alert">{{ error }}</p>

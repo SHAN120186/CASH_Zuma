@@ -10,6 +10,21 @@ export function groupCodePayload(chatId, companyCode, companies) {
   return {chat_id: id, company_code: companyCode};
 }
 
+export function groupCompanyInfo(group) {
+  const companies = Array.isArray(group?.companies) ? group.companies : [];
+  if (companies.length !== 1) {
+    return {label: companies.length ? 'Требуется одна компания' : 'Компания не выбрана', summaryEnabled: false};
+  }
+  const company = companies[0];
+  if (!company?.code || company.code === 'UNASSIGNED') {
+    return {label: 'Компания не выбрана', summaryEnabled: false};
+  }
+  return {
+    label: (company.name || company.code) + (company.active ? '' : ' (отключена)'),
+    summaryEnabled: company.active === true,
+  };
+}
+
 // Ответ должен относиться именно к группе и компании, которые подтвердил администратор.
 export function registrationCommand(result, payload) {
   if (!result || !/^[A-Z2-9]{20}$/.test(result.code || '') ||
