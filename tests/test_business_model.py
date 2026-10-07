@@ -31,6 +31,15 @@ def number(row, name):
 
 
 class BusinessModelTests(unittest.TestCase):
+    def test_material_cancellation_between_representable_values_blocks_excel_publication(self):
+        model = inputs(1, tax_rate=0, fixed_costs=0, receivable_days=0, inventory_days=0, payable_days=0)
+        model['products'][0].update(price='1000000000000000', unit_cost='999999999999999',
+                                    quantities='1000000000000000', capacity=None)
+        self.assertEqual(validate_model(model), [])
+        with self.assertRaises(ModelValidationError) as error:
+            calculate_model(model)
+        self.assertEqual(error.exception.issues[0]['field'], 'precision')
+
     def test_inputs_that_excel_would_silently_round_are_rejected(self):
         model = inputs(1)
         for price in ('10000.000000000001', '999999999999999.999999999999'):

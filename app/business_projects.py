@@ -27,7 +27,7 @@ from .db import (BusinessGeneration, BusinessProject, BusinessSourceFile, Report
 from .main import get, log
 from .report_archives import authorize, MIMES, valid_file
 from .security import perms_of
-from .business_model import calculate_model, validate_model
+from .business_model import calculate_model, validate_model, ModelValidationError
 
 router = APIRouter()
 MAX_FILE = 20 * 1024 * 1024
@@ -129,6 +129,8 @@ def detail(s, project, user):
     result['inputs'] = json.loads(project.inputs_json) if editable else {}
     result['extraction'] = json.loads(project.extraction_json) if editable else {}
     result['validation'] = validate_model(result['inputs']) if editable else []
+    if editable and project.status != 'ready':
+        result['validation'] += result['extraction'].get('calculation_issues', [])
     result['validation'] += source_issues(result['extraction']) if editable and project.status != 'ready' else []
     result['generations'] = []
     result['current_generation_id'] = None
@@ -354,6 +356,14 @@ def persist_generation(request, id, company_id, revision, inputs, extraction, so
     issues = validate_model(inputs)
     if not confirmed:
         issues += source_issues(extraction)
+    extraction['calculation_issues'] = []
+    result = None
+    if not issues:
+        try:
+            result = calculate_model(inputs)
+        except ModelValidationError as exc:
+            extraction['calculation_issues'] = exc.issues
+            issues += exc.issues
     if issues:
         with unit(True) as s:
             user, _ = authorize(s, request, 'import', company_id=company_id)
@@ -379,7 +389,6 @@ def persist_generation(request, id, company_id, revision, inputs, extraction, so
             s.flush()
             return detail(s, project, user)
     # Heavy parsing/rendering never holds the global financial write lock.
-    result = calculate_model(inputs)
     from .business_exports import build_documents
     output = build_documents(inputs, result, source_manifest, extraction)
     for content in output.values():

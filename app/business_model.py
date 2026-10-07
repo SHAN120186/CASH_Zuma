@@ -278,13 +278,27 @@ def _summary(rows: list[dict]) -> dict:
     return result
 
 
-def calculate_model(inputs: dict) -> dict:
+def _calculate_model(inputs: dict, precision: int = PRECISION) -> dict:
     """Calculate complete monthly statements; reject partial models explicitly."""
     with localcontext() as context:
         context.prec = PRECISION
         model, issues = _normalise(inputs)
         if issues:
             raise ModelValidationError(issues)
+        # The second pass uses ordinary binary double arithmetic, matching
+        # recalculating spreadsheet numerical limitations instead of Decimal.
+        ZERO = Decimal(0)
+        if precision != PRECISION:
+            def binary(value):
+                if isinstance(value, Decimal):
+                    return float(value)
+                if isinstance(value, list):
+                    return [binary(item) for item in value]
+                if isinstance(value, dict):
+                    return {key: binary(item) for key, item in value.items()}
+                return value
+            model = binary(model)
+            ZERO = 0.0
         months = model["months"]
         assets = [{**entry, "remaining": entry["value"], "depreciation": entry["value"] / entry["life_months"]}
                   for entry in model["assets"]]
@@ -389,6 +403,8 @@ def calculate_model(inputs: dict) -> dict:
             if revenue > ZERO and revenue <= cogs:
                 warnings.append({"code": "nonpositive_contribution", "month": month, "period": period,
                                  "message": "Цена и структура продаж не дают положительной маржи для покрытия постоянных расходов."})
+        if precision != PRECISION:
+            return {'rows': rows}
         annual = []
         for year in sorted({row["period"][:4] for row in rows}):
             year_rows = [row for row in rows if row["period"].startswith(year)]
@@ -431,3 +447,40 @@ def calculate_model(inputs: dict) -> dict:
                            "assets": [{"name": asset["name"], "value": asset["value"], "life_months": asset["life_months"],
                                        "commissioning_month": asset["commissioning_month"], "closing_value": asset["remaining"]} for asset in assets],
                            "assumptions": ASSUMPTIONS.copy(), "warnings": warnings})
+
+
+def calculate_model(inputs: dict) -> dict:
+    """Reject material loss of precision in a recalculating Excel workbook.
+
+    A double-precision recalculation catches cancellation
+    between close large amounts even when every individual input is representable.
+    Cent-sized and ordinary relative rounding noise is not a financial difference.
+    """
+    result = _calculate_model(inputs)
+    compatible = _calculate_model(inputs, 15)
+    def check(precise_value, approximate_value, label, ratio=False):
+        if precise_value is None or approximate_value is None:
+            if precise_value is None and approximate_value is None:
+                return
+            mismatch = True
+        else:
+            precise = Decimal(precise_value)
+            tolerance = max(Decimal('1e-9' if ratio else '0.01'), abs(precise) * Decimal('1e-9'))
+            mismatch = abs(precise - Decimal.from_float(float(approximate_value))) > tolerance
+        if mismatch:
+            raise ModelValidationError([{'field': 'precision', 'message':
+                f'{label}: большие близкие суммы теряют точность при пересчёте Excel. '
+                'Проверьте масштаб и округление цен, затрат и остатков; отчёты не опубликованы.'}])
+    for actual, approximate in zip(result['rows'], compatible['rows']):
+        for field in FLOW_FIELDS + STOCK_FIELDS + ('dscr', 'contribution_margin', 'break_even_revenue'):
+            if field == 'balance_difference':
+                continue
+            check(actual[field], approximate[field], f"Месяц {actual['month']}", field in ('dscr', 'contribution_margin'))
+    rate = (1 + float(inputs['discount_rate'])) ** (1 / 12) - 1
+    npv = -float(inputs['initial_investment']) + sum(row['free_cash_flow'] / (1 + rate) ** month
+               for month, row in enumerate(compatible['rows'], 1))
+    check(result['metrics']['npv'], npv, 'NPV')
+    service = sum(row['debt_service'] for row in compatible['rows'])
+    dscr = sum(row['cash_available_for_debt_service'] for row in compatible['rows']) / service if service > 0 else None
+    check(result['metrics']['dscr'], dscr, 'DSCR', True)
+    return result

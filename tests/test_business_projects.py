@@ -283,6 +283,22 @@ class BusinessProjectTests(unittest.TestCase):
         self.assertEqual(len(restored['generations']), 2)
         self.assertEqual(restored['inputs'], model())
 
+    def test_precision_error_keeps_inputs_and_publishes_no_mismatched_reports(self):
+        project, _ = self.create()
+        inputs = model()
+        inputs['products'][0].update(price='1000000000000000', unit_cost='999999999999999',
+                                     quantities='1000000000000000')
+        project = self.upload(project, json.dumps(inputs).encode()).json()
+        response = self.analyse(project)
+        self.assertEqual(response.status_code, 200, response.text)
+        detail = response.json()
+        self.assertEqual(detail['status'], 'needs_data')
+        self.assertEqual(detail['inputs'], inputs)
+        self.assertEqual(detail['generations'], [])
+        self.assertTrue(any(i['field'] == 'precision' for i in detail['validation']))
+        self.assertEqual(self.generate(detail, inputs, confirmed=True).json()['status'], 'needs_data')
+        self.assertEqual(self.generate(detail, model(), confirmed=True).json()['status'], 'ready')
+
 
 if __name__ == '__main__':
     unittest.main()
