@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import {compileComponent, mount, settle, text, all, find} from './helpers/mountVue.js';
 import {prepareSources, MAX_SOURCE_SIZE, MAX_FOLDER_SIZE, decimalShift, formFromInputs, inputsFromForm, resizeValues, monthLabels,
   createBusinessState, uploadProjectFolder, generateProject, projectUrl, templateUrl, fieldLabel, sourceLocation, headerProblem,
-  folderProjectTitle, projectReview, uploadFailureMessage, fieldGuidance, missingRequiredFields} from '../src/businessProjects.js';
+  folderProjectTitle, projectReview, uploadFailureMessage, fieldGuidance, missingRequiredFields, originalReportFiles} from '../src/businessProjects.js';
 
 const header = {title: 'Synthetic project', start: '2027-01-01', months: 36, currency: ''};
 const file = (name, size = 12, path = 'Project/' + name, value = 'contents') => ({name, size, webkitRelativePath: path, value});
@@ -15,6 +15,30 @@ const completeInputs = () => ({title: 'Synthetic project', start: '2027-01-01', 
   opening_cash: '0', opening_receivables: '0', opening_inventory: '0', opening_payables: '0', initial_investment: '1000',
   receivable_days: '0', inventory_days: '0', payable_days: '0', fixed_costs: '0', equity: '0',
   products: [{name: 'A', unit: 'pack', price: '10', unit_cost: '2', quantities: ['1', '2', '3']}], assets: [], loans: []});
+
+test('original report downloads retain the supplied document and reject another company or an unrelated URL', () => {
+  const doc = (id, filename) => ({id, filename, download_url: `/api/business-projects/1/sources/${id}/download?company_id=2`});
+  const project = {id: 1, company_id: 2, can_edit: true, files: [doc(3, 'Лекарство_производство_ООО_UZGERMED_PHARM_36м_Долл_.xlsx'), doc(4, 'Бизнес-план.docx'), doc(5, 'UZGERMED_PHARM_36m.pdf'), doc(6, 'Договор.pdf')]};
+  const before = structuredClone(project);
+  assert.deepEqual(originalReportFiles(project, 2).map(file => file.format), ['Excel', 'Word', 'PDF']);
+  assert.deepEqual(project, before);
+  assert.deepEqual(originalReportFiles({...project, can_edit: false}, 2), []);
+  assert.deepEqual(originalReportFiles(project, 9), []);
+  assert.deepEqual(originalReportFiles({...project, files: [{...doc(3, 'Бизнес-план.pdf'), download_url: 'https://other.test/fake.pdf'}]}, 2), []);
+});
+
+test('mounted original template is available before missing financial inputs are completed', async t => {
+  const project = {id: 1, company_id: 2, revision: 1, can_edit: true, title: 'Original folder', status: 'needs_data', generations: [], inputs: {}, extraction: {}, validation: [],
+    files: [{id: 3, filename: 'Бизнес-план.xlsx', relative_path: 'Folder/Бизнес-план.xlsx', size: 100, download_url: '/api/business-projects/1/sources/3/download?company_id=2'}]};
+  const view = mount(component, {company, api: async url => url.includes('/1?') ? project : {items: [project], can_upload: true}});
+  t.after(view.unmount);
+  await settle(); await view.state.openProject(project); await settle();
+  assert.match(text(view.container), /Готовый бизнес-план из вашей папки/);
+  assert.match(text(view.container), /свои разделы, таблицы, оформление, формулы и исходные суммы/);
+  const download = find(view.container, node => node.tag === 'a' && text(node).includes('Скачать исходный Excel'));
+  assert.equal(download.props.href, '/api/business-projects/1/sources/3/download?company_id=2');
+  assert.equal(button(view.container, 'Рассчитать бизнес-план').props.disabled, true);
+});
 
 test('folder validation preserves nested paths and explicitly distinguishes system junk from unsupported business files', () => {
   const result = prepareSources([file('input.XLSX', 12, 'Project/Models/input.XLSX'), file('contract.zip'), file('picture.jpg'), file('.DS_Store'), file('old.xls')]);

@@ -4,6 +4,21 @@ export const SOURCE_ACCEPT = '.pdf,.xlsx,.xltx,.docx,.csv,.txt,.json,.zip,.png,.
 export const MAX_SOURCE_SIZE = 20 * 1024 * 1024;
 export const MAX_FOLDER_SIZE = 100 * 1024 * 1024;
 export const MAX_SOURCE_COUNT = 100;
+// Original reports are downloaded as uploaded. This view preserves the supplied
+// document, and must never label it as a newly calculated forecast.
+export function originalReportFiles(project, companyId) {
+  if (!project?.can_edit || !Number.isSafeInteger(project.id) || project.id <= 0 || project.company_id !== companyId) return [];
+  const formats = {xlsx: 'Excel', docx: 'Word', pdf: 'PDF'};
+  const reportName = /бизнес[\s_-]*план|business[\s_-]*plan|(?:^|[\s_-])тео(?:[.\s_-]|$)|uzgermed_pharm_36m|лекарство_производство/i;
+  return (project.files || []).flatMap(file => {
+    const name = String(file.filename || '').normalize('NFKC');
+    const extension = name.split('.').pop().toLowerCase();
+    if (!formats[extension] || !reportName.test(name) || !Number.isSafeInteger(file.id) || file.id <= 0) return [];
+    const url = `/api/business-projects/${project.id}/sources/${file.id}/download?company_id=${companyId}`;
+    if (file.download_url !== url) return [];
+    return [{...file, format: formats[extension], downloadUrl: url}];
+  });
+}
 const EXTENSIONS = new Set(SOURCE_ACCEPT.split(',').map(value => value.slice(1)));
 export const BUSINESS_SCALARS = [
   ['opening_cash', 'Деньги на начало'], ['opening_receivables', 'Дебиторская задолженность на начало'],

@@ -34,6 +34,13 @@ MAX_FILE = 20 * 1024 * 1024
 MAX_FOLDER = 100 * 1024 * 1024
 MAX_FILES = 100
 EXTENSIONS = {'.pdf', '.xlsx', '.xltx', '.docx', '.csv', '.txt', '.json', '.zip', '.png', '.jpg', '.jpeg'}
+SOURCE_MIMES = {
+    '.pdf': MIMES['pdf'], '.xlsx': MIMES['xlsx'],
+    '.xltx': 'application/vnd.openxmlformats-officedocument.spreadsheetml.template',
+    '.docx': 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+    '.csv': 'text/csv', '.txt': 'text/plain', '.json': 'application/json', '.zip': 'application/zip',
+    '.png': 'image/png', '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg',
+}
 GENERATOR_VERSION = '1.0'
 
 
@@ -132,11 +139,14 @@ def source_issues(extraction, inputs):
 
 def detail(s, project, user):
     result = summary(s, project, user)
-    result['files'] = [{**m, 'id': f.id, 'uploaded_at': timestamp(f.uploaded_at)}
-                       for f, m in zip(sources(s, project.id), manifest(sources(s, project.id)))]
     # Raw input documents are restricted to their author/importer. Published
     # financial results remain available through existing report permissions.
     editable = result['can_edit']
+    records = sources(s, project.id)
+    result['files'] = [{**m, 'id': f.id, 'uploaded_at': timestamp(f.uploaded_at),
+                        **({'download_url': f'/api/business-projects/{project.id}/sources/{f.id}/download?company_id={project.company_id}'}
+                           if editable and f.company_id == project.company_id else {})}
+                       for f, m in zip(records, manifest(records))]
     result['inputs'] = json.loads(project.inputs_json) if editable else {}
     result['extraction'] = json.loads(project.extraction_json) if editable else {}
     if editable:
@@ -204,6 +214,29 @@ def project_detail(request: Request, id: int = Path(gt=0), company_id: int = Que
     with unit() as s:
         user, _ = authorize(s, request, 'export', company_id=company_id)
         return detail(s, get(s, BusinessProject, id), user)
+
+
+@router.get('/api/business-projects/{id}/sources/{source_id}/download')
+def download_source(request: Request, id: int = Path(gt=0), source_id: int = Path(gt=0),
+                    company_id: int = Query(gt=0)):
+    with unit() as s:
+        user, company = authorize(s, request, 'import', company_id=company_id)
+        project = s.get(BusinessProject, id)
+        if project is None or project.company_id != company.id:
+            raise HTTPException(404, 'Исходный файл не найден в выбранной компании и проекте.')
+        source = s.get(BusinessSourceFile, source_id)
+        if source is None or source.project_id != project.id or source.company_id != company.id:
+            raise HTTPException(404, 'Исходный файл не найден в выбранной компании и проекте.')
+        own(project, user)
+        # Preserve native Office parts, formulas, cached results and original
+        # formatting. No document parser or calculation runs on this path.
+        content, filename = bytes(source.content), source.filename
+    extension = PurePosixPath(filename).suffix.lower()
+    fallback = 'source' + (extension if extension in SOURCE_MIMES else '.bin')
+    return Response(content, media_type=SOURCE_MIMES.get(extension, 'application/octet-stream'), headers={
+        'Content-Disposition': f'attachment; filename="{fallback}"; filename*=UTF-8\'\'{quote(filename, safe="")}',
+        'Cache-Control': 'no-store', 'X-Content-Type-Options': 'nosniff',
+    })
 
 
 def safe_path(raw):

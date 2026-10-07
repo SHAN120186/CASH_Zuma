@@ -1,4 +1,5 @@
 """Company isolation and the complete folder-to-two-reports workflow, synthetic data only."""
+import hashlib
 import io
 import json
 import os
@@ -45,6 +46,32 @@ def model():
             'receivable_days': 0, 'inventory_days': 0, 'payable_days': 0,
             'products': [{'name': 'Synthetic product', 'unit': 'pack', 'price': 10, 'unit_cost': 3, 'quantities': 100}],
             'fixed_costs': 100, 'assets': [], 'loans': [], 'equity': 0}
+
+
+def synthetic_source(extension):
+    """Native fixture parts include a formula cache, without private data."""
+    if extension in ('.xlsx', '.xltx', '.docx', '.zip'):
+        stream = io.BytesIO()
+        with ZipFile(stream, 'w') as archive:
+            if extension == '.zip':
+                archive.writestr('folder/source.txt', 'Synthetic source')
+            elif extension == '.docx':
+                archive.writestr('[Content_Types].xml', '<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"/>')
+                archive.writestr('word/document.xml', '<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:body><w:p><w:r><w:t>Synthetic source</w:t></w:r></w:p></w:body></w:document>')
+            else:
+                content_type = 'application/vnd.openxmlformats-officedocument.spreadsheetml.' + ('template.main+xml' if extension == '.xltx' else 'sheet.main+xml')
+                archive.writestr('[Content_Types].xml', '<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="xml" ContentType="application/xml"/><Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/><Override PartName="/xl/workbook.xml" ContentType="'+content_type+'"/><Override PartName="/xl/worksheets/sheet1.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/></Types>')
+                archive.writestr('_rels/.rels', '<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="xl/workbook.xml"/></Relationships>')
+                archive.writestr('xl/workbook.xml', '<workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"><sheets><sheet name="Пример" sheetId="1" r:id="rId1"/></sheets></workbook>')
+                archive.writestr('xl/_rels/workbook.xml.rels', '<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet1.xml"/></Relationships>')
+                archive.writestr('xl/worksheets/sheet1.xml', '<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><dimension ref="A1:B2"/><sheetData><row r="1"><c r="A1" t="inlineStr"><is><t>Образец</t></is></c><c r="B1"><f>2+3</f><v>5</v></c></row></sheetData><mergeCells count="1"><mergeCell ref="A2:B2"/></mergeCells><pageSetup paperSize="9" orientation="portrait" scale="75"/></worksheet>')
+                archive.writestr('xl/printerSettings/printerSettings1.bin', b'Synthetic native print settings')
+        return stream.getvalue()
+    return {'.pdf': b'%PDF-1.4\n% Synthetic source\n%%EOF\n',
+            '.png': b'\x89PNG\r\n\x1a\nsynthetic source', '.jpg': b'\xff\xd8\xffsynthetic source',
+            '.jpeg': b'\xff\xd8\xffsynthetic source', '.json': b'{"description":"Synthetic source"}',
+            '.csv': 'Название,Описание\nПример,Исходник\n'.encode(),
+            '.txt': '<script>synthetic source text</script>'.encode()}[extension]
 
 
 class BusinessProjectTests(unittest.TestCase):
@@ -249,6 +276,79 @@ class BusinessProjectTests(unittest.TestCase):
         foreign, _ = self.actor('project_foreign', 'finance', self.other)
         self.assertEqual(foreign.get(f"/api/business-projects/{project['id']}",
                                     params={'company_id': self.cid}).status_code, 403)
+
+    def test_native_sources_download_as_exact_original_bytes_with_utf8_attachment_names(self):
+        project, _ = self.create()
+        expected_mimes = {'.xlsx': 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+                          '.xltx': 'application/vnd.openxmlformats-officedocument.spreadsheetml.template',
+                          '.docx': 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+                          '.pdf': 'application/pdf', '.csv': 'text/csv', '.txt': 'text/plain',
+                          '.json': 'application/json', '.zip': 'application/zip',
+                          '.png': 'image/png', '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg'}
+        for extension, media_type in expected_mimes.items():
+            with self.subTest(extension=extension):
+                raw = synthetic_source(extension)
+                filename = 'Образец "исходник"' + extension
+                uploaded = self.upload(project, raw, 'Папка/' + filename)
+                self.assertEqual(uploaded.status_code, 200, uploaded.text)
+                project = uploaded.json()
+                metadata = next(f for f in project['files'] if f['filename'] == filename)
+                self.assertEqual(metadata['sha256'], hashlib.sha256(raw).hexdigest())
+                self.assertNotIn('content', metadata)
+                self.assertEqual(metadata['download_url'], f"/api/business-projects/{project['id']}/sources/{metadata['id']}/download?company_id={self.cid}")
+                response = self.client.get(metadata['download_url'])
+                self.assertEqual(response.status_code, 200, response.text[:100])
+                self.assertEqual(response.content, raw)
+                self.assertEqual(hashlib.sha256(response.content).hexdigest(), metadata['sha256'])
+                self.assertEqual(response.headers['Content-Type'].split(';')[0], media_type)
+                self.assertEqual(response.headers['Content-Disposition'], 'attachment; filename="source'+extension+'"; filename*=UTF-8\'\''+quote(filename, safe=''))
+                self.assertEqual(response.headers['Cache-Control'], 'no-store')
+                self.assertEqual(response.headers['X-Content-Type-Options'], 'nosniff')
+                if extension == '.xlsx':
+                    with ZipFile(io.BytesIO(response.content)) as archive:
+                        self.assertIn(b'<f>2+3</f><v>5</v>', archive.read('xl/worksheets/sheet1.xml'))
+                        self.assertEqual(archive.read('xl/printerSettings/printerSettings1.bin'), b'Synthetic native print settings')
+        again = self.client.get(f"/api/business-projects/{project['id']}", params={'company_id': self.cid}).json()
+        self.assertEqual(again['revision'], project['revision'])
+        self.assertEqual(again['generations'], [])
+
+    def test_source_download_requires_owner_import_right_and_authenticated_session(self):
+        project, _ = self.create()
+        project = self.upload(project).json()
+        url = project['files'][0]['download_url']
+        anonymous = TestClient(app)
+        self.clients.append(anonymous)
+        self.assertEqual(anonymous.get(url).status_code, 401)
+        peer, _ = self.actor('source_peer', 'finance')
+        self.assertEqual(peer.get(url).status_code, 403)
+        peer_detail = peer.get(f"/api/business-projects/{project['id']}", params={'company_id': self.cid}).json()
+        self.assertTrue(all('download_url' not in f for f in peer_detail['files']))
+        with unit(True) as s:
+            s.get(CompanyUser, (self.cid, self.uid)).role = 'investor'
+        self.assertEqual(self.client.get(url).status_code, 403)
+        owner_detail = self.client.get(f"/api/business-projects/{project['id']}", params={'company_id': self.cid}).json()
+        self.assertFalse(owner_detail['can_edit'])
+        self.assertTrue(all('download_url' not in f for f in owner_detail['files']))
+
+    def test_source_download_checks_company_and_project_before_ownership(self):
+        first, _ = self.create()
+        first = self.upload(first).json()
+        second, _ = self.create()
+        second = self.upload(second).json()
+        source = first['files'][0]
+        wrong_project_url = f"/api/business-projects/{second['id']}/sources/{source['id']}/download?company_id={self.cid}"
+        self.assertEqual(self.client.get(wrong_project_url).status_code, 404)
+        peer, _ = self.actor('wrong_project_peer', 'finance')
+        self.assertEqual(peer.get(wrong_project_url).status_code, 404)
+        wrong_company_url = f"/api/business-projects/{first['id']}/sources/{source['id']}/download?company_id={self.other}"
+        self.assertEqual(self.client.get(wrong_company_url, headers={'X-Company-ID': str(self.other)}).status_code, 404)
+        missing_url = f"/api/business-projects/{first['id']}/sources/{source['id']+9999}/download?company_id={self.cid}"
+        self.assertEqual(self.client.get(missing_url).status_code, 404)
+        with unit(True) as s:
+            s.get(BusinessSourceFile, source['id']).company_id = self.other
+        self.assertEqual(self.client.get(source['download_url']).status_code, 404)
+        detail = self.client.get(f"/api/business-projects/{first['id']}", params={'company_id': self.cid}).json()
+        self.assertTrue(all('download_url' not in f for f in detail['files']))
 
     def test_access_and_revision_are_rechecked_after_rendering(self):
         project, _ = self.create()
