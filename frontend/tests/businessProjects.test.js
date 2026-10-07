@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import {compileComponent, mount, settle, text, all, find} from './helpers/mountVue.js';
 import {prepareSources, MAX_SOURCE_SIZE, MAX_FOLDER_SIZE, decimalShift, formFromInputs, inputsFromForm, resizeValues, monthLabels,
   createBusinessState, uploadProjectFolder, generateProject, projectUrl, templateUrl, fieldLabel, sourceLocation, headerProblem,
-  folderProjectTitle, projectReview, uploadFailureMessage} from '../src/businessProjects.js';
+  folderProjectTitle, projectReview, uploadFailureMessage, fieldGuidance, missingRequiredFields} from '../src/businessProjects.js';
 
 const header = {title: 'Synthetic project', start: '2027-01-01', months: 36, currency: ''};
 const file = (name, size = 12, path = 'Project/' + name, value = 'contents') => ({name, size, webkitRelativePath: path, value});
@@ -285,8 +285,10 @@ test('a forty-product source response keeps nine missing fields first, deduplica
   assert.equal(view.state.validation.length, 9);
   assert.equal(view.state.sourceProblems.length, 3);
   assert.equal(view.state.needsConfirmation, true);
-  const missingList = find(view.container, node => node.tag === 'ul' && node.props.class === 'bp-missing');
-  assert.equal(all(missingList, node => node.tag === 'li').length, 9);
+  const requiredGuide = find(view.container, node => node.tag === 'section' && node.props.class === 'bp-required-guide');
+  assert.equal(all(requiredGuide, node => node.tag === 'article').length, 9);
+  assert.equal(view.state.requiredFields.length, 9);
+  assert.equal(button(view.container, 'Рассчитать бизнес-план').props.disabled, true);
   assert.doesNotMatch(text(view.container), /Историческое поле не заполнено/);
   const products = find(view.container, node => node.tag === 'details' && String(node.props.class || '').includes('bp-products'));
   assert.equal(products.props.open, false);
@@ -301,6 +303,17 @@ test('a forty-product source response keeps nine missing fields first, deduplica
   assert.equal(view.state.form.no_assets, false);
   assert.equal(view.state.form.no_loans, false);
   assert.deepEqual([...view.state.form.products[39].quantities], Array(36).fill('5'));
+  for (const field of missing.filter(field => !['assets', 'loans'].includes(field))) view.state.form[field] = '0';
+  view.state.form.no_assets = true; view.state.form.no_loans = true;
+  await settle();
+  assert.equal(view.state.requiredFields.length, 0);
+  assert.equal(view.state.remainingRequirements.length, 0);
+  assert.equal(all(requiredGuide, node => node.tag === 'article').length, 0);
+  assert.equal(view.state.savedValidation.length, 0);
+  assert.equal(button(view.container, 'Рассчитать бизнес-план').props.disabled, true);
+  view.state.confirmed = true; await settle();
+  assert.equal(button(view.container, 'Рассчитать бизнес-план').props.disabled, false);
+  assert.match(text(requiredGuide), /Обязательные поля заполнены/);
   const confirmationOnly = projectReview({}, [{field: 'sources', code: 'source_issues', message: 'Проверьте источники.'}]);
   assert.equal(confirmationOnly.fields.length, 0);
   assert.equal(confirmationOnly.checks[0].requires_confirmation, true);
@@ -326,4 +339,75 @@ test('fatal or blocking source errors stay in required checks even without the c
   assert.equal(view.state.needsConfirmation, true);
   assert.equal(button(view.container, 'Рассчитать бизнес-план').props.disabled, true);
   assert.match(text(find(view.container, node => node.tag === 'div' && node.props.class === 'bp-review')), /Не удалось прочитать источник/);
+});
+
+test('mandatory-field guidance explains the source and action including truthful absent-assets and absent-loans choices', () => {
+  const fields = ['title', 'start', 'months', 'currency', 'tax_rate', 'discount_rate', 'opening_cash', 'opening_receivables', 'opening_inventory', 'opening_payables',
+    'initial_investment', 'fixed_costs', 'equity', 'receivable_days', 'inventory_days', 'payable_days', 'products', 'assets', 'loans',
+    'products[0].name', 'products[0].unit', 'products[0].price', 'products[0].unit_cost', 'products[0].quantities[2]', 'products[0].capacity',
+    'assets[0].name', 'assets[0].value', 'assets[0].life_months', 'assets[0].commissioning_month',
+    'loans[0].name', 'loans[0].opening_balance', 'loans[0].drawdowns[1]', 'loans[0].principal', 'loans[0].interest'];
+  for (const field of fields) {
+    const guide = fieldGuidance(field);
+    for (const key of ['label', 'what', 'source', 'how']) assert.ok(guide[key]?.trim(), `${field}.${key}`);
+    assert.doesNotMatch(Object.values(guide).join(' '), /\[\]|JSON/);
+  }
+  assert.match(fieldGuidance('opening_cash').source, /E46.*320/);
+  assert.match(fieldGuidance('opening_payables').source, /E81.*пустой/);
+  assert.match(fieldGuidance('currency').how, /тысячи сумов/);
+  assert.match(fieldGuidance('assets').zero, /только при их действительном отсутствии/);
+  assert.match(fieldGuidance('loans').zero, /только если.*действительно нет кредитов/);
+  assert.equal(fieldGuidance('products[0].quantities[2]').label, 'Продукция №1 · Объём реализации · месяц 3');
+});
+
+test('forty-product current-form requirements change from nine to zero only after explicit user entries and choices', () => {
+  const missing = ['opening_cash', 'opening_receivables', 'opening_inventory', 'opening_payables', 'initial_investment', 'fixed_costs', 'equity', 'assets', 'loans'];
+  const inputs = {...completeInputs(), months: 36, products: Array.from({length: 40}, (_, index) => ({name: `Sample ${index + 1}`, unit: 'pack', price: '10', unit_cost: '2', quantities: Array(36).fill('5')}))};
+  for (const field of missing) delete inputs[field];
+  const form = formFromInputs(inputs), before = JSON.stringify(form);
+  assert.deepEqual(missingRequiredFields(form).map(item => item.field).sort(), [...missing].sort());
+  assert.equal(JSON.stringify(form), before);
+  for (const field of missing.filter(field => !['assets', 'loans'].includes(field))) form[field] = '0';
+  assert.deepEqual(missingRequiredFields(form).map(item => item.field).sort(), ['assets', 'loans']);
+  form.no_assets = true; form.no_loans = true;
+  assert.deepEqual(missingRequiredFields(form), []);
+  form.opening_cash = '   ';
+  assert.deepEqual(missingRequiredFields(form), [{field: 'opening_cash'}]);
+  form.opening_cash = '0'; form.no_loans = false;
+  assert.deepEqual(missingRequiredFields(form), [{field: 'loans'}]);
+  assert.deepEqual(form.products[39].quantities, Array(36).fill('5'));
+  assert.equal(form.start, inputs.start);
+});
+
+test('current requirements identify missing row values, missing monthly items and mismatched schedule length by field path', () => {
+  const form = formFromInputs(completeInputs());
+  form.products[0].price = '';
+  form.products[0].quantities = ['0', ' ', null];
+  form.products[0].capacity = '';
+  form.fixed_costs = ['0', '0'];
+  form.equity = ['0', '0', '0'];
+  form.assets = [{name: 'Sample asset', value: '', life_months: '', commissioning_month: '0'}];
+  form.loans = [{name: 'Sample loan', opening_balance: '0', drawdowns: ['0', '', '0'], principal: '0', interest: ''}];
+  const actual = missingRequiredFields(form).map(item => item.field).sort();
+  assert.deepEqual(actual, ['products[0].price', 'products[0].quantities[1]', 'products[0].quantities[2]', 'products[0].capacity', 'fixed_costs',
+    'assets[0].value', 'assets[0].life_months', 'loans[0].drawdowns[1]', 'loans[0].interest'].sort());
+  form.products[0].quantities = new Array(3);
+  assert.deepEqual(missingRequiredFields(form).filter(item => item.field.includes('.quantities')).map(item => item.field),
+    ['products[0].quantities[0]', 'products[0].quantities[1]', 'products[0].quantities[2]']);
+});
+
+test('current requirements check absence without changing amounts or duplicating backend numeric and range validation', () => {
+  const form = formFromInputs(completeInputs());
+  form.products[0].price = '0.12345678901234567';
+  form.fixed_costs = '-1';
+  form.opening_cash = '0';
+  const before = JSON.stringify(form);
+  assert.deepEqual(missingRequiredFields(form), []);
+  assert.equal(JSON.stringify(form), before);
+  const blank = formFromInputs();
+  assert.ok(missingRequiredFields(blank).some(item => item.field === 'start'));
+  assert.equal(blank.start, '');
+  assert.equal(blank.opening_cash, '');
+  assert.equal(blank.no_assets, false);
+  assert.equal(blank.no_loans, false);
 });
