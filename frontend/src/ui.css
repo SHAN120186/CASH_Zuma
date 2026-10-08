@@ -47,6 +47,7 @@ small{display:block;font-size:12px;color:var(--mut);font-weight:600}
 [hidden]{display:none!important}
 :focus-visible{outline:2px solid var(--focus);outline-offset:2px}
 .num{text-align:right;white-space:nowrap;font-variant-numeric:tabular-nums}
+.nowrap{white-space:nowrap}
 .kpi .v,.hero .big,.tile .v,.thr .v,.ac-v,.rq-card .amt{text-align:left;white-space:normal}
 .muted,.sub{color:var(--mut)}
 .sub{font-size:13.5px}
@@ -245,6 +246,8 @@ td small{margin-top:2px}
 .ac-l{margin-top:10px;font-size:12.5px;font-weight:700;color:var(--mut)}
 .ac-v{font-size:28px;font-weight:800;letter-spacing:-.02em;line-height:1.15;overflow-wrap:anywhere}
 .ac-v small{display:inline;font-size:13px;margin-left:6px;letter-spacing:0}
+/* точная сумма под компактной: для сверки с выпиской, видна и на телефоне без подсказки */
+.ac-x{margin-top:-2px;font-size:13px;font-weight:700;color:var(--mut);text-align:left}
 .ac-o{display:flex;justify-content:space-between;gap:8px;flex-wrap:wrap;margin-top:8px;padding-top:12px;border-top:1px solid var(--line2);font-size:12.5px;color:var(--mut);font-weight:600}
 .ac-o b{color:var(--ink)}
 .ac-b{display:flex;gap:8px;margin-top:10px;flex-wrap:wrap}
@@ -269,6 +272,11 @@ td small{margin-top:2px}
 .tile .v{font-size:24px;font-weight:800;letter-spacing:-.015em;margin:6px 0 3px;line-height:1.15;overflow-wrap:anywhere}
 .tile .v small{display:inline;font-size:12px;margin-left:5px;letter-spacing:0}
 .tile .d{font-size:12.5px;font-weight:700;color:var(--mut)}
+/* Плитки одного ряда делят строки: если подпись одной плитки переносится, суммы соседей стоят на той же линии. */
+@supports (grid-template-rows:subgrid){
+ .sumrow>div.tile{display:grid;grid-row:span 3;grid-template-rows:subgrid;grid-template-columns:minmax(0,1fr);row-gap:0;align-content:start}
+ .sumrow>div.tile>.k{align-self:start}
+}
 tr.risk td{background:color-mix(in srgb,var(--warning-soft) 50%,var(--surface))!important}
 .ub{height:8px;background:var(--surface-muted);border-radius:99px;overflow:hidden;min-width:110px}
 .ub i{display:block;height:100%;border-radius:99px;background:var(--em)}
@@ -336,6 +344,11 @@ tr.risk td{background:color-mix(in srgb,var(--warning-soft) 50%,var(--surface))!
 .cf-cap{display:flex;justify-content:space-between;align-items:center;gap:12px;padding:0 2px 10px;flex-wrap:wrap}
 .cf-cap h3{font-size:16px;display:flex;gap:10px;align-items:center;flex-wrap:wrap}
 .cf-wrap{overflow:auto;max-height:calc(100vh - 250px);min-height:340px;border:1px solid var(--line);border-radius:var(--card-radius);background:var(--surface);position:relative}
+/* Тень у правого края, пока справа есть скрытые колонки; полосы прокрутки она не закрывает. */
+.cf-frame{position:relative}
+.cf-frame::after{content:"";position:absolute;top:1px;right:calc(1px + var(--cf-bar-x,0px));bottom:calc(1px + var(--cf-bar-y,0px));width:36px;pointer-events:none;z-index:7;border-radius:0 calc(var(--card-radius) - 1px) calc(var(--card-radius) - 1px) 0;background:linear-gradient(to left,rgba(var(--shade-rgb),.16),rgba(var(--shade-rgb),0));opacity:0;transition:opacity var(--dur-1) var(--ease)}
+.cf-frame.v-bar::after{border-radius:0}
+.cf-frame.more::after{opacity:1}
 table.cf{border-collapse:separate;border-spacing:0;min-width:100%;font-size:13px}
 .cf th,.cf td{height:38px;padding:0 12px;white-space:nowrap;text-align:right;border-bottom:1px solid var(--line2);background:var(--bgc,var(--surface));font-variant-numeric:tabular-nums}
 .cf .lab{position:sticky;left:0;z-index:2;text-align:left;min-width:300px;width:300px;max-width:300px;overflow:hidden;text-overflow:ellipsis;border-right:1px solid var(--line)}
@@ -461,9 +474,14 @@ table.cf{border-collapse:separate;border-spacing:0;min-width:100%;font-size:13px
   .rsp thead{display:none}
   .rsp,.rsp tbody,.rsp tr,.rsp td{display:block;width:100%}
   .rsp tr{border:1px solid var(--line);border-radius:14px;margin:0 0 10px;padding:6px 12px;background:var(--surface)}
-  .rsp td{display:flex;justify-content:space-between;gap:14px;border:0;padding:6px 0;text-align:right}
-  .rsp td::before{content:attr(data-l);color:var(--mut);font-weight:800;text-align:left;flex:none}
+  /* Карточка строки: подпись слева, всё содержимое ячейки — одним текстовым блоком справа.
+     Номер, контрагент, сумма с валютой и подстрока <small> не разъезжаются по отдельным колонкам. */
+  .rsp td{display:flow-root;border:0;padding:6px 0;text-align:right}
+  .rsp td::before{content:attr(data-l);float:left;margin-right:14px;color:var(--mut);font-weight:800;text-align:left}
+  .rsp td[data-l=""]::before,.rsp td:not([data-l])::before{content:none}
   .rsp td small{text-align:right}
+  .rsp td .actions{justify-content:flex-end}
+  .rsp td>.ub{display:inline-block;width:110px;vertical-align:middle}
   .rsp td.detail-cell{display:block}
   .table-card.rsp-wrap{background:transparent;border:0;box-shadow:none;overflow:visible}
   .tg-groups .rsp td:empty{display:none}
@@ -474,6 +492,7 @@ table.cf{border-collapse:separate;border-spacing:0;min-width:100%;font-size:13px
   body{background:#fff}
   .app{display:block}
   .cf-wrap{max-height:none;overflow:visible;border:0}
+  .cf-frame::after{display:none}
   .page{padding:0}
   @page{size:A3 landscape;margin:10mm}
 }
@@ -622,7 +641,7 @@ button:active:not(:disabled),.button:active{transform:translateY(1px)}
 @media (max-width:700px){.admin-kv{grid-template-columns:1fr}.admin-history li{grid-template-columns:1fr}.admin-history time{grid-row:auto}.admin-filters select{flex:1 1 100%}}
 .admin-journal{margin-top:16px}
 .admin-center td .pill,.admin-card .pill{white-space:normal;text-align:left}
-@media (max-width:700px){.admin-center .rsp td{flex-wrap:wrap;justify-content:flex-start}.admin-center .rsp td::before{flex-basis:100%}.admin-chips button{padding:0 4px}}
+@media (max-width:700px){.admin-center .rsp td{display:flex;flex-wrap:wrap;justify-content:flex-start;gap:14px}.admin-center .rsp td::before{content:attr(data-l);float:none;margin-right:0;flex:0 0 100%}.admin-chips button{padding:0 4px}}
 
 /* Заявка на оплату: форма, карточка, политика директора, ВрИО (2.13) */
 .modal.rq-editor{width:min(760px,100%)}

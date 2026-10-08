@@ -102,6 +102,32 @@ export function formatCompact(cents) {
   return (value < 0 ? '−' : '') + text + (unit ? ' ' + unit : '');
 }
 
+// Labels for the levels of one chart scale: "52 млн", "52,7 млн", "53,3 млн".
+// One unit for every level, chosen by the largest as formatAmount would, with its
+// precision (two decimals under 10, one under 100); more decimals are added while
+// neighbouring levels would read alike, then whole amounts. Zero is a plain "0".
+export function formatAxisLabels(values) {
+  const finite = values.filter(Number.isFinite);
+  if (!finite.length) return values.map(() => '—');
+  const top = Math.max(...finite.map(Math.abs));
+  const step = top >= COMPACT_FROM ? STEPS.slice().reverse().find(([size]) => top >= size) : null;
+  const scales = [[100, '']];
+  if (step) scales.unshift([step[0], ' ' + AMOUNT_UNITS.ru[step[1]]]);
+  let labels = [];
+  for (const [size, unit] of scales) {
+    const n = top / size;
+    for (let digits = unit ? (n < 10 ? 2 : n < 100 ? 1 : 0) : 0; digits <= 2; digits += 1) {
+      labels = values.map(v => {
+        if (!Number.isFinite(v)) return '—';
+        const text = numberFormat(digits, false).format(Math.abs(v) / size).replace(/(,\d*?)0+$/, '$1').replace(/,$/, '');
+        return text === '0' ? '0' : (v < 0 ? '−' : '') + text + unit;
+      });
+      if (new Set(labels).size === labels.length) return labels;
+    }
+  }
+  return labels;
+}
+
 const shortDate = new Intl.DateTimeFormat('ru-RU', { day: 'numeric', month: 'short', timeZone: 'UTC' });
 const longDate = new Intl.DateTimeFormat('ru-RU', { day: 'numeric', month: 'long', year: 'numeric', timeZone: 'UTC' });
 const parse = iso => new Date(iso + 'T00:00:00Z');

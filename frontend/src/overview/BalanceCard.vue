@@ -1,7 +1,7 @@
 <script setup>
 import {computed, nextTick, onBeforeUnmount, onMounted, ref, useId, watch} from 'vue';
-import {formatCents, formatAmount, amountTitle, formatPercent, formatShortDate, formatLongDate} from './format.js';
-import {scalePoints, smoothPath, tickIndexes} from './chart.js';
+import {formatCents, formatAmount, amountTitle, formatAxisLabels, formatPercent, formatShortDate, formatLongDate} from './format.js';
+import {makeScale, smoothPath, tickIndexes} from './chart.js';
 
 const props = defineProps({
   state: {type: String, default: 'loading'}, // loading | ready | empty | error
@@ -42,10 +42,31 @@ onMounted(() => {
   watch(plot, el => { observer?.disconnect(); if (el) { observer?.observe(el); measure(); } }, {immediate: true});
 });
 onBeforeUnmount(() => observer?.disconnect());
-const box = computed(() => ({...size.value, top: 18, bottom: 10, left: 6, right: 14}));
-const points = computed(() => (props.history || []).length
-  ? scalePoints(props.history.map(d => d.balance), box.value) : []);
+// Left gutter for the value scale, as on the forecast chart.
+const box = computed(() => ({...size.value, top: 18, bottom: 10, left: 58, right: 14}));
+const balances = computed(() => (props.history || []).map(d => d.balance));
+const scale = computed(() => (balances.value.length ? makeScale(balances.value, box.value) : null));
+const points = computed(() => (scale.value ? balances.value.map((v, i) => [scale.value.x(i), scale.value.y(v)]) : []));
 const line = computed(() => smoothPath(points.value));
+// The scale is fitted to the period's lowest and highest balance, so those levels
+// (and the middle one) are labelled: the slope is read in money, not in pixels.
+const levels = computed(() => {
+  if (!scale.value) return [];
+  const lo = Math.min(...balances.value), hi = Math.max(...balances.value);
+  const values = lo === hi ? [lo] : [lo, Math.round((lo + hi) / 2), hi];
+  const labels = formatAxisLabels(values);
+  return values.map((v, i) => ({v, y: scale.value.y(v), label: labels[i]}));
+});
+// Today's balance is written at the end of the line (a phone has no hover), on the
+// side away from where the line comes in so the curve never crosses the text.
+const endLabel = computed(() => {
+  const p = points.value, last = props.history?.at(-1);
+  if (p.length < 2 || !last) return null;
+  const [x, y] = p.at(-1);
+  // 36px: the gap to the dot plus the label; below the plot are the date labels.
+  const below = p.at(-2)[1] < y && y + 36 <= box.value.height;
+  return {text: formatAmount(last.balance, props.currency), below, style: {left: `${x}px`, top: `${y}px`}};
+});
 const area = computed(() => {
   const p = points.value;
   if (p.length < 2) return '';
@@ -184,8 +205,12 @@ function key(event) {
         <stop offset="1" stop-color="var(--primary)"/>
        </linearGradient>
       </defs>
+      <g v-for="l in levels" :key="'y' + l.v">
+       <line :x1="box.left" :x2="box.width" :y1="l.y" :y2="l.y" class="level"/>
+       <text :x="box.left - 8" :y="l.y + 4" text-anchor="end" class="level-l">{{l.label}}</text>
+      </g>
       <line v-for="t in ticks" :key="'g' + t.i" :x1="t.x" :x2="t.x" :y1="box.top - 6" :y2="box.height - 1" class="grid"/>
-      <line :x1="0" :x2="box.width" :y1="box.height - 1" :y2="box.height - 1" class="base"/>
+      <line :x1="box.left" :x2="box.width" :y1="box.height - 1" :y2="box.height - 1" class="base"/>
       <g :key="drawKey" class="draw">
        <path :d="area" class="area" :fill="`url(#${uid}-fill)`"/>
        <path :d="line" class="line" :stroke="`url(#${uid}-stroke)`" pathLength="1"/>
@@ -193,6 +218,7 @@ function key(event) {
       <line v-if="activeDay" :x1="points[active][0]" :x2="points[active][0]" :y1="box.top - 6" :y2="box.height - 1" class="cursor"/>
      </svg>
      <span class="bal-dot end" :style="{left: points.at(-1)[0] + 'px', top: points.at(-1)[1] + 'px'}" aria-hidden="true"></span>
+     <span v-if="endLabel" class="bal-end" :class="{below: endLabel.below}" :style="endLabel.style" aria-hidden="true">{{endLabel.text}}</span>
      <span v-if="activeDay" class="bal-dot" :style="{left: points[active][0] + 'px', top: points[active][1] + 'px'}" aria-hidden="true"></span>
      <div v-if="activeDay" ref="tip" class="bal-tip" :style="tipStyle" aria-hidden="true">
       <b>{{formatLongDate(activeDay.date)}}</b>
@@ -246,6 +272,8 @@ h2{font-size:21px;font-weight:600;letter-spacing:-.012em;color:var(--text)}
 .bal-plot{position:relative;height:150px;border-radius:12px;outline-offset:4px;touch-action:pan-y}
 .bal-plot.clickable{cursor:pointer}
 .bal-plot svg{position:absolute;inset:0;display:block;overflow:visible}
+.level{stroke:var(--line2);stroke-width:1}
+.level-l{font-size:11px;font-weight:700;fill:var(--muted);font-variant-numeric:tabular-nums}
 .grid{stroke:var(--line);stroke-dasharray:3 5;stroke-width:1}
 .base{stroke:var(--line);stroke-width:1}
 .cursor{stroke:var(--text);stroke-opacity:.28;stroke-width:1}
@@ -256,6 +284,10 @@ h2{font-size:21px;font-weight:600;letter-spacing:-.012em;color:var(--text)}
 @keyframes fade{from{opacity:0}to{opacity:1}}
 .bal-dot{position:absolute;width:11px;height:11px;margin:-5.5px 0 0 -5.5px;border-radius:50%;background:var(--primary);border:2px solid var(--surface);pointer-events:none}
 .bal-dot.end{box-shadow:0 0 0 8px rgba(91,77,242,.16)}
+/* Right edge just past the dot, above it (or below when the line comes in from above). */
+.bal-end{position:absolute;transform:translate(calc(-100% + 8px),calc(-100% - 16px));padding:1px 7px;border-radius:7px;background:var(--surface);box-shadow:0 0 0 1px var(--line2);
+ font-size:12.5px;font-weight:800;line-height:1.4;color:var(--text);white-space:nowrap;font-variant-numeric:tabular-nums;pointer-events:none;z-index:1}
+.bal-end.below{transform:translate(calc(-100% + 8px),16px)}
 .bal-tip{position:absolute;transform:translate(-50%,calc(-100% - 14px));display:flex;flex-direction:column;gap:3px;min-width:min(190px,100%);width:max-content;max-width:min(300px,100%);padding:10px 12px;border-radius:12px;
  background:var(--surface);border:1px solid var(--line);box-shadow:0 12px 28px -14px rgba(11,16,36,.35);font-size:12.5px;color:var(--muted);font-weight:600;pointer-events:none;z-index:2}
 .bal-tip b{color:var(--text);font-size:13px}
@@ -263,7 +295,7 @@ h2{font-size:21px;font-weight:600;letter-spacing:-.012em;color:var(--text)}
 .bal-tip em{white-space:nowrap;font-style:normal;color:var(--text);font-variant-numeric:tabular-nums;font-weight:700}
 .bal-tip em.in{color:var(--income-ink)}.bal-tip em.out{color:var(--expense-ink)}
 .bal-tip small{margin-top:3px;font-size:11.5px;color:var(--muted);font-weight:600}
-.bal-axis{display:flex;justify-content:space-between;margin-top:8px;font-size:12px;font-weight:600;color:var(--muted);font-variant-numeric:tabular-nums}
+.bal-axis{display:flex;justify-content:space-between;margin-top:8px;padding-left:52px;font-size:12px;font-weight:600;color:var(--muted);font-variant-numeric:tabular-nums}
 .bal-note{font-size:13px;color:var(--muted);font-weight:600}
 .bal-state{display:flex;flex-direction:column;align-items:flex-start;gap:8px;padding:18px 0 8px}
 .bal-state-title{font-size:18px;font-weight:700;color:var(--text)}

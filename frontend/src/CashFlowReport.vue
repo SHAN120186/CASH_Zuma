@@ -1,6 +1,7 @@
 <script setup>
-import {ref,computed,watch,nextTick} from 'vue';
+import {ref,computed,watch,nextTick,onMounted,onBeforeUnmount} from 'vue';
 import AppIcon from './AppIcon.vue';
+import {toCents,formatAmount,amountTitle} from './overview/format.js';
 const props=defineProps({report:Object,currency:String,year:[String,Number],api:Function,canPlan:Boolean,companies:Array,companyId:Number,scenario:String,asOf:String});
 const emit=defineEmits(['refresh','year','company','scenario','as-of','editing']);
 const months=['Янв','Фев','Мар','Апр','Май','Июн','Июл','Авг','Сен','Окт','Ноя','Дек'];
@@ -27,6 +28,9 @@ function display(v,plus=false){
  const text=Math.abs(n).toLocaleString('ru-RU',{minimumFractionDigits:u.digits,maximumFractionDigits:u.digits});
  return n<0?'−'+text:(plus&&n>0?'+'+text:text);
 }
+// KPI tiles: compact "52 млн" / "350 тыс." whatever the table unit, every digit in the tooltip.
+const short=(v,sign=false)=>formatAmount(toCents(v),props.currency,{sign});
+const exact=(v,sign=false)=>v==null?undefined:amountTitle(toCents(v),props.currency,{sign});
 const unitCaption=computed(()=>({m:'млн ',k:'тыс. ',x:''}[unit.value])+props.currency);
 const columns=computed(()=>mode.value==='plan'?['plan','values','delta']:['values']);
 const label={plan:'План',values:'Факт',delta:'Откл.'};
@@ -61,7 +65,7 @@ const tiles=computed(()=>{
  return [
   {k:'На начало периода',v:props.report.opening[i0],p:props.report.plan_opening[i0]},
   {k:'Операционная деятельность',v:op?sum(pick(op.values)):null,p:op?sum(pick(op.plan)):null},
-  {k:'Чистое изменение',v:sum(pick(props.report.totals)),p:sum(pick(props.report.plan_totals)),note:adj&&adj!=='0.00'?'Ввод остатков: '+display(adj):''},
+  {k:'Чистое изменение',v:sum(pick(props.report.totals)),p:sum(pick(props.report.plan_totals)),note:adj&&adj!=='0.00'?'Ввод остатков: '+short(adj)+' '+props.currency:''},
   {k:'На конец периода',v:props.report.closing[iN],p:props.report.plan_closing[iN]}
  ];
 });
@@ -75,6 +79,27 @@ async function saveNote(){saving.value=true;error.value='';try{await props.api('
 async function makeGroup(){error.value='';try{const q=new URLSearchParams({company_id:props.companyId,currency:props.currency,scenario:props.scenario,month:groupMonth.value,day:groupDay.value});groupText.value=(await props.api('/api/group-report?'+q)).text;groupOpen.value=true}catch(e){error.value=e.message}}
 async function compare(){error.value='';try{const month=String(props.asOf).slice(0,7),base={company_id:props.companyId,currency:props.currency,month,day:props.asOf};comparison.value=await Promise.all(['A','B','V'].map(async scenario=>({...await props.api('/api/group-report?'+new URLSearchParams({...base,scenario})),scenario})))}catch(e){error.value=e.message}}
 async function copyGroup(){await navigator.clipboard.writeText(groupText.value);saved.value=true}
+// On a laptop the table is wider than the screen, and the months with data sit on the right.
+// After loading (and when the period, view or units change) the month of "Факт по дату" is
+// scrolled into view; a shadow on the right edge shows that more columns are hidden there.
+const wrap=ref(null),moreRight=ref(false),bars=ref({x:0,y:0});
+function edges(){const el=wrap.value;if(!el)return;moreRight.value=el.scrollLeft+el.clientWidth<el.scrollWidth-1;bars.value={x:Math.max(0,el.offsetWidth-el.clientWidth-2*el.clientLeft),y:Math.max(0,el.offsetHeight-el.clientHeight-2*el.clientTop)}}
+function showAsOfMonth(){
+ const el=wrap.value;if(!el)return;
+ const list=indices.value,y=Number(String(props.asOf).slice(0,4)),m=Number(String(props.asOf).slice(5,7))-1;
+ const target=y===Number(props.year)?Math.min(Math.max(m,list[0]),list.at(-1)):y>Number(props.year)?list.at(-1):list[0];
+ const th=el.querySelector(`th[data-m="${target}"]`);
+ // 32px of the next column stay visible, so the edge shadow lies over it and not over the month.
+ if(th){const visibleRight=el.getBoundingClientRect().left+el.clientLeft+el.clientWidth;el.scrollLeft=Math.max(0,el.scrollLeft+th.getBoundingClientRect().right-visibleRight+32)}
+ autoLeft=el.scrollLeft;edges();
+}
+// Column widths can still change after the first scroll (web font, window size): the month
+// is aligned again unless the user has scrolled the table themselves since.
+let resize,autoLeft=null;
+function resized(){const el=wrap.value;if(el&&autoLeft!=null&&Math.abs(el.scrollLeft-autoLeft)<2)showAsOfMonth();else edges()}
+onMounted(()=>{nextTick(showAsOfMonth);if(typeof ResizeObserver==='function'&&wrap.value){resize=new ResizeObserver(resized);resize.observe(wrap.value);if(wrap.value.firstElementChild)resize.observe(wrap.value.firstElementChild)}});
+onBeforeUnmount(()=>resize?.disconnect());
+watch(()=>[props.asOf,props.year,props.currency,props.scenario,mode.value,unit.value,start.value,end.value].join('|'),()=>nextTick(showAsOfMonth));
 </script>
 <template>
  <div class="card tools">
@@ -96,9 +121,9 @@ async function copyGroup(){await navigator.clipboard.writeText(groupText.value);
  <p v-if="saved" class="notice" role="status">План сохранён</p>
  <section v-if="comparison.length" class="card plan-editor"><div class="section-head"><div><h2>Сравнение сценариев на {{asOf}}</h2><p class="sub">Выбор ручной. Фактические банковские поступления одинаковы для А, Б и В и не меняются при переключении.</p></div><button class="ghost" @click="comparison=[]">Закрыть</button></div><div class="sumrow"><button v-for="r in comparison" :key="r.scenario" class="card tile" :class="{selected:r.scenario===scenario}" @click="emit('scenario',r.scenario)"><div class="k">Сценарий {{{A:'А',B:'Б',V:'В'}[r.scenario]}}</div><div class="v num">{{display(r.expense_plan)}}<small>{{unitCaption}}</small></div><div class="d">Поступления с начала месяца {{display(r.bank_income_mtd)}} {{unitCaption}} · доступно {{display(r.available)}} {{unitCaption}}</div></button></div></section>
  <section v-if="groupOpen" class="card plan-editor"><div class="section-head"><h2>Сообщение для группы</h2><button class="ghost" @click="groupOpen=false">Закрыть</button></div><div class="filter-bar"><label>Месяц<input type="month" v-model="groupMonth"></label><label>День<input type="date" v-model="groupDay"></label><button type="button" class="secondary" @click="makeGroup">Обновить</button></div><textarea readonly rows="5" :value="groupText"></textarea><button type="button" @click="copyGroup">Копировать</button><p class="sub">Текст только копируется. Программа ничего не отправляет автоматически.</p></section>
- <div class="sumrow"><div v-for="t in tiles" :key="t.k" class="card tile"><div class="k"><span>{{t.k}}</span><span class="pill" :class="mode==='plan'?'plan':'fact'">{{mode==='plan'?'План-факт':'Факт'}}</span></div><div class="v num">{{t.v==null?'Не задан':display(t.v)}}<small v-if="t.v!=null">{{unitCaption}}</small></div><div class="d"><template v-if="mode==='plan'">План {{t.p==null?'не задан':display(t.p)}}<template v-if="t.p!=null&&t.v!=null"> · <span :class="devClass(difference(t.v,t.p))">{{display(difference(t.v,t.p),true)}}</span></template></template><template v-else>{{t.note||'Фактические операции'}}</template></div></div></div>
+ <div class="sumrow"><div v-for="t in tiles" :key="t.k" class="card tile"><div class="k"><span>{{t.k}}</span><span class="pill" :class="mode==='plan'?'plan':'fact'">{{mode==='plan'?'План-факт':'Факт'}}</span></div><div class="v num" :title="exact(t.v)">{{t.v==null?'Не задан':short(t.v)}}<small v-if="t.v!=null">{{currency}}</small></div><div class="d"><template v-if="mode==='plan'">План <span :title="exact(t.p)">{{t.p==null?'не задан':short(t.p)+' '+currency}}</span><template v-if="t.p!=null&&t.v!=null"> · <span :class="devClass(difference(t.v,t.p))" :title="exact(difference(t.v,t.p),true)">{{short(difference(t.v,t.p),true)}}</span></template></template><template v-else>{{t.note||'Фактические операции'}}</template></div></div></div>
  <div class="cf-cap"><h3>Отчёт о движении денежных средств · {{periodLabel}}</h3><span class="sub">Прямой метод · {{unitCaption}}<template v-if="mode==='plan'"> · План / Факт / Отклонение</template></span></div>
- <div class="cf-wrap" role="region" aria-label="Cash Flow по месяцам" tabindex="0"><table class="cf"><thead><tr><th class="lab" :rowspan="mode==='plan'?2:1">Статья · {{unitCaption}}</th><th v-for="m in indices" :key="m" :colspan="columns.length" class="mh">{{months[m]}} {{year}}</th><th v-if="hasTotal" :colspan="columns.length" class="mh tt">За период</th></tr><tr v-if="mode==='plan'"><template v-for="m in (hasTotal?[...indices,'total']:indices)" :key="m"><th v-for="(col,ci) in columns" :key="col" :class="[col==='plan'?'cp gs':col==='values'?'cf2':'',m==='total'?'tt':'']">{{label[col]}}</th></template></tr></thead><tbody>
+ <div class="cf-frame" :class="{more:moreRight,'v-bar':bars.x>0}" :style="{'--cf-bar-x':bars.x+'px','--cf-bar-y':bars.y+'px'}"><div ref="wrap" class="cf-wrap" role="region" aria-label="Cash Flow по месяцам" tabindex="0" @scroll.passive="edges"><table class="cf"><thead><tr><th class="lab" :rowspan="mode==='plan'?2:1">Статья · {{unitCaption}}</th><th v-for="m in indices" :key="m" :colspan="columns.length" class="mh" :data-m="m">{{months[m]}} {{year}}</th><th v-if="hasTotal" :colspan="columns.length" class="mh tt">За период</th></tr><tr v-if="mode==='plan'"><template v-for="m in (hasTotal?[...indices,'total']:indices)" :key="m"><th v-for="(col,ci) in columns" :key="col" :class="[col==='plan'?'cp gs':col==='values'?'cf2':'',m==='total'?'tt':'']">{{label[col]}}</th></template></tr></thead><tbody>
   <tr v-for="r in body" :key="r.key" :class="'r-'+r.t">
    <template v-if="r.t==='sub'"><td class="lab"><span>{{r.label}}</span></td><td v-for="n in blanks" :key="n"></td></template>
    <template v-else>
@@ -107,7 +132,7 @@ async function copyGroup(){await navigator.clipboard.writeText(groupText.value);
     <template v-if="hasTotal"><td v-for="col in columns" :key="col" :class="['tt',col==='plan'?'cp gs':'',col==='delta'?'cd '+devClass(aggregate(r.row,col)):'']"><span v-if="col==='plan'&&aggregate(r.row,col)==null" class="unset">Не задан</span><template v-else>{{col==='delta'?(aggregate(r.row,col)==null?'—':Number(aggregate(r.row,col))===0?'0':display(aggregate(r.row,col),true)):display(aggregate(r.row,col))}}</template></td></template>
    </template>
   </tr>
- </tbody></table></div>
+ </tbody></table></div></div>
  <p class="cf-note"><AppIcon name="help"/><span>Остатки в колонке «За период» не складываются, а берутся на границе периода. Правила расчёта — в справке.</span></p>
  <section v-if="mode==='plan'&&canPlan" class="card plan-editor"><div class="section-head"><h2>Примечание / Изоҳ к отклонению</h2></div><div class="filter-bar"><label>Месяц<select v-model="noteMonth" @change="loadNote"><option v-for="(m,i) in months" :key="i" :value="i+1">{{m}}</option></select></label></div><textarea v-model="note" maxlength="2000" rows="3" placeholder="Причина отклонения по чистому денежному потоку"></textarea><button type="button" :disabled="saving" @click="saveNote">Сохранить примечание</button></section>
  <section v-if="editor" class="card plan-editor" aria-label="План денежных потоков"><div class="section-head"><h2>План · {{year}} · {{currency}}</h2><button class="ghost" @click="editor=false" :disabled="saving">Закрыть</button></div><form @submit.prevent="save"><div class="filter-bar"><label>Месяц<select v-model="editMonth" @change="resetDraft" :disabled="saving"><option v-for="(m,i) in months" :key="i" :value="i+1">{{m}}</option></select></label><label>Плановый остаток на начало<input v-model="opening" inputmode="decimal" pattern="[0-9]+([.][0-9]{1,2})?" placeholder="Из предыдущего плана"></label><button type="button" class="secondary" :disabled="saving" @click="draft.forEach(r=>{if(r.amount==='')r.amount='0'})">Пустые суммы → 0</button></div><p class="sub">Пустая сумма — план не задан. Укажите 0, если движения не планируются.</p><div class="plan-rows"><label v-for="r in draft" :key="r.category_id+r.kind"><span>{{r.category}}<small>{{r.kind==='in'?'Поступление':'Выплата'}}</small></span><input v-model="r.amount" :aria-label="r.category+' '+r.kind" inputmode="decimal" pattern="[0-9]+([.][0-9]{1,2})?" placeholder="Не задан" :disabled="saving"></label></div><label class="plan-reason">Основание изменения<textarea v-model="reason" required minlength="10" maxlength="1000" :disabled="saving"></textarea></label><p v-if="error" class="error" role="alert">{{error}}</p><button :disabled="saving">{{saving?'Сохраняем…':'Сохранить план'}}</button></form></section>

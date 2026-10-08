@@ -1,6 +1,6 @@
 import {test} from 'node:test';
 import assert from 'node:assert/strict';
-import {toCents, formatCents, formatAmount, amountTitle, formatCompact, formatPercent, addDays, sameDayPreviousMonth} from '../src/overview/format.js';
+import {toCents, formatCents, formatAmount, amountTitle, formatCompact, formatAxisLabels, formatPercent, addDays, sameDayPreviousMonth} from '../src/overview/format.js';
 import {balanceHistory, monthPlanFact} from '../src/overview/history.js';
 import {makeScale, scalePoints, smoothPath, tickIndexes} from '../src/overview/chart.js';
 
@@ -118,6 +118,24 @@ test('axis labels are compact and signed', () => {
   assert.equal(plain(formatCompact(toCents('180000000'))), '180 млн');
   assert.equal(plain(formatCompact(toCents('-42000000'))), '−42 млн');
   assert.equal(formatCompact(toCents('950')), '950');
+});
+
+test('balance chart levels share one unit and never read as the same number', () => {
+  const levels = (...v) => formatAxisLabels(v.map(toCents)).map(plain);
+  // The reviewed case: 52 → 53,3 млн is a small rise, the scale says so in money.
+  assert.deepEqual(levels('52000000', '52650000', '53300000'), ['52 млн', '52,7 млн', '53,3 млн']);
+  assert.deepEqual(levels('50000000', '75000000', '100000000'), ['50 млн', '75 млн', '100 млн']);
+  // A narrow range gets more decimals instead of three equal labels.
+  assert.deepEqual(levels('52950000', '52970000', '52990000'), ['52,95 млн', '52,97 млн', '52,99 млн']);
+  // When even two decimals of the unit are equal, whole amounts are shown.
+  assert.deepEqual(levels('52950000', '52950500', '52951000'), ['52 950 000', '52 950 500', '52 951 000']);
+  // The unit follows the largest level; small sums stay exact, minus is a real minus.
+  assert.deepEqual(levels('900000', '1200000'), ['0,9 млн', '1,2 млн']);
+  assert.deepEqual(levels('-2000000', '0', '2000000'), ['−2 млн', '0', '2 млн']);
+  assert.deepEqual(levels('1500', '9500'), ['1 500', '9 500']);
+  assert.deepEqual(levels('25400', '30000'), ['25,4 тыс.', '30 тыс.']);
+  assert.deepEqual(formatAxisLabels([]), []);
+  assert.match(formatAxisLabels([toCents('53300000')])[0], /^53,3 млн$/);
 });
 
 test('headline amounts pick тыс., млн, млрд or трлн automatically', () => {
