@@ -9,6 +9,7 @@ import OverviewPage from './overview/OverviewPage.vue';
 import AdminCenter from './admin/AdminCenter.vue';
 import {loadRecentLogins,rememberLogin,matchingLogins,offerPasswordSave} from './loginPreferences.js';
 import {canPayRequest as canPayFor} from './overview/rights.js';
+import {toCents,formatAmount,amountTitle} from './overview/format.js';
 import RequestEditor from './requests/RequestEditor.vue';
 import RequestCard from './requests/RequestCard.vue';
 import PolicyPage from './requests/PolicyPage.vue';
@@ -41,6 +42,8 @@ const has=p=>p==='requests-view'?['request','view','pay_bank','pay_cash','reques
 watch(()=>[company.value?.name,title.value],([name,section])=>{document.title=name?`${name} · ${section}`:'Cash Flow · Выбор компании'},{immediate:true});
 const status={pending:'На согласовании',approved:'Утверждена',paid:'Оплачена',draft:'Черновик',rejected:'Отклонена',returned:'На доработке',cancelled:'Закрыта без оплаты',expected:'Ожидается',received:'Получено'};
 const money=v=>{if(v==null)return '—';let s=String(v);if(currency.value==='UZS')s=s.replace(/\.00$/,'');const [a,b]=s.split('.');return a.replace(/\B(?=(\d{3})+(?!\d))/g,' ')+(b!==undefined?'.'+b:'')};
+// Headline balances: "5,32 млрд"; the exact figure goes into the tooltip (moneyTitle).
+const moneyShort=(v,cur=currency.value)=>formatAmount(toCents(v),cur), moneyTitle=(v,cur=currency.value)=>amountTitle(toCents(v),cur);
 const costGroups={fixed:'Постоянные затраты',variable:'Переменные затраты',other:'Прочие затраты'};
 const auditRefresh=ref(0),homeRefresh=ref(0);
 const menuOpen=ref(false),helpOpen=ref(false);
@@ -312,7 +315,7 @@ onMounted(async()=>{try{const r=await api('/api/me');user.value=r.user;csrf.valu
      <div class="tb"><div class="seg" role="group" aria-label="Показать счета"><button :class="{on:!showArchive}" @click="showArchive=false;load()">Активные</button><button :class="{on:showArchive}" @click="showArchive=true;load()">Архив</button></div><span class="sub"><b>{{visibleRows.length}}</b> · {{currency}}</span><div class="grow"><button v-if="has('write')" @click="account()"><AppIcon name="plus"/> Добавить счёт</button></div></div>
      <div class="acc-grid"><section v-for="a in visibleRows" :key="a.id" class="card ac-card" :class="{arch:a.archived}">
       <div class="ac-top"><span class="ic"><AppIcon :name="a.kind==='bank'?'accounts':'cash'"/></span><div><b>{{a.name}}</b><small>{{a.kind==='bank'?'Банковский счёт':'Касса'}}{{a.allow_overdraft?' · овердрафт разрешён':''}}</small></div><span class="pill" :class="a.archived?'warn':'fact'">{{a.archived?'Архив · ':''}}{{a.currency}}</span></div>
-      <div class="ac-l">Текущий остаток</div><div class="ac-v num">{{money(a.balance)}}<small>{{a.currency}}</small></div>
+      <div class="ac-l">Текущий остаток</div><div class="ac-v num" :title="moneyTitle(a.balance,a.currency)">{{moneyShort(a.balance,a.currency)}}<small>{{a.currency}}</small></div>
       <div class="ac-o"><span>Начальный остаток на {{a.opening_date}}</span><b class="num">{{money(a.opening)}} {{a.currency}}</b></div>
       <div class="ac-b"><button v-if="has('write')&&!a.archived" class="secondary tiny" @click="account(a)"><AppIcon name="edit"/> Изменить</button><button v-if="has('users')&&has('write')" class="secondary tiny" @click="archiveAccount(a)"><AppIcon :name="a.archived?'restore':'archive'"/> {{a.archived?'Восстановить':'В архив'}}</button></div>
      </section></div>

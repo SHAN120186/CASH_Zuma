@@ -1,6 +1,6 @@
 import {test} from 'node:test';
 import assert from 'node:assert/strict';
-import {toCents, formatCents, formatCompact, formatPercent, addDays, sameDayPreviousMonth} from '../src/overview/format.js';
+import {toCents, formatCents, formatAmount, amountTitle, formatCompact, formatPercent, addDays, sameDayPreviousMonth} from '../src/overview/format.js';
 import {balanceHistory, monthPlanFact} from '../src/overview/history.js';
 import {makeScale, scalePoints, smoothPath, tickIndexes} from '../src/overview/chart.js';
 
@@ -118,4 +118,63 @@ test('axis labels are compact and signed', () => {
   assert.equal(plain(formatCompact(toCents('180000000'))), '180 млн');
   assert.equal(plain(formatCompact(toCents('-42000000'))), '−42 млн');
   assert.equal(formatCompact(toCents('950')), '950');
+});
+
+test('headline amounts pick тыс., млн, млрд or трлн automatically', () => {
+  const short = (v, cur = 'UZS', opts) => plain(formatAmount(toCents(v), cur, opts));
+  assert.equal(short('5318400000'), '5,32 млрд');
+  assert.equal(short('182000000'), '182 млн');
+  assert.equal(short('75000000'), '75 млн');
+  assert.equal(short('25400'), '25,4 тыс.');
+  assert.equal(short('10000'), '10 тыс.');
+  assert.equal(short('1000000'), '1 млн');
+  assert.equal(short('1000000000'), '1 млрд');
+  assert.equal(short('2500000000000'), '2,5 трлн');
+  assert.equal(short('90000000000000'), '90 трлн');
+  // Below 10 000 the exact amount is shown, with tiyin when there are any.
+  assert.equal(short('9999'), '9 999');
+  assert.equal(short('1500.50'), '1 500,50');
+  assert.equal(short('1500', 'USD'), '1 500,00');
+  // The unit stays on the same line as the number.
+  assert.match(formatAmount(toCents('182000000'), 'UZS'), /^182\u00a0млн$/);
+});
+
+test('compact amounts: two decimals under 10, one under 100, none above, no trailing zeros', () => {
+  const short = v => plain(formatAmount(toCents(v), 'UZS'));
+  assert.equal(short('1234567'), '1,23 млн');
+  assert.equal(short('1500000'), '1,5 млн');
+  assert.equal(short('12345678'), '12,3 млн');
+  assert.equal(short('123456789'), '123 млн');
+  assert.equal(short('40000000000'), '40 млрд');
+  // Rounding that reaches 1 000 moves to the next unit.
+  assert.equal(short('999600'), '1 млн');
+  assert.equal(short('999999999'), '1 млрд');
+  assert.equal(short('9996000'), '10 млн');
+});
+
+test('compact amounts keep the sign rules of exact amounts', () => {
+  assert.equal(plain(formatAmount(toCents('-42000000'), 'UZS')), '−42 млн');
+  assert.equal(plain(formatAmount(toCents('-25.10'), 'EUR')), '−25,10');
+  assert.equal(plain(formatAmount(toCents('3200000'), 'UZS', {sign: true})), '+3,2 млн');
+  assert.equal(plain(formatAmount(toCents('-3200000'), 'UZS', {sign: true})), '−3,2 млн');
+  assert.equal(plain(formatAmount(0, 'UZS', {sign: true})), '0');
+  assert.equal(formatAmount(null, 'UZS'), '—');
+  assert.equal(formatAmount(undefined, 'UZS'), '—');
+  assert.equal(formatAmount(toCents('100000000000000.00'), 'UZS'), '—');
+});
+
+test('compact amounts have Uzbek unit names', () => {
+  const uz = v => plain(formatAmount(toCents(v), 'UZS', {lang: 'uz'}));
+  assert.equal(uz('25400'), '25,4 ming');
+  assert.equal(uz('75000000'), '75 mln');
+  assert.equal(uz('5318400000'), '5,32 mlrd');
+  assert.equal(uz('2500000000000'), '2,5 trln');
+});
+
+test('the tooltip of a compact amount keeps every digit and the currency', () => {
+  assert.equal(plain(amountTitle(toCents('5318400000'), 'UZS')), '5 318 400 000 UZS');
+  assert.equal(plain(amountTitle(toCents('1234567.89'), 'USD')), '1 234 567,89 USD');
+  assert.equal(plain(amountTitle(toCents('-42000000'), 'UZS')), '−42 000 000 UZS');
+  assert.equal(plain(amountTitle(toCents('3200000'), 'UZS', {sign: true})), '+3 200 000 UZS');
+  assert.equal(amountTitle(null, 'UZS'), '');
 });

@@ -1,6 +1,6 @@
 <script setup>
 import {computed, nextTick, onBeforeUnmount, onMounted, ref, useId, watch} from 'vue';
-import {formatCents, formatPercent, formatShortDate, formatLongDate} from './format.js';
+import {formatCents, formatAmount, amountTitle, formatPercent, formatShortDate, formatLongDate} from './format.js';
 import {scalePoints, smoothPath, tickIndexes} from './chart.js';
 
 const props = defineProps({
@@ -21,7 +21,8 @@ const props = defineProps({
 });
 const emit = defineEmits(['open-report', 'open-day', 'retry', 'add-account']);
 
-const amountText = computed(() => formatCents(props.available, props.currency));
+// The headline is compact ("5,32 млрд"); every digit is in the tooltip.
+const amountText = computed(() => formatAmount(props.available, props.currency));
 const direction = computed(() => {
   const r = props.change?.ratio;
   return r == null || !Number.isFinite(r) ? 'flat' : r > 0 ? 'up' : r < 0 ? 'down' : 'flat';
@@ -140,7 +141,7 @@ function key(event) {
   <div v-else-if="state === 'error'" class="bal-state" role="alert">
    <p class="bal-state-title">Не удалось получить остаток</p>
    <p class="bal-state-text">{{error || 'Сервер не ответил. Данные на экране не изменены.'}}</p>
-   <p v-if="onAccounts != null" class="bal-state-text">На счетах сейчас: <b>{{formatCents(onAccounts, currency)}}</b> {{currency}}</p>
+   <p v-if="onAccounts != null" class="bal-state-text">На счетах сейчас: <b :title="amountTitle(onAccounts, currency)">{{formatAmount(onAccounts, currency)}}</b> {{currency}}</p>
    <button type="button" class="secondary tiny" @click="emit('retry')">Повторить</button>
   </div>
 
@@ -151,7 +152,7 @@ function key(event) {
   </div>
 
   <template v-else>
-   <p class="bal-amount" :style="{'--chars': amountText.length}">
+   <p class="bal-amount" :style="{'--chars': amountText.length}" :title="amountTitle(available, currency)">
     <span class="bal-num">{{amountText}}</span><span class="bal-cur">{{currency}}</span>
    </p>
    <div class="bal-meta">
@@ -162,7 +163,7 @@ function key(event) {
     <span v-else class="bal-delta flat">Нет данных для сравнения с прошлым месяцем</span>
    </div>
    <p class="bal-split">
-    На счетах <b>{{formatCents(onAccounts, currency)}}</b> · в резерве утверждённых заявок <b>{{formatCents(reserved, currency)}}</b> {{currency}}
+    На счетах <b :title="amountTitle(onAccounts, currency)">{{formatAmount(onAccounts, currency)}}</b> · в резерве утверждённых заявок <b :title="amountTitle(reserved, currency)">{{formatAmount(reserved, currency)}}</b> {{currency}}
    </p>
 
    <figure v-if="points.length > 1" class="bal-chart">
@@ -213,15 +214,15 @@ function key(event) {
 .bal{
  container-type:inline-size;position:relative;display:flex;flex-direction:column;gap:14px;min-width:0;
  padding:26px 28px 20px;border-radius:var(--radius-hero);
- background:linear-gradient(155deg,rgba(255,255,255,.97) 0%,rgba(251,251,248,.92) 48%,rgba(244,245,241,.9) 100%);
+ background:linear-gradient(155deg,var(--surface) 0%,var(--row-hover) 100%);
  -webkit-backdrop-filter:saturate(150%) blur(16px);backdrop-filter:saturate(150%) blur(16px);
- border:1px solid rgba(23,43,42,.08);
- box-shadow:inset 0 1px 0 #fff,inset 0 -1px 0 rgba(23,43,42,.04),0 2px 0 rgba(16,45,43,.035),0 1px 2px rgba(16,45,43,.06),0 22px 46px -22px rgba(16,45,43,.30);
+ border:1px solid var(--line2);
+ box-shadow:inset 0 1px 0 var(--surface),inset 0 -1px 0 rgba(11,16,36,.04),0 2px 0 rgba(11,16,36,.035),0 1px 2px rgba(11,16,36,.06),0 22px 46px -22px rgba(11,16,36,.30);
  transition:transform var(--dur-2) var(--ease),box-shadow var(--dur-2) var(--ease),border-color var(--dur-2) var(--ease);
 }
 @media (hover:hover) and (pointer:fine){
- .bal.is-ready:hover{transform:translateY(-3px);border-color:rgba(15,118,110,.28);
-  box-shadow:inset 0 1px 0 #fff,inset 0 -1px 0 rgba(23,43,42,.04),0 2px 0 rgba(16,45,43,.035),0 2px 4px rgba(16,45,43,.07),0 30px 56px -24px rgba(16,45,43,.36)}
+ .bal.is-ready:hover{transform:translateY(-3px);border-color:rgba(91,77,242,.28);
+  box-shadow:inset 0 1px 0 var(--surface),inset 0 -1px 0 rgba(11,16,36,.04),0 2px 0 rgba(11,16,36,.035),0 2px 4px rgba(11,16,36,.07),0 30px 56px -24px rgba(11,16,36,.36)}
 }
 .bal-head{display:flex;justify-content:space-between;align-items:flex-start;gap:12px}
 .bal-titles{min-width:0}
@@ -229,7 +230,7 @@ h2{font-size:21px;font-weight:600;letter-spacing:-.012em;color:var(--text)}
 .bal-sub{display:flex;flex-wrap:wrap;gap:4px 12px;margin-top:8px;font-size:12.5px;color:var(--muted);font-weight:600}
 .bal-company{letter-spacing:.1em;text-transform:uppercase;font-weight:700;font-size:13px}
 .bal-icon{flex:none;width:44px;height:44px;min-height:44px;padding:0;border-radius:50%;background:var(--primary-soft);border:0;color:var(--primary)}
-.bal-icon:hover:not(:disabled){background:#D3EAE5;color:var(--primary-hover)}
+.bal-icon:hover:not(:disabled){background:rgba(91,77,242,.18);color:var(--primary-hover)}
 .bal-amount{display:flex;flex-wrap:wrap;align-items:baseline;gap:4px 14px;margin:4px 0 0;line-height:1.02;min-width:0}
 .bal-num{font-size:clamp(18px,calc(112cqi / var(--chars)),60px);font-weight:800;letter-spacing:-.025em;color:var(--text);font-variant-numeric:tabular-nums;white-space:nowrap}
 .bal-cur{font-size:clamp(15px,4.4cqi,30px);font-weight:600;color:var(--muted);letter-spacing:.01em}
@@ -245,18 +246,18 @@ h2{font-size:21px;font-weight:600;letter-spacing:-.012em;color:var(--text)}
 .bal-plot{position:relative;height:150px;border-radius:12px;outline-offset:4px;touch-action:pan-y}
 .bal-plot.clickable{cursor:pointer}
 .bal-plot svg{position:absolute;inset:0;display:block;overflow:visible}
-.grid{stroke:rgba(23,43,42,.13);stroke-dasharray:3 5;stroke-width:1}
-.base{stroke:rgba(23,43,42,.10);stroke-width:1}
+.grid{stroke:var(--line);stroke-dasharray:3 5;stroke-width:1}
+.base{stroke:var(--line);stroke-width:1}
 .cursor{stroke:var(--text);stroke-opacity:.28;stroke-width:1}
 .line{fill:none;stroke-width:2.6;stroke-linecap:round;stroke-linejoin:round;stroke-dasharray:1;stroke-dashoffset:0}
 .draw .line{animation:draw 520ms var(--ease) both}
 .draw .area{animation:fade 520ms var(--ease) both}
 @keyframes draw{from{stroke-dashoffset:1}to{stroke-dashoffset:0}}
 @keyframes fade{from{opacity:0}to{opacity:1}}
-.bal-dot{position:absolute;width:11px;height:11px;margin:-5.5px 0 0 -5.5px;border-radius:50%;background:var(--primary);border:2px solid #fff;pointer-events:none}
-.bal-dot.end{box-shadow:0 0 0 8px rgba(46,156,128,.16)}
+.bal-dot{position:absolute;width:11px;height:11px;margin:-5.5px 0 0 -5.5px;border-radius:50%;background:var(--primary);border:2px solid var(--surface);pointer-events:none}
+.bal-dot.end{box-shadow:0 0 0 8px rgba(91,77,242,.16)}
 .bal-tip{position:absolute;transform:translate(-50%,calc(-100% - 14px));display:flex;flex-direction:column;gap:3px;min-width:min(190px,100%);width:max-content;max-width:min(300px,100%);padding:10px 12px;border-radius:12px;
- background:#fff;border:1px solid var(--line);box-shadow:0 12px 28px -14px rgba(16,45,43,.35);font-size:12.5px;color:var(--muted);font-weight:600;pointer-events:none;z-index:2}
+ background:var(--surface);border:1px solid var(--line);box-shadow:0 12px 28px -14px rgba(11,16,36,.35);font-size:12.5px;color:var(--muted);font-weight:600;pointer-events:none;z-index:2}
 .bal-tip b{color:var(--text);font-size:13px}
 .bal-tip span{display:flex;justify-content:space-between;gap:14px}
 .bal-tip em{white-space:nowrap;font-style:normal;color:var(--text);font-variant-numeric:tabular-nums;font-weight:700}
@@ -268,7 +269,7 @@ h2{font-size:21px;font-weight:600;letter-spacing:-.012em;color:var(--text)}
 .bal-state-title{font-size:18px;font-weight:700;color:var(--text)}
 .bal-state-text{color:var(--muted);font-weight:600;max-width:52ch}
 .bal-skel{display:flex;flex-direction:column;gap:14px;padding-top:4px}
-.sk{display:block;border-radius:10px;background:linear-gradient(90deg,#EFEDE7 0%,#F7F6F2 50%,#EFEDE7 100%);background-size:200% 100%;animation:shimmer 1.3s linear infinite}
+.sk{display:block;border-radius:10px;background:linear-gradient(90deg,var(--surface-muted) 0%,var(--bg) 50%,var(--surface-muted) 100%);background-size:200% 100%;animation:shimmer 1.3s linear infinite}
 .sk-amount{height:52px;width:min(78%,520px)}.sk-pill{height:30px;width:160px;border-radius:999px}.sk-chart{height:150px}
 @keyframes shimmer{from{background-position:200% 0}to{background-position:-200% 0}}
 .sr{position:absolute;width:1px;height:1px;padding:0;margin:-1px;overflow:hidden;clip:rect(0 0 0 0);white-space:nowrap;border:0}
@@ -281,5 +282,4 @@ h2{font-size:21px;font-weight:600;letter-spacing:-.012em;color:var(--text)}
  .bal,.bal.is-ready:hover{transition:none;transform:none}
  .draw .line,.draw .area,.sk{animation:none}
 }
-@supports not ((backdrop-filter:blur(1px)) or (-webkit-backdrop-filter:blur(1px))){.bal{background:linear-gradient(155deg,#fff,#F6F7F3)}}
 </style>

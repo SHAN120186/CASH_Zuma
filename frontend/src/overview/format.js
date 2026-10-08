@@ -42,6 +42,49 @@ export function formatCents(cents, currency, { sign = false } = {}) {
   return prefix + grouping.format(whole) + tail;
 }
 
+// Unit names for compact amounts; uz is ready for the Uzbek interface.
+export const AMOUNT_UNITS = {
+  ru: {k: 'тыс.', m: 'млн', b: 'млрд', t: 'трлн'},
+  uz: {k: 'ming', m: 'mln', b: 'mlrd', t: 'trln'},
+};
+// [size of one unit in cents, unit key], smallest first. Thresholds are on the
+// whole-currency value: 1e4 → тыс., 1e6 → млн, 1e9 → млрд, 1e12 → трлн.
+const STEPS = [[1e5, 'k'], [1e8, 'm'], [1e11, 'b'], [1e14, 't']];
+const COMPACT_FROM = 1e6; // 10 000 in cents
+
+// Headline amounts: "5,32 млрд", "182 млн", "25,4 тыс.". Below 10 000 the
+// exact amount is shown. Two decimals under 10 units, one under 100, none
+// above; trailing zeros are dropped. The unit is kept on the same line.
+// Ledgers, tables and forms keep formatCents with every digit.
+export function formatAmount(cents, currency, { sign = false, lang = 'ru' } = {}) {
+  if (cents === null || cents === undefined || !Number.isSafeInteger(cents)) return '—';
+  const abs = Math.abs(cents);
+  if (abs < COMPACT_FROM) return formatCents(cents, currency, { sign });
+  const units = AMOUNT_UNITS[lang] || AMOUNT_UNITS.ru;
+  let i = STEPS.length - 1;
+  while (i > 0 && abs < STEPS[i][0]) i -= 1;
+  let digits, value;
+  for (;;) {
+    const size = STEPS[i][0], n = abs / size;
+    digits = n < 10 ? 2 : n < 100 ? 1 : 0;
+    // Rounded in whole steps of the last shown digit, so no float drift.
+    const step = size / 10 ** digits;
+    value = Math.round(abs / step) / 10 ** digits;
+    // 999 960 rounds to "1 000 тыс."; show it as "1 млн" instead.
+    if (value < 1000 || i === STEPS.length - 1) break;
+    i += 1;
+  }
+  const text = numberFormat(digits, false).format(value).replace(/(,\d*?)0+$/, '$1').replace(/,$/, '');
+  const prefix = cents < 0 ? '−' : sign && cents > 0 ? '+' : '';
+  return prefix + text + '\u00a0' + units[STEPS[i][1]];
+}
+
+// Tooltip for a compact amount: every digit and the currency.
+export function amountTitle(cents, currency, { sign = false } = {}) {
+  if (cents === null || cents === undefined || !Number.isSafeInteger(cents)) return '';
+  return formatCents(cents, currency, { sign }) + ' ' + currency;
+}
+
 export function formatPercent(ratio) {
   if (ratio === null || !Number.isFinite(ratio)) return '—';
   const value = Math.round(ratio * 1000) / 10;
