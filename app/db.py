@@ -237,6 +237,84 @@ class ModelVersion(Base):
     source = Column(String(240), nullable=False)
     snapshot = Column(Text, nullable=False)
 
+class ReportArchive(Base):
+    """Private immutable pair of prepared PDF/XLSX reports; never a financial ledger."""
+    __tablename__ = 'report_archives'
+    id = Column(Integer, primary_key=True)
+    company_id = Column(Integer, ForeignKey('companies.id'), nullable=False)
+    title = Column(String(160), nullable=False)
+    period_start = Column(Date, nullable=False)
+    period_end = Column(Date, nullable=False)
+    request_key = Column(String(36), nullable=False)
+    version = Column(Integer, nullable=False)
+    status = Column(String(10), nullable=False, default='draft')
+    created_by = Column(Integer, ForeignKey('users.id'), nullable=False)
+    uploaded_at = Column(DateTime, nullable=False, default=now)
+    __table_args__ = (UniqueConstraint('company_id', 'request_key'),
+                      UniqueConstraint('company_id', 'version'))
+
+class ReportArchiveFile(Base):
+    """Bytes survive ephemeral hosting restarts and are only served after authorization."""
+    __tablename__ = 'report_archive_files'
+    id = Column(Integer, primary_key=True)
+    company_id = Column(Integer, ForeignKey('companies.id'), nullable=False)
+    archive_id = Column(Integer, ForeignKey('report_archives.id'), nullable=False)
+    format = Column(String(4), nullable=False)
+    filename = Column(String(220), nullable=False)
+    mime = Column(String(100), nullable=False)
+    sha256 = Column(String(64), nullable=False)
+    size = Column(Integer, nullable=False)
+    content = deferred(Column(LargeBinary, nullable=False))
+    created_at = Column(DateTime, nullable=False, default=now)
+    __table_args__ = (UniqueConstraint('archive_id', 'format'),)
+
+class BusinessProject(Base):
+    """A company-owned folder of inputs and its reproducible generation state."""
+    __tablename__ = 'business_projects'
+    id = Column(Integer, primary_key=True)
+    company_id = Column(Integer, ForeignKey('companies.id'), nullable=False)
+    title = Column(String(160), nullable=False)
+    request_key = Column(String(36), nullable=False)
+    created_by = Column(Integer, ForeignKey('users.id'), nullable=False)
+    revision = Column(Integer, nullable=False, default=0)
+    status = Column(String(20), nullable=False, default='draft')
+    inputs_json = Column(Text, nullable=False, default='{}')
+    extraction_json = Column(Text, nullable=False, default='{}')
+    current_fingerprint = Column(String(64), nullable=False, default='')
+    created_at = Column(DateTime, nullable=False, default=now)
+    updated_at = Column(DateTime, nullable=False, default=now)
+    __table_args__ = (UniqueConstraint('company_id', 'request_key'),)
+
+class BusinessSourceFile(Base):
+    __tablename__ = 'business_source_files'
+    id = Column(Integer, primary_key=True)
+    company_id = Column(Integer, ForeignKey('companies.id'), nullable=False)
+    project_id = Column(Integer, ForeignKey('business_projects.id'), nullable=False)
+    relative_path = Column(String(500), nullable=False)
+    filename = Column(String(220), nullable=False)
+    sha256 = Column(String(64), nullable=False)
+    size = Column(Integer, nullable=False)
+    content = deferred(Column(LargeBinary, nullable=False))
+    uploaded_at = Column(DateTime, nullable=False, default=now)
+    __table_args__ = (UniqueConstraint('project_id', 'relative_path'),)
+
+class BusinessGeneration(Base):
+    """Immutable calculated inputs/results and two archive pairs for each revision."""
+    __tablename__ = 'business_generations'
+    id = Column(Integer, primary_key=True)
+    company_id = Column(Integer, ForeignKey('companies.id'), nullable=False)
+    project_id = Column(Integer, ForeignKey('business_projects.id'), nullable=False)
+    revision = Column(Integer, nullable=False)
+    fingerprint = Column(String(64), nullable=False)
+    inputs_json = Column(Text, nullable=False)
+    result_json = Column(Text, nullable=False)
+    source_manifest_json = Column(Text, nullable=False)
+    business_archive_id = Column(Integer, ForeignKey('report_archives.id'), nullable=False)
+    teo_archive_id = Column(Integer, ForeignKey('report_archives.id'), nullable=False)
+    created_by = Column(Integer, ForeignKey('users.id'), nullable=False)
+    created_at = Column(DateTime, nullable=False, default=now)
+    __table_args__ = (UniqueConstraint('project_id', 'fingerprint'),)
+
 class Audit(Base):
     __tablename__ = 'audit_log'
     company_id = Column(Integer, ForeignKey('companies.id'), nullable=True)

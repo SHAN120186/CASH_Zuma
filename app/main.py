@@ -36,7 +36,7 @@ async def lifespan(app):
     drop_shadowed_groups()
     drop_orphan_groups()
     yield
-app=FastAPI(title='UZGERMED Treasury',version='2.14.10',docs_url=None,redoc_url=None,openapi_url=None,lifespan=lifespan)
+app=FastAPI(title='UZGERMED Treasury',version='2.16.3',docs_url=None,redoc_url=None,openapi_url=None,lifespan=lifespan)
 app.add_middleware(TrustedHostMiddleware,allowed_hosts=ALLOWED)
 app.mount('/static',StaticFiles(directory=ROOT/'app'/'static'),name='static')
 
@@ -45,7 +45,9 @@ async def safety(request,call_next):
     if request.method not in ('GET','HEAD','OPTIONS'):
         try:length=int(request.headers.get('content-length','0' if request.method=='DELETE' else '-1'))
         except ValueError:length=-1
-        limit=MAX_SIZE if request.url.path=='/api/model/upload' else 5*1024*1024 if request.url.path in ('/api/import/preview','/api/plan-import/preview') or request.url.path.endswith('/document') or '/documents' in request.url.path else 65536
+        archive_file=bool(re.fullmatch(r'/api/(?:bot/v1/)?report-archives/[0-9]+/files/(?:pdf|xlsx)',request.url.path)) or bool(re.fullmatch(r'/api/business-projects/[0-9]+/sources',request.url.path))
+        business_params=bool(re.fullmatch(r'/api/business-projects/[0-9]+/(?:generate|analyse)',request.url.path))
+        limit=MAX_SIZE if request.url.path=='/api/model/upload' or archive_file else 1024*1024 if business_params else 5*1024*1024 if request.url.path in ('/api/import/preview','/api/plan-import/preview') or request.url.path.endswith('/document') or '/documents' in request.url.path else 65536
         if length<0 or length>limit:return JSONResponse({'detail':'Неверный размер запроса.'},status_code=413)
         origin=request.headers.get('origin')
         expected=PUBLIC_ORIGIN or str(request.base_url).rstrip('/')
@@ -339,11 +341,12 @@ def edit_account(id:int,data:AccountEdit,request:Request):
         dates=[t.date for t in entries]+[r.due_date for r in requests]+[r.due_date for r in receipts]
         if dates and data.opening_date>min(dates):raise HTTPException(409,'Дата начала учёта не может быть позже существующих операций, заявок или поступлений.')
         def snapshot():return {'name':a.name,'kind':a.kind,'currency':a.currency,'company_id':a.company_id,'opening':money(a.opening),'opening_date':str(a.opening_date),'allow_overdraft':a.allow_overdraft}
-        before=snapshot()
+        before=snapshot();old_opening=a.opening
         if data.company_id is not None:get(s,Company,data.company_id);a.company_id=data.company_id
         a.name=data.name;a.kind=data.kind;a.currency=data.currency;a.opening=amount(data.opening,True)
         a.opening_date=data.opening_date;a.allow_overdraft=data.allow_overdraft
         s.flush();validate_running_balance(s,a)
+        if a.opening<old_opening:enforce_reservations_after_correction(s,a)
         if (a.kind,a.company_id)!=(before['kind'],before['company_id']):
             for r in requests:
                 if r.status in ('pending','approved'):log(s,u,'Изменён счёт заявки','request',r.id,f'{before["kind"]} → {a.kind}')
@@ -532,9 +535,9 @@ def decide(id:int,data:DecisionIn,request:Request):
             else:r.approved_by=u.id
             # Директор участвует по снимку политики статьи; последний нужный этап завершает согласование.
             if stage=='director' or not requires_director(r):
-                # Деньги проверяются на срок заявки и на сегодня: у просроченной заявки остаток
-                # на прошлую дату срока уже не говорит о том, что деньги есть сейчас.
-                for as_of in sorted({r.due_date,max(today(),r.due_date)}):enforce_available_funds(s,a,as_of,r.amount,r.id)
+                # Срок заявки и сегодняшний остаток проверяются вместе со всеми более
+                # поздними резервами: ранняя заявка не занимает уже обещанные деньги.
+                enforce_reserved_funds(s,a,r.due_date,r.amount,r.id)
                 r.status='approved';r.approved_at=now();r.approved_overrun=overrun(b)
         elif data.action=='return':
             if not (('approve' in perms and act_with_right(u,'approve')) or act_as(u,'accountant')):raise HTTPException(403,'Недостаточно прав для возврата.')
@@ -632,9 +635,10 @@ def reverse(id:int,data:ReverseIn,request:Request):
         t=get(s,Ledger,id)
         if any(get(s,Account,x).archived for x in (t.account_id,t.to_account_id) if x):raise HTTPException(409,'Счёт в архиве. Сначала восстановите его.')
         if t.reversal_of or s.scalar(select(Ledger.id).where(Ledger.reversal_of==id)):raise HTTPException(409,'Сторнирование уже выполнено или это запись сторно.')
-        inv=Ledger(account_id=t.to_account_id if t.kind=='transfer' else t.account_id,to_account_id=t.account_id if t.kind=='transfer' else None,
+        inverse_account=t.to_account_id if t.kind=='transfer' else t.account_id
+        inv=Ledger(account_id=inverse_account,to_account_id=t.account_id if t.kind=='transfer' else None,
                    kind={'in':'out','out':'in','transfer':'transfer'}[t.kind],amount=t.amount,date=t.date,
-                   category_id=t.category_id,counterparty=t.counterparty,reference='REV-'+str(t.id),note=data.reason,reversal_of=t.id,creator_id=u.id)
+                   category_id=t.category_id,counterparty=t.counterparty,reference=reversal_reference(s,inverse_account,t.id),note=data.reason,reversal_of=t.id,creator_id=u.id)
         s.add(inv)
         # Освобождаем уникальную связь оплаты, но сохраняем историю в журнале.
         if t.request_id:
@@ -643,6 +647,11 @@ def reverse(id:int,data:ReverseIn,request:Request):
             get(s,Receipt,t.receipt_id).status='expected';log(s,u,'Отмена поступления','receipt',t.receipt_id,f'Сторно операции {id}');t.receipt_id=None
         s.flush();validate_running_balance(s,get(s,Account,t.account_id))
         if t.to_account_id:validate_running_balance(s,get(s,Account,t.to_account_id))
+        # The inverse entry is already included in the actual balance. Check
+        # only the account losing money, with required=0, to avoid a second debit.
+        if t.kind in ('in','transfer'):
+            reduced_account=t.to_account_id if t.kind=='transfer' else t.account_id
+            enforce_reservations_after_correction(s,get(s,Account,reduced_account))
         log(s,u,'Сторно операции (исходная дата)','ledger',id,data.reason)
         return {'id':inv.id}
 
@@ -667,12 +676,12 @@ def group_report(request:Request,company_id:int,currency:Literal['UZS','USD','EU
         accounts=list(s.scalars(select(Account).where(Account.company_id==company_id,Account.currency==currency)))
         aids={a.id for a in accounts}
         entries=[t for t in s.scalars(effective_cashflows(s).where(Ledger.date>=start,Ledger.date<=day)) if t.account_id in aids and t.kind!='transfer']
-        plan=s.scalar(select(CashPlan).where(CashPlan.company_id==company_id,CashPlan.month==month,CashPlan.currency==currency,CashPlan.scenario==scenario))
-        payload=json.loads(plan.payload) if plan else {}
+        from .cash_report import expense_plan_summary
+        plan=expense_plan_summary(s,month,currency,company_id,scenario,day)
         bank_ids={a.id for a in accounts if a.kind=='bank'}
         income_mtd=sum(t.amount for t in entries if t.kind=='in' and t.account_id in bank_ids)
         last_income=max((t.date for t in entries if t.kind=='in' and t.account_id in bank_ids),default=None)
-        expense_plan=abs(sum(v for k,v in payload.items() if k.endswith(':out')))
+        expense_plan=plan['known'];remaining=None;coverage=None
         # Счёт, открытый позже дня отчёта, в этот день ещё не существует и даёт ноль, а не ошибку.
         opened=[a for a in accounts if a.opening_date<=day]
         opening=sum(day_start_balance(s,a,day) for a in opened)
@@ -681,16 +690,29 @@ def group_report(request:Request,company_id:int,currency:Literal['UZS','USD','EU
         closing=opening+income_day-expense_day
         reserved=sum(funds_state(s,a,day)['reserved'] for a in opened)
         available=closing-reserved
-        if expense_plan:
+        if not plan['complete']:
+            if plan['defined_rows']:
+                plan_line=(f'План расходов: частично задано {money(expense_plan)} {currency}; '
+                           f'незаполненные расходные строки: {plan["missing_rows"]}. '
+                           'Полный план и покрытие не определены.')
+            else:plan_line=f'План расходов: данных нет; незаполненные расходные строки: {plan["missing_rows"]}.'
+            plan_line+=f' Банковские поступления MTD: {money(income_mtd)} {currency}'
+        elif expense_plan:
             remaining=max(0,expense_plan-income_mtd);coverage=income_mtd*100/expense_plan
             plan_line=f'План расходов: {money(expense_plan)} {currency}; банковские поступления MTD: {money(income_mtd)}; до покрытия плана: {money(remaining)}; покрытие {coverage:.1f}%'
-        else:plan_line=f'План расходов: данных нет; банковские поступления MTD: {money(income_mtd)} {currency}'
+        else:
+            remaining=0
+            plan_line=(f'План расходов: {money(0)} {currency}; банковские поступления MTD: {money(income_mtd)}; '
+                       'покрытие не требуется: план выплат равен нулю.')
         last_line='нет' if last_income is None else last_income.strftime('%d.%m.%Y')
         day_label=day.strftime('%d.%m.%Y')
         text='\n'.join([f'{company.name} · {month} · сценарий {scenario}',plan_line,f'Последнее банковское поступление: {last_line}',
             f'{day_label}: начало дня {money(opening)}; приход {money(income_day)}; расход {money(expense_day)}; конец дня {money(closing)}; резерв {money(reserved)}; доступно {money(available)} {currency}'])
         return {'text':text,'company':company.name,'month':month,'day':str(day),'currency':currency,'scenario':scenario,
             'expense_plan':money(expense_plan),'bank_income_mtd':money(income_mtd),'last_bank_income':str(last_income) if last_income else None,
+            'expense_plan_complete':plan['complete'],'expense_plan_defined_rows':plan['defined_rows'],'expense_plan_missing_rows':plan['missing_rows'],
+            'expense_plan_total':money(plan['total']) if plan['total'] is not None else None,
+            'expense_plan_remaining':money(remaining) if remaining is not None else None,'expense_plan_coverage_percent':coverage,
             'opening':money(opening),'income_day':money(income_day),'expense_day':money(expense_day),'closing':money(closing),'reserved':money(reserved),'available':money(available)}
 
 @app.get('/api/export/ledger.csv')
@@ -870,3 +892,10 @@ app.include_router(bot_router)
 
 from .requests_api import router as requests_router
 app.include_router(requests_router)
+
+from .report_archives import router as report_archives_router
+app.include_router(report_archives_router)
+from .business_projects import router as business_projects_router
+app.include_router(business_projects_router)
+from .native_projects import router as native_projects_router
+app.include_router(native_projects_router)
