@@ -4,6 +4,7 @@ from decimal import Decimal
 from io import BytesIO
 import json
 from pathlib import Path
+import re
 import sys
 import unittest
 from zipfile import ZipFile
@@ -11,7 +12,7 @@ from zipfile import ZipFile
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from openpyxl import load_workbook
 from pypdf import PdfReader
-from app.business_exports import MONTHLY_FIELDS, build_documents, build_input_template
+from app.business_exports import BUSINESS_SECTIONS, MONTHLY_FIELDS, build_documents, build_input_template
 from app.business_model import calculate_model, validate_model, ModelValidationError
 from app.business_sources import PARAMETER_LABELS, extract_sources
 
@@ -167,7 +168,7 @@ class BusinessExportTests(unittest.TestCase):
             self.assertIn("a" * 32, text)
             self.assertIn("без НДС", text)
             self.assertNotIn("Число сотрудников: 10", text)
-        self.assertIn("Рынок и сбыт", texts["business_pdf"])
+        self.assertIn("Рынок и концепция маркетинга", texts["business_pdf"])
         self.assertIn("Письмо покупателя", texts["business_pdf"])
         self.assertIn("Производственная программа и мощность", texts["teo_pdf"])
         self.assertIn("Кассовые разрывы", texts["teo_pdf"])
@@ -268,6 +269,86 @@ class BusinessExportTests(unittest.TestCase):
         changed = dict(inputs, currency="UZS")
         with self.assertRaises(ValueError):
             build_documents(changed, result, [], {})
+
+    def test_manual_business_plan_has_twelve_ordered_sections_and_full_literal_text(self):
+        inputs = sample_inputs()
+        for index, (_, field) in enumerate(BUSINESS_SECTIONS, 1):
+            inputs[field] = f"ОПИСАНИЕ_РАЗДЕЛА_{index:02d} введено пользователем."
+        start = '=HYPERLINK("https://invalid.test", "Текст")\n'
+        end = "\nКОНЕЦ_ПОЛНОГО_ОПИСАНИЯ"
+        inputs["initiator"] = start + ("Подтверждённые сведения. " * 700)[:16000 - len(start) - len(end)] + end
+        self.assertEqual(len(inputs["initiator"]), 16000)
+        inputs["personnel"] += "\nДолжности и численность представлены пользователем."
+        documents = build_documents(inputs, calculate_model(inputs), [], {"mode": "manual", "manual_fields": list(inputs)})
+        pdf = PdfReader(BytesIO(documents["business_pdf"]))
+        text = re.sub(r"\s+", " ", " ".join(page.extract_text() for page in pdf.pages))
+        positions = [text.index(title) for title, _ in BUSINESS_SECTIONS]
+        self.assertEqual(positions, sorted(positions))
+        for index in range(1, 13):
+            if index != 2:
+                self.assertIn(f"ОПИСАНИЕ_РАЗДЕЛА_{index:02d}", text)
+        self.assertIn("КОНЕЦ_ПОЛНОГО_ОПИСАНИЯ", text)
+        self.assertIn("Введено пользователем", text)
+        self.assertIn("Внешние документы не предоставлены", text)
+        self.assertNotIn("Численность сотрудников и заработная плата по должностям отдельно не представлены", text)
+        book = load_workbook(BytesIO(documents["business_xlsx"]))
+        self.addCleanup(book.close)
+        sheet = book["Описание проекта"]
+        headers = [(cell.row, cell.value) for cell in sheet["A"] if cell.value in {title for title, _ in BUSINESS_SECTIONS}]
+        self.assertEqual([value for _, value in headers], [title for title, _ in BUSINESS_SECTIONS])
+        self.assertTrue(sheet.row_breaks.brk)
+        protected_rows = {row + offset for row, _ in headers for offset in (0, 1)}
+        self.assertFalse(any(page_break.id in protected_rows for page_break in sheet.row_breaks.brk))
+        row = next(row for row, value in headers if value == BUSINESS_SECTIONS[1][0]) + 2
+        chunks = []
+        while sum(map(len, chunks)) < len(inputs["initiator"]):
+            cell = sheet.cell(row, 1)
+            self.assertEqual(cell.data_type, "s")
+            self.assertIsNone(cell.hyperlink)
+            self.assertLess(sheet.row_dimensions[row].height, 409)
+            chunks.append(cell.value)
+            row += 1
+        self.assertEqual("".join(chunks), inputs["initiator"])
+        self.assertGreater(len(chunks), 1)
+        self.assertIn("Введено пользователем", [cell.value for cell in sheet["A"]])
+        self.assertIn("Введено пользователем", book["Параметры"]["D11"].value)
+        teo_text = " ".join(page.extract_text() for page in PdfReader(BytesIO(documents["teo_pdf"])).pages)
+        self.assertNotIn("КОНЕЦ_ПОЛНОГО_ОПИСАНИЯ", teo_text)
+        self.assertNotIn(BUSINESS_SECTIONS[1][0], teo_text)
+        teo_book = load_workbook(BytesIO(documents["teo_xlsx"]))
+        self.addCleanup(teo_book.close)
+        self.assertNotIn("Описание проекта", teo_book.sheetnames)
+
+    def test_missing_optional_business_sections_are_explicit_without_fabricated_content(self):
+        documents, _ = build_sample()
+        text = re.sub(r"\s+", " ", " ".join(page.extract_text() for page in PdfReader(BytesIO(documents["business_pdf"])).pages))
+        for index, (heading, field) in enumerate(BUSINESS_SECTIONS):
+            self.assertIn(heading, text)
+            if field not in sample_inputs():
+                start = text.index(heading) + len(heading)
+                self.assertTrue(text[start:].lstrip().startswith("Не указано."), field)
+        book = load_workbook(BytesIO(documents["business_xlsx"]), data_only=True)
+        self.addCleanup(book.close)
+        sheet = book["Описание проекта"]
+        for title, field in BUSINESS_SECTIONS:
+            if field not in sample_inputs():
+                row = next(cell.row for cell in sheet["A"] if cell.value == title)
+                self.assertEqual(sheet.cell(row + 2, 1).value, "Не указано.")
+
+    def test_multiline_narrative_splits_visible_rows_without_losing_lines(self):
+        inputs = sample_inputs()
+        inputs["resources"] = "\n".join(f"Строка_{index:03d} сырьё и ресурс." for index in range(120))
+        documents = build_documents(inputs, calculate_model(inputs), [], {"input_origin": "manual"})
+        book = load_workbook(BytesIO(documents["business_xlsx"]))
+        self.addCleanup(book.close)
+        sheet = book["Описание проекта"]
+        first = next(cell.row for cell in sheet["A"] if cell.value == BUSINESS_SECTIONS[4][0]) + 2
+        chunks = []
+        while sum(map(len, chunks)) < len(inputs["resources"]):
+            chunks.append(sheet.cell(first, 1).value)
+            self.assertLess(sheet.row_dimensions[first].height, 409)
+            first += 1
+        self.assertEqual("".join(chunks), inputs["resources"])
 
 
 if __name__ == "__main__":

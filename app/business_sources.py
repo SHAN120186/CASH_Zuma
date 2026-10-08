@@ -19,7 +19,7 @@ from typing import Any
 from defusedxml import ElementTree as ET
 from openpyxl.formula.translate import Translator
 
-from .business_model import validate_model
+from .business_model import MAX_NARRATIVE_LENGTH, NARRATIVE_FIELDS, NARRATIVE_LABELS, validate_model
 
 
 class SourceReadError(ValueError):
@@ -47,9 +47,9 @@ CANONICAL_FIELDS = {
     "opening_cash", "opening_receivables", "opening_inventory", "opening_payables",
     "initial_investment", "receivable_days", "inventory_days", "payable_days",
     "fixed_costs", "equity", "products", "assets", "loans",
-    "project_description", "technology", "market", "location", "investment_purpose",
+    *NARRATIVE_FIELDS,
 }
-TEXT_FIELDS = {"project_description", "technology", "market", "location", "investment_purpose"}
+TEXT_FIELDS = set(NARRATIVE_FIELDS)
 RUSSIAN_FIELDS = {
     "название проекта": "title", "проект": "title", "валюта": "currency",
     "месяц начала": "start", "дата начала": "start", "начало прогноза": "start",
@@ -66,6 +66,7 @@ RUSSIAN_FIELDS = {
     "постоянные расходы": "fixed_costs", "постоянные расходы в месяц": "fixed_costs",
     "взносы в капитал": "equity", "взносы в капитал в месяц": "equity",
     "продукция": "products", "активы": "assets", "кредиты": "loans",
+    "технология": "technology", "рынок": "market", "местоположение": "location",
 }
 PARAMETER_LABELS = {
     "title": "Название проекта", "currency": "Валюта", "start": "Месяц начала", "months": "Месяцев",
@@ -84,6 +85,7 @@ NORMALIZED_HEADERS = {
     "Активы": {"name": "Наименование", "value": "Стоимость", "life_months": "Срок амортизации (месяцы)", "commissioning_month": "Месяц ввода"},
     "Кредиты": {"name": "Наименование", "opening_balance": "Остаток на начало", "drawdowns": "Выдача в месяц", "principal": "Основной долг в месяц", "interest": "Проценты в месяц"},
 }
+PARAMETER_LABELS.update(NARRATIVE_LABELS)
 RUSSIAN_FIELDS.update({_label: canonical for canonical, label in PARAMETER_LABELS.items()
                        for _label in [label.casefold().replace("ё", "е")]})
 RUSSIAN_FIELDS.update({"assets_none": "assets_none", "loans_none": "loans_none"})
@@ -356,6 +358,8 @@ def _explicit(result: dict, cells: dict, address: str, field: str, name: str, sh
 
 
 def _parse_value(value: Any, field: str, percent: bool = False) -> Any:
+    if field in TEXT_FIELDS:
+        return value.strip() if isinstance(value, str) else value
     if value is None:
         return None
     if isinstance(value, str):
@@ -996,13 +1000,14 @@ def extract_sources(files: list[dict]) -> dict:
                 _issue(result, "documents", "image_reference", "Изображение сохранено как источник. Распознавание текста и финансовых чисел не выполнялось.", _source(name), False)
             elif suffix in ("txt", "csv"):
                 document["status"] = "reference_only"
-                stems = {"описание": "project_description", "технология": "technology", "рынок": "market",
+                stems = {**{_label(label): field for field, label in NARRATIVE_LABELS.items()},
+                         "описание": "project_description", "технология": "technology", "рынок": "market",
                          "местоположение": "location", "назначение инвестиций": "investment_purpose"}
                 stem = _label(name.rsplit("/", 1)[-1].rsplit(".", 1)[0])
                 if suffix == "txt" and stem in stems:
                     text = content.decode("utf-16" if content.startswith((b"\xff\xfe", b"\xfe\xff")) else "utf-8-sig").strip()
-                    if len(text) > 10000:
-                        raise SourceReadError("Описание должно содержать не более 10000 символов.")
+                    if len(text) > MAX_NARRATIVE_LENGTH:
+                        raise SourceReadError(f"Описание должно содержать не более {MAX_NARRATIVE_LENGTH} символов.")
                     if text:
                         text_inputs.setdefault(stems[stem], []).append((name, text))
                 else:
@@ -1052,8 +1057,8 @@ def extract_sources(files: list[dict]) -> dict:
             _evidence(result, field, value, _source(name), "explicit_text")
     for field in TEXT_FIELDS & result["inputs"].keys():
         value = result["inputs"][field]
-        if not isinstance(value, str) or len(value) > 10000:
-            _issue(result, field, "text_limit", "Текст раздела должен содержать не более 10000 символов.")
+        if not isinstance(value, str) or len(value) > MAX_NARRATIVE_LENGTH:
+            _issue(result, field, "text_limit", f"Текст раздела должен содержать не более {MAX_NARRATIVE_LENGTH} символов.")
             del result["inputs"][field]
     for issue in validate_model(result["inputs"]):
         if not any(item["field"] == issue["field"] and item["code"] == "missing_or_invalid" for item in result["issues"]):

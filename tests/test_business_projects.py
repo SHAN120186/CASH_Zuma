@@ -122,8 +122,10 @@ class BusinessProjectTests(unittest.TestCase):
             s.add(CompanyUser(company_id=company or self.cid, user_id=user.id, role=role))
         return self.login(name)
 
-    def create(self):
+    def create(self, mode=None):
         body = {'title': 'Synthetic project folder', 'company_id': self.cid, 'request_key': str(uuid4())}
+        if mode is not None:
+            body['mode'] = mode
         response = self.client.post('/api/business-projects', json=body, headers=self.headers)
         self.assertEqual(response.status_code, 200, response.text)
         return response.json(), body
@@ -152,6 +154,11 @@ class BusinessProjectTests(unittest.TestCase):
         return self.client.post(f"/api/business-projects/{project['id']}/generate", params={'company_id': self.cid},
                                 headers=self.headers, json={'revision': project['revision'], 'inputs': inputs or model(),
                                                            'confirm_sources': confirmed})
+
+    def save_draft(self, project, inputs, client=None, headers=None, **params):
+        return (client or self.client).put(f"/api/business-projects/{project['id']}/inputs",
+            params={'company_id': self.cid, **params}, headers=headers or self.headers,
+            json={'revision': project['revision'], 'inputs': inputs})
 
     def remove(self, project, client=None, headers=None, **params):
         return (client or self.client).delete(f"/api/business-projects/{project['id']}",
@@ -203,6 +210,203 @@ class BusinessProjectTests(unittest.TestCase):
         teo = stack.enter_context(patch('app.native_teo.build_teo_pdf',
             return_value=b'%PDF-1.4\nSynthetic native TEO\n%%EOF\n'))
         return stack, patched, rendered, teo
+
+    def test_manual_project_generates_four_files_without_sources_or_analysis(self):
+        project, body = self.create('manual')
+        self.assertEqual(project['mode'], 'manual')
+        self.assertEqual(project['source_count'], 0)
+        self.assertEqual(project['inputs'], {'title': body['title']})
+        again = self.client.post('/api/business-projects', json=body, headers=self.headers)
+        self.assertEqual(again.json()['id'], project['id'])
+        wrong_mode = self.client.post('/api/business-projects', json={**body, 'mode': 'files'}, headers=self.headers)
+        self.assertEqual(wrong_mode.status_code, 409)
+        ready = self.generate(project)
+        self.assertEqual(ready.status_code, 200, ready.text)
+        ready = ready.json()
+        self.assertEqual(ready['status'], 'ready')
+        self.assertEqual(ready['mode'], 'manual')
+        self.assertEqual(ready['extraction']['input_origin_label'], 'Введено пользователем')
+        self.assertEqual(set(ready['extraction']['manual_fields']), set(model()))
+        self.assertEqual(ready['extraction']['evidence'], [])
+        self.assertEqual(ready['files'], [])
+        self.assertEqual(len(ready['generations']), 1)
+        retry = self.generate(ready).json()
+        self.assertEqual(retry['current_generation_id'], ready['current_generation_id'])
+        with unit() as s:
+            self.assertEqual(s.scalar(select(func.count()).select_from(ReportArchiveFile)), 4)
+            self.assertEqual(s.scalar(select(func.count()).select_from(Ledger)), 0)
+            generation = s.get(BusinessGeneration, ready['current_generation_id'])
+            self.assertEqual(json.loads(generation.source_manifest_json), [])
+
+    def test_incomplete_manual_draft_preserves_missing_values_and_retries_safely(self):
+        project, _ = self.create('manual')
+        partial = {'title': 'Incomplete manual project', 'opening_cash': '', 'equity': None,
+                   'products': [{'name': 'Draft product', 'price': ''}], 'market': 'User supplied\nmarket note'}
+        saved = self.save_draft(project, partial)
+        self.assertEqual(saved.status_code, 200, saved.text)
+        saved = saved.json()
+        self.assertEqual(saved['revision'], project['revision'] + 1)
+        self.assertEqual(saved['status'], 'needs_data')
+        self.assertEqual(saved['inputs'], partial)
+        self.assertEqual(saved['generations'], [])
+        self.assertEqual(saved['current_generation_id'], None)
+        self.assertTrue(any(issue['field'] == 'opening_cash' for issue in saved['validation']))
+        retry = self.save_draft(project, partial)
+        self.assertEqual(retry.status_code, 200, retry.text)
+        self.assertEqual(retry.json()['revision'], saved['revision'])
+        self.assertEqual(self.save_draft(project, {**partial, 'opening_cash': 1}).status_code, 409)
+        self.assertEqual(self.generate(project).status_code, 409)
+        not_ready = self.generate(saved, partial).json()
+        self.assertEqual(not_ready['status'], 'needs_data')
+        self.assertEqual(not_ready['generations'], [])
+
+    def test_draft_edit_invalidates_current_generation_and_retains_immutable_reports(self):
+        project, _ = self.create('manual')
+        ready = self.generate(project).json()
+        generation = ready['current_generation_id']
+        with unit() as s:
+            old_files = {row.id: bytes(row.content) for row in s.scalars(select(ReportArchiveFile))}
+        same = self.save_draft(ready, model()).json()
+        self.assertEqual(same['status'], 'ready')
+        self.assertEqual(same['current_generation_id'], generation)
+        changed = {**model(), 'opening_cash': 600}
+        saved = self.save_draft(ready, changed).json()
+        self.assertEqual(saved['revision'], ready['revision'] + 1)
+        self.assertEqual(saved['current_generation_id'], None)
+        self.assertEqual(len(saved['generations']), 1)
+        new = self.generate(saved, changed).json()
+        self.assertNotEqual(new['current_generation_id'], generation)
+        self.assertEqual(len(new['generations']), 2)
+        with unit() as s:
+            for id, content in old_files.items():
+                self.assertEqual(bytes(s.get(ReportArchiveFile, id).content), content)
+
+    def test_manual_attachments_and_analysis_preserve_form_and_source_candidate(self):
+        project, _ = self.create('manual')
+        ready = self.generate(project).json()
+        source_model = model()
+        source_model['opening_cash'] = 999
+        source_model['products'][0]['price'] = 99
+        uploaded = self.upload(ready, json.dumps(source_model).encode()).json()
+        self.assertEqual(uploaded['mode'], 'manual')
+        self.assertEqual(uploaded['inputs'], model())
+        self.assertEqual(uploaded['current_generation_id'], None)
+        self.assertEqual(len(uploaded['generations']), 1)
+        analysed = self.analyse(uploaded).json()
+        self.assertEqual(analysed['status'], 'ready')
+        self.assertEqual(analysed['inputs'], model())
+        self.assertEqual(analysed['extraction']['inputs']['opening_cash'], 999)
+        self.assertIn('opening_cash', analysed['extraction']['manual_fields'])
+        self.assertIn('products', analysed['extraction']['manual_fields'])
+        generation = analysed['current_generation_id']
+        with unit() as s:
+            result = json.loads(s.get(BusinessGeneration, generation).result_json)
+            self.assertEqual(result['totals']['revenue'], '3000')
+            self.assertEqual(len(json.loads(s.get(BusinessGeneration, generation).source_manifest_json)), 1)
+
+    def test_manual_supporting_text_does_not_require_financial_workbook(self):
+        project, _ = self.create('manual')
+        saved = self.save_draft(project, model()).json()
+        uploaded = self.upload(saved, b'Synthetic supporting document', 'notes.txt').json()
+        self.assertEqual(uploaded['inputs'], model())
+        # Direct generation also analyses optional documents; no analyse bypass.
+        ready = self.generate(uploaded).json()
+        self.assertEqual(ready['status'], 'ready')
+        notice = next(issue for issue in ready['extraction']['issues'] if issue.get('code') == 'no_model')
+        self.assertFalse(notice['requires_confirmation'])
+        self.assertIn('пользователем', notice['message'])
+        self.assertEqual(ready['validation'], [])
+        self.assertTrue(any(issue.get('code') == 'text_reference' for issue in ready['extraction']['issues']))
+        self.assertTrue(any(issue.get('code') == 'missing_or_invalid' for issue in ready['extraction']['original_issues']))
+        self.assertFalse(any(issue.get('code') == 'missing_or_invalid' for issue in ready['extraction']['issues']))
+        from pypdf import PdfReader
+        with unit() as s:
+            generation = s.get(BusinessGeneration, ready['current_generation_id'])
+            for archive_id in (generation.business_archive_id, generation.teo_archive_id):
+                pdf = s.scalar(select(ReportArchiveFile).where(ReportArchiveFile.archive_id == archive_id,
+                                                              ReportArchiveFile.format == 'pdf'))
+                text = '\n'.join(page.extract_text() or '' for page in PdfReader(io.BytesIO(pdf.content)).pages)
+                self.assertNotIn('Обязательное непустое', text)
+                self.assertNotIn('Значение отсутствует', text)
+                self.assertIn('notes.txt', text)
+                self.assertIn('Финансовые данные вводятся пользователем', text)
+
+    def test_manual_generation_retains_blocking_attachment_issues_until_confirmation(self):
+        project, _ = self.create('manual')
+        uploaded = self.upload(project, b'Synthetic evidence', 'evidence.txt').json()
+        extraction = {'inputs': {}, 'evidence': [], 'documents': [], 'issues': [
+            {'field': 'model', 'code': 'no_model', 'message': 'No financial workbook', 'requires_confirmation': True},
+            {'field': 'products.price', 'code': 'price_conflict', 'message': 'Conflicting source prices',
+             'requires_confirmation': True}]}
+        with patch('app.business_sources.extract_sources', return_value=extraction):
+            waiting = self.generate(uploaded).json()
+        self.assertEqual(waiting['status'], 'needs_data')
+        self.assertEqual(waiting['generations'], [])
+        self.assertTrue(any(issue.get('source_code') == 'price_conflict' for issue in waiting['validation']))
+        self.assertTrue(any(issue.get('code') == 'price_conflict' for issue in waiting['extraction']['issues']))
+        with patch('app.business_sources.extract_sources', return_value=extraction):
+            ready = self.generate(waiting, confirmed=True).json()
+        self.assertEqual(ready['status'], 'ready')
+        self.assertTrue(ready['extraction']['parameters_confirmed'])
+        self.assertTrue(any(issue.get('code') == 'price_conflict' for issue in ready['extraction']['issues']))
+
+    def test_manual_native_attachment_cannot_bypass_original_methodology(self):
+        project, _ = self.create('manual')
+        saved = self.save_draft(project, {**model(), 'resources': 'Preserved manual resources'}).json()
+        uploaded = self.upload(saved, native_fixture(), 'native.xlsx').json()
+        self.assertTrue(uploaded['native_model'])
+        self.assertEqual(uploaded['inputs'], saved['inputs'])
+        self.assertEqual(self.save_draft(uploaded, model()).status_code, 409)
+        self.assertEqual(self.generate(uploaded, confirmed=True).status_code, 409)
+        analysed = self.analyse(uploaded).json()
+        self.assertTrue(analysed['native_model'])
+        self.assertEqual(analysed['mode'], 'manual')
+        self.assertEqual(analysed['inputs'], saved['inputs'])
+
+    def test_manual_draft_rechecks_revision_after_source_inspection(self):
+        project, _ = self.create('manual')
+        concurrent = {'title': 'Concurrent draft'}
+        def change_during_inspection(files):
+            with unit(True) as s:
+                record = s.get(BusinessProject, project['id'])
+                record.inputs_json = json.dumps(concurrent)
+                record.revision += 1
+                from app.db import now
+                record.updated_at = now()
+            return None
+        with patch('app.native_projects.native_candidate', side_effect=change_during_inspection):
+            response = self.save_draft(project, {'title': 'Stale draft'})
+        self.assertEqual(response.status_code, 409, response.text)
+        with unit() as s:
+            self.assertEqual(json.loads(s.get(BusinessProject, project['id']).inputs_json), concurrent)
+
+    def test_draft_permissions_company_lifecycle_and_narrative_bounds(self):
+        project, _ = self.create('manual')
+        peer, headers = self.actor('draft_peer', 'finance')
+        self.assertEqual(self.save_draft(project, {}, peer, headers).status_code, 403)
+        reader, headers = self.actor('draft_reader', 'investor')
+        self.assertEqual(self.save_draft(project, {}, reader, headers).status_code, 403)
+        self.assertEqual(self.save_draft(project, {}, company_id=self.other,
+            headers={**self.headers, 'X-Company-ID': str(self.other)}).status_code, 404)
+        anonymous = TestClient(app)
+        self.clients.append(anonymous)
+        self.assertEqual(self.save_draft(project, {}, anonymous).status_code, 401)
+        from app.business_model import MAX_NARRATIVE_LENGTH
+        for value in ({'unsafe': 'shape'}, None, 'x' * (MAX_NARRATIVE_LENGTH + 1), 'text\x00control'):
+            response = self.save_draft(project, {'title': 'Draft', 'strategy': value})
+            self.assertEqual(response.status_code, 422, response.text)
+        unchanged = self.client.get(f"/api/business-projects/{project['id']}", params={'company_id': self.cid}).json()
+        self.assertEqual(unchanged['revision'], project['revision'])
+        deleted = self.remove(project).json()
+        self.assertEqual(self.save_draft(deleted, {'title': 'Deleted draft'}).status_code, 409)
+
+    def test_legacy_file_project_still_requires_source_analysis(self):
+        project, _ = self.create()
+        self.assertEqual(project['mode'], 'files')
+        self.assertEqual(self.generate(project).status_code, 422)
+        uploaded = self.upload(project).json()
+        self.assertEqual(self.generate(uploaded).status_code, 409)
+        self.assertEqual(self.analyse(uploaded).json()['status'], 'ready')
 
     def test_native_generation_publishes_four_private_files_from_fresh_model_and_retries_without_rendering(self):
         project, source, word = self.native_complete_folder()

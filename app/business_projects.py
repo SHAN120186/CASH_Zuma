@@ -12,6 +12,7 @@ import stat
 import unicodedata
 from datetime import date, timezone
 from pathlib import PurePosixPath
+from typing import Literal
 from urllib.parse import quote, unquote
 from uuid import UUID, NAMESPACE_URL, uuid5
 from zipfile import BadZipFile, ZipFile
@@ -28,7 +29,7 @@ from .main import get, log
 from .report_archives import (authorize, delete_archive_record, restore_archive_record,
                              MIMES, valid_file)
 from .security import perms_of
-from .business_model import calculate_model, validate_model, ModelValidationError
+from .business_model import calculate_model, validate_model, validate_narratives, ModelValidationError
 
 router = APIRouter()
 MAX_FILE = 20 * 1024 * 1024
@@ -42,7 +43,7 @@ SOURCE_MIMES = {
     '.csv': 'text/csv', '.txt': 'text/plain', '.json': 'application/json', '.zip': 'application/zip',
     '.png': 'image/png', '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg',
 }
-GENERATOR_VERSION = '1.0'
+GENERATOR_VERSION = '1.1'
 
 
 def dump(value):
@@ -61,6 +62,7 @@ class ProjectIn(BaseModel):
     company_id: int = Field(gt=0)
     title: str = Field(min_length=1, max_length=160)
     request_key: UUID
+    mode: Literal['manual', 'files'] = 'files'
 
     @field_validator('title')
     @classmethod
@@ -82,6 +84,47 @@ class GenerateIn(BaseModel):
     revision: int = Field(ge=0)
     inputs: dict
     confirm_sources: bool = False
+
+
+class DraftIn(BaseModel):
+    model_config = ConfigDict(extra='forbid')
+    revision: int = Field(ge=0)
+    inputs: dict
+
+
+def project_mode(extraction):
+    return 'manual' if extraction.get('mode') == 'manual' else 'files'
+
+
+def manual_extraction(files=None):
+    if files:
+        from .business_sources import extract_sources
+        extraction = extract_sources(files)
+    else:
+        extraction = {'inputs': {}, 'evidence': [], 'issues': [], 'documents': [], 'narratives': []}
+    # A manual model supplies its own financial drivers. Missing a financial
+    # workbook is expected; all other source conflicts and errors remain visible.
+    extraction['issues'] = [
+        {**issue, 'requires_confirmation': False,
+         'message': 'В приложениях нет расчётной модели. Финансовые данные вводятся пользователем.'}
+        if issue.get('code') == 'no_model' else issue for issue in extraction.get('issues', [])]
+    return {**extraction, 'mode': 'manual', 'input_origin': 'manual',
+            'input_origin_label': 'Введено пользователем', 'sources_pending': False}
+
+
+def manual_fields(inputs, extraction):
+    return [key for key, value in inputs.items()
+            if key not in extraction.get('inputs', {}) or value != extraction['inputs'][key]]
+
+
+def checked_draft(inputs):
+    text_issues = validate_narratives(inputs)
+    if text_issues:
+        raise HTTPException(422, '; '.join(f"{issue['field']}: {issue['message']}" for issue in text_issues))
+    encoded = dump(inputs)
+    if len(encoded.encode('utf-8')) > 2 * 1024 * 1024:
+        raise HTTPException(413, 'Параметры проекта больше 2 МБ; уменьшите детализацию.')
+    return encoded
 
 
 def own(project, user):
@@ -122,6 +165,7 @@ def archive_meta(s, id):
 def summary(s, project, user):
     owner = project.created_by == user.id and 'import' in perms_of(user)
     return {'id': project.id, 'company_id': project.company_id, 'title': project.title,
+            'mode': project_mode(json.loads(project.extraction_json)),
             'status': project.status, 'revision': project.revision,
             'source_count': s.scalar(select(func.count()).select_from(BusinessSourceFile)
                                      .where(BusinessSourceFile.project_id == project.id)),
@@ -264,11 +308,15 @@ def create_project(data: ProjectIn, request: Request):
         user, company = authorize(s, request, 'import', company_id=data.company_id)
         project = s.scalar(select(BusinessProject).where(BusinessProject.request_key == str(data.request_key),
                                                         BusinessProject.company_id == company.id))
-        if project and (project.title != data.title or project.created_by != user.id):
+        if project and (project.title != data.title or project.created_by != user.id or
+                        project_mode(json.loads(project.extraction_json)) != data.mode):
             raise HTTPException(409, 'Ключ создания уже используется другим проектом.')
         if project is None:
             project = BusinessProject(company_id=company.id, title=data.title, request_key=str(data.request_key),
                                       created_by=user.id)
+            project.extraction_json = dump(manual_extraction() if data.mode == 'manual' else {'mode': 'files'})
+            if data.mode == 'manual':
+                project.inputs_json = dump({'title': data.title})
             s.add(project)
             s.flush()
             log(s, user, 'Создан проект бизнес-плана', 'business_project', project.id)
@@ -429,7 +477,13 @@ async def put_source(request: Request, id: int = Path(gt=0), company_id: int = Q
             s.add(BusinessSourceFile(company_id=company.id, project_id=id, relative_path=relative_path,
                                      filename=filename, sha256=sha, content=content, size=len(content)))
         project.revision += 1
-        project.status, project.inputs_json, project.extraction_json = 'draft', '{}', '{}'
+        if project_mode(json.loads(project.extraction_json)) == 'manual':
+            extraction = {**manual_extraction(), 'sources_pending': True}
+            extraction['manual_fields'] = list(json.loads(project.inputs_json))
+            project.extraction_json = dump(extraction)
+            project.status = 'needs_data'
+        else:
+            project.status, project.inputs_json, project.extraction_json = 'draft', '{}', dump({'mode': 'files', 'sources_pending': True})
         project.current_fingerprint = ''
         project.updated_at = now()
         s.flush()
@@ -462,25 +516,67 @@ def expanded_sources(records):
     return items
 
 
-def snapshot(request, id, company_id, revision):
+def snapshot(request, id, company_id, revision, allow_manual=False):
     with unit() as s:
         user, _ = authorize(s, request, 'import', company_id=company_id)
         project = get(s, BusinessProject, id)
         own(project, user)
         revision_ok(project, revision)
         records = sources(s, id)
-        if not records:
+        extraction = json.loads(project.extraction_json)
+        if not records and not (allow_manual and project_mode(extraction) == 'manual'):
             raise HTTPException(422, 'Сначала загрузите исходные файлы в папку проекта.')
-        return (expanded_sources(records), manifest(records), json.loads(project.extraction_json),
+        return (expanded_sources(records), manifest(records), extraction,
                 project.title, project.updated_at)
+
+
+@router.put('/api/business-projects/{id}/inputs')
+def save_inputs(data: DraftIn, request: Request, id: int = Path(gt=0), company_id: int = Query(gt=0)):
+    encoded = checked_draft(data.inputs)
+    with unit() as s:
+        user, _ = authorize(s, request, 'import', company_id=company_id)
+        project = get(s, BusinessProject, id)
+        own(project, user)
+        active(project)
+        records, updated_at = sources(s, id), project.updated_at
+        files = expanded_sources(records)
+    from .native_projects import native_candidate
+    if native_candidate(files):
+        raise HTTPException(409, 'В папке есть оригинальная финансовая модель. Используйте её параметры и пересчёт, чтобы сохранить исходную методику.')
+    with unit(True) as s:
+        user, _ = authorize(s, request, 'import', company_id=company_id)
+        project = get(s, BusinessProject, id)
+        own(project, user)
+        active(project)
+        # A retried save of exactly the same draft is harmless and returns the
+        # current revision, without invalidating an already prepared report.
+        if project.inputs_json == encoded:
+            return detail(s, project, user)
+        revision_ok(project, data.revision, updated_at)
+        extraction = json.loads(project.extraction_json)
+        if project_mode(extraction) == 'manual':
+            extraction.update({'input_origin': 'manual', 'input_origin_label': 'Введено пользователем'})
+        extraction.update({'manual_fields': manual_fields(data.inputs, extraction),
+                           'parameters_confirmed': False, 'calculation_issues': []})
+        project.inputs_json, project.extraction_json = encoded, dump(extraction)
+        project.revision += 1
+        project.status, project.updated_at, project.current_fingerprint = 'needs_data', now(), ''
+        s.flush()
+        log(s, user, 'Сохранён черновик бизнес-плана', 'business_project', id, f'Ревизия {project.revision}')
+        return detail(s, project, user)
 
 
 def persist_generation(request, id, company_id, revision, inputs, extraction, source_manifest, confirmed=False,
                        expected_updated_at=None):
+    # The parser describes its incomplete source candidate, while the report
+    # describes the current completed model. Keep the original diagnostics for
+    # audit, and publish the same active source issues shown in the project UI.
+    extraction = {**extraction,
+                  'original_issues': extraction.get('original_issues', extraction.get('issues', [])),
+                  'issues': current_source_issues(extraction, inputs)}
     # User changes have their own provenance rather than inheriting a source
     # citation whose value was replaced in the calculation form.
-    extraction = {**extraction, 'manual_fields': [key for key, value in inputs.items()
-                   if key not in extraction.get('inputs', {}) or value != extraction['inputs'][key]],
+    extraction = {**extraction, 'manual_fields': manual_fields(inputs, extraction),
                   'parameters_confirmed': confirmed}
     issues = validate_model(inputs)
     if not confirmed:
@@ -561,7 +657,8 @@ def persist_generation(request, id, company_id, revision, inputs, extraction, so
 
 @router.post('/api/business-projects/{id}/analyse')
 def analyse_project(data: AnalyseIn, request: Request, id: int = Path(gt=0), company_id: int = Query(gt=0)):
-    files, source_manifest, _, title, updated_at = snapshot(request, id, company_id, data.revision)
+    files, source_manifest, stored_extraction, title, updated_at = snapshot(request, id, company_id, data.revision, allow_manual=True)
+    mode = project_mode(stored_extraction)
     from .native_projects import native_candidate
     candidate = native_candidate(files)
     if candidate:
@@ -573,14 +670,24 @@ def analyse_project(data: AnalyseIn, request: Request, id: int = Path(gt=0), com
             project = get(s, BusinessProject, id)
             own(project, user)
             revision_ok(project, data.revision, updated_at)
-            project.extraction_json = dump({'native': candidate['profile'], 'issues': [], 'inputs': {}})
-            project.inputs_json = dump({'title': title, **data.overrides})
+            project.extraction_json = dump({'native': candidate['profile'], 'issues': [], 'inputs': {}, 'mode': mode})
+            if mode != 'manual':
+                project.inputs_json = dump({'title': title, **data.overrides})
             project.status, project.updated_at = 'needs_data', now()
             project.current_fingerprint = ''
             return detail(s, project, user)
     from .business_sources import extract_sources
-    extraction = extract_sources(files)
-    inputs = {**extraction.get('inputs', {}), **data.overrides}
+    extraction = manual_extraction(files) if mode == 'manual' else {**extract_sources(files), 'mode': 'files', 'sources_pending': False}
+    if mode == 'manual':
+        with unit() as s:
+            user, _ = authorize(s, request, 'import', company_id=company_id)
+            project = get(s, BusinessProject, id)
+            own(project, user)
+            revision_ok(project, data.revision, updated_at)
+            # Attachments provide evidence; they never overwrite the manual form.
+            inputs = {**json.loads(project.inputs_json), **data.overrides}
+    else:
+        inputs = {**extraction.get('inputs', {}), **data.overrides}
     inputs.setdefault('title', title)
     return persist_generation(request, id, company_id, data.revision, inputs, extraction, source_manifest,
                               expected_updated_at=updated_at)
@@ -588,11 +695,15 @@ def analyse_project(data: AnalyseIn, request: Request, id: int = Path(gt=0), com
 
 @router.post('/api/business-projects/{id}/generate')
 def generate_project(data: GenerateIn, request: Request, id: int = Path(gt=0), company_id: int = Query(gt=0)):
-    files, source_manifest, extraction, _, updated_at = snapshot(request, id, company_id, data.revision)
+    files, source_manifest, extraction, _, updated_at = snapshot(request, id, company_id, data.revision, allow_manual=True)
     from .native_projects import native_candidate
     if native_candidate(files):
         raise HTTPException(409, 'В папке есть оригинальная финансовая модель. Используйте «Пересчитать оригинал и проверить цифры», чтобы сохранить её формулы и оформление.')
-    if not extraction:
+    if project_mode(extraction) == 'manual':
+        # Re-read optional attachments before publication so newly uploaded
+        # source warnings cannot be skipped by directly calling generate.
+        extraction = manual_extraction(files)
+    elif 'inputs' not in extraction or extraction.get('sources_pending'):
         raise HTTPException(409, 'Сначала проверьте исходные файлы кнопкой анализа папки.')
     return persist_generation(request, id, company_id, data.revision, data.inputs, extraction, source_manifest,
                               confirmed=data.confirm_sources, expected_updated_at=updated_at)

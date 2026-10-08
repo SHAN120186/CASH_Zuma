@@ -24,6 +24,7 @@ from openpyxl.formatting.rule import CellIsRule
 from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
 from openpyxl.utils import get_column_letter
 from openpyxl.worksheet.datavalidation import DataValidation
+from openpyxl.worksheet.pagebreak import Break
 from openpyxl.workbook.properties import CalcProperties
 
 from .business_model import calculate_model, validate_model, ModelValidationError
@@ -36,6 +37,20 @@ PERCENT_FORMAT = '0.0%;[Red](0.0%);"-"'
 BLUE = "2354A6"
 GREEN = "237047"
 DARK = "23384D"
+BUSINESS_SECTIONS = (
+    ("1. Резюме проекта", "project_description"),
+    ("2. Инициатор проекта", "initiator"),
+    ("3. Стратегия проекта", "strategy"),
+    ("4. Рынок и концепция маркетинга", "market"),
+    ("5. Материальные ресурсы", "resources"),
+    ("6. Месторасположение", "location"),
+    ("7. Проектирование и технология", "technology"),
+    ("8. Организация и накладные расходы", "organization"),
+    ("9. Персонал", "personnel"),
+    ("10. Финансовая оценка", "investment_purpose"),
+    ("11. Страхование", "insurance"),
+    ("12. Выводы и риски", "risks"),
+)
 PALE = "EAF0F5"
 XML_NS = "http://schemas.openxmlformats.org/spreadsheetml/2006/main"
 ET.register_namespace("", XML_NS)
@@ -169,9 +184,35 @@ def _provenance(extraction: dict, field: str) -> str:
                 matches.append(source)
     original = "; ".join(matches)
     top_level = re.split(r"[.\[]", field, maxsplit=1)[0]
+    manual = extraction.get("mode") == "manual" or extraction.get("input_origin") == "manual"
+    if manual and not original:
+        return "Введено пользователем"
     if top_level in extraction.get("manual_fields", []):
         return ("Изменено пользователем; исходный кандидат: " + original)[:2000] if original else "Изменено пользователем; исходный кандидат отсутствует"
     return original[:2000] or "Входные данные утверждённой версии проекта"
+
+
+def _text_chunks(value: str, maximum: int = 1100) -> list[str]:
+    """Keep every character while limiting visible rows/paragraphs, not their text."""
+    chunks = []
+    start = 0
+    while start < len(value):
+        end = min(start + maximum, len(value))
+        newlines = [match.end() + start for match in re.finditer("\n", value[start:end])]
+        if len(newlines) > 18:
+            end = newlines[17]
+        elif end < len(value):
+            boundary = max(value.rfind(" ", start, end), value.rfind("\n", start, end))
+            if boundary >= start + maximum // 2:
+                end = boundary + 1
+        chunks.append(value[start:end])
+        start = end
+    return chunks
+
+
+def _narrative_text(inputs: dict, field: str) -> str:
+    value = inputs.get(field)
+    return _clean(value, 16000) if isinstance(value, str) and value.strip() else "Не указано."
 
 
 def _scalar_or_array(value: Any, months: int) -> list[Decimal]:
@@ -531,15 +572,11 @@ def _make_summary(workbook: Workbook, kind: str, inputs: dict, result: dict, con
                 _write(sheet.cell(row, column), value)
             sheet.cell(row, 4).number_format = PERCENT_FORMAT
     else:
-        for field, label in (("project_description", "Описание проекта"), ("market", "Рынок"), ("location", "Местоположение")):
-            row += 1
-            _write(sheet.cell(row, 1), label)
-            text = _clean(inputs.get(field) or "Сведения не предоставлены", 16000)
-            if len(text) > 400:
-                text = text[:400].rstrip() + " … Продолжение в PDF бизнес-плана."
-            _write(sheet.cell(row, 3), text)
-            sheet.cell(row, 3).alignment = Alignment(wrap_text=True, vertical="top")
-            sheet.row_dimensions[row].height = _height(text, 68, 36, 180)
+        row += 1
+        _write(sheet.cell(row, 1), "Полный бизнес-план")
+        _write(sheet.cell(row, 3), "Все 12 разделов и полные описания находятся на листе «Описание проекта».")
+        sheet.cell(row, 3).alignment = Alignment(wrap_text=True, vertical="top")
+        sheet.row_dimensions[row].height = 36
     sheet.column_dimensions["A"].width = 52
     sheet.column_dimensions["B"].width = 25
     sheet.column_dimensions["C"].width = 72
@@ -582,6 +619,84 @@ def _make_reconciliation(workbook: Workbook, inputs: dict, result: dict, fields:
     sheet.freeze_panes = "B5"
 
 
+def _make_business_text(workbook: Workbook, inputs: dict, result: dict, extraction: dict) -> None:
+    sheet = workbook.create_sheet("Описание проекта", 1)
+    _base_sheet(sheet, result["title"], "Полный бизнес-план · 12 разделов. Финансовые таблицы находятся на листах «Бизнес-план» и «Прогноз».")
+    for row in (2, 3):
+        sheet.merge_cells(start_row=row, start_column=1, end_row=row, end_column=4)
+    for column in "ABCD":
+        sheet.column_dimensions[column].width = 24
+    sheet.page_setup.orientation = "portrait"
+    sheet.page_margins.left = sheet.page_margins.right = .5
+    sheet.page_margins.top = sheet.page_margins.bottom = .5
+    sheet.row_dimensions[2].height = 25
+    sheet.row_dimensions[3].height = 34
+    sheet.print_title_rows = "2:3"
+    sheet.freeze_panes = "A5"
+    row = 5
+    used_height = 0
+    for title, field in BUSINESS_SECTIONS:
+        value = inputs.get(field)
+        source = _provenance(extraction, field) if isinstance(value, str) and value.strip() else "Сведения не предоставлены"
+        source_height = _height(source, 85, 22)
+        chunks = _text_chunks(_narrative_text(inputs, field))
+        first_height = _height(chunks[0], 85, 28)
+        # Keep the heading, source and first visible text row on one A4 page.
+        # Further text rows can continue on following pages without truncation.
+        if used_height and used_height + 28 + source_height + first_height > 660:
+            sheet.row_breaks.append(Break(id=row - 1))
+            used_height = 0
+        sheet.merge_cells(start_row=row, start_column=1, end_row=row, end_column=4)
+        _write(sheet.cell(row, 1), title)
+        sheet.cell(row, 1).font = Font(name="Arial", size=12, bold=True, color="FFFFFF")
+        for column in range(1, 5):
+            sheet.cell(row, column).fill = PatternFill("solid", fgColor=BLUE)
+        sheet.row_dimensions[row].height = 28
+        used_height += 28
+        row += 1
+        sheet.merge_cells(start_row=row, start_column=1, end_row=row, end_column=4)
+        _write(sheet.cell(row, 1), source)
+        sheet.cell(row, 1).font = Font(name="Arial", size=9, italic=True, color="64748B")
+        sheet.cell(row, 1).alignment = Alignment(wrap_text=True, vertical="top")
+        sheet.row_dimensions[row].height = source_height
+        used_height += source_height
+        row += 1
+        for chunk in chunks:
+            height = _height(chunk, 85, 28)
+            if used_height + height > 660:
+                sheet.row_breaks.append(Break(id=row - 1))
+                used_height = 0
+            sheet.merge_cells(start_row=row, start_column=1, end_row=row, end_column=4)
+            _write(sheet.cell(row, 1), chunk)
+            sheet.cell(row, 1).alignment = Alignment(wrap_text=True, vertical="top")
+            sheet.row_dimensions[row].height = height
+            used_height += height
+            row += 1
+        if field == "project_description":
+            note = (f"Горизонт расчёта: {result['months']} месяцев. Выручка: {_display(result['totals']['revenue'])} {result['currency']}. "
+                    f"Чистая прибыль: {_display(result['totals']['net_profit'])} {result['currency']}.")
+        elif field == "investment_purpose":
+            note = "Инвестиции, финансирование, прибыль, денежный поток и показатели эффективности рассчитаны в финансовых таблицах этой же версии."
+        elif field == "risks":
+            note = ("В расчёте выявлены замечания; они перечислены в PDF и финансовых таблицах." if result["warnings"] else
+                    "В пределах заданной модели отрицательные деньги и DSCR ниже 1 не обнаружены.")
+        else:
+            note = None
+        if note:
+            height = _height(note, 85, 28)
+            if used_height + height > 660:
+                sheet.row_breaks.append(Break(id=row - 1))
+                used_height = 0
+            sheet.merge_cells(start_row=row, start_column=1, end_row=row, end_column=4)
+            _write(sheet.cell(row, 1), note)
+            sheet.cell(row, 1).alignment = Alignment(wrap_text=True, vertical="top")
+            sheet.row_dimensions[row].height = height
+            used_height += height
+            row += 1
+        row += 1
+        used_height += 15
+
+
 def _xlsx(kind: str, inputs: dict, result: dict, manifest: list, extraction: dict, timestamp: str) -> bytes:
     workbook = Workbook()
     workbook.active.title = "Бизнес-план" if kind == "business" else "ТЭО"
@@ -598,6 +713,8 @@ def _xlsx(kind: str, inputs: dict, result: dict, manifest: list, extraction: dic
         fields = _make_forecast(workbook, inputs, result, controls, schedules, caches)
         _make_summary(workbook, kind, inputs, result, controls, fields, timestamp, caches)
         _make_reconciliation(workbook, inputs, result, fields, controls, schedules, caches)
+        if kind == "business":
+            _make_business_text(workbook, inputs, result, extraction)
     for sheet in workbook:
         sheet.print_area = f"A1:{get_column_letter(sheet.max_column)}{sheet.max_row}"
     return _save_cached(workbook, caches)
@@ -641,10 +758,11 @@ def _pdf(kind: str, inputs: dict, result: dict, manifest: list, extraction: dict
         "title": ParagraphStyle("title", fontName=font, fontSize=20, leading=25, textColor=colors.HexColor("#23384D"), spaceAfter=14),
         "heading": ParagraphStyle("heading", fontName=font, fontSize=12, leading=16, spaceBefore=15, spaceAfter=7, keepWithNext=True, textColor=colors.HexColor("#23384D")),
         "body": ParagraphStyle("body", fontName=font, fontSize=9, leading=13, spaceAfter=7),
-        "cell": ParagraphStyle("cell", fontName=font, fontSize=8, leading=11, wordWrap="CJK"),
-        "number": ParagraphStyle("number", fontName=font, fontSize=8, leading=11, alignment=TA_RIGHT, wordWrap="CJK"),
+        "cell": ParagraphStyle("cell", fontName=font, fontSize=8, leading=11),
+        "number": ParagraphStyle("number", fontName=font, fontSize=8, leading=11, alignment=TA_RIGHT),
         "small": ParagraphStyle("small", fontName=font, fontSize=8, leading=11, textColor=colors.HexColor("#64748B"), spaceAfter=7),
     }
+    styles["narrative-last"] = ParagraphStyle("narrative-last", parent=styles["body"], keepWithNext=True)
     parts = []
     def paragraph(text: Any, style: str = "body"):
         return Paragraph(escape(_clean(text, 16000)).replace("\n", "<br/>"), styles[style])
@@ -652,7 +770,7 @@ def _pdf(kind: str, inputs: dict, result: dict, manifest: list, extraction: dict
         parts.append(paragraph(text, "heading"))
     def body(text):
         parts.append(paragraph(text))
-    def table(headers: list[str], rows: list[list], widths: list[float] | None = None):
+    def table(headers: list[str], rows: list[list], widths: list[float] | None = None, *, compact: bool = False):
         usable = A4[0] - 76
         widths = widths or [usable / len(headers)] * len(headers)
         data = [[paragraph(value, "cell") for value in headers]]
@@ -661,21 +779,36 @@ def _pdf(kind: str, inputs: dict, result: dict, manifest: list, extraction: dict
         item = Table(data, colWidths=widths, repeatRows=1, hAlign="LEFT")
         item.setStyle(TableStyle([("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#EAF0F5")),
                                  ("VALIGN", (0, 0), (-1, -1), "TOP"), ("LEFTPADDING", (0, 0), (-1, -1), 5),
-                                 ("RIGHTPADDING", (0, 0), (-1, -1), 5), ("TOPPADDING", (0, 0), (-1, -1), 6),
-                                 ("BOTTOMPADDING", (0, 0), (-1, -1), 6),
+                                 ("RIGHTPADDING", (0, 0), (-1, -1), 5), ("TOPPADDING", (0, 0), (-1, -1), 3 if compact else 6),
+                                 ("BOTTOMPADDING", (0, 0), (-1, -1), 3 if compact else 6),
                                  ("LINEBELOW", (0, 0), (-1, 0), 0.6, colors.HexColor("#94A3B8")),
                                  ("LINEBELOW", (0, 1), (-1, -1), 0.25, colors.HexColor("#DCE3EA"))]))
         parts.append(item)
         parts.append(Spacer(1, 8))
     def narrative(field: str, missing: str):
         value = inputs.get(field)
-        body(value if isinstance(value, str) and value.strip() else missing)
+        if isinstance(value, str) and value.strip():
+            chunks = _text_chunks(_clean(value, 16000))
+            source = _provenance(extraction, field)
+            show_source = source not in ("Введено пользователем", "Входные данные утверждённой версии проекта")
+            for index, chunk in enumerate(chunks):
+                parts.append(paragraph(chunk, "narrative-last" if show_source and index == len(chunks) - 1 else "body"))
+            if show_source:
+                parts.append(paragraph(source, "small"))
+        else:
+            body(missing)
+    def business_section(index: int):
+        label, field = BUSINESS_SECTIONS[index]
+        heading(label)
+        narrative(field, "Не указано.")
     metrics = result["metrics"]
     totals = result["totals"]
     currency = result["currency"]
     parts.extend([paragraph(title, "title"), paragraph(result["title"], "heading"),
                   paragraph(f"Период: {result['period_start']}–{result['period_end']}. Валюта: {currency}. Суммы без НДС."),
                   paragraph("Дата формирования (UTC): " + timestamp, "small")])
+    if extraction.get("mode") == "manual" or extraction.get("input_origin") == "manual":
+        parts.append(paragraph("Исходные параметры: Введено пользователем.", "small"))
     heading("1. Резюме проекта" if kind == "business" else "1. Предмет и экономический результат")
     body(f"Расчёт включает {result['months']} месяцев и {len(inputs['products'])} позиций продукции. "
          f"Выручка за период — {_display(totals['revenue'])} {currency}, чистая прибыль — {_display(totals['net_profit'])} {currency}. "
@@ -691,22 +824,22 @@ def _pdf(kind: str, inputs: dict, result: dict, manifest: list, extraction: dict
     if metrics.get("irr_reason"):
         body(metrics["irr_reason"])
     if kind == "business":
-        heading("2. Проект и местоположение")
-        narrative("project_description", "Описание проекта не предоставлено.")
-        narrative("location", "Местоположение не предоставлено.")
-        heading("3. Продукция и план продаж")
+        narrative("project_description", "Не указано.")
+        for index in (1, 2, 3):
+            business_section(index)
+        heading("Продукция и план продаж")
     else:
         heading("2. Производственная программа и мощность")
     table(["Продукция", "Единица", "Цена", "Удельная себестоимость", "Объём за период"],
           [[product["name"], product["unit"], _display(product["price"]), _display(product["unit_cost"]), _display(product["total_quantity"])] for product in result["products"]],
           [190, 50, 80, 100, A4[0] - 496])
     if kind == "business":
-        heading("4. Рынок и сбыт")
-        narrative("market", "Обоснование спроса, конкуренты и подтверждённые каналы сбыта не предоставлены. Объёмы продаж являются входами прогноза, а не доказательством рыночного спроса.")
-        heading("5. Производство и технология")
+        for index in (4, 5):
+            business_section(index)
+        heading(BUSINESS_SECTIONS[6][0])
     else:
         heading("3. Технология, ресурсы и активы")
-    narrative("technology", "Описание технологического процесса и требования к ресурсам не предоставлены.")
+    narrative("technology", "Не указано." if kind == "business" else "Описание технологического процесса и требования к ресурсам не предоставлены.")
     available_capacity = [product for product in result["products"] if any(row["capacity"] is not None for row in product["rows"])]
     if available_capacity:
         table(["Продукция", "Максимальная месячная загрузка"],
@@ -715,11 +848,15 @@ def _pdf(kind: str, inputs: dict, result: dict, manifest: list, extraction: dict
     else:
         body("Производственная мощность не задана. Технологическая возможность выполнения плана не подтверждена расчётом загрузки.")
     if kind == "business":
-        heading("6. Организация и постоянные расходы")
+        business_section(7)
     body(f"Постоянные расходы за период — {_display(totals['fixed_costs'])} {currency}. "
-         "В них не входят удельная себестоимость продукции, амортизация и проценты. Численность сотрудников и заработная плата по должностям отдельно не представлены.")
-    heading("7. Инвестиции и финансирование" if kind == "business" else "4. Инвестиции и кредитные обязательства")
-    narrative("investment_purpose", "Назначение инвестиций отдельно не предоставлено.")
+         "В них не входят удельная себестоимость продукции, амортизация и проценты.")
+    if kind == "business":
+        business_section(8)
+        heading(BUSINESS_SECTIONS[9][0])
+    else:
+        heading("4. Инвестиции и кредитные обязательства")
+    narrative("investment_purpose", "Не указано." if kind == "business" else "Назначение инвестиций отдельно не предоставлено.")
     table(["Статья", "Сумма (" + currency + ")"], [
         ["Инвестиции до начала прогноза (t0)", _display(inputs["initial_investment"])],
         ["CAPEX в месяцах прогноза", _display(totals["capex"])],
@@ -739,13 +876,18 @@ def _pdf(kind: str, inputs: dict, result: dict, manifest: list, extraction: dict
               [144, 75, 75, 75, 75, A4[0] - 520])
     else:
         body("В исходных данных явно указано отсутствие кредитов.")
-    heading("8. Финансовый прогноз" if kind == "business" else "5. Экономическая эффективность и денежные потоки")
+    heading("Финансовый прогноз" if kind == "business" else "5. Экономическая эффективность и денежные потоки")
     table(["Год", "Выручка", "EBITDA", "Чистая прибыль", "Деньги на конец", "DSCR"],
           [[year["year"], _display(year["revenue"]), _display(year["ebitda"]), _display(year["net_profit"]), _display(year["cash"]), _display(year["dscr"], "ratio")] for year in result["annual"]],
           [44, 100, 100, 100, 110, A4[0] - 530])
     body(f"При рассчитанной структуре продаж средняя месячная выручка безубыточности по EBITDA — {_display(metrics['break_even_average_monthly_revenue'])} {currency}. "
          f"Проверка баланса: максимальная абсолютная разница — {_display(metrics['maximum_balance_difference'])} {currency}.")
-    heading("9. Риски и замечания источников" if kind == "business" else "6. Кассовые разрывы, покрытие долга и ограничения")
+    if kind == "business":
+        business_section(10)
+        business_section(11)
+        heading("Замечания расчёта и источников")
+    else:
+        heading("6. Кассовые разрывы, покрытие долга и ограничения")
     if result["warnings"]:
         grouped = {}
         for warning in result["warnings"]:
@@ -760,9 +902,9 @@ def _pdf(kind: str, inputs: dict, result: dict, manifest: list, extraction: dict
             body(_clean(issue.get("message", ""), 1000) + (" Источник: " + _source_text(issue["source"]) if issue.get("source") else ""))
     if len(extraction.get("issues", [])) > 20:
         body(f"Остальные замечания ({len(extraction['issues']) - 20}) сохранены в карточке проекта.")
-    heading("10. Допущения и исходные документы" if kind == "business" else "7. Методика и исходные документы")
+    heading("Допущения и исходные документы" if kind == "business" else "7. Методика и исходные документы")
     for assumption in result["assumptions"]:
-        body(assumption)
+        parts.append(paragraph(assumption, "small"))
     if manifest:
         table(["Документ", "Размер, байт", "SHA-256"],
               [[item.get("relative_path", item.get("filename", item.get("name", ""))), item.get("size", item.get("bytes", 0)), item.get("sha256", "")] for item in manifest],
@@ -776,7 +918,7 @@ def _pdf(kind: str, inputs: dict, result: dict, manifest: list, extraction: dict
     body("Полная модель, исходные параметры, графики каждого кредита и активов доступны в Excel той же версии.")
     table(["Месяц", "Выручка", "Чистая прибыль", "FCF проекта", "Деньги", "Долг"],
           [[row["period"][:7], _display(row["revenue"]), _display(row["net_profit"]), _display(row["free_cash_flow"]), _display(row["cash"]), _display(row["debt"])] for row in result["rows"]],
-          [58, 95, 95, 95, 95, A4[0] - 514])
+          [58, 95, 95, 95, 95, A4[0] - 514], compact=True)
     def footer(canvas, document):
         canvas.saveState()
         canvas.setFont(font, 8)

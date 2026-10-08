@@ -27,8 +27,11 @@ export const BUSINESS_SCALARS = [
   ['receivable_days', 'Срок оплаты покупателей, дней'], ['inventory_days', 'Запасы, дней'], ['payable_days', 'Срок оплаты поставщикам, дней'],
 ];
 export const NARRATIVE_FIELDS = [
-  ['project_description', 'Описание проекта'], ['technology', 'Технология и производственный процесс'],
-  ['market', 'Рынок и сбыт'], ['location', 'Место реализации'], ['investment_purpose', 'Назначение инвестиций'],
+  ['project_description', 'Описание проекта'], ['initiator', 'Инициатор проекта'], ['strategy', 'Стратегия развития'],
+  ['market', 'Рынок и сбыт'], ['resources', 'Сырьё и ресурсы'], ['location', 'Место реализации'],
+  ['technology', 'Технология и производственный процесс'], ['organization', 'Организация работы'],
+  ['personnel', 'Персонал'], ['investment_purpose', 'Назначение инвестиций'],
+  ['insurance', 'Страхование'], ['risks', 'Риски и меры снижения'],
 ];
 const LABELS = Object.fromEntries([...BUSINESS_SCALARS, ...NARRATIVE_FIELDS, ['title', 'Название'], ['start', 'Начало прогноза'],
   ['months', 'Количество месяцев'], ['currency', 'Валюта'], ['tax_rate', 'Налог на прибыль'], ['discount_rate', 'Ставка дисконтирования'],
@@ -90,9 +93,11 @@ export const numericText = value => value == null ? '' : String(value).trim().re
 export function decimalShift(value, power) {
   const text = numericText(value);
   if (!text) return '';
-  const match = /^([+-]?)(\d+)(?:\.(\d*))?$/.exec(text);
+  const match = /^([+-]?)(\d+)(?:\.(\d*))?(?:[eE]([+-]?\d+))?$/.exec(text);
   if (!match) return text;
-  const digits = match[2] + (match[3] || ''), position = match[2].length + power;
+  const exponent = Number(match[4] || 0);
+  if (!Number.isSafeInteger(exponent) || Math.abs(exponent) > 1000) return text;
+  const digits = match[2] + (match[3] || ''), position = match[2].length + power + exponent;
   let whole = position <= 0 ? '0' : digits.slice(0, position).padEnd(position, '0');
   let fraction = position <= 0 ? '0'.repeat(-position) + digits : digits.slice(position);
   whole = whole.replace(/^0+(?=\d)/, ''); fraction = fraction.replace(/0+$/, '');
@@ -290,16 +295,39 @@ export function assertProject(project, companyId, id = null) {
   return project;
 }
 
-export async function uploadProjectFolder(api, state, {companyId, header, sources, isCurrent = () => true, onProject, onStep} = {}) {
+export async function createProjectDraft(api, state, companyId, title, mode = 'manual', isCurrent = () => true) {
+  const check = () => {if (!isCurrent()) throw new DOMException('Раздел или компания изменены', 'AbortError');};
+  check();
+  if (state.project) return assertProject(state.project, companyId);
+  if (!String(title || '').trim() || String(title).trim().length > 160) throw Error('Укажите название проекта: до 160 символов.');
+  state.createFields ||= {company_id: companyId, title: String(title).trim(), request_key: state.requestKey, mode};
+  if (state.createFields.company_id !== companyId || state.createFields.mode !== mode) throw Error('Форма относится к другому проекту или компании.');
+  let result;
+  try {result = await api(projectUrl(companyId), json(state.createFields));}
+  catch (e) {if (e.status >= 400 && e.status < 500 && !state.createUnknown) state.createFields = null; else state.createUnknown = true; throw e;}
+  check(); state.project = assertProject(result, companyId); state.createUnknown = false;
+  return state.project;
+}
+
+export async function saveProjectDraft(api, project, companyId, inputs, isCurrent = () => true) {
+  assertProject(project, companyId);
+  if (!project.can_edit) throw Error('Изменение этого проекта недоступно.');
+  if (!isCurrent()) throw new DOMException('Раздел или компания изменены', 'AbortError');
+  const result = await api(projectUrl(companyId, project.id, 'inputs'), {...json({revision: project.revision, inputs}), method: 'PUT'});
+  if (!isCurrent()) throw new DOMException('Раздел или компания изменены', 'AbortError');
+  return assertProject(result, companyId, project.id);
+}
+
+export async function uploadProjectFolder(api, state, {companyId, header, sources, mode = state.project?.mode || 'files', isCurrent = () => true, onProject, onStep} = {}) {
   const check = () => {if (!isCurrent()) throw new DOMException('Раздел или компания изменены', 'AbortError');};
   const remember = project => {check(); assertProject(project, companyId, state.project?.id); state.project = project; onProject?.(project);};
   check();
-  const problem = headerProblem(header);
+  const problem = mode === 'manual' ? (!String(header.title || '').trim() ? 'Укажите название проекта.' : '') : headerProblem(header);
   if (problem) throw Error(problem);
   const picked = prepareSources(sources.map(item => item.file));
   if (picked.problems.length) throw Error(picked.problems.join(' '));
   if (!state.project) {
-    state.createFields ||= {company_id: companyId, title: header.title.trim(), request_key: state.requestKey};
+    state.createFields ||= {company_id: companyId, title: header.title.trim(), request_key: state.requestKey, mode};
     if (state.createFields.company_id !== companyId) throw Error('Форма относится к другой компании.');
     onStep?.('Создаём папку проекта…');
     let project;
@@ -319,8 +347,8 @@ export async function uploadProjectFolder(api, state, {companyId, header, source
     remember(project); state.uploaded.add(item.key);
   }
   check(); onStep?.('Изучаем источники и рассчитываем бизнес-план и ТЭО…');
-  const overrides = {title: header.title.trim(), start: header.start, months: Number(header.months)};
-  if (header.currency) overrides.currency = header.currency;
+  const overrides = mode === 'manual' ? {} : {title: header.title.trim(), start: header.start, months: Number(header.months)};
+  if (mode !== 'manual' && header.currency) overrides.currency = header.currency;
   const project = await api(projectUrl(companyId, state.project.id, 'analyse'), json({revision: state.project.revision, overrides}));
   remember(project); return project;
 }

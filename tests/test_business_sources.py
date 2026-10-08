@@ -320,6 +320,27 @@ class BusinessSourceTests(unittest.TestCase):
             self.assertEqual(extracted["inputs"]["products"][0]["price"], explicit["products"][0]["price"])
             self.assertTrue(any(issue["field"] == "products[0].price" and issue["code"] == "missing_or_invalid" for issue in extracted["issues"]))
 
+    def test_all_report_sections_round_trip_without_interpreting_numeric_or_json_text(self):
+        from app.business_model import NARRATIVE_FIELDS
+        data = model()
+        for field in NARRATIVE_FIELDS:
+            data[field] = '00123' if field == 'personnel' else '["Описание", "вторая строка"]'
+        workbook = normalised_book(data)
+        extracted = extract_sources([upload('inputs.xlsx', workbook_bytes(workbook))])
+        self.assertFalse(any(issue['requires_confirmation'] for issue in extracted['issues']))
+        for field in NARRATIVE_FIELDS:
+            self.assertEqual(extracted['inputs'][field], data[field])
+        json_extracted = extract_sources([upload('project.json', json.dumps(data).encode())])
+        for field in NARRATIVE_FIELDS:
+            self.assertEqual(json_extracted['inputs'][field], data[field])
+
+    def test_new_named_report_text_is_retained_up_to_shared_limit(self):
+        description = 'Описание рисков. ' * 900
+        extracted = extract_sources([upload('project.json', json.dumps(model()).encode()),
+                                     upload('Выводы и риски.txt', description.encode())])
+        self.assertEqual(extracted['inputs']['risks'], description.strip())
+        self.assertFalse(any(issue['requires_confirmation'] for issue in extracted['issues']))
+
     def test_explicit_optional_narratives_from_json_excel_and_named_text(self):
         data = model()
         data["technology"] = "Synthetic mixing process."

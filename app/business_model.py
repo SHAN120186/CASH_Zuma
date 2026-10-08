@@ -20,6 +20,28 @@ ONE = Decimal(1)
 MAX_AMOUNT = Decimal("1000000000000000")
 PRECISION = 80
 SCHEMA_VERSION = "1.0"
+MAX_NARRATIVE_LENGTH = 16_000
+NARRATIVE_LABELS = {
+    "project_description": "Описание проекта", "initiator": "Инициатор проекта",
+    "strategy": "Стратегия проекта", "market": "Рынок и маркетинг",
+    "resources": "Материальные ресурсы", "location": "Месторасположение",
+    "technology": "Технология и производство", "organization": "Организация и расходы",
+    "personnel": "Персонал", "investment_purpose": "Назначение инвестиций",
+    "insurance": "Страхование", "risks": "Выводы и риски",
+}
+NARRATIVE_FIELDS = tuple(NARRATIVE_LABELS)
+
+
+def validate_narratives(inputs: dict) -> list[dict[str, str]]:
+    """Validate optional report text independently of incomplete draft numbers."""
+    issues = []
+    for field in NARRATIVE_FIELDS:
+        value = inputs.get(field, "")
+        if not isinstance(value, str):
+            issues.append({"field": field, "message": "Ожидается текст раздела."})
+        elif len(value) > MAX_NARRATIVE_LENGTH or any(ord(c) < 32 and c not in "\n\r\t" for c in value):
+            issues.append({"field": field, "message": f"Допустимо до {MAX_NARRATIVE_LENGTH} символов без управляющих знаков; разрешены переносы строк."})
+    return issues
 
 ASSUMPTIONS = [
     "Все суммы указаны в одной валюте, без НДС; пересчёт валют не выполняется.",
@@ -114,6 +136,10 @@ def _normalise(inputs: Any) -> tuple[dict, list[dict[str, str]]]:
     if not isinstance(inputs, dict):
         return {}, [{"field": "model", "message": "Ожидается объект исходных данных."}]
     result: dict = {"title": _text(inputs.get("title"), "title", issues)}
+    issues.extend(validate_narratives(inputs))
+    for field in NARRATIVE_FIELDS:
+        value = inputs.get(field, "")
+        result[field] = value.strip() if isinstance(value, str) else ""
     currency = inputs.get("currency")
     if currency not in ("USD", "UZS", "EUR"):
         issues.append({"field": "currency", "message": "Укажите одну валюту: USD, UZS или EUR."})

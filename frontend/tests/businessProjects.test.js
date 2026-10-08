@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import {compileComponent, mount, settle, text, all, find} from './helpers/mountVue.js';
 import {prepareSources, MAX_SOURCE_SIZE, MAX_FOLDER_SIZE, decimalShift, formFromInputs, inputsFromForm, resizeValues, monthLabels,
   createBusinessState, uploadProjectFolder, generateProject, projectUrl, templateUrl, fieldLabel, sourceLocation, headerProblem,
-  folderProjectTitle, projectReview, uploadFailureMessage, fieldGuidance, missingRequiredFields, originalReportFiles} from '../src/businessProjects.js';
+  folderProjectTitle, projectReview, uploadFailureMessage, fieldGuidance, missingRequiredFields, originalReportFiles, NARRATIVE_FIELDS, createProjectDraft, saveProjectDraft} from '../src/businessProjects.js';
 
 const header = {title: 'Synthetic project', start: '2027-01-01', months: 36, currency: ''};
 const file = (name, size = 12, path = 'Project/' + name, value = 'contents') => ({name, size, webkitRelativePath: path, value});
@@ -86,6 +86,75 @@ test('editing preserves missing values and exact decimal amounts; absent loans a
   assert.deepEqual(inputsFromForm(form).assets, []);
   assert.deepEqual(inputsFromForm(form).loans, []);
   assert.equal(decimalShift(' 1 000,25 ', -2), '10.0025');
+  assert.equal(decimalShift('1e-7', 2), '0.00001');
+  assert.equal(decimalShift('1e2', -2), '1');
+});
+
+test('manual project starts without files, saves missing values as a draft and exposes all six data groups and twelve narratives',async t=>{
+  let project=null;const calls=[];
+  const api=async(url,options)=>{
+    calls.push({url,...options});
+    if(!options)return{items:project?[project]:[],can_upload:true};
+    const body=JSON.parse(options.body);
+    if(options.method==='POST'){project={id:5,company_id:2,revision:0,title:body.title,mode:body.mode,can_edit:true,status:'draft',inputs:{},files:[],generations:[],validation:[]};return structuredClone(project);}
+    assert.equal(url,projectUrl(2,5,'inputs'));
+    assert.equal(body.revision,project.revision);
+    project={...project,revision:project.revision+1,status:'needs_data',inputs:body.inputs,validation:[{field:'opening_cash',message:'Заполните остаток.'}]};
+    return structuredClone(project);
+  };
+  const view=mount(component,{api,company});t.after(view.unmount);await settle();
+  await button(view.container,'Новый проект').props.onClick();await settle();
+  assert.equal(view.state.projectMode,'manual');assert.equal(view.state.selected.length,0);
+  view.state.header.title='Manual synthetic';
+  await button(view.container,'Сохранить и перейти к данным').props.onClick();await settle();
+  const writes=calls.filter(call=>call.method);
+  assert.equal(writes.length,2);assert.equal(JSON.parse(writes[0].body).mode,'manual');
+  assert.equal(JSON.parse(writes[1].body).inputs.opening_cash,'');
+  assert.equal(JSON.parse(writes[1].body).inputs.assets,null);
+  assert.equal(JSON.parse(writes[1].body).inputs.loans,null);
+  assert.equal(view.state.flowStage,'data');assert.equal(view.state.current.revision,1);
+  const groups=all(view.container,node=>Object.hasOwn(node.props||{},'data-bp-group'));
+  assert.equal(groups.length,6);
+  assert.equal(all(view.container,node=>node.tag==='textarea').length,12);
+  assert.ok(all(view.container,node=>node.tag==='textarea').every(node=>node.props.maxlength==='16000'));
+  for(const [field] of NARRATIVE_FIELDS)view.state.form[field]='Synthetic '+field;
+  view.state.form.opening_cash='0';
+  await view.state.saveDraft();await settle();
+  assert.equal(view.state.current.revision,2);assert.equal(view.state.form.opening_cash,'0');
+  for(const [field] of NARRATIVE_FIELDS)assert.equal(view.state.form[field],'Synthetic '+field);
+  assert.equal(view.state.form.opening_inventory,'');
+  assert.match(text(view.container),/Черновик сохранён/);
+});
+
+test('manual generation saves canonical data first then submits the returned revision and keeps reports stale during edits',async t=>{
+  const archive=id=>({id,company_id:2,status:'ready'});
+  const older={id:1,revision:1,business_archive:archive(10),teo_archive:archive(11),metrics:{npv:'10'}};
+  let project={id:5,company_id:2,revision:1,mode:'manual',title:'Synthetic',can_edit:true,status:'ready',inputs:completeInputs(),files:[],generations:[older],current_generation_id:1,validation:[],extraction:{}};
+  const calls=[];
+  const view=mount(component,{company,api:async(url,options)=>{
+    if(!options)return url.includes('/5?')?structuredClone(project):{items:[project],can_upload:true};
+    calls.push({url,...options});const body=JSON.parse(options.body);
+    if(options.method==='PUT'){assert.equal(body.revision,1);project={...project,revision:2,status:'needs_data',inputs:body.inputs,current_generation_id:null};return structuredClone(project);}
+    assert.equal(body.revision,2);project={...project,status:'ready',current_generation_id:2,generations:[{...older,id:2,revision:2,business_archive:archive(20),teo_archive:archive(21)},older]};return structuredClone(project);
+  }});t.after(view.unmount);await settle();await view.state.openProject(project);await settle();
+  view.state.form.opening_cash='25';view.state.form.initiator='Synthetic initiator';await settle();
+  assert.match(text(view.container),/Файлы относятся к сохранённой версии/);
+  await view.state.generate();await settle();
+  assert.deepEqual(calls.map(call=>[call.url,call.method]),[[projectUrl(2,5,'inputs'),'PUT'],[projectUrl(2,5,'generate'),'POST']]);
+  assert.equal(JSON.parse(calls[1].body).inputs.initiator,'Synthetic initiator');
+  assert.equal(view.state.current.revision,2);assert.equal(view.state.flowStage,'report');
+  assert.equal(view.state.latest.id,2);assert.equal(view.state.changed,false);
+});
+
+test('manual draft helper reuses an uncertain creation key and stops between save and generation after a company change',async()=>{
+  const state=createBusinessState(),calls=[];let attempts=0;
+  const api=async(url,options)=>{calls.push({url,...options});if(attempts++===0)throw lost();return{id:5,company_id:2,revision:0,mode:'manual',can_edit:true};};
+  await assert.rejects(createProjectDraft(api,state,2,'Synthetic'),/Failed/);
+  const project=await createProjectDraft(api,state,2,'Changed local title');
+  assert.equal(calls[0].body,calls[1].body);assert.equal(state.createUnknown,false);
+  let current=true;
+  await assert.rejects(saveProjectDraft(async()=>{current=false;return project;},project,2,{opening_cash:''},()=>current),{name:'AbortError'});
+  await assert.rejects(saveProjectDraft(async()=>({...project,company_id:9}),project,2,{}),/другой компании/);
 });
 
 test('monthly resizing keeps entered values and adds blanks rather than inventing zero', () => {
@@ -189,7 +258,7 @@ test('explicit generation submits full canonical inputs, confirmation and curren
   assert.equal(sourceLocation({filename: 'a.xlsx', sheet: 'Input', cell: 'B2'}), 'a.xlsx · лист «Input» · B2');
 });
 
-test('mounted folder chooser exposes the 36-month choice and generates all four protected download links', async t => {
+test('mounted optional original import keeps the 36-month choice and exposes business PDF, one Excel and secondary TEO', async t => {
   const service = backend(); let generated = 0;
   const archive = id => ({id, company_id: 2, status: 'ready', formats: ['pdf', 'xlsx']});
   const api = async (url, options) => {
@@ -198,7 +267,9 @@ test('mounted folder chooser exposes the 36-month choice and generates all four 
     return url.includes('/analyse') ? {...response, inputs: completeInputs(), validation: [], extraction: {}, generations: [{id: 1, revision: response.revision, business_archive: archive(10), teo_archive: archive(11), metrics: {npv: '12.3'}}]} : response;
   };
   const view = mount(component, {api, company, onGenerated: () => generated++}); t.after(view.unmount);
-  await settle(); await button(view.container, 'Новая папка проекта').props.onClick(); await settle();
+  await settle(); await button(view.container, 'Новый проект').props.onClick(); await settle();
+  assert.equal(view.state.projectMode, 'manual');
+  await button(view.container, 'Импорт оригинальных Word и Excel').props.onClick(); await settle();
   assert.equal(view.state.header.months, 36);
   assert.equal(view.state.header.currency, '');
   assert.ok(find(view.container, node => node.tag === 'input' && 'webkitdirectory' in node.props));
@@ -207,8 +278,10 @@ test('mounted folder chooser exposes the 36-month choice and generates all four 
   await view.state.upload(); await settle();
   assert.equal(generated, 1);
   const downloads = all(view.container, node => node.tag === 'a' && node.props.href?.includes('/files/'));
-  assert.equal(downloads.length, 4);
-  assert.deepEqual(downloads.map(node => node.props.href), ['/api/report-archives/10/files/pdf?company_id=2', '/api/report-archives/10/files/xlsx?company_id=2', '/api/report-archives/11/files/pdf?company_id=2', '/api/report-archives/11/files/xlsx?company_id=2']);
+  assert.equal(downloads.length, 3);
+  assert.deepEqual(downloads.map(node => node.props.href), ['/api/report-archives/10/files/pdf?company_id=2', '/api/report-archives/10/files/xlsx?company_id=2', '/api/report-archives/11/files/pdf?company_id=2']);
+  const teo = find(view.container,node=>node.tag==='details'&&node.children.some(child=>child.tag==='summary'&&text(child).includes('Дополнительно')));
+  assert.notEqual(teo.props.open,true);
   assert.match(text(view.container), /Бизнес-план и ТЭО сформированы/);
 });
 
@@ -225,7 +298,7 @@ test('mounted missing-data response keeps submitted financial values; source amb
   view.state.form.opening_cash = '31';
   await view.state.generate(); assert.equal(posts, 0);
   view.state.confirmed = true; await view.state.generate(); await settle();
-  assert.equal(posts, 1);
+  assert.equal(posts, 2);
   assert.equal(view.state.form.opening_cash, '31');
   assert.match(text(view.container), /Заполните налог/);
   assert.ok(!text(view.container).includes('Бизнес-план и ТЭО сформированы из одной финансовой модели.'));
@@ -279,7 +352,7 @@ test('folder title is suggested only from a common selected folder and preflight
   const service = backend();
   const api = async (url, options) => options ? service.api(url, options) : {items: [], can_upload: true};
   const view = mount(component, {company, api}); t.after(view.unmount);
-  await settle(); view.state.newProject();
+  await settle(); view.state.newProject('files');
   view.state.chooseSources({target: {files: [file('a.xlsx', 12, 'Sample Folder/a.xlsx')], value: 'selected'}});
   assert.equal(view.state.header.title, 'Sample Folder');
   assert.equal(view.state.header.start, '');
@@ -332,8 +405,8 @@ test('a forty-product source response keeps nine missing fields first, deduplica
   assert.equal(products.props.open, false);
   const notes = find(view.container, node => node.tag === 'details' && node.children.some(child => child.tag === 'summary' && text(child).includes('Справочные заметки')));
   assert.notEqual(notes.props.open, true);
-  const content = text(view.container), productPosition = content.indexOf('Продукция · 40 · цены и объёмы');
-  assert.ok(content.indexOf('Постоянные расходы и взносы в капитал') < productPosition);
+  const content = text(view.container), productPosition = content.indexOf('5. Продукция, производство и рынок · 40');
+  assert.ok(content.indexOf('2. Расходы и ресурсы') < productPosition);
   assert.ok(content.indexOf('Основные средства · 0') < productPosition);
   assert.ok(content.indexOf('Кредиты · 0') < productPosition);
   assert.equal(view.state.form.fixed_costs, '');

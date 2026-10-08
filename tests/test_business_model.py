@@ -7,7 +7,7 @@ import sys
 import unittest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-from app.business_model import ModelValidationError, calculate_model, validate_model
+from app.business_model import NARRATIVE_FIELDS, ModelValidationError, calculate_model, validate_model, validate_narratives
 
 
 D = Decimal
@@ -31,6 +31,22 @@ def number(row, name):
 
 
 class BusinessModelTests(unittest.TestCase):
+    def test_optional_report_text_does_not_change_financial_calculations(self):
+        baseline = inputs(2)
+        enriched = copy.deepcopy(baseline)
+        for field in NARRATIVE_FIELDS:
+            enriched[field] = "Явные данные проекта.\nВторая строка.\tУточнение."
+        self.assertEqual(validate_model(enriched), [])
+        self.assertEqual(calculate_model(enriched), calculate_model(baseline))
+        self.assertEqual(validate_narratives({}), [])
+
+    def test_report_text_validates_types_limits_and_control_characters_in_drafts(self):
+        for field in NARRATIVE_FIELDS:
+            for value in (None, 123, {}, [], "a" * 16001, "text\x00control"):
+                with self.subTest(field=field, value_type=type(value).__name__):
+                    self.assertEqual({i['field'] for i in validate_narratives({field: value})}, {field})
+            self.assertEqual(validate_narratives({field: "a" * 16000}), [])
+
     def test_material_cancellation_between_representable_values_blocks_excel_publication(self):
         model = inputs(1, tax_rate=0, fixed_costs=0, receivable_days=0, inventory_days=0, payable_days=0)
         model['products'][0].update(price='1000000000000000', unit_cost='999999999999999',
