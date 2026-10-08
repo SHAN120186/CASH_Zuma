@@ -1,6 +1,7 @@
 <script setup>
 import {ref, computed, onMounted, onUnmounted, nextTick} from 'vue';
 import {STATE_CLASS, historyLine, filterUsers, stateCounts, canResolve} from './adminCenter.js';
+import GroupRegistration from './GroupRegistration.vue';
 
 const props = defineProps({
   api: {type: Function, required: true},
@@ -94,6 +95,8 @@ onUnmounted(() => document.removeEventListener('keydown', onKey));
         <button :disabled="!meta" @click="startCreate">Новый пользователь</button></div></div>
     <p v-if="notice" class="notice" role="status">{{ notice }}</p>
     <p v-if="error && !card && !form" class="error" role="alert">{{ error }}</p>
+
+    <GroupRegistration v-if="meta" :api="api" :companies="meta.companies" />
 
     <div class="admin-chips" role="group" aria-label="Состояние доступа">
       <button v-for="(label, key) in meta?.states || {}" :key="key" class="ghost tiny" :class="{on: filters.state === key}" :aria-pressed="filters.state === key"

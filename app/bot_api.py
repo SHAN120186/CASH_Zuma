@@ -26,7 +26,7 @@ from sqlalchemy import delete, func, insert, or_, select
 
 from .company_scope import SERVICE_CODE
 from .db import (Account, Audit, Budget, Category, Company, CompanyUser, Delegation, Ledger, LoginAttempt, PaymentRequest,
-                 Setting, TelegramGroup, TelegramLink, TelegramLinkCode, User, now, unit)
+                 Setting, TelegramGroup, TelegramGroupCode, TelegramLink, TelegramLinkCode, User, now, unit)
 from .security import COMPANY_ROLES, PERMS, client_ip, digest, login_limited, pay_right, record_failure, session_user
 from .services import (account_balance, all_participants, approval_stage, budget_state, effective_cashflows, funds_state, log,
                        money, participants, round_participants, route_complete)
@@ -82,7 +82,10 @@ def bot_username():
 
 
 def config_groups():
-    """BOT_REPORT_GROUPS: "-1001234567890:UZGERMED,ZUMA; -100…:ZUMA" → {chat_id: {codes}}."""
+    """BOT_REPORT_GROUPS: "-1001234567890:UZGERMED; -100…:ZUMA" → {chat_id: {codes}}.
+    Preserve ambiguous legacy entries here so they cannot fall back to another stored binding;
+    group_scope refuses them before any financial data is returned.
+    """
     groups = {}
     for part in os.getenv('BOT_REPORT_GROUPS', '').split(';'):
         if not part.strip():
@@ -128,6 +131,10 @@ def group_scope(s, chat_id, group):
     company list, not stored, so it also moves when a company is switched off or the group is
     replaced by BOT_REPORT_GROUPS. The chat id is part of it: equal company lists in two groups
     never share a fingerprint."""
+    # One group belongs to one company. Check the original binding before filtering inactive
+    # companies: an old combined group must not silently become valid when one is disabled.
+    if len(group['companies']) != 1 or SERVICE_CODE in group['companies']:
+        return [], None
     active = active_codes(s)
     codes = sorted(active[c].code for c in group['companies'] if c in active)
     if not codes:
@@ -198,17 +205,22 @@ def morning_summary(request: Request, chat_id: int, report_date: date, today: da
         raise HTTPException(422, 'Сводка строится на сегодня по Ташкенту за предыдущий календарный день.')
     with unit() as s:
         group = report_groups(s).get(chat_id)
-    if not group:
+        codes, scope_id = group_scope(s, chat_id, group) if group else ([], None)
+    if not codes:
         audit(None, 'Бот: группа не разрешена', chat_id, f'Сводка за {report_date} не выдана')
         raise HTTPException(403, 'Группа не разрешена для утренней сводки.')
-    codes = group['companies']
-
     with unit() as s:
+        # Re-read the binding with the data. Never use an earlier group's company with the
+        # current scope fingerprint if an administrator changed settings between reads.
+        group = report_groups(s).get(chat_id)
+        codes, scope_id = group_scope(s, chat_id, group) if group else ([], None)
+        if not codes:
+            raise HTTPException(403, 'Для группы не подключена одна активная компания.')
         companies = {c.id: c for c in s.scalars(select(Company).where(Company.active.is_(True)))
                      if c.code.upper() in codes}
         if not companies:
             raise HTTPException(403, 'Для группы не найдено активных компаний.')
-        scope_codes, scope_id = group_scope(s, chat_id, group)
+        scope_codes = codes
         name = {cid: c.name for cid, c in companies.items()}
         all_accounts = {a.id: a for a in s.scalars(select(Account).where(Account.company_id.in_(list(companies))))}
         # An account opened after ``today`` does not exist yet. An archived account holds no money now,
@@ -282,6 +294,11 @@ def morning_summary(request: Request, chat_id: int, report_date: date, today: da
         result = {'chat_id': chat_id, 'report_date': str(report_date), 'today': str(today),
                   'companies': scope_codes, 'scope_id': scope_id, 'balances': balances, 'income': movements('in'), 'expense': movements('out'),
                   'payments_today': payments, 'pending_approvals': pending, 'warnings': warnings}
+        # Names are editable. The bot verifies a stable code on every financial row before
+        # sending it, while displaying the company's current name unchanged.
+        for section in ('balances', 'income', 'expense', 'payments_today', 'pending_approvals', 'warnings'):
+            for row in result[section] or []:
+                row['company_code'] = scope_codes[0]
     audit(list(companies), 'Бот: утренняя сводка', chat_id, f'Группа {chat_id}; сводка за {report_date:%d.%m.%Y}')
     return result
 
@@ -506,11 +523,99 @@ def access_check(request: Request, chat_id: int | None = Query(default=None, gt=
 
 # ---------------------------------------------------------------- summary groups connected from Telegram
 
+class GroupCodeIn(BaseModel):
+    model_config = ConfigDict(extra='forbid', str_strip_whitespace=True)
+    chat_id: int = Field(gt=-2**63, lt=0)
+    company_code: str = Field(min_length=1, max_length=40)
+
+
+class GroupRegisterIn(BaseModel):
+    model_config = ConfigDict(extra='forbid', str_strip_whitespace=True)
+    code: str = Field(max_length=128)
+    chat_id: int = Field(gt=-2**63, lt=0)
+    title: str = Field(default='', max_length=255)
+    telegram_user_id: int = Field(gt=0, lt=2**53)
+
+
+GROUP_CODE_REFUSAL = 'Код регистрации не найден, истёк или не подходит для этой группы.'
+
+
+def group_code_hash(code):
+    return digest('telegram-group-registration:' + code.strip().upper())
+
+
+def check_registration_scope(s, chat_id, company_code):
+    """Never replace server settings or switch a connected group to a different company.
+    Called under the write guard on both issuance and consumption, so a concurrent change
+    cannot widen the group scope between the two steps."""
+    if chat_id in config_groups():
+        raise HTTPException(409, 'Эта группа задана в настройках сервера (BOT_REPORT_GROUPS).')
+    group = report_groups(s).get(chat_id)
+    if group is not None and group['companies'] != {company_code}:
+        raise HTTPException(409, 'Группа уже подключена к другой компании. Сначала отключите её на сайте.')
+
+
+@router.post('/api/admin/telegram-group-codes')
+def issue_group_registration_code(data: GroupCodeIn, request: Request):
+    """A site administrator authorizes one group and one company for ten minutes.
+    No personal Telegram link is needed; the plaintext code is returned only here."""
+    with unit(True) as s:
+        user, _ = session_user(s, request, 'users')
+        require_holding_admin(user)
+        company = chosen_companies(s, [data.company_code])[0]
+        check_registration_scope(s, data.chat_id, company.code)
+        code = ''.join(secrets.choice(CODE_ALPHABET) for _ in range(20))
+        expires_at = now() + CODE_TTL
+        s.execute(delete(TelegramGroupCode).where(TelegramGroupCode.chat_id == data.chat_id))
+        s.add(TelegramGroupCode(code_hash=group_code_hash(code), chat_id=data.chat_id,
+                               company_id=company.id, issued_by=user.id, expires_at=expires_at))
+        journal_group(s, {company.code}, 'Выдан код регистрации Telegram-группы', data.chat_id,
+                      'Одноразовый код выдан на 10 минут', user.id)
+        return {'code': code, 'chat_id': data.chat_id, 'company_code': company.code,
+                'company_name': company.name, 'expires_at': utc_iso(expires_at)}
+
+
+@router.post('/api/bot/v1/report-groups/register')
+def register_report_group(data: GroupRegisterIn, request: Request):
+    """Consume an authorization from the site. The authenticated bot verifies that the
+    Telegram actor is an administrator/owner of this chat; that actor need not have a site
+    account or personal Telegram link. The site authority belongs to the code issuer."""
+    authenticate_bot(request)
+    code = data.code.upper()
+    if not re.fullmatch('[' + CODE_ALPHABET + ']{20}', code):
+        raise HTTPException(403, GROUP_CODE_REFUSAL)
+    with unit(True) as s:
+        pending = s.get(TelegramGroupCode, group_code_hash(code))
+        if pending is None or pending.expires_at <= now() or pending.chat_id != data.chat_id:
+            raise HTTPException(403, GROUP_CODE_REFUSAL)
+        issuer = s.get(User, pending.issued_by)
+        company = s.get(Company, pending.company_id)
+        if (issuer is None or not issuer.active or issuer.role != 'admin' or issuer.must_change_password
+                or company is None or not company.active or company.code.upper() == SERVICE_CODE):
+            raise HTTPException(403, GROUP_CODE_REFUSAL)
+        check_registration_scope(s, data.chat_id, company.code)
+        # A forwarded code must not be copied into the stored title or audit text.
+        title = re.sub(re.escape(code), '[код скрыт]', data.title, flags=re.IGNORECASE)
+        title = mask_digits(title, 255)
+        row = s.get(TelegramGroup, data.chat_id)
+        if row is None:
+            row = TelegramGroup(chat_id=data.chat_id, title=title, companies=company.code,
+                                added_by=issuer.id, added_at=now())
+            s.add(row)
+        else:
+            row.title, row.companies = title, company.code
+            row.added_by, row.added_at = issuer.id, now()
+        s.delete(pending)
+        journal_group(s, {company.code}, 'Telegram-группа зарегистрирована', data.chat_id,
+                      'Подключена одноразовым кодом; компания: ' + company.code, issuer.id)
+        return {'registered': True, 'chat_id': data.chat_id,
+                'companies': [company.code], 'company_names': [company.name]}
+
 class GroupIn(BaseModel):
     model_config = ConfigDict(extra='forbid', str_strip_whitespace=True)
     chat_id: int = Field(gt=-2**63, lt=2**63)
     title: str = Field(default='', max_length=255)
-    companies: list[str] = Field(max_length=100)
+    companies: list[str] = Field(min_length=1, max_length=1)
     telegram_user_id: int = Field(gt=0, lt=2**53)
 
 
@@ -534,13 +639,14 @@ def group_state(s, chat_id, user):
     """GET /report-groups/{chat_id} as seen by ``user``, the site user who pressed the button (or None)."""
     group = report_groups(s).get(chat_id)
     active = active_codes(s)
+    codes, _ = group_scope(s, chat_id, group) if group else ([], None)
     can_manage = user is not None and user.role == 'admin' and (group is None or group['source'] != 'config')
     choices = []
     if can_manage:
         choices = [{'code': c.code, 'name': c.name} for c in sorted(active.values(), key=lambda c: (c.name, c.code))
                    if c.code.upper() != SERVICE_CODE]
     return {'chat_id': chat_id, 'connected': group is not None, 'source': group['source'] if group else None,
-            'companies': sorted(active[c].code for c in group['companies'] if c in active) if group else [],
+            'companies': codes,
             'can_manage': can_manage, 'choices': choices}
 
 
@@ -579,8 +685,8 @@ def locked_manager(s, chat_id, telegram_user_id):
 
 def chosen_companies(s, codes):
     """Validated selection → active companies in the requested order."""
-    if not codes:
-        raise HTTPException(422, 'Выберите хотя бы одну компанию.')
+    if len(codes) != 1:
+        raise HTTPException(422, 'Для одной Telegram-группы выберите ровно одну компанию.')
     active, known, chosen = active_codes(s), {c.code.upper() for c in s.scalars(select(Company))}, []
     for raw in codes:
         code = raw.strip().upper()
@@ -732,7 +838,7 @@ def get_report_group(request: Request, chat_id: int, telegram_user_id: int = Que
 
 @router.post('/api/bot/v1/report-groups')
 def save_report_group(data: GroupIn, request: Request):
-    """Connect a group to the morning summary or change its companies (holding administrator only)."""
+    """Connect one company or update its group; changing the company needs an explicit disconnect."""
     authenticate_bot(request)
     require_group(data.chat_id)
     check_manager(data.chat_id, data.telegram_user_id)
@@ -741,6 +847,9 @@ def save_report_group(data: GroupIn, request: Request):
         user = locked_manager(s, data.chat_id, data.telegram_user_id)
         codes = [c.code.upper() for c in chosen_companies(s, data.companies)]
         row = s.get(TelegramGroup, data.chat_id)
+        if row is not None and stored_codes(row) != set(codes):
+            raise HTTPException(422, 'Группа уже закреплена за другой компанией. '
+                                'Сначала отключите её на сайте и создайте новый код регистрации.')
         if row is None:
             before, owner = None, user.id
             row = TelegramGroup(chat_id=data.chat_id, title=title, companies=','.join(codes), added_by=user.id, added_at=now())
@@ -922,6 +1031,7 @@ def revoke_telegram_link_code(data: RevokeIn, request: Request):
 def revoke_telegram(s, user_id):
     """Remove a user's Telegram link and pending codes, e.g. together with their sessions."""
     s.execute(delete(TelegramLinkCode).where(TelegramLinkCode.user_id == user_id))
+    s.execute(delete(TelegramGroupCode).where(TelegramGroupCode.issued_by == user_id))
     return s.execute(delete(TelegramLink).where(TelegramLink.user_id == user_id)).rowcount > 0
 
 
