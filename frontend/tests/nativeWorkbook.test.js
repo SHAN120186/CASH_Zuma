@@ -40,10 +40,13 @@ const readyOriginal = () => {
   project.native_model.parameters.push({key:'Input!C2',sheet:'Input',cell:'C2',label:'Read only source',value:17,editable:false});
   return project;
 };
+const publishedOriginal = project => ({...project,status:'ready',inputs:{...project.inputs,start:'2028-04-01'},current_generation_id:31,
+  generations:[{id:31,revision:project.revision,native:true,
+    business_archive:{id:310,company_id:2,status:'ready'},teo_archive:{id:311,company_id:2,status:'ready'}}]});
 
 test('native preparation requires an explicit month and generates using the preview response revision and editable parameters',async t=>{
   const project=readyOriginal(),calls=[],events=[];
-  const checked={...project,revision:5}, response={...checked,status:'ready'};
+  const checked={...project,revision:5}, response=publishedOriginal(checked);
   const view=mount(component,{company,project,onUpdated:value=>events.push(['updated',value]),onGenerated:()=>events.push(['generated']),
     api:async(url,options)=>{calls.push({url,options});return url.includes('/preview?')?checked:response;}});t.after(view.unmount);await settle();
   assert.equal(view.state.reportStart,'');
@@ -206,7 +209,35 @@ test('native prepare shows checked preview and document generation stages and ke
     const view=mount(progressView,{company,project,api:async(url,options)=>{calls.push({url,options});return url.includes('/preview?')?preview.promise:generate.promise;}});t.after(view.unmount);await settle();view.state.reportStart='2028-04';const pending=view.state.generate();await settle();
     assert.equal(view.state.progress.completed,0);assert.equal(view.state.progress.total,2);assert.equal(find(view.container,node=>node.props?.role==='progressbar').props['aria-valuenow'],0);await settle();assert.equal(view.state.progress.completed,0);
     preview.resolve({...project,revision:5});await settle();assert.equal(calls.length,2);assert.equal(view.state.progress.completed,1);assert.equal(find(view.container,node=>node.props?.role==='progressbar').props['aria-valuenow'],50);
-    if(fail)generate.reject(Error('PDF unavailable'));else generate.resolve({...project,revision:6,status:'ready'});await pending;await settle();assert.equal(view.state.progress.active,false);assert.equal(view.state.progress.completed,fail?1:2);assert.equal(find(view.container,node=>node.props?.role==='progressbar').props['aria-valuenow'],fail?50:100);if(fail)assert.match(view.state.progress.error,/PDF unavailable/);
+    if(fail)generate.reject(Error('PDF unavailable'));else generate.resolve(publishedOriginal({...project,revision:6}));await pending;await settle();assert.equal(view.state.progress.active,false);assert.equal(view.state.progress.completed,fail?1:2);assert.equal(find(view.container,node=>node.props?.role==='progressbar').props['aria-valuenow'],fail?50:100);if(fail)assert.match(view.state.progress.error,/PDF unavailable/);
+  }
+});
+
+test('ready native responses require the current published archive before claiming completion or opening reports',async t=>{
+  for(const scenario of ['deleted','current-missing','generation-missing','revision-mismatch','generic','foreign-archive','invalid-archive-id','draft-archive']){
+    const project=reactive(readyOriginal()),checked={...project,revision:5},response=publishedOriginal(checked),events=[],calls=[];
+    const generation=response.generations[0];
+    if(scenario==='deleted')generation.business_archive.status='deleted';
+    if(scenario==='current-missing')response.current_generation_id=null;
+    if(scenario==='generation-missing')response.current_generation_id=99;
+    if(scenario==='revision-mismatch')generation.revision=4;
+    if(scenario==='generic')generation.native=false;
+    if(scenario==='foreign-archive')generation.business_archive.company_id=9;
+    if(scenario==='invalid-archive-id')generation.business_archive.id=0;
+    if(scenario==='draft-archive')generation.business_archive.status='draft';
+    const view=mount(progressView,{company,project,stage:'report',onUpdated:value=>Object.assign(project,value),onGenerated:()=>events.push('generated'),
+      api:async(url,options)=>{calls.push({url,options});return url.includes('/preview?')?checked:response;}});t.after(view.unmount);await settle();
+    view.state.reportStart='2028-04';await view.state.generate();await settle();
+    assert.equal(calls.length,2,scenario);assert.deepEqual(events,[],scenario);
+    assert.equal(view.state.progress.active,false,scenario);assert.equal(view.state.progress.completed,1,scenario);
+    assert.equal(find(view.container,node=>node.props?.role==='progressbar').props['aria-valuenow'],50,scenario);
+    assert.equal(view.state.stale,true,scenario);assert.doesNotMatch(view.state.progress.label,/готовы/,scenario);
+    const results=find(view.container,node=>node.props?.class==='native-results');if(results)assert.equal(results.tag,'details',scenario);
+    if(scenario==='deleted'){
+      assert.equal(view.state.error,'Отчёт удалён из архива. Включите «Показать удалённые» в архиве отчётов и нажмите «Восстановить».');
+      assert.equal(view.state.files.some(file=>!file.secondary),false);
+    }else assert.match(view.state.error,/Для текущей версии нет доступного комплекта PDF и Excel/,scenario);
+    assert.equal(project.native_model.metrics[0].original,100,scenario);assert.equal(project.native_model.metrics[0].calculated,125,scenario);
   }
 });
 

@@ -271,7 +271,7 @@ test('mounted optional original import keeps the 36-month choice and exposes bus
   const api = async (url, options) => {
     if (!options) return {items: [], can_upload: true};
     const response = await service.api(url, options);
-    return url.includes('/analyse') ? {...response, inputs: completeInputs(), validation: [], extraction: {}, generations: [{id: 1, revision: response.revision, business_archive: archive(10), teo_archive: archive(11), metrics: {npv: '12.3'}}]} : response;
+    return url.includes('/analyse') ? {...response, current_generation_id:1, inputs: completeInputs(), validation: [], extraction: {}, generations: [{id: 1, revision: response.revision, business_archive: archive(10), teo_archive: archive(11), metrics: {npv: '12.3'}}]} : response;
   };
   const view = mount(component, {api, company, onGenerated: () => generated++}); t.after(view.unmount);
   await settle(); await button(view.container, 'Новый проект').props.onClick(); await settle();
@@ -289,7 +289,8 @@ test('mounted optional original import keeps the 36-month choice and exposes bus
   assert.deepEqual(downloads.map(node => node.props.href), ['/api/report-archives/10/files/pdf?company_id=2', '/api/report-archives/10/files/xlsx?company_id=2', '/api/report-archives/11/files/pdf?company_id=2']);
   const teo = find(view.container,node=>node.tag==='details'&&node.children.some(child=>child.tag==='summary'&&text(child).includes('Дополнительно')));
   assert.notEqual(teo.props.open,true);
-  assert.match(text(view.container), /Бизнес-план и ТЭО сформированы/);
+  assert.equal(view.state.flowStage,'report');
+  assert.match(text(view.container), /Бизнес-план готов\. Скачайте PDF и Excel/);
 });
 
 test('mounted missing-data response keeps submitted financial values; source ambiguity requires review', async t => {
@@ -572,7 +573,7 @@ test('save plus generation shows actual zero/fifty/complete stages and a failed 
     const view=mount(progressView,{company,api:async(url,options)=>options?(options.method==='PUT'?save.promise:generate.promise):url.includes('/13?')?project:{items:[project],can_upload:true}});t.after(view.unmount);await settle();await view.state.openProject(project);await settle();const pending=view.state.generate();await settle();
     assert.equal(view.state.progress.completed,0);assert.equal(view.state.progress.total,2);await settle();assert.equal(view.state.progress.completed,0);
     save.resolve({...project,revision:1});await settle();assert.equal(view.state.progress.completed,1);assert.equal(find(view.container,n=>n.props?.role==='progressbar').props['aria-valuenow'],50);
-    if(fail)generate.reject(Error('Export unavailable'));else generate.resolve({...project,revision:2,status:'ready'});await pending;await settle();
+    if(fail)generate.reject(Error('Export unavailable'));else generate.resolve({...project,revision:2,status:'ready',current_generation_id:1,generations:[{id:1,revision:2,business_archive:{id:201,company_id:2,status:'ready'}}]});await pending;await settle();
     assert.equal(view.state.progress.active,false);assert.equal(view.state.progress.completed,fail?1:2);assert.equal(find(view.container,n=>n.props?.role==='progressbar').props['aria-valuenow'],fail?50:100);if(fail)assert.match(view.state.progress.error,/Export unavailable/);
   }
 });
@@ -591,5 +592,71 @@ test('company switches and unmount invalidate manual operation progress and prev
     const view=mount(progressView,{company:activeCompany,api:async(url,options)=>{calls.push({url,options});if(options)return save.promise;return url.includes('/15?')?project:{items:[],can_upload:true};}});if(!unmount)t.after(view.unmount);
     await settle();await view.state.openProject(project);await settle();const pending=view.state.generate();await settle();if(unmount)view.unmount();else activeCompany.id=9;await settle();save.resolve({...project,revision:1});await pending;await settle();
     assert.equal(calls.filter(call=>call.url.includes('/generate?')).length,0);assert.notEqual(view.state.progress.completed,2);assert.equal(view.state.error,'');
+  }
+});
+
+const nativeComponent=await compileComponent(new URL('../src/NativeWorkbook.vue',import.meta.url));
+const reportsComponent=await compileComponent(new URL('../src/BusinessProjects.vue',import.meta.url),{'./NativeWorkbook.vue':nativeComponent});
+const availableProject=(native=false)=>({id:41,company_id:2,revision:6,current_generation_id:501,can_edit:true,title:'Synthetic ready project',mode:'manual',status:'ready',files:[],inputs:completeInputs(),validation:[],extraction:{},
+  ...(native?{native_model:{supported:true,parameters:[],metrics:[],preview:{blocked:false,formula_count:0,error_count:0,issues:[]}}}:{}),
+  generations:[{id:999,revision:5,native,business_archive:{id:399,company_id:2,status:'ready'}},{id:501,revision:6,native,business_archive:{id:401,company_id:2,status:'ready'},teo_archive:{id:402,company_id:2,status:'ready'}}]});
+const visiblyAvailable=node=>{for(let current=node;current;current=current.parent){if(current.props?.hidden===true)return false;if(current.tag==='details'&&current.props.open!==true)return false;}return true;};
+const visibleReportLinks=root=>all(root,node=>node.tag==='a'&&node.props.href?.includes('/files/')&&visiblyAvailable(node));
+
+test('opening a current ready generic or native project immediately exposes its PDF and Excel despite no source files',async t=>{
+  for(const native of [false,true]){
+    const project=availableProject(native);const view=mount(reportsComponent,{company,api:async url=>url.includes('/41?')?project:{items:[project],can_upload:true}});t.after(view.unmount);
+    await settle();await view.state.openProject(project);await settle();assert.equal(view.state.flowStage,'report');assert.equal(view.state.current.files.length,0);
+    assert.deepEqual(visibleReportLinks(view.container).map(node=>node.props.href),['/api/report-archives/401/files/pdf?company_id=2','/api/report-archives/401/files/xlsx?company_id=2']);
+    assert.doesNotMatch(view.state.notice,/нет доступного/);assert.equal(button(view.container,'3. Отчёт').props['aria-current'],'step');
+  }
+});
+
+test('opening draft, stale or unavailable reports stays in data and never announces a ready downloadable report',async t=>{
+  for(const native of [false,true])for(const scenario of ['draft','needs_data','deleted','stale','no_current','no_generation','no_archive','deleted_archive','pending_archive','foreign_archive']){
+    const project=availableProject(native);const selected=project.generations[1];
+    if(['draft','needs_data','deleted'].includes(scenario))project.status=scenario;
+    if(scenario==='stale')selected.revision=5;
+    if(scenario==='no_current')project.current_generation_id=null;
+    if(scenario==='no_generation')project.current_generation_id=555;
+    if(scenario==='no_archive')delete selected.business_archive;
+    if(scenario==='deleted_archive')selected.business_archive.status='deleted';
+    if(scenario==='pending_archive')selected.business_archive.status='pending';
+    if(scenario==='foreign_archive')selected.business_archive.company_id=9;
+    const view=mount(reportsComponent,{company,api:async url=>url.includes('/41?')?project:{items:[project],can_upload:true}});t.after(view.unmount);await settle();await view.state.openProject(project);await settle();
+    assert.equal(view.state.flowStage,'data',`${native}/${scenario}`);assert.deepEqual(visibleReportLinks(view.container),[],`${native}/${scenario}`);assert.equal(view.state.reportsStale,true);
+    const message=scenario==='deleted_archive'?/Отчёт удалён из архива.*Показать удалённые.*Восстановить/:/Для текущей версии нет доступного комплекта PDF и Excel/;
+    if(project.status==='ready')assert.match(view.state.notice,message);else assert.doesNotMatch(view.state.notice,/Бизнес-план готов/);
+    await view.state.goStage('report');await settle();assert.match(text(view.container),message);
+    if(!native)assert.doesNotMatch(text(view.container),/Готовые отчёты · версия/);
+  }
+});
+
+test('source analysis lands on its actual current report and does not call older or missing archives generated',async t=>{
+  for(const native of [false,true])for(const ready of [false,true]){
+    let project=availableProject(native);project.status='draft';project.current_generation_id=null;project.generations=[];let generated=0;
+    const view=mount(reportsComponent,{company,onGenerated:()=>generated++,api:async(url,options)=>{
+      if(!options)return url.includes('/41?')?project:{items:[project],can_upload:true};
+      if(options.method==='PUT'){project={...project,revision:7};return project;}
+      assert.match(url,/\/analyse\?/);project=availableProject(native);project.revision=7;project.generations[1].revision=ready?7:6;return project;
+    }});t.after(view.unmount);await settle();await view.state.openProject(project);await settle();
+    view.state.chooseSources({target:{files:[file('reference.txt')],value:'selected'}});await view.state.upload();await settle();assert.equal(view.state.flowStage,ready?'report':'data');assert.equal(generated,ready?1:0);
+    if(ready){assert.equal(visibleReportLinks(view.container).length,2);assert.match(view.state.notice,/Бизнес-план готов\. Скачайте PDF и Excel/);}
+    else{assert.deepEqual(visibleReportLinks(view.container),[]);assert.match(view.state.notice,/Для текущей версии нет доступного комплекта PDF и Excel/);assert.doesNotMatch(view.state.notice,/Бизнес-план готов|сформированы/);}
+  }
+});
+
+test('cached generation with a deleted archive or stale revision never reports complete and explains how to recover files',async t=>{
+  for(const deleted of [false,true]){
+    let project=availableProject();let generated=0;
+    const view=mount(progressView,{company,onGenerated:()=>generated++,api:async(url,options)=>{
+      if(!options)return url.includes('/41?')?project:{items:[project],can_upload:true};
+      if(options.method==='PUT'){project={...project,revision:7};return project;}
+      assert.match(url,/\/generate\?/);project=structuredClone(project);const selected=project.generations.find(item=>item.id===project.current_generation_id);selected.revision=deleted?7:6;if(deleted)selected.business_archive.status='deleted';return project;
+    }});t.after(view.unmount);await settle();await view.state.openProject(project);await settle();await view.state.generate();await settle();
+    assert.equal(view.state.flowStage,'data');assert.equal(generated,0);assert.equal(view.state.progress.active,false);assert.equal(view.state.progress.completed,1);assert.equal(view.state.progress.total,2);assert.equal(find(view.container,node=>node.props?.role==='progressbar').props['aria-valuenow'],50);assert.deepEqual(visibleReportLinks(view.container),[]);
+    assert.doesNotMatch(view.state.notice,/Бизнес-план и расчётный Excel готовы/);
+    if(deleted){assert.match(view.state.notice,/Отчёт удалён из архива.*Показать удалённые.*Восстановить/);assert.doesNotMatch(view.state.notice,/подготовьте отчёт заново/);await view.state.goStage('report');await settle();const message=find(view.container,node=>node.tag==='p'&&node.props.role==='status'&&text(node).includes('Отчёт удалён из архива'));assert.ok(message);assert.doesNotMatch(text(message),/создать файлы/);}
+    else assert.match(view.state.notice,/Для текущей версии нет доступного комплекта PDF и Excel/);
   }
 });
