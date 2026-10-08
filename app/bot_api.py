@@ -82,7 +82,10 @@ def bot_username():
 
 
 def config_groups():
-    """BOT_REPORT_GROUPS: "-1001234567890:UZGERMED,ZUMA; -100…:ZUMA" → {chat_id: {codes}}."""
+    """BOT_REPORT_GROUPS: "-1001234567890:UZGERMED; -100…:ZUMA" → {chat_id: {codes}}.
+    Preserve ambiguous legacy entries here so they cannot fall back to another stored binding;
+    group_scope refuses them before any financial data is returned.
+    """
     groups = {}
     for part in os.getenv('BOT_REPORT_GROUPS', '').split(';'):
         if not part.strip():
@@ -128,6 +131,10 @@ def group_scope(s, chat_id, group):
     company list, not stored, so it also moves when a company is switched off or the group is
     replaced by BOT_REPORT_GROUPS. The chat id is part of it: equal company lists in two groups
     never share a fingerprint."""
+    # One group belongs to one company. Check the original binding before filtering inactive
+    # companies: an old combined group must not silently become valid when one is disabled.
+    if len(group['companies']) != 1 or SERVICE_CODE in group['companies']:
+        return [], None
     active = active_codes(s)
     codes = sorted(active[c].code for c in group['companies'] if c in active)
     if not codes:
@@ -198,17 +205,22 @@ def morning_summary(request: Request, chat_id: int, report_date: date, today: da
         raise HTTPException(422, 'Сводка строится на сегодня по Ташкенту за предыдущий календарный день.')
     with unit() as s:
         group = report_groups(s).get(chat_id)
-    if not group:
+        codes, scope_id = group_scope(s, chat_id, group) if group else ([], None)
+    if not codes:
         audit(None, 'Бот: группа не разрешена', chat_id, f'Сводка за {report_date} не выдана')
         raise HTTPException(403, 'Группа не разрешена для утренней сводки.')
-    codes = group['companies']
-
     with unit() as s:
+        # Re-read the binding with the data. Never use an earlier group's company with the
+        # current scope fingerprint if an administrator changed settings between reads.
+        group = report_groups(s).get(chat_id)
+        codes, scope_id = group_scope(s, chat_id, group) if group else ([], None)
+        if not codes:
+            raise HTTPException(403, 'Для группы не подключена одна активная компания.')
         companies = {c.id: c for c in s.scalars(select(Company).where(Company.active.is_(True)))
                      if c.code.upper() in codes}
         if not companies:
             raise HTTPException(403, 'Для группы не найдено активных компаний.')
-        scope_codes, scope_id = group_scope(s, chat_id, group)
+        scope_codes = codes
         name = {cid: c.name for cid, c in companies.items()}
         all_accounts = {a.id: a for a in s.scalars(select(Account).where(Account.company_id.in_(list(companies))))}
         # An account opened after ``today`` does not exist yet. An archived account holds no money now,
@@ -282,6 +294,11 @@ def morning_summary(request: Request, chat_id: int, report_date: date, today: da
         result = {'chat_id': chat_id, 'report_date': str(report_date), 'today': str(today),
                   'companies': scope_codes, 'scope_id': scope_id, 'balances': balances, 'income': movements('in'), 'expense': movements('out'),
                   'payments_today': payments, 'pending_approvals': pending, 'warnings': warnings}
+        # Names are editable. The bot verifies a stable code on every financial row before
+        # sending it, while displaying the company's current name unchanged.
+        for section in ('balances', 'income', 'expense', 'payments_today', 'pending_approvals', 'warnings'):
+            for row in result[section] or []:
+                row['company_code'] = scope_codes[0]
     audit(list(companies), 'Бот: утренняя сводка', chat_id, f'Группа {chat_id}; сводка за {report_date:%d.%m.%Y}')
     return result
 
@@ -598,7 +615,7 @@ class GroupIn(BaseModel):
     model_config = ConfigDict(extra='forbid', str_strip_whitespace=True)
     chat_id: int = Field(gt=-2**63, lt=2**63)
     title: str = Field(default='', max_length=255)
-    companies: list[str] = Field(max_length=100)
+    companies: list[str] = Field(min_length=1, max_length=1)
     telegram_user_id: int = Field(gt=0, lt=2**53)
 
 
@@ -622,13 +639,14 @@ def group_state(s, chat_id, user):
     """GET /report-groups/{chat_id} as seen by ``user``, the site user who pressed the button (or None)."""
     group = report_groups(s).get(chat_id)
     active = active_codes(s)
+    codes, _ = group_scope(s, chat_id, group) if group else ([], None)
     can_manage = user is not None and user.role == 'admin' and (group is None or group['source'] != 'config')
     choices = []
     if can_manage:
         choices = [{'code': c.code, 'name': c.name} for c in sorted(active.values(), key=lambda c: (c.name, c.code))
                    if c.code.upper() != SERVICE_CODE]
     return {'chat_id': chat_id, 'connected': group is not None, 'source': group['source'] if group else None,
-            'companies': sorted(active[c].code for c in group['companies'] if c in active) if group else [],
+            'companies': codes,
             'can_manage': can_manage, 'choices': choices}
 
 
@@ -667,8 +685,8 @@ def locked_manager(s, chat_id, telegram_user_id):
 
 def chosen_companies(s, codes):
     """Validated selection → active companies in the requested order."""
-    if not codes:
-        raise HTTPException(422, 'Выберите хотя бы одну компанию.')
+    if len(codes) != 1:
+        raise HTTPException(422, 'Для одной Telegram-группы выберите ровно одну компанию.')
     active, known, chosen = active_codes(s), {c.code.upper() for c in s.scalars(select(Company))}, []
     for raw in codes:
         code = raw.strip().upper()
@@ -820,7 +838,7 @@ def get_report_group(request: Request, chat_id: int, telegram_user_id: int = Que
 
 @router.post('/api/bot/v1/report-groups')
 def save_report_group(data: GroupIn, request: Request):
-    """Connect a group to the morning summary or change its companies (holding administrator only)."""
+    """Connect one company or update its group; changing the company needs an explicit disconnect."""
     authenticate_bot(request)
     require_group(data.chat_id)
     check_manager(data.chat_id, data.telegram_user_id)
@@ -829,6 +847,9 @@ def save_report_group(data: GroupIn, request: Request):
         user = locked_manager(s, data.chat_id, data.telegram_user_id)
         codes = [c.code.upper() for c in chosen_companies(s, data.companies)]
         row = s.get(TelegramGroup, data.chat_id)
+        if row is not None and stored_codes(row) != set(codes):
+            raise HTTPException(422, 'Группа уже закреплена за другой компанией. '
+                                'Сначала отключите её на сайте и создайте новый код регистрации.')
         if row is None:
             before, owner = None, user.id
             row = TelegramGroup(chat_id=data.chat_id, title=title, companies=','.join(codes), added_by=user.id, added_at=now())
