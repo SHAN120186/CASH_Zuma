@@ -3,7 +3,7 @@ import {computed, ref, watch} from 'vue';
 import BalanceCard from './BalanceCard.vue';
 import ForecastCard from './ForecastCard.vue';
 import AppIcon from '../AppIcon.vue';
-import {toCents, formatCents, formatShortDate, addDays, sameDayPreviousMonth} from './format.js';
+import {toCents, formatCents, formatAmount, amountTitle, formatShortDate, addDays, sameDayPreviousMonth} from './format.js';
 import {balanceHistory, monthPlanFact} from './history.js';
 import {canPayAny} from './rights.js';
 
@@ -211,12 +211,14 @@ const monthStart = computed(() => props.today.slice(0, 8) + '01');
 const kpiCards = computed(() => {
   const k = kpi.value, cur = props.currency, since = `с ${formatShortDate(monthStart.value)} · факт`;
   if (!k) return [];
+  // Tiles show compact amounts; the exact figure is in the tooltip.
+  const low = k.low ? toCents(k.low.balance) : null;
   return [
-    {label: 'Доходы', value: formatCents(k.inflow, cur), tone: 'in', note: since},
-    {label: 'Расходы', value: formatCents(k.outflow, cur), tone: 'out', note: since},
-    {label: 'Чистый поток', value: formatCents(k.net, cur, {sign: true}), tone: k.net >= 0 ? 'in' : 'out', note: 'доходы − расходы месяца'},
-    {label: `Прогноз на ${s.value.dashDays ?? horizon.value} дней`, value: formatCents(k.end, cur), tone: '',
-     note: k.low ? `минимум ${formatCents(toCents(k.low.balance), cur)} · ${formatShortDate(k.low.date)}` : ''},
+    {label: 'Доходы', value: formatAmount(k.inflow, cur), title: amountTitle(k.inflow, cur), tone: 'in', note: since},
+    {label: 'Расходы', value: formatAmount(k.outflow, cur), title: amountTitle(k.outflow, cur), tone: 'out', note: since},
+    {label: 'Чистый поток', value: formatAmount(k.net, cur, {sign: true}), title: amountTitle(k.net, cur, {sign: true}), tone: k.net >= 0 ? 'in' : 'out', note: 'доходы − расходы месяца'},
+    {label: `Прогноз на ${s.value.dashDays ?? horizon.value} дней`, value: formatAmount(k.end, cur), title: amountTitle(k.end, cur), tone: '',
+     note: k.low ? `минимум ${formatAmount(low, cur)} · ${formatShortDate(k.low.date)}` : '', noteTitle: k.low ? 'минимум ' + amountTitle(low, cur) : ''},
   ];
 });
 
@@ -347,8 +349,8 @@ const signedLedger = t => (t.kind === 'out' ? -1 : t.kind === 'in' ? 1 : 0) * (t
     <template v-if="kpi && balanceState !== 'empty'">
      <div v-for="k in kpiCards" :key="k.label" class="ov-kpi">
       <span class="kpi-l">{{k.label}}</span>
-      <span class="kpi-v" :class="k.tone" :style="{'--chars': k.value.length}">{{k.value}}</span>
-      <span v-if="k.note" class="kpi-s">{{k.note}}</span>
+      <span class="kpi-v" :class="k.tone" :style="{'--chars': k.value.length}" :title="k.title">{{k.value}}</span>
+      <span v-if="k.note" class="kpi-s" :title="k.noteTitle || undefined">{{k.note}}</span>
      </div>
     </template>
     <template v-else-if="s.loading"><div v-for="n in 4" :key="n" class="ov-kpi" aria-hidden="true"><span class="sk sk-l"></span><span class="sk sk-v"></span><span class="sk sk-l"></span></div></template>
@@ -374,12 +376,12 @@ const signedLedger = t => (t.kind === 'out' ? -1 : t.kind === 'in' ? 1 : 0) * (t
     <div v-else class="ov-empty"><span class="empty-ic" aria-hidden="true">✓</span><p>Решений от вас по {{currency}} сейчас не требуется.</p></div>
     <p v-if="decisions.length > SHOWN_ROWS" class="panel-note">Ещё {{decisions.length - SHOWN_ROWS}} — в разделе «Заявки».</p>
     <p v-if="s.pendingLoaded < s.pendingTotal" class="panel-note">Прочитаны {{s.pendingLoaded}} из {{s.pendingTotal}} заявок на согласовании; остальные — в разделе «Заявки».</p>
-    <p v-if="s.dash?.pending_count" class="ov-pend-total">Всего на согласовании: <b>{{s.dash.pending_count}}</b> {{plural(s.dash.pending_count, 'заявка', 'заявки', 'заявок')}} на сумму <b>{{formatCents(toCents(s.dash.pending_amount), currency)}}</b> {{currency}}</p>
+    <p v-if="s.dash?.pending_count" class="ov-pend-total">Всего на согласовании: <b>{{s.dash.pending_count}}</b> {{plural(s.dash.pending_count, 'заявка', 'заявки', 'заявок')}} на сумму <b :title="amountTitle(toCents(s.dash.pending_amount), currency)">{{formatAmount(toCents(s.dash.pending_amount), currency)}}</b> {{currency}}</p>
    </section>
    <section v-else class="panel span-7" aria-labelledby="ov-pend-h">
     <header class="panel-h"><h2 id="ov-pend-h">На согласовании</h2><button v-if="has('requests-view')" type="button" class="ghost tiny" @click="emit('go', 'requests', {status: 'pending'})">Все заявки <AppIcon name="arrow"/></button></header>
     <div v-if="s.loading" class="panel-sk" aria-hidden="true"><span class="sk"></span></div>
-    <p v-else-if="s.dash?.pending_count" class="ov-pend"><b>{{s.dash.pending_count}}</b> {{plural(s.dash.pending_count, 'заявка', 'заявки', 'заявок')}} на сумму <b>{{formatCents(toCents(s.dash.pending_amount), currency)}}</b> {{currency}}</p>
+    <p v-else-if="s.dash?.pending_count" class="ov-pend"><b>{{s.dash.pending_count}}</b> {{plural(s.dash.pending_count, 'заявка', 'заявки', 'заявок')}} на сумму <b :title="amountTitle(toCents(s.dash.pending_amount), currency)">{{formatAmount(toCents(s.dash.pending_amount), currency)}}</b> {{currency}}</p>
     <p v-else-if="!s.dash && s.errors.dash" class="panel-err">Сводка не загрузилась: {{s.errors.dash}}</p>
     <div v-if="s.requestsLoading && !s.loading" class="panel-sk" aria-hidden="true"><span class="sk"></span><span class="sk"></span></div>
     <p v-else-if="s.errors.pending" class="panel-err">Заявки не загрузились: {{s.errors.pending}}</p>
@@ -409,7 +411,7 @@ const signedLedger = t => (t.kind === 'out' ? -1 : t.kind === 'in' ? 1 : 0) * (t
      <div v-else-if="!riskGaps.length" class="ov-empty"><span class="empty-ic ok" aria-hidden="true">✓</span><p>Рисков по {{currency}} не видно: остаток выше резерва, бюджеты в пределах лимитов, просрочек нет.</p></div>
     </template>
     <p v-if="s.dash" class="ov-reserve">
-     <span>Минимальный резерв: <b>{{formatCents(toCents(s.dash.reserve), currency)}}</b> {{currency}}</span>
+     <span>Минимальный резерв: <b :title="amountTitle(toCents(s.dash.reserve), currency)">{{formatAmount(toCents(s.dash.reserve), currency)}}</b> {{currency}}</span>
      <button v-if="has('budget')" type="button" class="ghost tiny" @click="emit('edit-reserve', s.dash.reserve)">Изменить</button>
     </p>
    </section>
@@ -436,7 +438,7 @@ const signedLedger = t => (t.kind === 'out' ? -1 : t.kind === 'in' ? 1 : 0) * (t
      <li v-for="a in accountList" :key="a.id">
       <span class="ov-acc-ic" aria-hidden="true"><AppIcon :name="a.kind === 'bank' ? 'accounts' : 'cash'"/></span>
       <span class="ov-acc-main"><b>{{a.name}}</b><small>{{a.kind === 'bank' ? 'Банковский счёт' : 'Касса'}}</small></span>
-      <span class="ov-acc-amt">{{formatCents(toCents(a.balance), a.currency)}} <small>{{a.currency}}</small></span>
+      <span class="ov-acc-amt" :title="amountTitle(toCents(a.balance), a.currency)">{{formatAmount(toCents(a.balance), a.currency)}} <small>{{a.currency}}</small></span>
      </li>
     </ul>
     <div v-else class="ov-empty"><span class="empty-ic" aria-hidden="true"><AppIcon name="accounts"/></span><p>Нет счетов в {{currency}}.</p></div>
@@ -470,7 +472,7 @@ const signedLedger = t => (t.kind === 'out' ? -1 : t.kind === 'in' ? 1 : 0) * (t
      <li v-for="(p, i) in upcoming" :key="(p.id ?? 'x') + '-' + i">
       <span class="ov-upc-d">{{formatShortDate(p.date)}}</span>
       <span class="ov-upc-n">{{p.name}}<small>утверждено</small></span>
-      <span class="ov-upc-a">{{formatCents(toCents(p.amount), currency)}} <small>{{currency}}</small></span>
+      <span class="ov-upc-a" :title="amountTitle(toCents(p.amount), currency)">{{formatAmount(toCents(p.amount), currency)}} <small>{{currency}}</small></span>
      </li>
     </ul>
     <p v-else class="panel-note">Нет утверждённых выплат на ближайшие {{s.dashDays ?? horizon}} дней.</p>
@@ -487,7 +489,7 @@ const signedLedger = t => (t.kind === 'out' ? -1 : t.kind === 'in' ? 1 : 0) * (t
     <div v-else-if="!planFact" class="panel-sk" aria-hidden="true"><span class="sk"></span><span class="sk"></span></div>
     <div v-else class="ov-pf">
      <div v-for="[key, label, cls] in [['income','Поступления','in'],['expense','Выплаты','out']]" :key="key" class="ov-pf-row">
-      <div class="ov-pf-top"><span>{{label}}</span><span class="ov-pf-num"><b>{{formatCents(planFact[key].fact, currency)}}</b> <template v-if="planFact[key].plan != null">из {{formatCents(planFact[key].plan, currency)}}</template><template v-else>· план не задан</template></span></div>
+      <div class="ov-pf-top"><span>{{label}}</span><span class="ov-pf-num"><b :title="amountTitle(planFact[key].fact, currency)">{{formatAmount(planFact[key].fact, currency)}}</b> <template v-if="planFact[key].plan != null">из <span :title="amountTitle(planFact[key].plan, currency)">{{formatAmount(planFact[key].plan, currency)}}</span></template><template v-else>· план не задан</template></span></div>
       <div class="bar" :class="cls" role="img" :aria-label="pfLabel(label, planFact[key])">
        <span :style="{width: planFact[key].plan ? Math.min(100, pct(planFact[key].fact, planFact[key].plan)) + '%' : '0%'}"></span>
       </div>
@@ -528,17 +530,17 @@ const signedLedger = t => (t.kind === 'out' ? -1 : t.kind === 'in' ? 1 : 0) * (t
 .ov-today-label{font-size:12px;font-weight:800;letter-spacing:.12em;text-transform:uppercase;color:var(--muted);margin-right:4px}
 .ov-chip{max-width:100%;white-space:normal;text-align:left;min-height:34px;padding:0 14px;border-radius:999px;background:var(--surface);border:1px solid var(--line);color:var(--text);font-weight:600;font-size:13px;gap:6px}
 .ov-chip b{font-variant-numeric:tabular-nums}
-.ov-chip.hot{background:var(--primary-soft);border-color:rgba(15,118,110,.25);color:#0B4F49}
-.ov-chip.bad{background:var(--expense-soft);border-color:rgba(193,59,41,.22);color:var(--expense-ink)}
+.ov-chip.hot{background:var(--primary-soft);border-color:rgba(91,77,242,.25);color:var(--primary-hover)}
+.ov-chip.bad{background:var(--expense-soft);border-color:rgba(190,18,60,.22);color:var(--expense-ink)}
 .ov-chip:hover:not(:disabled){border-color:var(--primary);color:var(--primary-hover);background:var(--surface)}
-.sk-chip{width:180px;background:linear-gradient(90deg,#EFEDE7,#F7F6F2,#EFEDE7);background-size:200% 100%;animation:shimmer 1.3s linear infinite;border:0}
+.sk-chip{width:180px;background:linear-gradient(90deg,var(--surface-muted),var(--bg),var(--surface-muted));background-size:200% 100%;animation:shimmer 1.3s linear infinite;border:0}
 
 .ov-top{position:relative;display:grid;grid-template-columns:repeat(12,minmax(0,1fr));gap:18px;align-items:stretch}
-.ov-top::before{content:"";position:absolute;inset:-40px 20% -30px -40px;background:radial-gradient(closest-side,rgba(15,118,110,.10),transparent 70%);pointer-events:none;z-index:0}
+.ov-top::before{content:"";position:absolute;inset:-40px 20% -30px -40px;background:radial-gradient(closest-side,rgba(91,77,242,.10),transparent 70%);pointer-events:none;z-index:0}
 .ov-main{grid-column:span 8;z-index:1}
 .ov-kpis{grid-column:span 4;display:grid;grid-template-columns:minmax(0,1fr);grid-auto-rows:1fr;gap:12px;z-index:1}
 .ov-kpi{container-type:inline-size;display:flex;flex-direction:column;justify-content:center;gap:4px;min-width:0;padding:14px 18px;border-radius:var(--radius-card);
- background:rgba(255,255,255,.9);border:1px solid rgba(23,43,42,.07);box-shadow:var(--shadow-1);
+ background:var(--surface);border:1px solid var(--line2);box-shadow:var(--shadow-1);
  transition:transform var(--dur-2) var(--ease),box-shadow var(--dur-2) var(--ease)}
 @media (hover:hover) and (pointer:fine){.ov-kpi:hover{transform:translateY(-2px);box-shadow:var(--shadow-2)}}
 .kpi-l{font-size:12.5px;font-weight:700;color:var(--muted)}
@@ -549,12 +551,12 @@ const signedLedger = t => (t.kind === 'out' ? -1 : t.kind === 'in' ? 1 : 0) * (t
 
 .ov-grid{display:grid;grid-template-columns:repeat(12,minmax(0,1fr));gap:18px}
 .span-4{grid-column:span 4}.span-5{grid-column:span 5}.span-7{grid-column:span 7}.span-8{grid-column:span 8}.span-12{grid-column:span 12}
-.panel{display:flex;flex-direction:column;gap:10px;min-width:0;padding:18px 20px;border-radius:var(--radius-card);background:var(--surface);border:1px solid rgba(23,43,42,.07);box-shadow:var(--shadow-1);outline-offset:3px;scroll-margin-top:76px}
+.panel{display:flex;flex-direction:column;gap:10px;min-width:0;padding:18px 20px;border-radius:var(--radius-card);background:var(--surface);border:1px solid var(--line2);box-shadow:var(--shadow-1);outline-offset:3px;scroll-margin-top:76px}
 .panel-h{display:flex;align-items:center;justify-content:space-between;gap:10px;flex-wrap:wrap}
 .panel-h h2{font-size:15px;font-weight:800;color:var(--text)}
 .ov-sub{font-size:11.5px;font-weight:800;letter-spacing:.06em;text-transform:uppercase;color:var(--muted);margin-top:4px}
 .ov-acc,.ov-upc,.ov-steps{list-style:none;margin:0;padding:0;display:flex;flex-direction:column}
-.ov-acc li{display:flex;flex-wrap:wrap;align-items:center;gap:4px 12px;padding:10px 0;border-bottom:1px solid #EEF2F0;min-width:0}
+.ov-acc li{display:flex;flex-wrap:wrap;align-items:center;gap:4px 12px;padding:10px 0;border-bottom:1px solid var(--line2);min-width:0}
 .ov-acc li:last-child{border-bottom:0}
 .ov-acc-ic{flex:none;width:36px;height:36px;border-radius:11px;display:grid;place-items:center;background:var(--primary-soft);color:var(--primary)}
 .ov-acc-main{flex:1 1 12ch;min-width:12ch;display:flex;flex-direction:column}
@@ -563,12 +565,12 @@ const signedLedger = t => (t.kind === 'out' ? -1 : t.kind === 'in' ? 1 : 0) * (t
 .ov-acc-main small,.ov-steps small{font-size:12px;color:var(--muted);font-weight:600}
 .ov-acc-amt,.ov-upc-a{font-weight:800;color:var(--text);font-variant-numeric:tabular-nums;white-space:nowrap;text-align:right}
 .ov-acc-amt small,.ov-upc-a small{display:inline;font-size:11.5px;color:var(--muted);font-weight:700}
-.ov-upc li{display:grid;grid-template-columns:64px minmax(0,1fr) auto;gap:12px;align-items:baseline;padding:8px 0;border-bottom:1px solid #EEF2F0;font-size:13px;font-weight:600;color:var(--text)}
+.ov-upc li{display:grid;grid-template-columns:64px minmax(0,1fr) auto;gap:12px;align-items:baseline;padding:8px 0;border-bottom:1px solid var(--line2);font-size:13px;font-weight:600;color:var(--text)}
 .ov-upc li:last-child{border-bottom:0}
 .ov-upc-d{color:var(--muted)}
 .ov-upc-n{min-width:0;overflow-wrap:break-word}
 .ov-upc-n small{display:block;font-size:11.5px;color:var(--muted);font-weight:600}
-.ov-pend-total{margin-top:auto;padding-top:10px;border-top:1px solid #EEF2F0;font-size:13px;color:var(--muted);font-weight:600;font-variant-numeric:tabular-nums}
+.ov-pend-total{margin-top:auto;padding-top:10px;border-top:1px solid var(--line2);font-size:13px;color:var(--muted);font-weight:600;font-variant-numeric:tabular-nums}
 .ov-pend-total b{color:var(--text);font-weight:800}
 .row.static{cursor:default}.row.static:hover{background:transparent}
 .row-main .trk{margin-top:6px}
@@ -579,22 +581,22 @@ const signedLedger = t => (t.kind === 'out' ? -1 : t.kind === 'in' ? 1 : 0) * (t
 .ov-steps .n{flex:none;width:28px;height:28px;border-radius:50%;display:grid;place-items:center;background:var(--primary-soft);color:var(--primary);font-weight:800}
 .ov-steps b{display:block;color:var(--text);font-size:13.5px}
 .ov-steps button{margin-top:8px}
-.ov-reserve{margin:auto 0 0;padding-top:12px;border-top:1px solid #EEF2F0;display:flex;flex-wrap:wrap;align-items:center;justify-content:space-between;gap:6px 10px;font-size:13px;color:var(--muted);font-weight:600}
+.ov-reserve{margin:auto 0 0;padding-top:12px;border-top:1px solid var(--line2);display:flex;flex-wrap:wrap;align-items:center;justify-content:space-between;gap:6px 10px;font-size:13px;color:var(--muted);font-weight:600}
 .ov-reserve b{color:var(--text);font-weight:800;font-variant-numeric:tabular-nums}
 .ov-pend{font-size:14px;color:var(--muted);font-weight:600;font-variant-numeric:tabular-nums}
 .ov-pend b{color:var(--text);font-weight:800}.ov-pend b:first-child{font-size:24px;margin-right:2px}
 .panel-note{font-size:12px;color:var(--muted);font-weight:600}
 .panel-err{color:var(--expense-ink);font-weight:600;background:var(--expense-soft);padding:10px 12px;border-radius:10px}
 .panel-sk{display:flex;flex-direction:column;gap:10px}
-.sk{display:block;height:42px;border-radius:10px;background:linear-gradient(90deg,#EFEDE7 0%,#F7F6F2 50%,#EFEDE7 100%);background-size:200% 100%;animation:shimmer 1.3s linear infinite}
+.sk{display:block;height:42px;border-radius:10px;background:linear-gradient(90deg,var(--surface-muted) 0%,var(--bg) 50%,var(--surface-muted) 100%);background-size:200% 100%;animation:shimmer 1.3s linear infinite}
 .sk-l{height:12px;width:60%}.sk-v{height:22px;width:85%}
 @keyframes shimmer{from{background-position:200% 0}to{background-position:-200% 0}}
 
 .rows,.risks{list-style:none;margin:0;padding:0;display:flex;flex-direction:column}
 .row{width:100%;display:flex;justify-content:space-between;align-items:center;gap:12px;min-height:54px;padding:8px 10px;margin:0 -10px;width:calc(100% + 20px);
  border:0;border-radius:12px;background:transparent;color:var(--text);text-align:left;font-weight:600}
-.rows li+li .row{border-top:1px solid #EEF2F0;border-radius:0}
-.row:hover:not(:disabled){background:#F3F8F6;color:var(--text);border-radius:12px}
+.rows li+li .row{border-top:1px solid var(--line2);border-radius:0}
+.row:hover:not(:disabled){background:var(--row-hover);color:var(--text);border-radius:12px}
 .row-main{display:flex;flex-direction:column;gap:2px;min-width:0}
 .row-main b{font-size:13.5px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .row-main small,.tbl small{font-size:12px;color:var(--muted);font-weight:600;display:block;white-space:normal}
@@ -615,15 +617,15 @@ const signedLedger = t => (t.kind === 'out' ? -1 : t.kind === 'in' ? 1 : 0) * (t
 
 .ov-empty{display:flex;align-items:center;gap:12px;padding:10px 2px;color:var(--muted);font-weight:600}
 .empty-ic{flex:none;width:40px;height:40px;border-radius:12px;display:grid;place-items:center;font-weight:800;color:var(--primary);
- background:linear-gradient(145deg,#FFFFFF,#E6F2EF);box-shadow:0 1px 0 #fff inset,0 6px 14px -8px rgba(15,118,110,.45),0 0 0 1px rgba(15,118,110,.10)}
+ background:linear-gradient(145deg,var(--surface),var(--primary-soft));box-shadow:0 1px 0 var(--surface) inset,0 6px 14px -8px rgba(91,77,242,.45),0 0 0 1px rgba(91,77,242,.10)}
 .empty-ic.ok{color:var(--income-ink)}
 
 .tbl-wrap{overflow-x:auto;margin:0 -4px}
 .tbl{width:100%;border-collapse:collapse;font-size:13px}
 .tbl th{position:sticky;top:0;background:var(--surface);text-align:left;font-size:11.5px;font-weight:800;letter-spacing:.06em;text-transform:uppercase;color:var(--muted);padding:8px 8px;border-bottom:1px solid var(--line)}
-.tbl td{padding:9px 8px;border-bottom:1px solid #EEF2F0;vertical-align:top;color:var(--text);font-weight:600}
+.tbl td{padding:9px 8px;border-bottom:1px solid var(--line2);vertical-align:top;color:var(--text);font-weight:600}
 .tbl tbody tr{transition:background-color var(--dur-1) var(--ease)}
-.tbl tbody tr:hover{background:#F7FAF9}
+.tbl tbody tr:hover{background:var(--row-hover)}
 .tbl tr:last-child td{border-bottom:0}
 .tbl .r{text-align:right}.nowrap{white-space:nowrap}
 .tbl .num{font-variant-numeric:tabular-nums;font-weight:800}
@@ -637,7 +639,7 @@ const signedLedger = t => (t.kind === 'out' ? -1 : t.kind === 'in' ? 1 : 0) * (t
 .ov-pf-top{display:flex;justify-content:space-between;gap:10px;flex-wrap:wrap;font-weight:700;color:var(--text);font-size:13.5px}
 .ov-pf-top .ov-pf-num{font-weight:600;color:var(--muted);font-variant-numeric:tabular-nums;text-align:right;white-space:normal}
 .ov-pf-top .ov-pf-num b{color:var(--text);font-weight:800}
-.bar{height:10px;border-radius:999px;background:#EDF1EF;overflow:hidden}
+.bar{height:10px;border-radius:999px;background:var(--line2);overflow:hidden}
 .bar span{display:block;height:100%;border-radius:inherit;transition:width 480ms var(--ease)}
 .bar.in span{background:var(--income)}.bar.out span{background:var(--expense)}
 .ov-pf-pct{font-size:12px;color:var(--muted);font-weight:700}
@@ -657,7 +659,7 @@ const signedLedger = t => (t.kind === 'out' ? -1 : t.kind === 'in' ? 1 : 0) * (t
  .tbl-wrap{overflow:visible;margin:0}
  .tbl,.tbl tbody,.tbl tr,.tbl td{display:block}
  .tbl thead{position:absolute;width:1px;height:1px;overflow:hidden;clip:rect(0 0 0 0);white-space:nowrap}
- .tbl tr{display:grid;grid-template-columns:minmax(0,1fr) auto;column-gap:12px;row-gap:2px;padding:10px 0;border-bottom:1px solid #EEF2F0}
+ .tbl tr{display:grid;grid-template-columns:minmax(0,1fr) auto;column-gap:12px;row-gap:2px;padding:10px 0;border-bottom:1px solid var(--line2)}
  .tbl tr:last-child{border-bottom:0}
  .tbl td{padding:0;border:0;white-space:normal}
  .tbl td:first-child{grid-column:1;font-size:12px;color:var(--muted)}

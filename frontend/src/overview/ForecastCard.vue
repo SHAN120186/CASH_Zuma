@@ -164,22 +164,22 @@ const tipStyle = computed(() => {
 .fc-titles{min-width:0}
 h2{font-size:15px;font-weight:800;color:var(--text)}
 .fc-sub{margin-top:3px;font-size:12.5px;font-weight:600;color:var(--muted)}
-.fc-sk{height:200px;border-radius:12px;background:linear-gradient(90deg,#EFEDE7 0%,#F7F6F2 50%,#EFEDE7 100%);background-size:200% 100%;animation:shimmer 1.3s linear infinite}
+.fc-sk{height:200px;border-radius:12px;background:linear-gradient(90deg,var(--surface-muted) 0%,var(--bg) 50%,var(--surface-muted) 100%);background-size:200% 100%;animation:shimmer 1.3s linear infinite}
 @keyframes shimmer{from{background-position:200% 0}to{background-position:-200% 0}}
 .fc-err{display:flex;flex-wrap:wrap;align-items:center;gap:8px 12px;color:var(--expense-ink);font-weight:600;background:var(--expense-soft);padding:10px 12px;border-radius:10px}
 .fc-plot{position:relative;height:180px;border-radius:12px;outline-offset:4px;touch-action:pan-y}
 .fc-plot svg{position:absolute;inset:0;display:block;overflow:visible}
-.level{stroke:rgba(23,43,42,.08);stroke-width:1}
+.level{stroke:var(--line2);stroke-width:1}
 .level-l{font-size:11px;font-weight:700;fill:var(--muted);font-variant-numeric:tabular-nums}
-.grid{stroke:rgba(23,43,42,.13);stroke-dasharray:3 5;stroke-width:1}
-.base{stroke:rgba(23,43,42,.10);stroke-width:1}
+.grid{stroke:var(--line);stroke-dasharray:3 5;stroke-width:1}
+.base{stroke:var(--line);stroke-width:1}
 .reserve{stroke:var(--expense);stroke-width:1.6;stroke-dasharray:2 5;stroke-linecap:round}
 .plan{fill:none;stroke:var(--plan);stroke-width:2.4;stroke-dasharray:7 6;stroke-linecap:round;stroke-linejoin:round}
 .cursor{stroke:var(--text);stroke-opacity:.28;stroke-width:1}
-.fc-dot{position:absolute;width:11px;height:11px;margin:-5.5px 0 0 -5.5px;border-radius:50%;background:var(--plan);border:2px solid #fff;pointer-events:none}
-.fc-dot.today{background:var(--primary);box-shadow:0 0 0 6px rgba(15,118,110,.14)}
+.fc-dot{position:absolute;width:11px;height:11px;margin:-5.5px 0 0 -5.5px;border-radius:50%;background:var(--plan);border:2px solid var(--surface);pointer-events:none}
+.fc-dot.today{background:var(--primary);box-shadow:0 0 0 6px rgba(91,77,242,.14)}
 .fc-tip{position:absolute;transform:translate(-50%,calc(-100% - 14px));display:flex;flex-direction:column;gap:3px;min-width:min(190px,100%);width:max-content;max-width:min(300px,100%);padding:10px 12px;border-radius:12px;
- background:#fff;border:1px solid var(--line);box-shadow:0 12px 28px -14px rgba(16,45,43,.35);font-size:12.5px;color:var(--muted);font-weight:600;pointer-events:none;z-index:2}
+ background:var(--surface);border:1px solid var(--line);box-shadow:0 12px 28px -14px rgba(11,16,36,.35);font-size:12.5px;color:var(--muted);font-weight:600;pointer-events:none;z-index:2}
 .fc-tip b{color:var(--text);font-size:13px}
 .fc-tip span{display:flex;justify-content:space-between;gap:14px}
 .fc-tip em{white-space:nowrap;font-style:normal;color:var(--text);font-variant-numeric:tabular-nums;font-weight:700}
@@ -191,7 +191,7 @@ h2{font-size:15px;font-weight:800;color:var(--text)}
 .k-today{width:9px;height:9px;border-radius:50%;background:var(--primary)}
 .k-plan{width:20px;border-top:2.4px dashed var(--plan)}
 .k-res{width:20px;border-top:2px dotted var(--expense)}
-.fc-week{margin-top:auto;padding-top:10px;border-top:1px solid #EEF2F0;font-size:13px;font-weight:600;color:var(--muted);font-variant-numeric:tabular-nums}
+.fc-week{margin-top:auto;padding-top:10px;border-top:1px solid var(--line2);font-size:13px;font-weight:600;color:var(--muted);font-variant-numeric:tabular-nums}
 .fc-week b{font-weight:800}.fc-week .in{color:var(--income-ink)}.fc-week .out{color:var(--expense-ink)}
 .fc-note{color:var(--muted);font-weight:600}
 @media (max-width:600px){.fc-plot{height:150px}}
