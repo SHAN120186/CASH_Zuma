@@ -9,7 +9,7 @@ const props = defineProps({
 });
 
 const POLICIES = {always: N_('Директор утверждает любую сумму'), threshold: N_('Директор — только выше порога'), skip: N_('Директор не участвует')};
-const data = ref(null), error = ref(''), notice = ref(''), busy = ref(false), editing = ref(null), form = ref({});
+const data = ref(null), error = ref(''), notice = ref(''), noticeParams = ref(null), busy = ref(false), editing = ref(null), form = ref({});
 const year = ref(new Date().getFullYear()), days = ref([]), dayForm = ref({day: '', kind: 'holiday', name: ''});
 const skipForm = ref(null);
 
@@ -18,9 +18,10 @@ async function load() {
   try { data.value = await props.api('/api/approval-policy'); days.value = await props.api(`/api/calendar-days?year=${year.value}`); }
   catch (e) { error.value = e.message; }
 }
-async function run(fn, message) {
-  busy.value = true; error.value = ''; notice.value = '';
-  try { await fn(); await load(); notice.value = message; } catch (e) { error.value = e.message; } finally { busy.value = false; }
+// The notice keeps its Russian key and parameters, so it follows a later language switch.
+async function run(fn, message, params = null) {
+  busy.value = true; error.value = ''; notice.value = ''; noticeParams.value = null;
+  try { await fn(); await load(); notice.value = message; noticeParams.value = params; } catch (e) { error.value = e.message; } finally { busy.value = false; }
 }
 const json = (method, body) => ({method, headers: {'Content-Type': 'application/json'}, body: JSON.stringify(body)});
 
@@ -31,7 +32,7 @@ function edit(c) {
 function save(c) {
   const f = form.value, blank = v => (v === '' || v == null ? null : String(v));
   run(() => props.api(`/api/categories/${c.id}/director-policy`, json('PUT', {policy: f.policy, threshold_uzs: blank(f.threshold_uzs),
-    threshold_usd: blank(f.threshold_usd), threshold_eur: blank(f.threshold_eur), reason: f.reason})), tx('Политика статьи «{name}» сохранена.', {name: c.name}))
+    threshold_usd: blank(f.threshold_usd), threshold_eur: blank(f.threshold_eur), reason: f.reason})), N_('Политика статьи «{name}» сохранена.'), {name: c.name})
     .then(() => { if (!error.value) editing.value = null; });
 }
 function toggleSkip(c) {
@@ -60,7 +61,7 @@ onMounted(load);
     </ol>
   </div></section>
 
-  <p v-if="notice" class="notice" role="status">{{ tx(notice) }}</p>
+  <p v-if="notice" class="notice" role="status">{{ tx(notice, noticeParams) }}</p>
   <p v-if="error" class="error" role="alert">{{ tx(error) }}</p>
 
   <section v-if="data" class="card"><div class="card-h"><h3>{{ tx('Политика директора по статьям') }}</h3>

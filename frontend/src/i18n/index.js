@@ -47,13 +47,14 @@ export function tx(text, params) {
   if (Object.hasOwn(entries, source)) return fill(entries[source], params);
   const trimmed = source.trim();
   if (trimmed !== source && Object.hasOwn(entries, trimmed)) return source.replace(trimmed, fill(entries[trimmed], params));
-  for (const [pattern, replacement] of patterns) {
+  for (const [pattern, replacement, translated = []] of patterns) {
     if (pattern.test(source)) return fill(source.replace(pattern, (...groups) => {
       const values = groups.slice(1, -2);
       return replacement.replace(/\$(\d)/g, (_, index) => {
         const value = values[Number(index) - 1] ?? '';
-        // A captured Russian label (status, role) is translated as well when known.
-        return Object.hasOwn(entries, value) ? entries[value] : value;
+        // Only groups the pattern names (roles, field labels, a nested message) are
+        // translated; account, company and file names entered by users stay as typed.
+        return translated.includes(Number(index)) ? tx(value) : value;
       });
     }), params);
   }

@@ -19,8 +19,6 @@ export default {
   'Удалена · можно восстановить': 'Oʻchirilgan · tiklash mumkin',
   'Готовый бизнес-план': 'Tayyor biznes-reja',
   'Последний готовый бизнес-план · данные с тех пор изменены': 'Oxirgi tayyor biznes-reja · shundan keyin maʼlumotlar oʻzgargan',
-  'Готового файла пока нет: откройте проект, заполните данные и нажмите «Рассчитать бизнес-план».':
-    'Tayyor fayl hali yoʻq: loyihani oching, maʼlumotlarni toʻldiring va «Biznes-rejani hisoblash» tugmasini bosing.',
   'Удалить папку и её отчёты': 'Papka va uning hisobotlarini oʻchirish',
   'Проектов пока нет. Нажмите «Новый проект» и укажите название.': 'Loyihalar hali yoʻq. «Yangi loyiha» tugmasini bosing va nomini kiriting.',
   'Загружаем проекты…': 'Loyihalar yuklanmoqda…',
@@ -385,6 +383,8 @@ export default {
   'Попросите автора проекта подготовить отчёт.': 'Loyiha muallifidan hisobotni tayyorlashni soʻrang.',
   'Нажмите «Рассчитать бизнес-план», чтобы создать файлы.': 'Fayllarni yaratish uchun «Biznes-rejani hisoblash» tugmasini bosing.',
   'Нажмите «Подготовить бизнес-план и Excel», чтобы создать файлы.': 'Fayllarni yaratish uchun «Biznes-reja va Excel faylini tayyorlash» tugmasini bosing.',
+  'Готового файла пока нет: откройте проект, заполните данные и подготовьте отчёт на шаге «3. Отчёт».': 'Tayyor fayl hali yoʻq: loyihani oching, maʼlumotlarni toʻldiring va hisobotni «3. Hisobot» bosqichida tayyorlang.',
+  'Готового файла пока нет. Попросите автора проекта подготовить отчёт.': 'Tayyor fayl hali yoʻq. Loyiha muallifidan hisobotni tayyorlashni soʻrang.',
 };
 
 // [RegExp over the whole Russian message, Uzbek replacement with $1…] for texts with numbers or names.

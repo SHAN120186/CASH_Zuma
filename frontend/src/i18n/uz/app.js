@@ -228,7 +228,7 @@ export default {
     'Bitta oyna: kompaniya, toʻlov kanali, valyuta, hisob, modda, summa, kontragent, toʻlov maqsadi, ustuvorlik va sana, pastda — uchta ilova bloki. «Qoralamani saqlash» arizani yubormasdan saqlaydi, «Kelishishga yuborish» saqlaydi, fayllarni yuklaydi va yuboradi. «Modda byudjeti» kartochkasi tanlangan modda boʻyicha limit, foydalanilgan, zaxira, mavjud summa va arizadan keyingi qoldiqni koʻrsatadi.',
   'Документы': 'Hujjatlar',
   'Черновик сохраняется без файлов. Для отправки нужны внутренняя заявка (индент) и договор или счёт на оплату; прочие документы — по желанию. PDF, PNG, JPEG, DOCX или XLSX до 5 МБ. После отправки файлы меняются в карточке заявки: новая версия обязательного документа или удаление прочего с причиной начинают согласование заново; прежние версии остаются в истории.':
-    'Qoralama fayllarsiz saqlanadi. Yuborish uchun ichki ariza (indent) hamda shartnoma yoki hisob-faktura kerak; boshqa hujjatlar — ixtiyoriy. PDF, PNG, JPEG, DOCX yoki XLSX, 5 MB gacha. Yuborilgandan keyin fayllar ariza kartochkasida almashtiriladi: majburiy hujjatning yangi versiyasi yoki boshqa hujjatni sababi bilan olib tashlash kelishishni qaytadan boshlaydi; avvalgi versiyalar tarixda qoladi.',
+    'Qoralama fayllarsiz saqlanadi. Yuborish uchun ichki ariza (indent) hamda shartnoma yoki toʻlov uchun hisobvaraq kerak; boshqa hujjatlar — ixtiyoriy. PDF, PNG, JPEG, DOCX yoki XLSX, 5 MB gacha. Yuborilgandan keyin fayllar ariza kartochkasida almashtiriladi: majburiy hujjatning yangi versiyasi yoki boshqa hujjatni sababi bilan olib tashlash kelishishni qaytadan boshlaydi; avvalgi versiyalar tarixda qoladi.',
   'Если файл не загрузился': 'Agar fayl yuklanmasa',
   'Черновик и уже загруженные файлы сохраняются. Исправьте форму и нажмите кнопку ещё раз: сохранятся текущие поля, загрузятся только недостающие файлы, вторая заявка не создаётся. Если заявка уже отправлена, дальнейшие изменения — в её карточке с указанием причины.':
     'Qoralama va yuklangan fayllar saqlanib qoladi. Shaklni tuzating va tugmani yana bir bor bosing: joriy maydonlar saqlanadi, faqat yetishmayotgan fayllar yuklanadi, ikkinchi ariza yaratilmaydi. Agar ariza allaqachon yuborilgan boʻlsa, keyingi oʻzgarishlar — uning kartochkasida, sababi koʻrsatilgan holda.',
@@ -558,7 +558,7 @@ export default {
   'Порядок согласования и оплаты': 'Kelishish va toʻlov tartibi',
   'Расчётный бухгалтер проверяет реквизиты и комплектность': 'Hisob-kitob buxgalteri rekvizitlar va hujjatlar toʻliqligini tekshiradi',
   'Внутренняя заявка (индент) и договор или счёт обязательны до отправки. Срок оплаты — не раньше 7 рабочих дней, при высоком приоритете — 3, срочная — 1.':
-    'Ichki ariza (indent) hamda shartnoma yoki hisob-faktura yuborishdan oldin majburiy. Toʻlov muddati — kamida 7 ish kuni, yuqori ustuvorlikda — 3, shoshilinch arizada — 1.',
+    'Ichki ariza (indent) hamda shartnoma yoki toʻlov uchun hisobvaraq yuborishdan oldin majburiy. Toʻlov muddati — kamida 7 ish kuni, yuqori ustuvorlikda — 3, shoshilinch arizada — 1.',
   'Финансовый директор проверяет бюджет и дату': 'Moliya direktori byudjet va sanani tekshiradi',
   'Автор и последний редактор заявку не согласуют; один сотрудник не проходит два этапа. Вернуть на доработку или закрыть без оплаты можно только с комментарием.':
     'Muallif va oxirgi tahrirlovchi arizani kelishmaydi; bitta xodim ikki bosqichdan oʻtmaydi. Qayta ishlashga qaytarish yoki toʻlovsiz yopish faqat izoh bilan mumkin.',
@@ -608,6 +608,8 @@ export default {
   // Help drawer
   'Справка · {title}': 'Yordam · {title}',
   'Закрыть справку': 'Yordamni yopish',
+  'Загрузка готового отчёта': 'Tayyor hisobotni yuklash',
+  'PDF и Excel одного отчёта загружаются парой, до 20 МБ на файл. Готовая пара сразу доступна на сайте и в Telegram-боте; удалённый отчёт можно восстановить через «Показать удалённые».': 'Bitta hisobotning PDF va Excel fayllari juftlikda yuklanadi, har bir fayl 20 MB gacha. Tayyor juftlik darhol saytda va Telegram-botda mavjud boʻladi; oʻchirilgan hisobotni «Oʻchirilganlarni koʻrsatish» orqali tiklash mumkin.',
 };
 
 // [RegExp over the whole Russian message, Uzbek replacement with $1…] for texts with numbers or names.

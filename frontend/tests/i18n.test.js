@@ -93,3 +93,16 @@ test('compact amounts and dates follow the interface language', () => {
     assert.equal(formatDate('not a date', {}), '');
   } finally {setLang(previous);}
 });
+
+test('server patterns translate roles and nested messages but keep names users entered', () => {
+  const previous = lang.value;
+  try {
+    setLang('uz');
+    assert.equal(tx('Финансовый директор · ВрИО Кассир'), 'Moliya direktori · Kassir v.b.');
+    // «Касса» is also a dictionary word, but here it is the name of an account.
+    assert.match(tx('Недостаточно средств на счёте «Касса» на 2026-10-08: 100 UZS.'), /^«Касса» hisobida/);
+    assert.equal(tx('Не найдено название: Касса'), 'Nom topilmadi: Касса');
+    setLang('ru');
+    assert.equal(tx('Финансовый директор · ВрИО Кассир'), 'Финансовый директор · ВрИО Кассир');
+  } finally {setLang(previous);}
+});

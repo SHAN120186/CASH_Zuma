@@ -660,3 +660,29 @@ test('cached generation with a deleted archive or stale revision never reports c
     else assert.match(view.state.notice,/Для текущей версии нет доступного комплекта PDF и Excel/);
   }
 });
+
+test('a viewer opens straight on the report step; the owner of a deleted folder stays on its data',async t=>{
+  const viewer=availableProject();viewer.can_edit=false;viewer.status='needs_data';viewer.current_generation_id=null;
+  let view=mount(reportsComponent,{company,api:async url=>url.includes('/41?')?viewer:{items:[viewer],can_upload:false}});t.after(view.unmount);
+  await settle();await view.state.openProject(viewer);await settle();
+  assert.equal(view.state.flowStage,'report');
+  assert.doesNotMatch(text(view.container),/Незаполненные поля перечислены выше/);
+  const removed=availableProject();removed.can_edit=false;removed.can_restore=true;removed.status='deleted';
+  view=mount(reportsComponent,{company,api:async url=>url.includes('/41?')?removed:{items:[removed],can_upload:true}});t.after(view.unmount);
+  await settle();await view.state.openProject(removed);await settle();
+  assert.equal(view.state.flowStage,'data');
+});
+
+test('the project list offers the latest finished files and explains a missing file by role',async t=>{
+  const ready={id:41,company_id:2,revision:6,title:'Ready',status:'ready',can_edit:true,latest_report:{generation_id:501,revision:6,current:true,created_at:'2026-10-08T06:00:00Z',
+    business_archive:{id:401,company_id:2,status:'ready'},teo_archive:{id:402,company_id:2,status:'ready'}}};
+  const draft={id:42,company_id:2,revision:1,title:'Draft',status:'draft',can_edit:true,latest_report:null};
+  const viewed={id:43,company_id:2,revision:1,title:'Viewed',status:'needs_data',can_edit:false,latest_report:null};
+  const foreign={...ready,id:44,latest_report:{...ready.latest_report,business_archive:{id:403,company_id:9,status:'ready'}}};
+  const view=mount(reportsComponent,{company,api:async()=>({items:[ready,draft,viewed,foreign],can_upload:true})});t.after(view.unmount);await settle();
+  const links=all(view.container,node=>node.tag==='a'&&node.props.href?.includes('/files/')).map(node=>node.props.href);
+  assert.deepEqual(links,['/api/report-archives/401/files/pdf?company_id=2','/api/report-archives/401/files/xlsx?company_id=2','/api/report-archives/402/files/pdf?company_id=2']);
+  const page=text(view.container);
+  assert.match(page,/Готового файла пока нет: откройте проект/);
+  assert.match(page,/Попросите автора проекта подготовить отчёт/);
+});

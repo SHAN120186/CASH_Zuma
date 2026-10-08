@@ -36,7 +36,7 @@ export default {
   'Оплата расчётным бухгалтером': 'Hisob-kitob buxgalteri tomonidan toʻlash',
   'Выдача кассиром': 'Kassir tomonidan berish',
   'Внутренняя заявка / Индент': 'Ichki ariza / Indent',
-  'Договор / Счёт на оплату': 'Shartnoma / Hisob-faktura',
+  'Договор / Счёт на оплату': 'Shartnoma / Toʻlov uchun hisobvaraq',
   'Прочие подтверждающие документы': 'Boshqa tasdiqlovchi hujjatlar',
   'Операционная деятельность': 'Operatsion faoliyat',
   'Инвестиционная деятельность': 'Investitsiya faoliyati',
@@ -240,13 +240,13 @@ export default {
   'Дата раньше начала учёта выбранного счёта.': 'Sana tanlangan hisob boʻyicha hisobga olish boshlanishidan oldin.',
   'Дата раньше начала учёта счёта.': 'Sana hisob boʻyicha hisobga olish boshlanishidan oldin.',
   'Сначала сохраните черновик и приложите «Внутренняя заявка / Индент» и «Договор / Счёт на оплату», затем отправьте заявку.':
-    'Avval qoralamani saqlang, «Ichki ariza / Indent» va «Shartnoma / Hisob-faktura» hujjatlarini biriktiring, soʻng arizani yuboring.',
+    'Avval qoralamani saqlang, «Ichki ariza / Indent» va «Shartnoma / Toʻlov uchun hisobvaraq» hujjatlarini biriktiring, soʻng arizani yuboring.',
   'Перед отправкой прикрепите: «Внутренняя заявка / Индент», «Договор / Счёт на оплату». Черновик можно сохранить без файлов.':
-    'Yuborishdan oldin biriktiring: «Ichki ariza / Indent», «Shartnoma / Hisob-faktura». Qoralamani fayllarsiz saqlash mumkin.',
+    'Yuborishdan oldin biriktiring: «Ichki ariza / Indent», «Shartnoma / Toʻlov uchun hisobvaraq». Qoralamani fayllarsiz saqlash mumkin.',
   'Перед отправкой прикрепите: «Внутренняя заявка / Индент». Черновик можно сохранить без файлов.':
     'Yuborishdan oldin biriktiring: «Ichki ariza / Indent». Qoralamani fayllarsiz saqlash mumkin.',
   'Перед отправкой прикрепите: «Договор / Счёт на оплату». Черновик можно сохранить без файлов.':
-    'Yuborishdan oldin biriktiring: «Shartnoma / Hisob-faktura». Qoralamani fayllarsiz saqlash mumkin.',
+    'Yuborishdan oldin biriktiring: «Shartnoma / Toʻlov uchun hisobvaraq». Qoralamani fayllarsiz saqlash mumkin.',
   'Редактировать может автор или финансовый руководитель.': 'Muallif yoki moliyaviy rahbar tahrirlashi mumkin.',
   'Отклонённая заявка хранится только для чтения. Создайте новую заявку.': 'Rad etilgan ariza faqat oʻqish uchun saqlanadi. Yangi ariza yarating.',
   'Отклонённая заявка хранится только для чтения.': 'Rad etilgan ariza faqat oʻqish uchun saqlanadi.',
@@ -626,7 +626,7 @@ export default {
   'Не удалось прочитать структуру книги.': 'Kitob tuzilmasini oʻqib boʻlmadi.',
   'Результат отсутствует': 'Natija yoʻq',
   'Расчёт охватывает относительные месяцы 1-36 и годы 1-3. Выбранная дата архива является подписью отчёта и не переносит автоматически календарь платежей прежних кредитов в исходной книге.':
-    'Hisob-kitob nisbiy 1–36-oylar va 1–3-yillarni qamrab oladi. Tanlangan arxiv sanasi hisobot imzosi hisoblanadi va manba kitobdagi avvalgi kreditlar toʻlov kalendarini avtomatik koʻchirmaydi.',
+    'Hisob-kitob nisbiy 1–36-oylar va 1–3-yillarni qamrab oladi. Tanlangan arxiv sanasi faqat hisobot yorligʻi uchun ishlatiladi va manba kitobdagi avvalgi kreditlar toʻlov kalendarini avtomatik koʻchirmaydi.',
 
   // Business plans: checks of the entered model (business_model.py)
   'Ожидается текст раздела.': 'Boʻlim matni kutilmoqda.',
@@ -790,16 +790,16 @@ const anchored = source => new RegExp('^' + source + '$');
 
 export const patterns = [
   // Role labels: «Администратор холдинга · Финансовый директор», «Кассир · ВрИО Директор», «ВрИО · Кассир»
-  [anchored(`(${ROLE}) · (${ROLE})`), '$1 · $2'],
-  [anchored(`(${ROLE}|Без роли в компании) · ВрИО (${ROLE})`), '$1 · $2 v.b.'],
-  [anchored(`(${ROLE}) · (${ROLE}) · ВрИО (${ROLE})`), '$1 · $2 · $3 v.b.'],
-  [anchored(`(${ROLE}|Без роли в компании) · ВрИО (${ROLE}) · ВрИО (${ROLE})`), '$1 · $2 v.b. · $3 v.b.'],
-  [anchored(`ВрИО · (${ROLE})`), '$1 v.b.'],
-  [anchored(`ВрИО · (${ROLE}), (${ROLE})`), '$1, $2 v.b.'],
+  [anchored(`(${ROLE}) · (${ROLE})`), '$1 · $2', [1, 2]],
+  [anchored(`(${ROLE}|Без роли в компании) · ВрИО (${ROLE})`), '$1 · $2 v.b.', [1, 2]],
+  [anchored(`(${ROLE}) · (${ROLE}) · ВрИО (${ROLE})`), '$1 · $2 · $3 v.b.', [1, 2, 3]],
+  [anchored(`(${ROLE}|Без роли в компании) · ВрИО (${ROLE}) · ВрИО (${ROLE})`), '$1 · $2 v.b. · $3 v.b.', [1, 2, 3]],
+  [anchored(`ВрИО · (${ROLE})`), '$1 v.b.', [1]],
+  [anchored(`ВрИО · (${ROLE}), (${ROLE})`), '$1, $2 v.b.', [1, 2]],
 
   // Funds and budget checks of approvals and payments
   [anchored(CORRECTION + FUNDS), CORRECTION_UZ + FUNDS_UZ],
-  [anchored(CORRECTION + '(.+)'), CORRECTION_UZ + '$1'],
+  [anchored(CORRECTION + '(.+)'), CORRECTION_UZ + '$1', [1]],
   [anchored(FUNDS + RETURN), FUNDS_UZ + RETURN_UZ],
   [anchored(FUNDS), FUNDS_UZ],
   [/^Недостаточно средств на счёте «(.+)» на (\S+): (\S+) (\S+)\.$/, '«$1» hisobida $2 holatiga mablagʻ yetarli emas: $3 $4.'],
@@ -809,14 +809,14 @@ export const patterns = [
     BUDGET_UZ + ' Ariza muddati $4: moliya direktori muddatni toʻlov oyiga koʻchirishi kerak; koʻchirilgandan keyin arizani boshqa moliyachi yoki administrator tekshiradi va direktor tasdiqlaydi.' + RETURN_UZ],
   [anchored(BUDGET + RETURN), BUDGET_UZ + RETURN_UZ],
   // Any other known message followed by the payment hint
-  [anchored('(.+)' + RETURN), '$1' + RETURN_UZ],
+  [anchored('(.+)' + RETURN), '$1' + RETURN_UZ, [1]],
   [/^Дата оплаты не может быть раньше утверждения заявки \((\S+)\)\.$/, 'Toʻlov sanasi arizani tasdiqlash sanasidan ($1) oldin boʻlishi mumkin emas.'],
   [/^Сумма выше порога статьи (.+) (\S+): нужен директор\.$/, 'Summa moddaning $1 $2 chegarasidan yuqori: direktor kerak.'],
   [/^Сумма не выше порога статьи (.+) (\S+): директор не участвует\.$/, 'Summa moddaning $1 $2 chegarasidan oshmaydi: direktor ishtirok etmaydi.'],
   [/^Для обычного приоритета нужно не меньше (\d+) рабочих дней: ближайшая допустимая дата (\S+)\.$/, 'Oddiy ustuvorlik uchun kamida $1 ish kuni kerak: eng yaqin ruxsat etilgan sana $2.'],
   [/^Для высокого приоритета нужно не меньше (\d+) рабочих дней: ближайшая допустимая дата (\S+)\.$/, 'Yuqori ustuvorlik uchun kamida $1 ish kuni kerak: eng yaqin ruxsat etilgan sana $2.'],
   [/^Для срочного приоритета нужно не меньше (\d+) рабочих дней: ближайшая допустимая дата (\S+)\.$/, 'Shoshilinch ustuvorlik uchun kamida $1 ish kuni kerak: eng yaqin ruxsat etilgan sana $2.'],
-  [/^У заменяемого сотрудника в этой компании нет роли «(.+)»\.$/, 'Oʻrni bosiladigan xodimning ushbu kompaniyada «$1» roli yoʻq.'],
+  [/^У заменяемого сотрудника в этой компании нет роли «(.+)»\.$/, 'Oʻrni bosiladigan xodimning ushbu kompaniyada «$1» roli yoʻq.', [1]],
 
   // Imports
   [/^Строка (\d+): неверное число столбцов\.$/, '$1-qator: ustunlar soni notoʻgʻri.'],
@@ -834,10 +834,10 @@ export const patterns = [
   [/^Компания «(.+)» указана дважды\.$/, '«$1» kompaniyasi ikki marta koʻrsatilgan.'],
 
   // Business plans
-  [/^(.+): поле доступно только для чтения\. Для изменения обновите исходную книгу Excel\.$/, '$1: maydon faqat oʻqish uchun. Oʻzgartirish uchun manba Excel kitobini yangilang.'],
-  [/^(.+): укажите конечное число\.$/, '$1: chekli son kiriting.'],
-  [/^(.+): значение за пределами допустимого диапазона\.$/, '$1: qiymat ruxsat etilgan oraliqdan tashqarida.'],
-  [/^(.+): укажите целое число\.$/, '$1: butun son kiriting.'],
+  [/^(.+): поле доступно только для чтения\. Для изменения обновите исходную книгу Excel\.$/, '$1: maydon faqat oʻqish uchun. Oʻzgartirish uchun manba Excel kitobini yangilang.', [1]],
+  [/^(.+): укажите конечное число\.$/, '$1: chekli son kiriting.', [1]],
+  [/^(.+): значение за пределами допустимого диапазона\.$/, '$1: qiymat ruxsat etilgan oraliqdan tashqarida.', [1]],
+  [/^(.+): укажите целое число\.$/, '$1: butun son kiriting.', [1]],
   [/^Добавьте в папку один исходный Word с именем («Бизнес-план») или («Лекарство_производство»)\. Он задаёт оформление PDF\.$/,
     'Papkaga nomi $1 yoki $2 boʻlgan bitta manba Word faylini qoʻshing. U PDF bezagini belgilaydi.'],
   [/^Не рассчитана обязательная ячейка (.+)\. ТЭО не сформировано\.$/, 'Majburiy katak $1 hisoblanmadi. TIA shakllantirilmadi.'],
@@ -845,7 +845,7 @@ export const patterns = [
   [/^Месяц (\d+): большие близкие суммы теряют точность при пересчёте Excel\. Проверьте масштаб и округление цен, затрат и остатков; отчёты не опубликованы\.$/,
     '$1-oy: Excel da qayta hisoblashda katta va bir-biriga yaqin summalar aniqligini yoʻqotadi. Narxlar, xarajatlar va qoldiqlarning masshtabi hamda yaxlitlanishini tekshiring; hisobotlar eʼlon qilinmadi.'],
   [/^(.+): большие близкие суммы теряют точность при пересчёте Excel\. Проверьте масштаб и округление цен, затрат и остатков; отчёты не опубликованы\.$/,
-    '$1: Excel da qayta hisoblashda katta va bir-biriga yaqin summalar aniqligini yoʻqotadi. Narxlar, xarajatlar va qoldiqlarning masshtabi hamda yaxlitlanishini tekshiring; hisobotlar eʼlon qilinmadi.'],
+    '$1: Excel da qayta hisoblashda katta va bir-biriga yaqin summalar aniqligini yoʻqotadi. Narxlar, xarajatlar va qoldiqlarning masshtabi hamda yaxlitlanishini tekshiring; hisobotlar eʼlon qilinmadi.', [1]],
   [/^Допустимо до (\d+) символов без управляющих знаков; разрешены переносы строк\.$/, 'Boshqaruv belgilarisiz $1 tagacha belgiga ruxsat etiladi; yangi qatorga oʻtish mumkin.'],
   [/^Допустимо до (\d+) символов без управляющих знаков\.$/, 'Boshqaruv belgilarisiz $1 tagacha belgiga ruxsat etiladi.'],
   [/^Допустимый диапазон: 0–(\S+)\.$/, 'Ruxsat etilgan oraliq: 0–$1.'],
@@ -875,6 +875,6 @@ export const patterns = [
     'Manba kitobdagi sotuv narxlarida $1 koeffitsiyenti bor. U hisob-kitobda saqlangan; narxlarni oʻzgartirishdan oldin uning maqsadini tasdiqlash kerak.'],
 
   // Pydantic checks with a Russian message arrive as «field: Value error, …».
-  [/^([\w.]+): Value error, (.+)$/, '$1: $2'],
-  [/^(?:: )?Value error, (.+)$/, '$1'],
+  [/^([\w.]+): Value error, (.+)$/, '$1: $2', [2]],
+  [/^(?:: )?Value error, (.+)$/, '$1', [1]],
 ];

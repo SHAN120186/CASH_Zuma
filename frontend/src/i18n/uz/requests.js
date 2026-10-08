@@ -26,7 +26,7 @@ export default {
   'Срочный': 'Shoshilinch',
   'Банк (расчётный счёт)': 'Bank (hisob-kitob hisobvaragʻi)',
   'Внутренняя заявка / Индент': 'Ichki ariza / Indent',
-  'Договор / Счёт на оплату': 'Shartnoma / Hisob-faktura',
+  'Договор / Счёт на оплату': 'Shartnoma / Toʻlov uchun hisobvaraq',
   'Прочие подтверждающие документы': 'Boshqa tasdiqlovchi hujjatlar',
 
   // File checks and sizes
@@ -124,7 +124,7 @@ export default {
   'Заявка на согласовании. После сохранения она останется на согласовании, а проверка и согласования начнутся заново. Новый файл заменит прежний (прежняя версия останется в истории); убрать файл можно в карточке заявки с причиной.':
     'Ariza kelishishda. Saqlangandan keyin u kelishishda qoladi, tekshiruv va kelishuvlar esa qaytadan boshlanadi. Yangi fayl avvalgisining oʻrnini oladi (avvalgi versiya tarixda qoladi); faylni ariza kartochkasida sababini koʻrsatib olib tashlash mumkin.',
   '«Сохранить черновик» — без отправки, файлы можно приложить позже. «Отправить на согласование» — сохранить, загрузить файлы и отправить: нужны внутренняя заявка (индент) и договор или счёт. Автор и последний редактор не согласуют свою заявку.':
-    '«Qoralamani saqlash» — yubormasdan, fayllarni keyinroq biriktirish mumkin. «Kelishishga yuborish» — saqlash, fayllarni yuklash va yuborish: ichki ariza (indent) hamda shartnoma yoki hisob-faktura kerak. Muallif va oxirgi tahrirlovchi oʻz arizasini kelishmaydi.',
+    '«Qoralamani saqlash» — yubormasdan, fayllarni keyinroq biriktirish mumkin. «Kelishishga yuborish» — saqlash, fayllarni yuklash va yuborish: ichki ariza (indent) hamda shartnoma yoki toʻlov uchun hisobvaraq kerak. Muallif va oxirgi tahrirlovchi oʻz arizasini kelishmaydi.',
   'Канал оплаты': 'Toʻlov kanali',
   'Счёт списания': 'Pul yechiladigan hisob',
   'Нет счёта для выбранного канала и валюты.': 'Tanlangan kanal va valyuta uchun hisob yoʻq.',
@@ -205,7 +205,7 @@ export default {
   'Порядок согласования и оплаты': 'Kelishish va toʻlov tartibi',
   'Расчётный бухгалтер проверяет реквизиты и комплектность': 'Hisob-kitob buxgalteri rekvizitlar va hujjatlar toʻliqligini tekshiradi',
   'Внутренняя заявка (индент) и договор или счёт обязательны до отправки.':
-    'Ichki ariza (indent) hamda shartnoma yoki hisob-faktura yuborishdan oldin majburiy.',
+    'Ichki ariza (indent) hamda shartnoma yoki toʻlov uchun hisobvaraq yuborishdan oldin majburiy.',
   'Финансовый директор проверяет бюджет и дату': 'Moliya direktori byudjet va sanani tekshiradi',
   'Бюджет статьи повторно проверяется при отправке, каждом согласовании и оплате.':
     'Modda byudjeti yuborishda, har bir kelishishda va toʻlovda qayta tekshiriladi.',
