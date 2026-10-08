@@ -144,8 +144,12 @@ def google_preview(request:Request):
 def readable_ledger(s,u,entry):
     """Плательщик без просмотра реестра читает документы только операций своего канала."""
     channels=payment_channels(perms_of(u))
-    if 'view' not in perms_of(u) and channels and get(s,Account,entry.account_id).kind not in channels:
-        raise HTTPException(404,'Запись не найдена.')
+    if 'view' not in perms_of(u) and channels:
+        account_ids=[entry.account_id]
+        if entry.to_account_id:account_ids.append(entry.to_account_id)
+        # Как в журнале: перевод является движением и источника, и получателя.
+        if not any(get(s,Account,id).kind in channels for id in account_ids):
+            raise HTTPException(404,'Запись не найдена.')
     return entry
 
 def safe_filename(name,suffix=''):
