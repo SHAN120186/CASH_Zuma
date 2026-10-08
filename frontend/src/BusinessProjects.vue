@@ -1,13 +1,15 @@
 <script setup>
-import {ref, computed, watch, onMounted, onUnmounted} from 'vue';
+import {ref, computed, watch, nextTick, onMounted, onUnmounted} from 'vue';
 import AppIcon from './AppIcon.vue';
 import NativeWorkbook from './NativeWorkbook.vue';
+import OperationProgress from './OperationProgress.vue';
+import {createOperationProgress} from './operationProgress.js';
 import {archiveFileUrl, uploadLabel} from './reportArchive.js';
 import {formatCents, toCents} from './overview/format.js';
 import {SOURCE_ACCEPT, BUSINESS_SCALARS, NARRATIVE_FIELDS, prepareSources, sourceSize, projectUrl, templateUrl,
   formFromInputs, inputsFromForm, monthLabels, resizeValues, createBusinessState, uploadProjectFolder, generateProject,
   assertProject, fieldLabel, issueMessage, projectReview, evidenceRows, sourceLocation, folderProjectTitle, uploadFailureMessage,
-  fieldGuidance, missingRequiredFields, headerProblem, originalReportFiles, createProjectDraft, saveProjectDraft} from './businessProjects.js';
+  fieldGuidance, missingRequiredFields, missingHeaderFields, headerProblem, originalReportFiles, createProjectDraft, saveProjectDraft} from './businessProjects.js';
 
 const props = defineProps({api: {type: Function, required: true}, company: {type: Object, required: true}, refresh: {type: Number, default: 0}});
 const emit = defineEmits(['editing', 'generated']);
@@ -15,7 +17,9 @@ const projects = ref([]), canUpload = ref(false), listLoading = ref(false), erro
 const state = ref(null), current = ref(null), action = ref(''), step = ref('');
 const header = ref({title: '', start: '', months: 36, currency: ''});
 const form = ref(formFromInputs()), selected = ref([]), ignored = ref([]), selectionProblems = ref([]), totalSize = ref(0);
-const modelForm = ref(null);
+const modelForm = ref(null), headerForm = ref(null), validationAttempted = ref(false), headerAttempted = ref(false);
+const progress = ref({active:false,label:'',completed:0,total:0,error:''});
+const operation = createOperationProgress(value => {progress.value = value;});
 const showDeleted = ref(false);
 const confirmed = ref(false), loadedSnapshot = ref('');
 const projectMode = ref('manual'), flowStage = ref('project');
@@ -31,10 +35,8 @@ const needsConfirmation = computed(() => sourceProblems.value.some(issue => issu
 const blockingSources = computed(() => sourceProblems.value.filter(issue => issue.blocking || ['error','fatal','blocking'].includes(String(issue.severity || '').toLowerCase())));
 const validation = computed(() => review.value.fields);
 const requiredFields = computed(() => missingRequiredFields(form.value));
-const remainingRequirements = computed(() => {
-  const seen = new Set();
-  return requiredFields.value.filter(item => {const key = item.field.split(/[.\[]/)[0]; if (seen.has(key)) return false; seen.add(key); return true;});
-});
+const remainingRequirements = computed(() => requiredFields.value);
+const headerMissing = computed(() => missingHeaderFields(header.value, projectMode.value, !!current.value?.native_model));
 const savedValidation = computed(() => changed.value ? [] : validation.value.filter(issue => !requiredFields.value.some(item => item.field === issue.field)));
 const referenceNotes = computed(() => review.value.references);
 const evidence = computed(() => evidenceRows(current.value?.extraction));
@@ -75,18 +77,20 @@ const ratio = value => value == null ? '—' : new Intl.NumberFormat('ru-RU', {m
 
 watch(editing, value => emit('editing', value));
 watch(() => props.refresh, loadProjects);
-watch(() => props.company.id, () => {listRequest++; detailRequest++; state.value = null; current.value = null; projects.value = []; selected.value = []; action.value = ''; error.value = ''; notice.value = ''; loadProjects();});
+watch(() => props.company.id, () => {operation.reset(); validationAttempted.value=false; headerAttempted.value=false; listRequest++; detailRequest++; state.value = null; current.value = null; projects.value = []; selected.value = []; action.value = ''; error.value = ''; notice.value = ''; loadProjects();});
 onMounted(loadProjects);
-onUnmounted(() => {active = false; listRequest++; detailRequest++; emit('editing', false);});
+onUnmounted(() => {active = false; operation.reset(); listRequest++; detailRequest++; emit('editing', false);});
 
 async function loadProjects() {
   const request = ++listRequest, companyId = props.company.id; listLoading.value = true;
+  const ticket = busy.value ? null : operation.begin('Загружаем проекты…', 1);
   try {
     const response = await props.api(projectUrl(companyId) + '&include_deleted=true');
     if (!active || request !== listRequest || companyId !== props.company.id) return;
     projects.value = (response.items || []).filter(project => project.company_id === companyId);
     canUpload.value = !!response.can_upload;
-  } catch (e) {if (active && request === listRequest && e.name !== 'AbortError') error.value = e.message;}
+    if (ticket) operation.complete(ticket, 'Проекты загружены');
+  } catch (e) {if (active && request === listRequest && e.name !== 'AbortError') {error.value = e.message; if(ticket)operation.fail(ticket,e.message);}}
   finally {if (active && request === listRequest) listLoading.value = false;}
 }
 function setProject(project, replaceForm = false) {
@@ -101,6 +105,7 @@ function setProject(project, replaceForm = false) {
 }
 function newProject(mode = 'manual') {
   if (busy.value) return;
+  operation.reset(); validationAttempted.value=false; headerAttempted.value=false;
   state.value = createBusinessState(); current.value = null;
   projectMode.value = mode; flowStage.value = 'project';
   header.value = {title: '', start: '', months: 36, currency: ''};
@@ -109,7 +114,9 @@ function newProject(mode = 'manual') {
 }
 async function openProject(project) {
   if (busy.value) return;
-  const request = ++detailRequest; action.value = 'open'; error.value = ''; notice.value = '';
+  const request = ++detailRequest, companyId=props.company.id; action.value = 'open'; error.value = ''; notice.value = '';
+  validationAttempted.value=false; headerAttempted.value=false;
+  const ticket=operation.begin('Открываем данные проекта…',1);
   try {
     const detail = await props.api(projectUrl(props.company.id, project.id));
     if (!active || request !== detailRequest) return;
@@ -119,14 +126,16 @@ async function openProject(project) {
     const values = detail.inputs || detail.extraction?.inputs || {};
     header.value = {title: detail.title, start: values.start || '', months: values.months ?? 36, currency: values.currency || ''};
     setProject(detail, true);
-  } catch (e) {if (active && e.name !== 'AbortError') error.value = e.message;}
+    operation.complete(ticket,'Данные проекта загружены');
+  } catch (e) {if (active && request===detailRequest && companyId===props.company.id && e.name !== 'AbortError') {error.value = e.message; operation.fail(ticket,e.message);}}
   finally {if (active && request === detailRequest) action.value = '';}
 }
-function closeProject() {if (busy.value) return; state.value = null; current.value = null; selected.value = []; error.value = ''; notice.value = ''; loadProjects();}
+function closeProject() {if (busy.value) return; operation.reset(); state.value = null; current.value = null; selected.value = []; error.value = ''; notice.value = ''; loadProjects();}
 async function changeProjectState(project, restore = false) {
   if (busy.value || project.company_id !== props.company.id || !(restore ? project.can_restore : project.can_delete)) return;
   const companyId = props.company.id;
   action.value = restore ? 'restore' : 'delete'; error.value = ''; notice.value = '';
+  const ticket=operation.begin(restore?'Восстанавливаем проект…':'Удаляем проект из списка…',1);
   try {
     const path = `/api/business-projects/${project.id}${restore ? '/restore' : ''}?company_id=${companyId}&expected_revision=${project.revision}`;
     const detail = await props.api(path, {method: restore ? 'POST' : 'DELETE'});
@@ -134,9 +143,10 @@ async function changeProjectState(project, restore = false) {
     assertProject(detail, companyId, project.id);
     if (current.value?.id === project.id) {state.value = null; current.value = null; selected.value = [];}
     notice.value = restore ? 'Папка и её отчёты восстановлены.' : 'Папка и её отчёты удалены из списка и бота. Для возврата включите «Показать удалённые» и нажмите «Восстановить».';
+    operation.complete(ticket,restore?'Проект восстановлен':'Проект удалён из списка');
     await loadProjects(); emit('generated');
-  } catch (e) {if (active && e.name !== 'AbortError') {error.value = e.message; await loadProjects();}}
-  finally {if (active) action.value = '';}
+  } catch (e) {if (active && companyId===props.company.id && e.name !== 'AbortError') {error.value = e.message; operation.fail(ticket,e.message); await loadProjects();}}
+  finally {if (active && companyId===props.company.id) action.value = '';}
 }
 function chooseSources(event) {
   const result = prepareSources(event.target.files || []); event.target.value = '';
@@ -156,68 +166,89 @@ async function recoverConflict(e) {
 async function upload() {
   if (busy.value || !selected.value.length || selectionProblems.value.length) return;
   const workingState = state.value, companyId = props.company.id;
+  const isCurrent = () => active && state.value === workingState && props.company.id === companyId;
+  const preliminary = !current.value && projectMode.value==='manual' ? 2 : current.value&&!current.value.native_model&&changed.value ? 1 : 0;
+  const total = preliminary + Number(!current.value&&projectMode.value!=='manual') + selected.value.filter(item=>!workingState.uploaded.has(item.key)).length + 1;
+  const ticket=operation.begin('Готовим проект к загрузке…',total); let prepared=0;
+  headerAttempted.value=true;
   action.value = 'upload'; error.value = ''; notice.value = '';
   try {
-    const isCurrent = () => active && state.value === workingState && props.company.id === companyId;
     if (!current.value && projectMode.value === 'manual') {
+      operation.stage(ticket,'Создаём проект…');
       const created = await createProjectDraft(props.api, workingState, companyId, header.value.title, 'manual', isCurrent);
+      operation.advance(ticket); prepared++;
       setProject(created); form.value = formFromInputs({}, header.value);
+      operation.stage(ticket,'Сохраняем данные проекта…');
       const saved = await saveProjectDraft(props.api, created, companyId, inputsFromForm(form.value), isCurrent);
+      operation.advance(ticket); prepared++;
       setProject(saved, true);
     }
     if (current.value && !current.value.native_model && changed.value) {
+      operation.stage(ticket,'Сохраняем изменения перед загрузкой…');
       const saved = await saveProjectDraft(props.api, current.value, companyId, inputsFromForm(form.value), isCurrent);
+      operation.advance(ticket); prepared++;
       setProject(saved, true);
     }
     const project = await uploadProjectFolder(props.api, workingState, {companyId, header: {...header.value}, sources: selected.value,
       mode: projectMode.value, isCurrent,
       onProject: project => setProject(project), onStep: value => {step.value = value;},
+      onProgress: value => {if(isCurrent())operation.progress(ticket,{...value,completed:prepared+value.completed,total:prepared+value.total});},
     });
     if (!isCurrent()) return;
     setProject(project, true);
+    operation.complete(ticket,'Файлы загружены, источники проверены');
     flowStage.value = 'data';
     notice.value = project.generations?.length && !project.validation?.length ? 'Бизнес-план и ТЭО сформированы. Скачайте PDF и Excel ниже.' : 'Папка изучена. Проверьте замечания и заполните недостающие параметры ниже.';
     if (project.generations?.length) emit('generated');
     await loadProjects();
-  } catch (e) {if (active && e.name !== 'AbortError') {error.value = uploadFailureMessage(e, workingState); await recoverConflict(e);}}
+  } catch (e) {if (isCurrent() && e.name !== 'AbortError') {error.value = uploadFailureMessage(e, workingState); operation.fail(ticket,error.value); await recoverConflict(e);}}
   finally {if (active && state.value === workingState && props.company.id === companyId) {action.value = ''; step.value = '';}}
 }
 async function generate() {
-  if (busy.value || !canEdit.value || requiredFields.value.length || needsConfirmation.value && !confirmed.value) return;
+  if (busy.value || !canEdit.value) return;
+  validationAttempted.value=true;
+  if(requiredFields.value.length){flowStage.value='data';notice.value='Заполните обязательные поля из списка. Черновик можно сохранить без расчёта.';await goToField(requiredFields.value[0].field);return;}
+  if(needsConfirmation.value&&!confirmed.value)return;
   const companyId = props.company.id, id = current.value.id;
+  const ticket=operation.begin('Сохраняем данные проекта…',2);
   action.value = 'generate'; step.value = 'Сохраняем данные и готовим отчёт…'; error.value = ''; notice.value = '';
   try {
     const isCurrent = () => active && current.value?.id === id && props.company.id === companyId;
     const inputs = inputsFromForm(form.value);
     const saved = await saveProjectDraft(props.api, current.value, companyId, inputs, isCurrent);
+    operation.advance(ticket,1,'Рассчитываем модель и формируем PDF и Excel…');
     const detail = await generateProject(props.api, saved, companyId, inputs, confirmed.value, isCurrent);
     if (!isCurrent()) return;
     setProject(detail, true);
-    if (detail.validation?.length || detail.status !== 'ready') notice.value = 'Проверьте замечания. Новый комплект отчётов появится после заполнения обязательных данных.';
-    else {notice.value = 'Бизнес-план и расчётный Excel готовы.'; flowStage.value = 'report'; emit('generated');}
+    if (detail.validation?.length || detail.status !== 'ready') {notice.value = 'Проверьте замечания. Новый комплект отчётов появится после заполнения обязательных данных.'; operation.fail(ticket,notice.value);flowStage.value='data';}
+    else {operation.complete(ticket,'Бизнес-план PDF и расчётный Excel готовы');notice.value = 'Бизнес-план и расчётный Excel готовы.'; flowStage.value = 'report'; emit('generated');}
     await loadProjects();
-  } catch (e) {if (active && e.name !== 'AbortError') {error.value = e.message; await recoverConflict(e);}}
+  } catch (e) {if (active && current.value?.id===id && companyId===props.company.id && e.name !== 'AbortError') {error.value = e.message; operation.fail(ticket,e.message); await recoverConflict(e);}}
   finally {if (active && current.value?.id === id && props.company.id === companyId) {action.value = ''; step.value = '';}}
 }
 async function saveDraft(nextStage = null) {
   if (busy.value || current.value && (!canEdit.value || current.value.native_model)) return false;
   const workingState = state.value, companyId = props.company.id;
   const isCurrent = () => active && state.value === workingState && props.company.id === companyId;
+  const ticket=operation.begin(current.value?'Сохраняем черновик…':'Создаём проект…',current.value?1:2);
+  headerAttempted.value=true;
   action.value = 'save'; error.value = ''; notice.value = '';
   try {
     let project = current.value;
     if (!project) {
       project = await createProjectDraft(props.api, workingState, companyId, header.value.title, projectMode.value, isCurrent);
+      operation.advance(ticket,1,'Сохраняем черновик проекта…');
       setProject(project);
       form.value.title = header.value.title.trim();
       form.value.start = header.value.start; form.value.months = header.value.months; form.value.currency = header.value.currency;
     }
     const saved = await saveProjectDraft(props.api, project, companyId, inputsFromForm(form.value), isCurrent);
     const reviewed = confirmed.value; setProject(saved, true); confirmed.value = reviewed;
+    operation.complete(ticket,'Черновик сохранён');
     notice.value = 'Черновик сохранён. Недостающие данные можно заполнить позже.';
     if (nextStage) flowStage.value = nextStage;
     await loadProjects(); return true;
-  } catch (e) {if (isCurrent() && e.name !== 'AbortError') {error.value = e.message; await recoverConflict(e);} return false;}
+  } catch (e) {if (isCurrent() && e.name !== 'AbortError') {error.value = e.message; operation.fail(ticket,e.message); await recoverConflict(e);} return false;}
   finally {if (isCurrent()) action.value = '';}
 }
 async function goStage(stage) {
@@ -240,20 +271,26 @@ function downloads(generation) {
     return archive?.company_id === props.company.id && archive.status === 'ready' ? (key === 'business_archive' ? ['pdf', 'xlsx'] : ['pdf']).map(format => ({title: title + ' · ' + (format === 'pdf' ? 'PDF' : 'Excel'), secondary: key === 'teo_archive', url: archiveFileUrl(archive, format)})) : [];
   });
 }
-function reloadInputs() {if (!busy.value && current.value) setProject(current.value, true);}
+function reloadInputs() {if (!busy.value && current.value) {validationAttempted.value=false;setProject(current.value, true);}}
 function isMissing(field) {return requiredFields.value.some(item => item.field === field || item.field.startsWith(field + '[') || item.field.startsWith(field + '.'));}
-function goToField(field) {
+function fieldInvalid(field) {return validationAttempted.value&&isMissing(field);}
+function missingId(field) {return 'bp-missing-'+encodeURIComponent(field);}
+function nativeWorking(value){action.value=value?'native':'';if(value)operation.reset();}
+async function goToField(field) {
+  flowStage.value='data';await nextTick();
+  if(typeof modelForm.value?.querySelector!=='function')return;
   const root = field.split(/[.\[]/)[0];
   const target = modelForm.value?.querySelector('[data-bp-field="' + field + '"]') || modelForm.value?.querySelector('[data-bp-field="' + root + '"]');
   if (!target) return;
-  const nested = target.matches('details') ? target : target.querySelector('details');
+  const nested = target.tagName === 'DETAILS' ? target : target.querySelector?.('details');
   if (nested) nested.open = true;
   let container = target.parentElement;
   while (container) {if (container.tagName === 'DETAILS') container.open = true; container = container.parentElement;}
   target.scrollIntoView({behavior:'smooth', block:'center'});
-  const input = target.matches('input,select,textarea') ? target : target.querySelector('input:not([type="checkbox"]),select,textarea,button,input');
-  input?.focus({preventScroll:true});
+  const input = ['INPUT','SELECT','TEXTAREA'].includes(target.tagName) ? target : target.querySelector?.('input') || target.querySelector?.('select') || target.querySelector?.('textarea') || target.querySelector?.('button');
+  input?.focus?.({preventScroll:true});
 }
+async function goToHeader(field){flowStage.value='project';await nextTick();const label=headerForm.value?.querySelector?.('[data-bp-header="'+field+'"]');const input=label?.querySelector?.('input')||label?.querySelector?.('select');input?.focus?.({preventScroll:true});input?.scrollIntoView?.({behavior:'smooth',block:'center'});}
 function guidance(field) {return fieldGuidance(field);}
 function scheduleField(entry, month = null) {
   const product = form.value.products.indexOf(entry.object), loan = form.value.loans.indexOf(entry.object);
@@ -269,7 +306,7 @@ function scheduleField(entry, month = null) {
       <p class="sub bp-intro">Создайте проект, заполните данные и получите бизнес-план PDF с расчётным Excel. Черновик можно сохранить в любой момент. Исходные документы можно добавить при необходимости.</p>
       <div class="bp-actions"><a class="button secondary" :href="templateUrl(company.id)"><AppIcon name="download"/> Шаблон исходных данных · Excel</a><button class="ghost" :disabled="busy||listLoading" @click="loadProjects"><AppIcon name="refresh"/> Обновить папки</button></div>
       <p v-if="error" class="error" role="alert">{{error}}</p><p v-if="notice" class="notice" role="status">{{notice}}</p>
-      <p v-if="listLoading" class="loading" role="status">Загружаем проекты…</p>
+      <OperationProgress v-if="progress.total&&action!=='native'" v-bind="progress"/>
       <label v-if="canUpload" class="bp-actions"><input v-model="showDeleted" type="checkbox" :disabled="busy"> Показать удалённые папки</label>
       <div v-if="visibleProjects.length" class="bp-project-list"><div v-for="project in visibleProjects" :key="project.id" class="bp-project-row"><button class="secondary bp-project" :class="{selected:current?.id===project.id}" :disabled="busy||editing" @click="openProject(project)"><span><b>{{project.title}}</b><small>{{statusLabel(project)}} · версия исходных данных {{project.revision}}</small></span><AppIcon name="arrow"/></button><button v-if="project.can_delete" class="secondary tiny" :disabled="busy||editing" @click="changeProjectState(project)">Удалить папку и её отчёты</button><button v-if="project.can_restore" class="secondary tiny" :disabled="busy||editing" @click="changeProjectState(project,true)">Восстановить</button></div></div>
       <p v-else-if="!listLoading&&!editing" class="sub">Проектов пока нет. Нажмите «Новый проект» и укажите название.</p>
@@ -280,13 +317,14 @@ function scheduleField(entry, month = null) {
         <p v-if="current?.status==='deleted'" class="warning">Папка удалена. Для нового расчёта сначала восстановите её. Исходные файлы сохранены.</p>
         <p v-if="current&&!canEdit" class="sub">Просмотр проекта и готовых отчётов. Изменять исходные данные может автор папки с правом импорта.</p>
         <nav class="bp-actions bp-flow" aria-label="Этапы проекта"><button v-for="[stage,label] in [['project','1. Проект'],['data','2. Данные'],['report','3. Отчёт']]" :key="stage" type="button" :class="flowStage===stage?'':'secondary'" :aria-current="flowStage===stage?'step':undefined" :disabled="busy||!current&&stage==='report'" @click="goStage(stage)">{{label}}</button></nav>
-        <div v-if="!current||canEdit" :hidden="flowStage!=='project'" class="bp-upload-area">
+        <div v-if="!current||canEdit" ref="headerForm" :hidden="flowStage!=='project'" class="bp-upload-area">
+          <section v-if="headerMissing.length" class="bp-missing-summary" aria-labelledby="bp-header-missing-title"><h4 id="bp-header-missing-title">Не заполнены поля проекта</h4><ul><li v-for="item in headerMissing" :key="item.field"><button type="button" class="ghost tiny" :disabled="busy" @click="goToHeader(item.field)">{{item.label}}</button></li></ul><p class="sub">Для сохранения черновика достаточно названия; остальные поля можно заполнить позже.</p></section>
           <div class="bp-fields">
-            <label class="bp-wide">Название проекта <span class="bp-required-tag">Обязательно</span><input v-model="header.title" maxlength="160" :disabled="busy||!!state.createFields||!!current" placeholder="Производство лекарственных препаратов"><small>Заполнится из имени папки, если своё название ещё не указано.</small></label>
+            <label class="bp-wide" data-bp-header="title">Название проекта <span class="bp-required-tag">Обязательно</span><input v-model="header.title" maxlength="160" :aria-invalid="headerAttempted&&headerMissing.some(item=>item.field==='title')" :disabled="busy||!!state.createFields||!!current" placeholder="Производство лекарственных препаратов"><small>Заполнится из имени папки, если своё название ещё не указано.</small></label>
             <template v-if="!current?.native_model">
-              <label>Начало прогноза <span class="bp-required-tag">Обязательно</span><input type="month" :value="header.start.slice(0,7)" min="2000-01" max="2100-12" :disabled="busy" @input="setStart(header,$event)"><small>Выберите первый месяц расчёта. Дата загрузки и дата баланса не заменяют начало прогноза.</small></label>
-              <label>Прогноз, месяцев<input v-model="header.months" type="number" min="1" max="60" step="1" :disabled="busy"><small>От 1 до 60; по умолчанию 36 месяцев</small></label>
-              <label>Валюта модели<select v-model="header.currency" :disabled="busy"><option value="">{{projectMode==='manual'?'Выберите валюту':'Определить из источников'}}</option><option>USD</option><option>UZS</option><option>EUR</option></select></label>
+              <label data-bp-header="start">Начало прогноза <span class="bp-required-tag">Обязательно</span><input type="month" :value="header.start.slice(0,7)" min="2000-01" max="2100-12" :disabled="busy" @input="setStart(header,$event)"><small>Выберите первый месяц расчёта. Дата загрузки и дата баланса не заменяют начало прогноза.</small></label>
+              <label data-bp-header="months">Прогноз, месяцев<input v-model="header.months" type="number" min="1" max="60" step="1" :disabled="busy"><small>От 1 до 60; по умолчанию 36 месяцев</small></label>
+              <label data-bp-header="currency">Валюта модели<select v-model="header.currency" :disabled="busy"><option value="">{{projectMode==='manual'?'Выберите валюту':'Определить из источников'}}</option><option>USD</option><option>UZS</option><option>EUR</option></select></label>
             </template>
           </div>
           <div v-if="!current&&projectMode==='manual'" class="bp-actions"><button :disabled="busy||!header.title.trim()" @click="saveDraft('data')"><AppIcon name="check"/> Сохранить и перейти к данным</button><span class="sub">Файлы не обязательны</span></div>
@@ -304,7 +342,6 @@ function scheduleField(entry, month = null) {
           <button :disabled="busy||!selected.length||selectionProblems.length>0||!!uploadRequirement" @click="upload"><AppIcon name="import"/> {{current?'Добавить файлы и выполнить анализ':'Импортировать файлы проекта'}}</button>
           </details>
         </div>
-        <p v-if="busy" class="loading bp-progress" role="status">{{step||(action==='native'?'Работаем с оригинальными Word и Excel…':'Загружаем проект…')}}</p>
 
         <template v-if="current">
           <details v-if="originalReports.length" class="bp-details" aria-labelledby="bp-original-title"><summary>Исходные документы · {{originalReports.length}}</summary>
@@ -314,13 +351,14 @@ function scheduleField(entry, month = null) {
             <p v-if="!originalReports.some(file=>file.format==='PDF')" class="sub bp-note">{{current.native_model?'Для нового PDF выполните пересчёт оригинала и нажмите «Сформировать бизнес-план и ТЭО по оригиналу». PDF будет подготовлен по Word из этой папки.':'Для PDF с исходным оформлением добавьте PDF, экспортированный из исходного Word, через «Выбрать отдельные файлы».'}}</p>
           </details>
           <details class="bp-details"><summary>Исходные файлы проекта · {{current.files?.length||0}}</summary><ul class="bp-files"><li v-for="file in current.files||[]" :key="file.relative_path"><span>{{file.relative_path||file.filename}}</span><small>{{sourceSize(file.size||0)}} <a v-if="canEdit&&file.download_url" :href="file.download_url">Скачать исходник</a></small></li></ul></details>
-          <NativeWorkbook v-if="current.native_model" :hidden="flowStage==='project'" :stage="flowStage" :api="api" :company="company" :project="current" @report="goStage('report')" @data="goStage('data')" @updated="setProject($event,true)" @generated="flowStage='report';emit('generated');loadProjects()" @working="action=$event?'native':''"/>
+          <NativeWorkbook v-if="current.native_model" :hidden="flowStage==='project'" :stage="flowStage" :api="api" :company="company" :project="current" @report="goStage('report')" @data="goStage('data')" @updated="setProject($event,true)" @generated="flowStage='report';emit('generated');loadProjects()" @working="nativeWorking"/>
           <template v-if="!current.native_model">
+          <section v-if="canEdit&&requiredFields.length" class="bp-missing-summary" :class="{'bp-validation-attempted':validationAttempted}" aria-labelledby="bp-missing-title"><h4 id="bp-missing-title" aria-live="polite">Не заполнены обязательные поля · {{requiredFields.length}}</h4><ul><li v-for="item in requiredFields" :key="item.field"><button type="button" class="ghost tiny" :disabled="busy" @click="goToField(item.field)">{{guidance(item.field).label||fieldLabel(item.field)}}</button></li></ul><p class="sub">Нажмите название, чтобы открыть нужную группу и перейти к полю. Явный ноль считается заполненным значением.</p></section>
           <div :hidden="flowStage!=='data'">
           <section v-if="canEdit&&action!=='upload'" class="bp-required-guide" aria-labelledby="bp-required-title">
-            <h3 id="bp-required-title">Обязательные поля · {{remainingRequirements.length ? 'осталось заполнить ' + remainingRequirements.length + ' разделов' : 'все поля заполнены'}}</h3>
+            <h3 id="bp-required-title">Обязательные поля · {{remainingRequirements.length ? 'осталось заполнить ' + remainingRequirements.length + ' полей' : 'все поля заполнены'}}</h3>
             <p class="sub bp-note">Заполняйте суммы в выбранной валюте. Пустое поле не означает ноль; ноль указывайте явно. Черновик сохраняется и с неполными данными.</p>
-            <details v-if="remainingRequirements.length" class="bp-details"><summary>Что ещё нужно заполнить · {{remainingRequirements.length}}</summary>
+            <details v-if="remainingRequirements.length" class="bp-details"><summary>Как заполнить обязательные поля · {{remainingRequirements.length}}</summary>
             <div v-if="remainingRequirements.length" class="bp-required-list">
               <article v-for="item in remainingRequirements" :key="item.field" class="bp-required-item">
                 <h4>{{guidance(item.field).label || fieldLabel(item.field)}}</h4>
@@ -353,12 +391,12 @@ function scheduleField(entry, month = null) {
             <fieldset :disabled="busy||!canEdit" class="bp-fieldset">
               <details class="bp-details" data-bp-group="passport" open><summary>1. Проект и инициатор</summary><p class="sub">Название, период, валюта и описание проекта.</p>
               <div class="bp-fields">
-                <label class="bp-wide" data-bp-field="title">Название отчётов <span class="bp-required-tag">Обязательно</span><input v-model="form.title" maxlength="160" required :aria-invalid="isMissing('title')"></label>
-                <label data-bp-field="start">Начало прогноза <span class="bp-required-tag">Обязательно</span><input type="month" :value="form.start.slice(0,7)" min="2000-01" max="2100-12" required :aria-invalid="isMissing('start')" @input="setStart(form,$event)"><small>Первый месяц финансового прогноза.</small></label>
-                <label data-bp-field="months">Прогноз, месяцев <span class="bp-required-tag">Обязательно</span><input v-model="form.months" type="number" min="1" max="60" step="1" required><small>Графики должны покрывать выбранное число месяцев.</small></label>
-                <label data-bp-field="currency">Валюта <span class="bp-required-tag">Обязательно</span><select v-model="form.currency" required :aria-invalid="isMissing('currency')"><option value="">Выберите валюту</option><option>USD</option><option>UZS</option><option>EUR</option></select><small>Все суммы — в единицах выбранной валюты.</small></label>
-                <label data-bp-field="tax_rate">Налог на прибыль, % <span class="bp-required-tag">Обязательно</span><input v-model="form.tax_rate" type="text" inputmode="decimal" required :aria-invalid="isMissing('tax_rate')"><small>Подтверждённая ставка проекта, в процентах.</small></label>
-                <label data-bp-field="discount_rate">Годовая ставка дисконтирования, % <span class="bp-required-tag">Обязательно</span><input v-model="form.discount_rate" type="text" inputmode="decimal" required :aria-invalid="isMissing('discount_rate')"><small>Утверждённая годовая ставка для оценки денежных потоков.</small></label>
+                <label class="bp-wide" data-bp-field="title" :class="{'bp-field-error':fieldInvalid('title')}">Название отчётов <span class="bp-required-tag">Обязательно</span><input v-model="form.title" maxlength="160" required :aria-invalid="fieldInvalid('title')" :aria-describedby="fieldInvalid('title') ? missingId('title') : undefined"><small v-if="fieldInvalid('title')" :id="missingId('title')" class="bp-field-help">Заполните поле «{{guidance('title').label || fieldLabel('title')}}».</small></label>
+                <label data-bp-field="start" :class="{'bp-field-error':fieldInvalid('start')}">Начало прогноза <span class="bp-required-tag">Обязательно</span><input type="month" :value="form.start.slice(0,7)" min="2000-01" max="2100-12" required :aria-invalid="fieldInvalid('start')" @input="setStart(form,$event)" :aria-describedby="fieldInvalid('start') ? missingId('start') : undefined"><small>Первый месяц финансового прогноза.</small><small v-if="fieldInvalid('start')" :id="missingId('start')" class="bp-field-help">Заполните поле «{{guidance('start').label || fieldLabel('start')}}».</small></label>
+                <label data-bp-field="months" :class="{'bp-field-error':fieldInvalid('months')}">Прогноз, месяцев <span class="bp-required-tag">Обязательно</span><input v-model="form.months" type="number" min="1" max="60" step="1" required :aria-describedby="fieldInvalid('months') ? missingId('months') : undefined" :aria-invalid="fieldInvalid('months')"><small>Графики должны покрывать выбранное число месяцев.</small><small v-if="fieldInvalid('months')" :id="missingId('months')" class="bp-field-help">Заполните поле «{{guidance('months').label || fieldLabel('months')}}».</small></label>
+                <label data-bp-field="currency" :class="{'bp-field-error':fieldInvalid('currency')}">Валюта <span class="bp-required-tag">Обязательно</span><select v-model="form.currency" required :aria-invalid="fieldInvalid('currency')" :aria-describedby="fieldInvalid('currency') ? missingId('currency') : undefined"><option value="">Выберите валюту</option><option>USD</option><option>UZS</option><option>EUR</option></select><small>Все суммы — в единицах выбранной валюты.</small><small v-if="fieldInvalid('currency')" :id="missingId('currency')" class="bp-field-help">Заполните поле «{{guidance('currency').label || fieldLabel('currency')}}».</small></label>
+                <label data-bp-field="tax_rate" :class="{'bp-field-error':fieldInvalid('tax_rate')}">Налог на прибыль, % <span class="bp-required-tag">Обязательно</span><input v-model="form.tax_rate" type="text" inputmode="decimal" required :aria-invalid="fieldInvalid('tax_rate')" :aria-describedby="fieldInvalid('tax_rate') ? missingId('tax_rate') : undefined"><small>Подтверждённая ставка проекта, в процентах.</small><small v-if="fieldInvalid('tax_rate')" :id="missingId('tax_rate')" class="bp-field-help">Заполните поле «{{guidance('tax_rate').label || fieldLabel('tax_rate')}}».</small></label>
+                <label data-bp-field="discount_rate" :class="{'bp-field-error':fieldInvalid('discount_rate')}">Годовая ставка дисконтирования, % <span class="bp-required-tag">Обязательно</span><input v-model="form.discount_rate" type="text" inputmode="decimal" required :aria-invalid="fieldInvalid('discount_rate')" :aria-describedby="fieldInvalid('discount_rate') ? missingId('discount_rate') : undefined"><small>Утверждённая годовая ставка для оценки денежных потоков.</small><small v-if="fieldInvalid('discount_rate')" :id="missingId('discount_rate')" class="bp-field-help">Заполните поле «{{guidance('discount_rate').label || fieldLabel('discount_rate')}}».</small></label>
               </div>
               <div class="bp-narratives"><label v-for="[field,label] in narrativeFields(0)" :key="field" :data-bp-field="field">{{label}}<textarea v-model="form[field]" maxlength="16000"></textarea></label></div>
               </details>
@@ -367,24 +405,24 @@ function scheduleField(entry, month = null) {
               <h3 class="bp-form-head">Постоянные расходы</h3><p class="sub">Введите ежемесячную сумму. Для нерегулярных расходов используйте график по месяцам.</p>
 
               <div v-for="entry in financialSchedules.filter(item=>item.field==='fixed_costs')" :key="entry.key" class="bp-schedule" :data-bp-field="entry.field">
-                <template v-if="!Array.isArray(entry.object[entry.field])"><label>{{entry.label}} · каждый месяц <span class="bp-required-tag">Обязательно</span><input v-model="entry.object[entry.field]" type="text" inputmode="decimal" required :aria-invalid="isMissing(entry.field)"><small>Одно значение повторится каждый месяц.</small></label><button type="button" class="secondary tiny" @click="makeMonthly(entry)">По месяцам</button></template>
-                <details v-else class="bp-details"><summary>{{entry.label}} · график: {{entry.object[entry.field].length}} месяцев</summary><p v-if="entry.object[entry.field].length!==Number(form.months)" class="warning">Длина графика отличается от прогноза ({{form.months}} мес.). Уже введённые значения сохраняются до вашего выбора.<button type="button" class="secondary tiny" @click="makeMonthly(entry)">{{entry.object[entry.field].length>Number(form.months)?'Убрать последние '+(entry.object[entry.field].length-Number(form.months))+' значений':'Добавить пустые месяцы'}}</button></p><div class="bp-month-grid"><label v-for="(_,index) in entry.object[entry.field]" :key="index">{{labels[index]||'Месяц '+(index+1)}}<input :data-bp-field="scheduleField(entry,index)" v-model="entry.object[entry.field][index]" type="text" inputmode="decimal" required :aria-invalid="isMissing(scheduleField(entry,index))"></label></div><button type="button" class="ghost tiny" @click="entry.object[entry.field]=''">Заменить график одним ежемесячным значением</button></details>
+                <template v-if="!Array.isArray(entry.object[entry.field])"><label :class="{'bp-field-error':fieldInvalid(entry.field)}">{{entry.label}} · каждый месяц <span class="bp-required-tag">Обязательно</span><input v-model="entry.object[entry.field]" type="text" inputmode="decimal" required :aria-invalid="fieldInvalid(entry.field)" :aria-describedby="fieldInvalid(entry.field) ? missingId(entry.field) : undefined"><small>Одно значение повторится каждый месяц.</small><small v-if="fieldInvalid(entry.field)" :id="missingId(entry.field)" class="bp-field-help">Заполните поле «{{guidance(entry.field).label || fieldLabel(entry.field)}}».</small></label><button type="button" class="secondary tiny" @click="makeMonthly(entry)">По месяцам</button></template>
+                <details v-else class="bp-details"><summary>{{entry.label}} · график: {{entry.object[entry.field].length}} месяцев</summary><p v-if="entry.object[entry.field].length!==Number(form.months)" class="warning">Длина графика отличается от прогноза ({{form.months}} мес.). Уже введённые значения сохраняются до вашего выбора.<button type="button" class="secondary tiny" @click="makeMonthly(entry)">{{entry.object[entry.field].length>Number(form.months)?'Убрать последние '+(entry.object[entry.field].length-Number(form.months))+' значений':'Добавить пустые месяцы'}}</button></p><div class="bp-month-grid"><label v-for="(_,index) in entry.object[entry.field]" :key="index" :class="{'bp-field-error':fieldInvalid(scheduleField(entry,index))}">{{labels[index]||'Месяц '+(index+1)}}<input :data-bp-field="scheduleField(entry,index)" v-model="entry.object[entry.field][index]" type="text" inputmode="decimal" required :aria-invalid="fieldInvalid(scheduleField(entry,index))" :aria-describedby="fieldInvalid(scheduleField(entry,index)) ? missingId(scheduleField(entry,index)) : undefined"><small v-if="fieldInvalid(scheduleField(entry,index))" :id="missingId(scheduleField(entry,index))" class="bp-field-help">Заполните поле «{{guidance(scheduleField(entry,index)).label || fieldLabel(scheduleField(entry,index))}}».</small></label></div><button type="button" class="ghost tiny" @click="entry.object[entry.field]=''">Заменить график одним ежемесячным значением</button></details>
               </div>
               <div class="bp-narratives"><label v-for="[field,label] in narrativeFields(1)" :key="field" :data-bp-field="field">{{label}}<textarea v-model="form[field]" maxlength="16000"></textarea></label></div>
               </details>
 
               <details class="bp-details" data-bp-group="investment"><summary>3. Инвестиции и основные средства</summary><p class="sub">Вложения до прогноза и покупка активов по месяцам учитываются отдельно.</p>
-              <label data-bp-field="initial_investment">Инвестиции до начала прогноза<input v-model="form.initial_investment" type="text" inputmode="decimal" required :aria-invalid="isMissing('initial_investment')"><small>Не включайте повторно активы, покупаемые в месяцах прогноза.</small></label>
+              <label data-bp-field="initial_investment" :class="{'bp-field-error':fieldInvalid('initial_investment')}">Инвестиции до начала прогноза<input v-model="form.initial_investment" type="text" inputmode="decimal" required :aria-invalid="fieldInvalid('initial_investment')" :aria-describedby="fieldInvalid('initial_investment') ? missingId('initial_investment') : undefined"><small>Не включайте повторно активы, покупаемые в месяцах прогноза.</small><small v-if="fieldInvalid('initial_investment')" :id="missingId('initial_investment')" class="bp-field-help">Заполните поле «{{guidance('initial_investment').label || fieldLabel('initial_investment')}}».</small></label>
               <div class="section-head bp-form-head" data-bp-field="assets"><h3>Основные средства · {{form.assets.length}} <span class="bp-required-tag">Обязательно указать наличие</span></h3><button type="button" class="secondary tiny" :disabled="form.assets.length>=200" @click="addRow('assets')"><AppIcon name="plus"/> Добавить актив</button></div>
               <p class="sub bp-note">Укажите существующие активы и плановые покупки. Если активов нет, отметьте это явно.</p>
-              <label v-if="!form.assets.length" class="bp-check"><input v-model="form.no_assets" type="checkbox"> Основных средств в этой модели нет</label>
+              <label v-if="!form.assets.length" class="bp-check" :class="{'bp-field-error':fieldInvalid('assets')}"><input v-model="form.no_assets" type="checkbox" :aria-invalid="fieldInvalid('assets')" :aria-describedby="fieldInvalid('assets')?missingId('assets'):undefined"> Основных средств в этой модели нет</label><small v-if="fieldInvalid('assets')" :id="missingId('assets')" class="bp-field-help">Добавьте актив или явно отметьте отсутствие основных средств.</small>
               <div v-for="(asset,index) in form.assets" :key="index" class="bp-row-card">
                 <div class="section-head"><b>Актив №{{index+1}}</b><button type="button" class="ghost tiny" @click="form.assets.splice(index,1);form.no_assets=false">Удалить строку</button></div>
                 <div class="bp-fields">
-                  <label :data-bp-field="`assets[${index}].name`">Название <span class="bp-required-tag">Обязательно</span><input v-model="asset.name" maxlength="160" required></label>
-                  <label :data-bp-field="`assets[${index}].value`">Стоимость <span class="bp-required-tag">Обязательно</span><input v-model="asset.value" type="text" inputmode="decimal" required><small>{{guidance(`assets[${index}].value`).how}}</small></label>
-                  <label :data-bp-field="`assets[${index}].life_months`">Срок амортизации, месяцев <span class="bp-required-tag">Обязательно</span><input v-model="asset.life_months" type="number" min="1" max="1200" step="1" required><small>{{guidance(`assets[${index}].life_months`).how}}</small></label>
-                  <label :data-bp-field="`assets[${index}].commissioning_month`">Месяц ввода <span class="bp-required-tag">Обязательно</span><input v-model="asset.commissioning_month" type="number" min="0" :max="form.months" step="1" required><small>0 — актив на начало; 1 — первый месяц прогноза</small></label>
+                  <label :data-bp-field="`assets[${index}].name`" :class="{'bp-field-error':fieldInvalid(`assets[${index}].name`)}">Название <span class="bp-required-tag">Обязательно</span><input v-model="asset.name" maxlength="160" required :aria-describedby="fieldInvalid(`assets[${index}].name`) ? missingId(`assets[${index}].name`) : undefined" :aria-invalid="fieldInvalid(`assets[${index}].name`)"><small v-if="fieldInvalid(`assets[${index}].name`)" :id="missingId(`assets[${index}].name`)" class="bp-field-help">Заполните поле «{{guidance(`assets[${index}].name`).label || fieldLabel(`assets[${index}].name`)}}».</small></label>
+                  <label :data-bp-field="`assets[${index}].value`" :class="{'bp-field-error':fieldInvalid(`assets[${index}].value`)}">Стоимость <span class="bp-required-tag">Обязательно</span><input v-model="asset.value" type="text" inputmode="decimal" required :aria-describedby="fieldInvalid(`assets[${index}].value`) ? missingId(`assets[${index}].value`) : undefined" :aria-invalid="fieldInvalid(`assets[${index}].value`)"><small>{{guidance(`assets[${index}].value`).how}}</small><small v-if="fieldInvalid(`assets[${index}].value`)" :id="missingId(`assets[${index}].value`)" class="bp-field-help">Заполните поле «{{guidance(`assets[${index}].value`).label || fieldLabel(`assets[${index}].value`)}}».</small></label>
+                  <label :data-bp-field="`assets[${index}].life_months`" :class="{'bp-field-error':fieldInvalid(`assets[${index}].life_months`)}">Срок амортизации, месяцев <span class="bp-required-tag">Обязательно</span><input v-model="asset.life_months" type="number" min="1" max="1200" step="1" required :aria-describedby="fieldInvalid(`assets[${index}].life_months`) ? missingId(`assets[${index}].life_months`) : undefined" :aria-invalid="fieldInvalid(`assets[${index}].life_months`)"><small>{{guidance(`assets[${index}].life_months`).how}}</small><small v-if="fieldInvalid(`assets[${index}].life_months`)" :id="missingId(`assets[${index}].life_months`)" class="bp-field-help">Заполните поле «{{guidance(`assets[${index}].life_months`).label || fieldLabel(`assets[${index}].life_months`)}}».</small></label>
+                  <label :data-bp-field="`assets[${index}].commissioning_month`" :class="{'bp-field-error':fieldInvalid(`assets[${index}].commissioning_month`)}">Месяц ввода <span class="bp-required-tag">Обязательно</span><input v-model="asset.commissioning_month" type="number" min="0" :max="form.months" step="1" required :aria-describedby="fieldInvalid(`assets[${index}].commissioning_month`) ? missingId(`assets[${index}].commissioning_month`) : undefined" :aria-invalid="fieldInvalid(`assets[${index}].commissioning_month`)"><small>0 — актив на начало; 1 — первый месяц прогноза</small><small v-if="fieldInvalid(`assets[${index}].commissioning_month`)" :id="missingId(`assets[${index}].commissioning_month`)" class="bp-field-help">Заполните поле «{{guidance(`assets[${index}].commissioning_month`).label || fieldLabel(`assets[${index}].commissioning_month`)}}».</small></label>
                 </div>
               </div>
               <div class="bp-narratives"><label v-for="[field,label] in narrativeFields(2)" :key="field" :data-bp-field="field">{{label}}<textarea v-model="form[field]" maxlength="16000"></textarea></label></div>
@@ -392,37 +430,37 @@ function scheduleField(entry, month = null) {
 
               <details class="bp-details" data-bp-group="financing"><summary>4. Финансирование</summary><p class="sub">Собственные взносы, кредиты и графики платежей.</p>
               <div v-for="entry in financialSchedules.filter(item=>item.field==='equity')" :key="entry.key" class="bp-schedule" data-bp-field="equity">
-                <template v-if="!Array.isArray(form.equity)"><label>Взносы в капитал · каждый месяц<input v-model="form.equity" type="text" inputmode="decimal" required :aria-invalid="isMissing('equity')"></label><button type="button" class="secondary tiny" @click="makeMonthly(entry)">По месяцам</button></template>
-                <details v-else class="bp-details"><summary>Взносы в капитал · график: {{form.equity.length}} месяцев</summary><p v-if="form.equity.length!==Number(form.months)" class="warning">Длина графика отличается от прогноза.<button type="button" class="secondary tiny" @click="makeMonthly(entry)">Обновить длину графика</button></p><div class="bp-month-grid"><label v-for="(_,index) in form.equity" :key="index">{{labels[index]||'Месяц '+(index+1)}}<input :data-bp-field="scheduleField(entry,index)" v-model="form.equity[index]" type="text" inputmode="decimal" required></label></div><button type="button" class="ghost tiny" @click="form.equity=''">Заменить график одним ежемесячным значением</button></details>
+                <template v-if="!Array.isArray(form.equity)"><label :class="{'bp-field-error':fieldInvalid('equity')}">Взносы в капитал · каждый месяц<input v-model="form.equity" type="text" inputmode="decimal" required :aria-invalid="fieldInvalid('equity')" :aria-describedby="fieldInvalid('equity') ? missingId('equity') : undefined"><small v-if="fieldInvalid('equity')" :id="missingId('equity')" class="bp-field-help">Заполните поле «{{guidance('equity').label || fieldLabel('equity')}}».</small></label><button type="button" class="secondary tiny" @click="makeMonthly(entry)">По месяцам</button></template>
+                <details v-else class="bp-details"><summary>Взносы в капитал · график: {{form.equity.length}} месяцев</summary><p v-if="form.equity.length!==Number(form.months)" class="warning">Длина графика отличается от прогноза.<button type="button" class="secondary tiny" @click="makeMonthly(entry)">Обновить длину графика</button></p><div class="bp-month-grid"><label v-for="(_,index) in form.equity" :key="index" :class="{'bp-field-error':fieldInvalid(scheduleField(entry,index))}">{{labels[index]||'Месяц '+(index+1)}}<input :data-bp-field="scheduleField(entry,index)" v-model="form.equity[index]" type="text" inputmode="decimal" required :aria-describedby="fieldInvalid(scheduleField(entry,index)) ? missingId(scheduleField(entry,index)) : undefined" :aria-invalid="fieldInvalid(scheduleField(entry,index))"><small v-if="fieldInvalid(scheduleField(entry,index))" :id="missingId(scheduleField(entry,index))" class="bp-field-help">Заполните поле «{{guidance(scheduleField(entry,index)).label || fieldLabel(scheduleField(entry,index))}}».</small></label></div><button type="button" class="ghost tiny" @click="form.equity=''">Заменить график одним ежемесячным значением</button></details>
               </div>
               <div class="section-head bp-form-head" data-bp-field="loans"><h3>Кредиты · {{form.loans.length}} <span class="bp-required-tag">Обязательно указать наличие</span></h3><button type="button" class="secondary tiny" :disabled="form.loans.length>=200" @click="addRow('loans')"><AppIcon name="plus"/> Добавить кредит</button></div>
               <p class="sub bp-note">Укажите остаток, получение кредита и платежи. Если кредитов нет, отметьте это явно.</p>
-              <label v-if="!form.loans.length" class="bp-check"><input v-model="form.no_loans" type="checkbox"> Кредитов в этой модели нет</label>
-              <div v-for="(loan,index) in form.loans" :key="index" class="bp-row-card"><div class="section-head"><b>Кредит №{{index+1}}</b><button type="button" class="ghost tiny" @click="form.loans.splice(index,1);form.no_loans=false">Удалить строку</button></div><div class="bp-fields"><label :data-bp-field="`loans[${index}].name`">Название <span class="bp-required-tag">Обязательно</span><input v-model="loan.name" maxlength="160" required></label><label :data-bp-field="`loans[${index}].opening_balance`">Долг на начало прогноза <span class="bp-required-tag">Обязательно</span><input v-model="loan.opening_balance" type="text" inputmode="decimal" required><small>{{guidance(`loans[${index}].opening_balance`).how}}</small></label></div><small>Получение, погашение и проценты задайте в графиках ниже. Процентную ставку вместо суммы процентов здесь не вводите.</small></div>
+              <label v-if="!form.loans.length" class="bp-check" :class="{'bp-field-error':fieldInvalid('loans')}"><input v-model="form.no_loans" type="checkbox" :aria-invalid="fieldInvalid('loans')" :aria-describedby="fieldInvalid('loans')?missingId('loans'):undefined"> Кредитов в этой модели нет</label><small v-if="fieldInvalid('loans')" :id="missingId('loans')" class="bp-field-help">Добавьте кредит или явно отметьте отсутствие кредитов.</small>
+              <div v-for="(loan,index) in form.loans" :key="index" class="bp-row-card"><div class="section-head"><b>Кредит №{{index+1}}</b><button type="button" class="ghost tiny" @click="form.loans.splice(index,1);form.no_loans=false">Удалить строку</button></div><div class="bp-fields"><label :data-bp-field="`loans[${index}].name`" :class="{'bp-field-error':fieldInvalid(`loans[${index}].name`)}">Название <span class="bp-required-tag">Обязательно</span><input v-model="loan.name" maxlength="160" required :aria-describedby="fieldInvalid(`loans[${index}].name`) ? missingId(`loans[${index}].name`) : undefined" :aria-invalid="fieldInvalid(`loans[${index}].name`)"><small v-if="fieldInvalid(`loans[${index}].name`)" :id="missingId(`loans[${index}].name`)" class="bp-field-help">Заполните поле «{{guidance(`loans[${index}].name`).label || fieldLabel(`loans[${index}].name`)}}».</small></label><label :data-bp-field="`loans[${index}].opening_balance`" :class="{'bp-field-error':fieldInvalid(`loans[${index}].opening_balance`)}">Долг на начало прогноза <span class="bp-required-tag">Обязательно</span><input v-model="loan.opening_balance" type="text" inputmode="decimal" required :aria-describedby="fieldInvalid(`loans[${index}].opening_balance`) ? missingId(`loans[${index}].opening_balance`) : undefined" :aria-invalid="fieldInvalid(`loans[${index}].opening_balance`)"><small>{{guidance(`loans[${index}].opening_balance`).how}}</small><small v-if="fieldInvalid(`loans[${index}].opening_balance`)" :id="missingId(`loans[${index}].opening_balance`)" class="bp-field-help">Заполните поле «{{guidance(`loans[${index}].opening_balance`).label || fieldLabel(`loans[${index}].opening_balance`)}}».</small></label></div><small>Получение, погашение и проценты задайте в графиках ниже. Процентную ставку вместо суммы процентов здесь не вводите.</small></div>
 
               <h3 v-if="loanSchedules.length" class="bp-form-head">Помесячные графики кредитов</h3><p v-if="loanSchedules.length" class="sub">Одно значение повторяется каждый месяц. Для отдельных выдач и погашений используйте график по месяцам.</p>
               <div v-for="entry in loanSchedules" :key="entry.key" class="bp-schedule" :data-bp-field="scheduleField(entry)">
-                <template v-if="!Array.isArray(entry.object[entry.field])"><label>{{entry.label}} · каждый месяц<input :data-bp-field="scheduleField(entry)" v-model="entry.object[entry.field]" type="text" inputmode="decimal" required :aria-invalid="isMissing(scheduleField(entry))"></label><button type="button" class="secondary tiny" @click="makeMonthly(entry)">По месяцам</button></template>
-                <details v-else class="bp-details"><summary>{{entry.label}} · график: {{entry.object[entry.field].length}} месяцев</summary><p v-if="entry.object[entry.field].length!==Number(form.months)" class="warning">Длина графика отличается от прогноза ({{form.months}} мес.). Уже введённые значения сохраняются до вашего выбора.<button type="button" class="secondary tiny" @click="makeMonthly(entry)">{{entry.object[entry.field].length>Number(form.months)?'Убрать последние '+(entry.object[entry.field].length-Number(form.months))+' значений':'Добавить пустые месяцы'}}</button></p><div class="bp-month-grid"><label v-for="(_,index) in entry.object[entry.field]" :key="index">{{labels[index]||'Месяц '+(index+1)}}<input :data-bp-field="scheduleField(entry,index)" v-model="entry.object[entry.field][index]" type="text" inputmode="decimal" required :aria-invalid="isMissing(scheduleField(entry,index))"></label></div><button type="button" class="ghost tiny" @click="entry.object[entry.field]=''">Заменить график одним ежемесячным значением</button></details>
+                <template v-if="!Array.isArray(entry.object[entry.field])"><label :class="{'bp-field-error':fieldInvalid(scheduleField(entry))}">{{entry.label}} · каждый месяц<input :data-bp-field="scheduleField(entry)" v-model="entry.object[entry.field]" type="text" inputmode="decimal" required :aria-invalid="fieldInvalid(scheduleField(entry))" :aria-describedby="fieldInvalid(scheduleField(entry)) ? missingId(scheduleField(entry)) : undefined"><small v-if="fieldInvalid(scheduleField(entry))" :id="missingId(scheduleField(entry))" class="bp-field-help">Заполните поле «{{guidance(scheduleField(entry)).label || fieldLabel(scheduleField(entry))}}».</small></label><button type="button" class="secondary tiny" @click="makeMonthly(entry)">По месяцам</button></template>
+                <details v-else class="bp-details"><summary>{{entry.label}} · график: {{entry.object[entry.field].length}} месяцев</summary><p v-if="entry.object[entry.field].length!==Number(form.months)" class="warning">Длина графика отличается от прогноза ({{form.months}} мес.). Уже введённые значения сохраняются до вашего выбора.<button type="button" class="secondary tiny" @click="makeMonthly(entry)">{{entry.object[entry.field].length>Number(form.months)?'Убрать последние '+(entry.object[entry.field].length-Number(form.months))+' значений':'Добавить пустые месяцы'}}</button></p><div class="bp-month-grid"><label v-for="(_,index) in entry.object[entry.field]" :key="index" :class="{'bp-field-error':fieldInvalid(scheduleField(entry,index))}">{{labels[index]||'Месяц '+(index+1)}}<input :data-bp-field="scheduleField(entry,index)" v-model="entry.object[entry.field][index]" type="text" inputmode="decimal" required :aria-invalid="fieldInvalid(scheduleField(entry,index))" :aria-describedby="fieldInvalid(scheduleField(entry,index)) ? missingId(scheduleField(entry,index)) : undefined"><small v-if="fieldInvalid(scheduleField(entry,index))" :id="missingId(scheduleField(entry,index))" class="bp-field-help">Заполните поле «{{guidance(scheduleField(entry,index)).label || fieldLabel(scheduleField(entry,index))}}».</small></label></div><button type="button" class="ghost tiny" @click="entry.object[entry.field]=''">Заменить график одним ежемесячным значением</button></details>
               </div>
 
               </details>
               <details class="bp-details bp-products" data-bp-group="production" data-bp-field="products" :open="reviewProducts"><summary>5. Продукция, производство и рынок · {{form.products.length}}</summary><p class="sub">Цена и себестоимость без НДС. Объём — в единицах продукции.</p>
               <div class="section-head bp-form-head"><h3>Продукция · {{form.products.length}}</h3><button type="button" class="secondary tiny" :disabled="form.products.length>=200" @click="addRow('products')"><AppIcon name="plus"/> Добавить продукцию</button></div>
-              <div v-for="(product,index) in form.products" :key="index" class="bp-row-card"><div class="section-head"><b>Продукция №{{index+1}}</b><button type="button" class="ghost tiny" @click="form.products.splice(index,1)">Удалить строку</button></div><div class="bp-fields"><label :data-bp-field="`products[${index}].name`">Название <span class="bp-required-tag">Обязательно</span><input v-model="product.name" maxlength="160" required></label><label :data-bp-field="`products[${index}].unit`">Единица измерения <span class="bp-required-tag">Обязательно</span><input v-model="product.unit" maxlength="40" placeholder="упаковка" required></label><label :data-bp-field="`products[${index}].price`">Цена реализации <span class="bp-required-tag">Обязательно</span><input v-model="product.price" type="text" inputmode="decimal" required><small>{{guidance(`products[${index}].price`).how}}</small></label><label :data-bp-field="`products[${index}].unit_cost`">Себестоимость единицы <span class="bp-required-tag">Обязательно</span><input v-model="product.unit_cost" type="text" inputmode="decimal" required><small>{{guidance(`products[${index}].unit_cost`).how}}</small></label></div><label class="bp-check"><input type="checkbox" :checked="product.capacity!=null" @change="product.capacity=$event.target.checked?'':null"> Указать производственную мощность</label><small>Объём реализации{{product.capacity!=null?' и мощность':''}} — в графиках ниже.</small></div>
+              <div v-for="(product,index) in form.products" :key="index" class="bp-row-card"><div class="section-head"><b>Продукция №{{index+1}}</b><button type="button" class="ghost tiny" @click="form.products.splice(index,1)">Удалить строку</button></div><div class="bp-fields"><label :data-bp-field="`products[${index}].name`" :class="{'bp-field-error':fieldInvalid(`products[${index}].name`)}">Название <span class="bp-required-tag">Обязательно</span><input v-model="product.name" maxlength="160" required :aria-describedby="fieldInvalid(`products[${index}].name`) ? missingId(`products[${index}].name`) : undefined" :aria-invalid="fieldInvalid(`products[${index}].name`)"><small v-if="fieldInvalid(`products[${index}].name`)" :id="missingId(`products[${index}].name`)" class="bp-field-help">Заполните поле «{{guidance(`products[${index}].name`).label || fieldLabel(`products[${index}].name`)}}».</small></label><label :data-bp-field="`products[${index}].unit`" :class="{'bp-field-error':fieldInvalid(`products[${index}].unit`)}">Единица измерения <span class="bp-required-tag">Обязательно</span><input v-model="product.unit" maxlength="40" placeholder="упаковка" required :aria-describedby="fieldInvalid(`products[${index}].unit`) ? missingId(`products[${index}].unit`) : undefined" :aria-invalid="fieldInvalid(`products[${index}].unit`)"><small v-if="fieldInvalid(`products[${index}].unit`)" :id="missingId(`products[${index}].unit`)" class="bp-field-help">Заполните поле «{{guidance(`products[${index}].unit`).label || fieldLabel(`products[${index}].unit`)}}».</small></label><label :data-bp-field="`products[${index}].price`" :class="{'bp-field-error':fieldInvalid(`products[${index}].price`)}">Цена реализации <span class="bp-required-tag">Обязательно</span><input v-model="product.price" type="text" inputmode="decimal" required :aria-describedby="fieldInvalid(`products[${index}].price`) ? missingId(`products[${index}].price`) : undefined" :aria-invalid="fieldInvalid(`products[${index}].price`)"><small>{{guidance(`products[${index}].price`).how}}</small><small v-if="fieldInvalid(`products[${index}].price`)" :id="missingId(`products[${index}].price`)" class="bp-field-help">Заполните поле «{{guidance(`products[${index}].price`).label || fieldLabel(`products[${index}].price`)}}».</small></label><label :data-bp-field="`products[${index}].unit_cost`" :class="{'bp-field-error':fieldInvalid(`products[${index}].unit_cost`)}">Себестоимость единицы <span class="bp-required-tag">Обязательно</span><input v-model="product.unit_cost" type="text" inputmode="decimal" required :aria-describedby="fieldInvalid(`products[${index}].unit_cost`) ? missingId(`products[${index}].unit_cost`) : undefined" :aria-invalid="fieldInvalid(`products[${index}].unit_cost`)"><small>{{guidance(`products[${index}].unit_cost`).how}}</small><small v-if="fieldInvalid(`products[${index}].unit_cost`)" :id="missingId(`products[${index}].unit_cost`)" class="bp-field-help">Заполните поле «{{guidance(`products[${index}].unit_cost`).label || fieldLabel(`products[${index}].unit_cost`)}}».</small></label></div><label class="bp-check"><input type="checkbox" :checked="product.capacity!=null" @change="product.capacity=$event.target.checked?'':null"> Указать производственную мощность</label><small>Объём реализации{{product.capacity!=null?' и мощность':''}} — в графиках ниже.</small></div>
               <p v-if="!form.products.length" class="sub">Для расчёта добавьте хотя бы один препарат или другой продукт.</p>
               <h3 v-if="productSchedules.length" class="bp-form-head">Объёмы и помесячные графики</h3><p v-if="productSchedules.length" class="sub">Одно значение повторяется каждый месяц. Для сезонности используйте график по месяцам.</p>
               <div v-for="entry in productSchedules" :key="entry.key" class="bp-schedule" :data-bp-field="scheduleField(entry)">
-                <template v-if="!Array.isArray(entry.object[entry.field])"><label>{{entry.label}} · каждый месяц<input :data-bp-field="scheduleField(entry)" v-model="entry.object[entry.field]" type="text" inputmode="decimal" required :aria-invalid="isMissing(scheduleField(entry))"></label><button type="button" class="secondary tiny" @click="makeMonthly(entry)">По месяцам</button></template>
-                <details v-else class="bp-details"><summary>{{entry.label}} · график: {{entry.object[entry.field].length}} месяцев</summary><p v-if="entry.object[entry.field].length!==Number(form.months)" class="warning">Длина графика отличается от прогноза ({{form.months}} мес.). Уже введённые значения сохраняются до вашего выбора.<button type="button" class="secondary tiny" @click="makeMonthly(entry)">{{entry.object[entry.field].length>Number(form.months)?'Убрать последние '+(entry.object[entry.field].length-Number(form.months))+' значений':'Добавить пустые месяцы'}}</button></p><div class="bp-month-grid"><label v-for="(_,index) in entry.object[entry.field]" :key="index">{{labels[index]||'Месяц '+(index+1)}}<input :data-bp-field="scheduleField(entry,index)" v-model="entry.object[entry.field][index]" type="text" inputmode="decimal" required :aria-invalid="isMissing(scheduleField(entry,index))"></label></div><button type="button" class="ghost tiny" @click="entry.object[entry.field]=''">Заменить график одним ежемесячным значением</button></details>
+                <template v-if="!Array.isArray(entry.object[entry.field])"><label :class="{'bp-field-error':fieldInvalid(scheduleField(entry))}">{{entry.label}} · каждый месяц<input :data-bp-field="scheduleField(entry)" v-model="entry.object[entry.field]" type="text" inputmode="decimal" required :aria-invalid="fieldInvalid(scheduleField(entry))" :aria-describedby="fieldInvalid(scheduleField(entry)) ? missingId(scheduleField(entry)) : undefined"><small v-if="fieldInvalid(scheduleField(entry))" :id="missingId(scheduleField(entry))" class="bp-field-help">Заполните поле «{{guidance(scheduleField(entry)).label || fieldLabel(scheduleField(entry))}}».</small></label><button type="button" class="secondary tiny" @click="makeMonthly(entry)">По месяцам</button></template>
+                <details v-else class="bp-details"><summary>{{entry.label}} · график: {{entry.object[entry.field].length}} месяцев</summary><p v-if="entry.object[entry.field].length!==Number(form.months)" class="warning">Длина графика отличается от прогноза ({{form.months}} мес.). Уже введённые значения сохраняются до вашего выбора.<button type="button" class="secondary tiny" @click="makeMonthly(entry)">{{entry.object[entry.field].length>Number(form.months)?'Убрать последние '+(entry.object[entry.field].length-Number(form.months))+' значений':'Добавить пустые месяцы'}}</button></p><div class="bp-month-grid"><label v-for="(_,index) in entry.object[entry.field]" :key="index" :class="{'bp-field-error':fieldInvalid(scheduleField(entry,index))}">{{labels[index]||'Месяц '+(index+1)}}<input :data-bp-field="scheduleField(entry,index)" v-model="entry.object[entry.field][index]" type="text" inputmode="decimal" required :aria-invalid="fieldInvalid(scheduleField(entry,index))" :aria-describedby="fieldInvalid(scheduleField(entry,index)) ? missingId(scheduleField(entry,index)) : undefined"><small v-if="fieldInvalid(scheduleField(entry,index))" :id="missingId(scheduleField(entry,index))" class="bp-field-help">Заполните поле «{{guidance(scheduleField(entry,index)).label || fieldLabel(scheduleField(entry,index))}}».</small></label></div><button type="button" class="ghost tiny" @click="entry.object[entry.field]=''">Заменить график одним ежемесячным значением</button></details>
               </div>
               <div class="bp-narratives"><label v-for="[field,label] in narrativeFields(4)" :key="field" :data-bp-field="field">{{label}}<textarea v-model="form[field]" maxlength="16000"></textarea></label></div>
               </details>
 
-              <details class="bp-details" data-bp-group="working-capital"><summary>6. Оборотный капитал и риски</summary><p class="sub">Остатки на начало прогноза и сроки оплаты в днях. Пустое значение не означает ноль.</p><div class="bp-fields"><label v-for="[field,label] in workingCapitalScalars" :key="field" :data-bp-field="field">{{label}} <span class="bp-required-tag">Обязательно</span><input v-model="form[field]" type="text" inputmode="decimal" required :aria-invalid="isMissing(field)"><small>{{guidance(field).what}}</small></label></div><div class="bp-narratives"><label v-for="[field,label] in narrativeFields(5)" :key="field" :data-bp-field="field">{{label}}<textarea v-model="form[field]" maxlength="16000"></textarea></label></div></details>
+              <details class="bp-details" data-bp-group="working-capital"><summary>6. Оборотный капитал и риски</summary><p class="sub">Остатки на начало прогноза и сроки оплаты в днях. Пустое значение не означает ноль.</p><div class="bp-fields"><label v-for="[field,label] in workingCapitalScalars" :key="field" :data-bp-field="field" :class="{'bp-field-error':fieldInvalid(field)}">{{label}} <span class="bp-required-tag">Обязательно</span><input v-model="form[field]" type="text" inputmode="decimal" required :aria-invalid="fieldInvalid(field)" :aria-describedby="fieldInvalid(field) ? missingId(field) : undefined"><small>{{guidance(field).what}}</small><small v-if="fieldInvalid(field)" :id="missingId(field)" class="bp-field-help">Заполните поле «{{guidance(field).label || fieldLabel(field)}}».</small></label></div><div class="bp-narratives"><label v-for="[field,label] in narrativeFields(5)" :key="field" :data-bp-field="field">{{label}}<textarea v-model="form[field]" maxlength="16000"></textarea></label></div></details>
               <label class="bp-check bp-confirm"><input v-model="confirmed" type="checkbox"> Я проверил финансовые параметры и замечания к источникам</label>
               <p v-if="needsConfirmation&&!confirmed" class="sub">Для расчёта по исправленным параметрам подтвердите проверку источников.</p>
-              <p v-if="remainingRequirements.length" class="warning" role="status">Перед расчётом заполните {{remainingRequirements.length}} разделов. Откройте нужное поле кнопкой «К полю» в списке обязательных данных.</p>
+              <p v-if="remainingRequirements.length" class="warning" role="status">Перед расчётом заполните {{remainingRequirements.length}} полей. Откройте нужное поле кнопкой «К полю» в списке обязательных данных.</p>
               <div v-if="canEdit" class="bp-actions"><button type="button" class="secondary" :disabled="busy" @click="saveDraft()"><AppIcon name="check"/> Сохранить черновик</button><button type="button" :disabled="busy" @click="goStage('report')">Перейти к отчёту</button><span v-if="changed" class="pill warn">Есть изменения параметров</span></div>
             </fieldset>
           </form>
@@ -430,7 +468,7 @@ function scheduleField(entry, month = null) {
           </template>
           </div>
           </template>
-          <section v-if="!current.native_model" :hidden="flowStage!=='report'" class="bp-results"><h3>Подготовить отчёт</h3><p class="sub">Полный бизнес-план и финансовые таблицы формируются из сохранённых данных проекта.</p><p v-if="requiredFields.length" class="warning">Заполните обязательные данные: {{remainingRequirements.length}} разделов.</p><p v-if="needsConfirmation&&!confirmed" class="warning">Перед расчётом подтвердите проверку замечаний в разделе «Данные».</p><div class="bp-actions"><button v-if="canEdit" :disabled="busy||requiredFields.length>0||needsConfirmation&&!confirmed" @click="generate"><AppIcon name="report"/> Рассчитать бизнес-план</button><button type="button" class="secondary" :disabled="busy" @click="goStage('data')">Вернуться к данным</button></div></section>
+          <section v-if="!current.native_model" :hidden="flowStage!=='report'" class="bp-results"><h3>Подготовить отчёт</h3><p class="sub">Полный бизнес-план и финансовые таблицы формируются из сохранённых данных проекта.</p><p v-if="requiredFields.length" class="warning">Незаполненные поля перечислены выше. Нажмите название, чтобы внести данные.</p><p v-if="needsConfirmation&&!confirmed" class="warning">Перед расчётом подтвердите проверку замечаний в разделе «Данные».</p><div class="bp-actions"><button v-if="canEdit" :disabled="busy||needsConfirmation&&!confirmed" @click="generate"><AppIcon name="report"/> Рассчитать бизнес-план</button><button type="button" class="secondary" :disabled="busy" @click="goStage('data')">Вернуться к данным</button></div></section>
           <component :is="reportsStale?'details':'section'" v-if="latest&&!current.native_model" :hidden="flowStage!=='report'" class="bp-results">
             <summary v-if="reportsStale">Предыдущая сохранённая версия</summary><h3 v-else>Готовые отчёты · версия исходных данных {{latest.revision}}</h3><p class="sub">{{latest.business_archive?.title||current.title}}</p><p class="sub">{{uploadLabel(latest.created_at)}} · суммы в валюте, указанной в файлах этой версии</p>
             <div class="bp-metrics"><div><small>NPV проекта</small><b>{{money(latest.metrics?.npv)}}</b></div><div><small>IRR годовая</small><b>{{ratio(latest.metrics?.irr_annual)}}</b></div><div><small>Окупаемость, мес.</small><b>{{latest.metrics?.payback_months==null?'Не определена':money(latest.metrics.payback_months)}}</b></div><div><small>Минимум денег</small><b>{{money(latest.metrics?.minimum_cash)}}</b></div></div>
@@ -447,6 +485,7 @@ function scheduleField(entry, month = null) {
 </template>
 
 <style scoped>
+.bp-missing-summary{margin:16px 0;padding:14px 16px;border:1px solid var(--line);border-radius:12px;background:var(--emx)}.bp-missing-summary h4{margin:0 0 10px}.bp-missing-summary ul{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:6px 16px;margin:0;padding-left:20px;max-height:360px;overflow:auto}.bp-missing-summary button{white-space:normal;text-align:left}.bp-validation-attempted{border-color:#b42318}.bp-field-help{color:#b42318!important;line-height:1.5}.bp-field-error input,.bp-field-error select,.bp-field-error textarea{border-color:#b42318!important;background:var(--paper,#fff)!important}.bp-field-error{color:#b42318}@media(max-width:700px){.bp-missing-summary ul{grid-template-columns:1fr}}
 .business-projects [hidden]{display:none!important}.bp-fieldset details>label{display:grid;gap:6px;max-width:460px}.bp-narratives{margin-top:16px}.bp-flow{margin-top:20px}
 .bp-original-list{display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:14px}.bp-original-list b{overflow-wrap:anywhere}.bp-original-list .button{margin-top:auto;white-space:normal}
 .bp-required-guide{padding:18px;border:1px solid var(--line);border-radius:14px;background:var(--emx);margin:18px 0}.bp-required-list{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:14px}.bp-required-item{display:flex;flex-direction:column;gap:8px;border:1px solid var(--line);border-radius:12px;padding:16px;background:var(--paper,#fff)}.bp-required-item h4{margin:0;font-size:15px}.bp-required-item p{margin:0;line-height:1.55;overflow-wrap:anywhere}.bp-required-item button{align-self:flex-start;margin-top:auto;white-space:normal;text-align:left}.bp-required-tag{color:var(--em);font-size:11px;font-weight:700}.bp-fields input[aria-invalid="true"],.bp-fields select[aria-invalid="true"],.bp-schedule input[aria-invalid="true"]{border-color:var(--warn,#a76500);background:var(--warnl)}@media(max-width:700px){.bp-required-list{grid-template-columns:1fr}.bp-required-guide{padding:14px}}

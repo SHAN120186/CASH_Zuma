@@ -1,6 +1,10 @@
 import {test} from 'node:test';
 import assert from 'node:assert/strict';
-import {fileProblem, MAX_REPORT_BYTES, periodProblem, filterProblem, archiveUrl, archiveFileUrl, uploadLabel, createArchiveState, saveArchive} from '../src/reportArchive.js';
+import {fileProblem, MAX_REPORT_BYTES, periodProblem, filterProblem, archiveUrl, archiveFileUrl, uploadLabel, createArchiveState, saveArchive, archiveRequirements} from '../src/reportArchive.js';
+import {compileComponent,mount,settle,text,find,all} from './helpers/mountVue.js';
+const progressComponent=await compileComponent(new URL('../src/OperationProgress.vue',import.meta.url));
+const component=await compileComponent(new URL('../src/ReportArchive.vue',import.meta.url),{'./OperationProgress.vue':progressComponent});
+const company={id:2,name:'Synthetic company'};
 
 const form = {title: 'Бизнес-план', period_start: '2026-01-01', period_end: '2028-12-31'};
 const files = {pdf: {name: 'Отчёт.pdf', size: 12}, xlsx: {name: 'Отчёт.xlsx', size: 15}};
@@ -111,4 +115,76 @@ test('a wrong company response cannot cause a follow-up upload', async () => {
 test('the client never treats uploaded pair as ready without server ready status', async () => {
   const state = createArchiveState({...draft, formats: ['pdf', 'xlsx']});
   await assert.rejects(saveArchive(async () => {throw Error('No call expected');}, state, {companyId: 2, form, files: {}}), /черновик/);
+});
+
+test('named archive requirements cover each blank field, calendar errors and only the files not already saved',()=>{
+  assert.deepEqual(archiveRequirements().map(issue=>issue.label),['Название','Начало периода','Конец периода','Файл PDF','Файл Excel (.xlsx)']);
+  assert.deepEqual(archiveRequirements(form,{xlsx:files.xlsx},['pdf']),[]);
+  assert.deepEqual(archiveRequirements(form,{},['pdf','xlsx']),[]);
+  const invalid=archiveRequirements({...form,period_start:'2026-02-30',period_end:'2026-03-01'},files);
+  assert.deepEqual(invalid.map(issue=>issue.field),['period_start']);
+  const reversed=archiveRequirements({...form,period_end:'2025-01-01'},files);
+  assert.deepEqual(reversed.map(issue=>issue.field),['period_end']);assert.match(reversed[0].message,/раньше/);
+});
+
+test('archive progress counts confirmed metadata, each uploaded file and ready validation and keeps a failed file incomplete',async()=>{
+  const backend=server(),state=createArchiveState(),stages=[],labels=[];
+  backend.loseExcel();
+  await assert.rejects(saveArchive(backend.api,state,{companyId:2,form,files,onStep:label=>labels.push(label),onProgress:value=>stages.push(value)}),/Failed/);
+  assert.deepEqual(stages.map(value=>[value.completed,value.total]),[[0,4],[1,4],[1,4],[2,4],[2,4]]);
+  assert.equal(stages.at(-1).label,'Загружаем Excel…');assert.ok(labels.includes('Загружаем PDF…'));
+  const retry=[];
+  const result=await saveArchive(backend.api,state,{companyId:2,form,files:{xlsx:files.xlsx},onProgress:value=>retry.push(value)});
+  assert.equal(result.status,'ready');
+  assert.deepEqual(retry.map(value=>[value.completed,value.total]),[[0,2],[1,2],[1,2],[2,2]]);
+  assert.equal(retry.at(-1).label,'PDF и Excel готовы');
+});
+
+test('mounted archive load waits at 0% then reports confirmed completion and filters foreign company rows',async t=>{
+  let resolve;
+  const view=mount(component,{company,api:()=>new Promise(done=>{resolve=done;})});t.after(view.unmount);await settle();
+  assert.equal(view.state.listProgress.active,true);assert.match(text(view.container),/0%/);
+  resolve({can_upload:true,items:[{...draft,title:'Local record'},{...draft,id:42,company_id:9,title:'Foreign record'}]});
+  await settle();
+  assert.equal(view.state.listProgress.active,false);assert.match(text(view.container),/100%/);
+  assert.match(text(view.container),/Local record/);assert.doesNotMatch(text(view.container),/Foreign record/);
+});
+
+test('mounted archive form names blank fields inline and retry needs only a missing Excel after a PDF is already saved',async t=>{
+  const record={...draft,can_upload:true,formats:['pdf']},calls=[];
+  const api=async(url,options)=>{
+    if(!options)return{items:[record],can_upload:true};
+    calls.push({url,...options});
+    return{...record,formats:['pdf','xlsx'],status:'ready'};
+  };
+  const view=mount(component,{company,api});t.after(view.unmount);await settle();
+  view.state.open();await settle();
+  const required=find(view.container,node=>node.props?.class==='archive-requirements');
+  assert.equal(all(required,node=>node.tag==='li').length,5);
+  for(const label of ['Название','Начало периода','Конец периода','Файл PDF','Файл Excel (.xlsx)'])assert.match(text(required),new RegExp(label.replace(/[().]/g,'\\$&')));
+  assert.equal(all(view.container,node=>node.tag==='input'&&node.props['aria-invalid']===true).length,3);
+  await view.state.save();assert.equal(calls.length,0);assert.match(view.state.formError,/Название.*Начало периода.*Конец периода.*Файл PDF.*Файл Excel/);
+  view.state.open(record);await settle();
+  assert.deepEqual(view.state.requirements.map(issue=>issue.label),['Файл Excel (.xlsx)']);
+  view.state.choose('xlsx',{target:{files:[files.xlsx],value:'chosen'}});await settle();
+  assert.equal(view.state.requirements.length,0);
+  await view.state.save();await settle();
+  assert.equal(calls.length,1);assert.equal(calls[0].url,archiveFileUrl(record,'xlsx'));
+  assert.equal(view.state.actionProgress.active,false);assert.equal(view.state.actionProgress.completed,2);assert.equal(view.state.actionProgress.total,2);
+  assert.equal(view.state.editor,null);assert.match(text(view.container),/PDF и Excel сохранены/);
+});
+
+test('mounted archive deletion and restore retain scoped versions and finish progress only after checked responses',async t=>{
+  let record={...draft,status:'ready',formats:['pdf','xlsx'],version:0,can_delete:true,can_upload:true};
+  const calls=[];
+  const view=mount(component,{company,api:async(url,options)=>{
+    if(!options)return{items:[record],can_upload:true};
+    calls.push({url,...options});record={...record,status:options.method==='DELETE'?'deleted':'ready',can_restore:options.method==='DELETE',can_delete:options.method!=='DELETE'};return structuredClone(record);
+  }});t.after(view.unmount);await settle();
+  await view.state.changeArchiveState(record);await settle();
+  assert.equal(calls[0].url,'/api/report-archives/41?company_id=2&expected_version=0');
+  assert.equal(calls[0].method,'DELETE');assert.equal(view.state.actionProgress.completed,1);assert.equal(view.state.actionProgress.total,1);
+  await view.state.changeArchiveState(record,true);await settle();
+  assert.equal(calls[1].url,'/api/report-archives/41/restore?company_id=2&expected_version=0');
+  assert.equal(calls[1].method,'POST');assert.equal(view.state.actionProgress.error,'');
 });

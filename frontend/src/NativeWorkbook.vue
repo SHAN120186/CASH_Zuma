@@ -1,11 +1,16 @@
 <script setup>
-import {ref, computed, watch, onUnmounted} from 'vue';
+import {ref, computed, watch, nextTick, onUnmounted} from 'vue';
 import AppIcon from './AppIcon.vue';
+import OperationProgress from './OperationProgress.vue';
+import {createOperationProgress} from './operationProgress.js';
 import {archiveFileUrl} from './reportArchive.js';
 import {assertProject, decimalShift, numericText} from './businessProjects.js';
 const props = defineProps({api:Function, project:Object, company:Object, stage:{type:String,default:'data'}});
 const emit = defineEmits(['updated','generated','working','report','data']);
 const parameters = ref({}), busy = ref(false), error = ref(''), reportStart = ref(''), previousGeneration = ref(null);
+const nativeForm=ref(null), validationAttempted=ref(false), periodAttempted=ref(false);
+const progress=ref({active:false,label:'',completed:0,total:0,error:''});
+const operation=createOperationProgress(value=>{progress.value=value;});
 let active = true;
 const model = computed(() => props.project.native_model);
 const canEdit = computed(() => props.project.company_id === props.company.id && props.project.can_edit && props.project.status !== 'deleted');
@@ -14,7 +19,8 @@ const displayValue = (parameter, value) => value == null ? '' : isPercent(parame
 watch(() => model.value, value => {parameters.value = Object.fromEntries((value?.parameters || []).map(p => [p.key,displayValue(p,value.overrides?.[p.key] ?? p.value)]));}, {immediate:true});
 watch(() => props.project.id+'|'+props.company.id+'|'+props.project.inputs?.start, () => {reportStart.value = props.project.inputs?.start?.slice(0,7)||'';}, {immediate:true});
 watch(busy,value=>emit('working',value));
-onUnmounted(() => {active=false;emit('working',false);});
+watch(()=>props.project.id+'|'+props.company.id,()=>{operation.reset();busy.value=false;error.value='';validationAttempted.value=false;periodAttempted.value=false;});
+onUnmounted(() => {active=false;operation.reset();emit('working',false);});
 const groups = computed(() => {
   const definitions = [
     {id:'financing',title:'1. Финансирование',hint:'Курс, новый кредит и годовая ставка. Ставка также влияет на NPV оригинала.',cells:['B38','D28','AA6']},
@@ -30,6 +36,11 @@ const groups = computed(() => {
   return definitions;
 });
 const locked = computed(() => (model.value?.parameters || []).filter(p=>p.editable===false));
+const missingParameters=computed(()=>(model.value?.parameters||[]).filter(p=>p.editable!==false&&!numericText(parameters.value[p.key])).map(p=>({field:p.key,label:p.label})));
+const missingFields=computed(()=>[...missingParameters.value,...(!reportStart.value?[{field:'period',label:'Первый месяц периода в архиве'}]:[])]);
+const fieldInvalid=field=>field==='period'?periodAttempted.value&&!reportStart.value:validationAttempted.value&&missingParameters.value.some(item=>item.field===field);
+const missingId=field=>'native-missing-'+encodeURIComponent(field);
+async function goToField(field){emit(field==='period'?'report':'data');await nextTick();if(typeof nativeForm.value?.querySelectorAll!=='function')return;const target=Array.from(nativeForm.value.querySelectorAll('[data-native-field]')).find(node=>node.getAttribute('data-native-field')===field);if(!target)return;let container=target.parentElement;while(container){if(container.tagName==='DETAILS')container.open=true;container=container.parentElement;}target.focus?.({preventScroll:true});target.scrollIntoView?.({behavior:'smooth',block:'center'});}
 const generation = computed(() => (props.project.generations||[]).find(g=>g.native&&g.id===props.project.current_generation_id)
   || (previousGeneration.value?.projectId===props.project.id ? (props.project.generations||[]).find(g=>g.native&&g.id===previousGeneration.value.id) : null)
   || (props.project.current_generation_id==null ? (props.project.generations||[]).filter(g=>g.native).slice().sort((a,b)=>b.id-a.id)[0] : null));
@@ -70,38 +81,49 @@ async function preview(c,values) {
 }
 async function calculate() {
   if(busy.value||!canEdit.value)return;
+  validationAttempted.value=true;
+  if(missingParameters.value.length){error.value='Заполните поля: '+missingParameters.value.map(item=>item.label).join(', ')+'. Пустое поле не означает ноль.';await goToField(missingParameters.value[0].field);return;}
   const c=context();busy.value=true;error.value='';
-  try {if(generation.value)previousGeneration.value={projectId:c.id,id:generation.value.id};await preview(c,overrides());}
-  catch(e){if(active&&e.name!=='AbortError'&&props.project.id===c.id&&props.company.id===c.companyId)error.value=e.message;}
-  finally{if(active)busy.value=false;}
+  const ticket=operation.begin('Пересчитываем исходные формулы…',1);
+  try {if(generation.value)previousGeneration.value={projectId:c.id,id:generation.value.id};const checked=await preview(c,overrides());if(checked.native_model?.preview?.blocked)operation.fail(ticket,'Проверка завершена: исправьте ошибки исходных формул.');else operation.complete(ticket,'Исходные формулы проверены');}
+  catch(e){if(active&&e.name!=='AbortError'&&props.project.id===c.id&&props.company.id===c.companyId){error.value=e.message;operation.fail(ticket,e.message);}}
+  finally{if(active&&props.project.id===c.id&&props.company.id===c.companyId)busy.value=false;}
 }
 async function generate() {
-  if(busy.value||!canEdit.value||!reportStart.value)return;
+  if(busy.value||!canEdit.value)return;
+  validationAttempted.value=true;periodAttempted.value=true;
+  if(missingFields.value.length){error.value='Заполните поля: '+missingFields.value.map(item=>item.label).join(', ')+'. Пустое поле не означает ноль.';await goToField(missingFields.value[0].field);return;}
   const c=context(),start=reportStart.value+'-01';busy.value=true;error.value='';
+  const ticket=operation.begin('Пересчитываем оригинал и проверяем формулы…',2);
   try {
     if(generation.value)previousGeneration.value={projectId:c.id,id:generation.value.id};
     const values=overrides(),checked=await preview(c,values);
+    operation.advance(ticket,1,'Формируем бизнес-план PDF и Excel…');
     if(!checked.native_model?.preview)throw Error('Сервер не вернул проверку модели. Повторите подготовку отчёта.');
-    if(checked.native_model.preview.blocked){error.value='В оригинале найдены ошибки, влияющие на финансовый результат. Исправьте указанные формулы перед подготовкой отчёта.';return;}
+    if(checked.native_model.preview.blocked){error.value='В оригинале найдены ошибки, влияющие на финансовый результат. Исправьте указанные формулы перед подготовкой отчёта.';operation.fail(ticket,error.value);return;}
     c.check();
     const updated=await props.api(`/api/business-projects/${c.id}/native/generate?company_id=${c.companyId}`,options({revision:checked.revision,start,overrides:values}));
-    c.check();assertProject(updated,c.companyId,c.id);emit('updated',updated);emit('generated');
-  } catch(e){if(active&&e.name!=='AbortError'&&props.project.id===c.id&&props.company.id===c.companyId)error.value=e.message;}
-  finally{if(active)busy.value=false;}
+    c.check();assertProject(updated,c.companyId,c.id);emit('updated',updated);
+    if(updated.status==='ready'){operation.complete(ticket,'Бизнес-план PDF и Excel готовы');emit('generated');}
+    else{error.value='Отчёт пока не готов. Проверьте замечания к исходным данным.';operation.fail(ticket,error.value);}
+  } catch(e){if(active&&e.name!=='AbortError'&&props.project.id===c.id&&props.company.id===c.companyId){error.value=e.message;operation.fail(ticket,e.message);}}
+  finally{if(active&&props.project.id===c.id&&props.company.id===c.companyId)busy.value=false;}
 }
 </script>
 <template>
   <section v-if="model" class="native-workbook" aria-labelledby="native-model-title">
     <h3 id="native-model-title">Расчёт по оригиналу</h3>
     <p class="sub">Полный бизнес-план PDF и Excel сохраняют структуру и методику ваших Word и Excel.</p>
+    <OperationProgress v-if="progress.total" v-bind="progress"/>
+    <section v-if="canEdit&&missingFields.length" class="native-missing-summary" aria-labelledby="native-missing-title"><h4 id="native-missing-title" aria-live="polite">Не заполнены обязательные поля · {{missingFields.length}}</h4><ul><li v-for="item in missingFields" :key="item.field"><button type="button" class="ghost tiny" :disabled="busy" @click="goToField(item.field)">{{item.label}}</button></li></ul><p class="sub">Нажмите название, чтобы перейти к полю. Пустое значение не заменяется нулём.</p></section>
     <p v-if="error" class="error" role="alert">{{error}}</p>
     <p v-if="model.preview?.blocked" class="warning" role="alert">В оригинале найдены ошибки, влияющие на финансовый результат. Отчёт нельзя публиковать до их исправления.</p>
     <ul v-if="model.preview?.blocked" class="native-blockers"><li v-for="(issue,index) in model.preview.issues||[]" :key="index"><b>{{issue.sheet}}!{{issue.cell}}</b> — {{issue.message||issue.error}}</li></ul>
-    <form v-if="canEdit" novalidate @submit.prevent="generate">
-      <details v-for="group in groups" :key="group.id" :hidden="stage==='report'" class="native-group" :data-native-group="group.id" :open="group.id==='financing'"><summary>{{group.title}}</summary><p class="sub">{{group.hint}}</p><div class="native-parameters"><label v-for="parameter in group.parameters||[]" :key="parameter.key">{{parameter.label}} <span v-if="parameter.unit">({{isPercent(parameter)?parameter.cell==='Q19'?'п.п./год':'%':parameter.unit}})</span><input v-model="parameters[parameter.key]" type="text" inputmode="decimal" required :disabled="busy"><small v-if="parameter.cell==='AA6'">Эта же ставка применяется для дисконтирования NPV.</small></label></div></details>
+    <form v-if="canEdit" ref="nativeForm" novalidate @submit.prevent="generate">
+      <details v-for="group in groups" :key="group.id" :hidden="stage==='report'" class="native-group" :data-native-group="group.id" :open="group.id==='financing'"><summary>{{group.title}}</summary><p class="sub">{{group.hint}}</p><div class="native-parameters"><label v-for="parameter in group.parameters||[]" :key="parameter.key" :class="{'native-field-error':fieldInvalid(parameter.key)}">{{parameter.label}} <span v-if="parameter.unit">({{isPercent(parameter)?parameter.cell==='Q19'?'п.п./год':'%':parameter.unit}})</span><input v-model="parameters[parameter.key]" :data-native-field="parameter.key" type="text" inputmode="decimal" required :disabled="busy" :aria-invalid="fieldInvalid(parameter.key)" :aria-describedby="fieldInvalid(parameter.key)?missingId(parameter.key):undefined"><small v-if="fieldInvalid(parameter.key)" :id="missingId(parameter.key)" class="native-field-help">Заполните поле «{{parameter.label}}».</small><small v-if="parameter.cell==='AA6'">Эта же ставка применяется для дисконтирования NPV.</small></label></div></details>
       <button v-if="stage==='data'" type="button" :disabled="busy" @click="emit('report')">Перейти к отчёту</button>
-      <label :hidden="stage!=='report'">Первый месяц периода в архиве<input v-model="reportStart" type="month" min="2000-01" max="2097-12" required :disabled="busy"><small>Выберите период для поиска отчёта. Таблицы сохраняют месяцы 1–36; даты договоров не меняются.</small></label>
-      <div class="native-downloads" :hidden="stage!=='report'"><button :disabled="busy||!reportStart"><AppIcon name="file"/> {{busy?'Проверяем расчёт и готовим отчёт…':'Подготовить бизнес-план и Excel'}}</button><button type="button" class="secondary" :disabled="busy" @click="emit('data')">Вернуться к данным</button></div>
+      <label :hidden="stage!=='report'" :class="{'native-field-error':fieldInvalid('period')}">Первый месяц периода в архиве<input v-model="reportStart" data-native-field="period" type="month" min="2000-01" max="2097-12" required :disabled="busy" :aria-invalid="fieldInvalid('period')" :aria-describedby="fieldInvalid('period')?missingId('period'):undefined"><small v-if="fieldInvalid('period')" :id="missingId('period')" class="native-field-help">Выберите первый месяц периода в архиве.</small><small>Выберите период для поиска отчёта. Таблицы сохраняют месяцы 1–36; даты договоров не меняются.</small></label>
+      <div class="native-downloads" :hidden="stage!=='report'"><button :disabled="busy"><AppIcon name="file"/> {{busy?'Проверяем расчёт и готовим отчёт…':'Подготовить бизнес-план и Excel'}}</button><button type="button" class="secondary" :disabled="busy" @click="emit('data')">Вернуться к данным</button></div>
       <p class="sub" :hidden="stage!=='report'">Сайт пересчитает формулы, проверит результат и сформирует полный бизнес-план.</p>
     </form>
     <div class="native-kpis"><article v-for="item in kpis" :key="item.label"><small>{{item.label}}</small><b>{{model.preview&&!changed?number(item.metric?.calculated,item.metric?.unit):'Ещё не пересчитано'}}</b></article></div>
@@ -121,6 +143,7 @@ async function generate() {
   </section>
 </template>
 <style scoped>
+.native-missing-summary{margin:16px 0;padding:14px 16px;border:1px solid var(--line);border-radius:12px;background:var(--emx)}.native-missing-summary h4{margin:0 0 10px}.native-missing-summary ul{padding-left:20px;margin:0}.native-missing-summary button{white-space:normal;text-align:left}.native-field-error input{border-color:#b42318}.native-field-error,.native-workbook .native-field-help{color:#b42318}.native-field-help{line-height:1.5}
 .native-workbook [hidden]{display:none!important}
 .native-workbook{margin:24px 0;border-top:1px solid var(--line);padding-top:20px}.native-parameters{display:grid;grid-template-columns:repeat(auto-fit,minmax(230px,1fr));gap:14px;margin:18px 0}.native-parameters label,.native-workbook form>label{display:grid;gap:6px}.native-workbook table{width:100%;margin:20px 0}.native-workbook th,.native-workbook td{padding:10px;text-align:left;border-bottom:1px solid var(--line);white-space:normal}.native-workbook details{margin:16px 0}.native-workbook li{margin:12px 0;overflow-wrap:anywhere}.native-workbook small{display:block;color:var(--muted);margin-top:6px}.native-workbook .sub{line-height:1.6}.native-workbook form{margin:18px 0}.native-downloads{display:flex;gap:10px;flex-wrap:wrap;margin:20px 0}.native-group,.native-technical{border:1px solid var(--line);border-radius:12px;padding:14px}.native-workbook summary{cursor:pointer;font-weight:700}.native-kpis{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:12px;margin:18px 0}.native-kpis article{background:var(--emx);border:1px solid var(--line);border-radius:12px;padding:14px}.native-kpis b{display:block;margin-top:8px;font-size:20px;overflow-wrap:anywhere}.native-results{border-top:1px solid var(--line);padding-top:20px;margin-top:20px}@media(max-width:560px){.native-kpis{grid-template-columns:1fr}.native-parameters{grid-template-columns:1fr}}
 </style>

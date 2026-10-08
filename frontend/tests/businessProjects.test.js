@@ -1,14 +1,18 @@
 import {test} from 'node:test';
 import assert from 'node:assert/strict';
+import {reactive} from 'vue';
 import {compileComponent, mount, settle, text, all, find} from './helpers/mountVue.js';
 import {prepareSources, MAX_SOURCE_SIZE, MAX_FOLDER_SIZE, decimalShift, formFromInputs, inputsFromForm, resizeValues, monthLabels,
   createBusinessState, uploadProjectFolder, generateProject, projectUrl, templateUrl, fieldLabel, sourceLocation, headerProblem,
-  folderProjectTitle, projectReview, uploadFailureMessage, fieldGuidance, missingRequiredFields, originalReportFiles, NARRATIVE_FIELDS, createProjectDraft, saveProjectDraft} from '../src/businessProjects.js';
+  folderProjectTitle, projectReview, uploadFailureMessage, fieldGuidance, missingRequiredFields, missingHeaderFields, originalReportFiles, NARRATIVE_FIELDS, createProjectDraft, saveProjectDraft} from '../src/businessProjects.js';
 
 const header = {title: 'Synthetic project', start: '2027-01-01', months: 36, currency: ''};
 const file = (name, size = 12, path = 'Project/' + name, value = 'contents') => ({name, size, webkitRelativePath: path, value});
 const lost = () => new TypeError('Failed to fetch');
 const component = await compileComponent(new URL('../src/BusinessProjects.vue', import.meta.url));
+const progressComponent=await compileComponent(new URL('../src/OperationProgress.vue',import.meta.url));
+const progressView=await compileComponent(new URL('../src/BusinessProjects.vue',import.meta.url),{'./OperationProgress.vue':progressComponent});
+const deferred=()=>{let resolve,reject;const promise=new Promise((done,fail)=>{resolve=done;reject=fail;});return{promise,resolve,reject};};
 const company = {id: 2, name: 'Synthetic company'};
 const button = (root, phrase) => find(root, node => node.tag === 'button' && text(node).includes(phrase));
 const completeInputs = () => ({title: 'Synthetic project', start: '2027-01-01', months: 3, currency: 'USD', tax_rate: '0.15', discount_rate: '0.12',
@@ -51,7 +55,10 @@ test('mounted original template is available before missing financial inputs are
   assert.match(text(view.container), /свои разделы, таблицы, оформление, формулы и исходные суммы/);
   const download = find(view.container, node => node.tag === 'a' && text(node).includes('Скачать исходный Excel'));
   assert.equal(download.props.href, '/api/business-projects/1/sources/3/download?company_id=2');
-  assert.equal(button(view.container, 'Рассчитать бизнес-план').props.disabled, true);
+  assert.equal(button(view.container, 'Рассчитать бизнес-план').props.disabled, false);
+  await view.state.generate();await settle();
+  assert.equal(view.state.validationAttempted,true);
+  assert.ok(view.state.requiredFields.length);
 });
 
 test('folder validation preserves nested paths and explicitly distinguishes system junk from unsupported business files', () => {
@@ -521,4 +528,68 @@ test('current requirements check absence without changing amounts or duplicating
   assert.equal(blank.opening_cash, '');
   assert.equal(blank.no_assets, false);
   assert.equal(blank.no_loans, false);
+});
+
+test('project headers name missing fields and create/save progress advances only on confirmed responses',async t=>{
+  assert.deepEqual(missingHeaderFields({title:'',start:'',months:36,currency:''}).map(item=>item.label),['Название проекта','Начало прогноза','Валюта модели']);
+  assert.deepEqual(missingHeaderFields({title:'A',start:'',months:36,currency:''},'files').map(item=>item.field),['start']);
+  assert.deepEqual(missingHeaderFields({title:'A'},'files',true),[]);
+  const create=deferred(),save=deferred();let sent;
+  const project={id:10,company_id:2,revision:0,title:'Draft',mode:'manual',can_edit:true,inputs:{title:'Draft'},extraction:{},validation:[],generations:[],files:[]};
+  const view=mount(progressView,{company,api:async(url,options)=>{if(!options)return{items:[],can_upload:true};if(options.method==='POST')return create.promise;sent=JSON.parse(options.body).inputs;return save.promise;}});t.after(view.unmount);
+  await settle();view.state.newProject();await settle();assert.match(text(view.container),/Не заполнены поля проекта/);assert.match(text(view.container),/Валюта модели/);
+  view.state.header.title='Draft';const pending=view.state.saveDraft('data');await settle();
+  assert.equal(view.state.progress.completed,0);assert.equal(view.state.progress.total,2);assert.equal(find(view.container,n=>n.props?.role==='progressbar').props['aria-valuenow'],0);
+  create.resolve(project);await settle();assert.equal(view.state.progress.completed,1);assert.equal(find(view.container,n=>n.props?.role==='progressbar').props['aria-valuenow'],50);assert.equal(sent.start,'');assert.equal(sent.currency,'');
+  save.resolve({...project,revision:1,inputs:sent});await pending;await settle();assert.equal(view.state.progress.completed,2);assert.equal(view.state.progress.active,false);assert.equal(view.state.flowStage,'data');
+});
+
+test('missing summaries identify each row and month; attempts expose accessible red helpers while drafts stay saveable',async t=>{
+  const inputs=completeInputs();inputs.products=[{name:'A',unit:'pack',price:'',unit_cost:'0',quantities:['','0','1']},{name:'B',unit:'pack',price:'',unit_cost:'0',quantities:'0'}];
+  let project={id:11,company_id:2,revision:0,title:inputs.title,mode:'manual',can_edit:true,inputs,extraction:{},validation:[],generations:[],files:[]};const calls=[];
+  const view=mount(component,{company,api:async(url,options)=>{calls.push({url,options});if(options){project={...project,revision:project.revision+1,inputs:JSON.parse(options.body).inputs};return project;}return url.includes('/11?')?project:{items:[project],can_upload:true};}});t.after(view.unmount);
+  await settle();await view.state.openProject(project);view.state.flowStage='report';await settle();
+  const summary=find(view.container,n=>n.props?.['aria-labelledby']==='bp-missing-title');assert.equal(summary.props.hidden,undefined);assert.match(text(summary),/Продукция №1/);assert.match(text(summary),/Продукция №2/);assert.match(text(summary),/месяц 1/);
+  const price=()=>find(view.container,n=>n.tag==='label'&&n.props?.['data-bp-field']==='products[0].price');
+  assert.equal(find(price(),n=>n.tag==='input').props['aria-invalid'],false);const previous=calls.length;
+  await view.state.generate();await settle();assert.equal(calls.length,previous);assert.equal(view.state.flowStage,'data');
+  assert.match(price().props.class,/bp-field-error/);const input=find(price(),n=>n.tag==='input');assert.equal(input.props['aria-invalid'],true);const helper=find(price(),n=>n.props?.id===input.props['aria-describedby']);assert.match(text(helper),/Цена/);
+  view.state.form.products[0].price='0';await settle();assert.equal(find(price(),n=>n.tag==='input').props['aria-invalid'],false);
+  await view.state.saveDraft();const saved=calls.find(call=>call.options?.method==='PUT');assert.equal(JSON.parse(saved.options.body).inputs.products[0].quantities[0],'');
+});
+
+test('field navigation opens its data group and focuses the actual input',async t=>{
+  const project={id:12,company_id:2,revision:0,title:'A',mode:'manual',can_edit:true,inputs:completeInputs(),extraction:{},validation:[],generations:[],files:[]};
+  const view=mount(component,{company,api:async url=>url.includes('/12?')?project:{items:[project],can_upload:true}});t.after(view.unmount);await settle();await view.state.openProject(project);await settle();
+  const group={tagName:'DETAILS',open:false,parentElement:null};let focused=false,scrolled=false;
+  const control={focus:()=>{focused=true;}};const target={tagName:'LABEL',parentElement:group,querySelector:tag=>tag==='input'?control:null,scrollIntoView:()=>{scrolled=true;}};
+  view.state.modelForm={querySelector:()=>target};await view.state.goToField('products[0].price');assert.equal(group.open,true);assert.equal(focused,true);assert.equal(scrolled,true);
+});
+
+test('save plus generation shows actual zero/fifty/complete stages and a failed export stays at fifty',async t=>{
+  for(const fail of [false,true]){
+    const save=deferred(),generate=deferred();const project={id:13,company_id:2,revision:0,title:'A',mode:'manual',can_edit:true,inputs:completeInputs(),extraction:{},validation:[],generations:[],files:[]};
+    const view=mount(progressView,{company,api:async(url,options)=>options?(options.method==='PUT'?save.promise:generate.promise):url.includes('/13?')?project:{items:[project],can_upload:true}});t.after(view.unmount);await settle();await view.state.openProject(project);await settle();const pending=view.state.generate();await settle();
+    assert.equal(view.state.progress.completed,0);assert.equal(view.state.progress.total,2);await settle();assert.equal(view.state.progress.completed,0);
+    save.resolve({...project,revision:1});await settle();assert.equal(view.state.progress.completed,1);assert.equal(find(view.container,n=>n.props?.role==='progressbar').props['aria-valuenow'],50);
+    if(fail)generate.reject(Error('Export unavailable'));else generate.resolve({...project,revision:2,status:'ready'});await pending;await settle();
+    assert.equal(view.state.progress.active,false);assert.equal(view.state.progress.completed,fail?1:2);assert.equal(find(view.container,n=>n.props?.role==='progressbar').props['aria-valuenow'],fail?50:100);if(fail)assert.match(view.state.progress.error,/Export unavailable/);
+  }
+});
+
+test('folder progress counts confirmed files and analysis; stale company responses do not advance',async()=>{
+  const sources=prepareSources([file('a.txt'),file('b.txt')]).files;const files=[deferred(),deferred()],analyse=deferred(),events=[];
+  const project={id:14,company_id:2,revision:0,can_edit:true,mode:'files'};const state=createBusinessState(project);let index=0;
+  const pending=uploadProjectFolder(async url=>url.includes('/analyse?')?analyse.promise:files[index++].promise,state,{companyId:2,header,sources,onProgress:value=>events.push(value)});await settle();assert.equal(events.at(-1).completed,0);assert.equal(events.at(-1).total,3);
+  files[0].resolve({...project,revision:1});await settle();assert.equal(events.at(-1).completed,1);files[1].resolve({...project,revision:2});await settle();assert.equal(events.at(-1).completed,2);analyse.resolve({...project,revision:3,status:'needs_data'});await pending;assert.equal(events.at(-1).completed,3);
+  const late=deferred(),staleEvents=[];let current=true;const stale=uploadProjectFolder(async()=>late.promise,createBusinessState(project),{companyId:2,header,sources:sources.slice(0,1),isCurrent:()=>current,onProgress:value=>staleEvents.push(value)});current=false;late.resolve({...project,revision:1});await assert.rejects(stale,{name:'AbortError'});assert.equal(staleEvents.at(-1).completed,0);
+});
+
+test('company switches and unmount invalidate manual operation progress and prevent subsequent generation',async t=>{
+  for(const unmount of [false,true]){
+    const save=deferred(),activeCompany=reactive({...company}),calls=[];const project={id:15,company_id:2,revision:0,title:'A',mode:'manual',can_edit:true,inputs:completeInputs(),extraction:{},validation:[],generations:[],files:[]};
+    const view=mount(progressView,{company:activeCompany,api:async(url,options)=>{calls.push({url,options});if(options)return save.promise;return url.includes('/15?')?project:{items:[],can_upload:true};}});if(!unmount)t.after(view.unmount);
+    await settle();await view.state.openProject(project);await settle();const pending=view.state.generate();await settle();if(unmount)view.unmount();else activeCompany.id=9;await settle();save.resolve({...project,revision:1});await pending;await settle();
+    assert.equal(calls.filter(call=>call.url.includes('/generate?')).length,0);assert.notEqual(view.state.progress.completed,2);assert.equal(view.state.error,'');
+  }
 });

@@ -65,24 +65,42 @@ export function createArchiveState(record = null) {
   return {record, requestKey: requestKey(), fields: null, createUnknown: false};
 }
 
-export async function saveArchive(api, state, {companyId, form, files, isCurrent = () => true, onRecord, onStep} = {}) {
+export function archiveRequirements(form = {}, files = {}, savedFormats = []) {
+  const issues = [], title = String(form.title ?? '').trim();
+  if (!title) issues.push({field:'title',label:'Название',message:'Укажите название отчёта.'});
+  else if (title.length > 160) issues.push({field:'title',label:'Название',message:'Название — до 160 символов.'});
+  else if (/\p{C}/u.test(title)) issues.push({field:'title',label:'Название',message:'Название содержит недопустимые символы.'});
+  for (const [field,label] of [['period_start','Начало периода'],['period_end','Конец периода']]) {
+    if (!form[field]) issues.push({field,label,message:'Укажите дату.'});
+    else if (!validDate(form[field])) issues.push({field,label,message:'Укажите действительную дату от 2000 до 2100 года.'});
+  }
+  if (validDate(form.period_start) && validDate(form.period_end)) {
+    const problem = periodProblem(form.period_start,form.period_end);
+    if (problem) issues.push({field:'period_end',label:'Конец периода',message:problem});
+  }
+  for (const format of FORMATS.filter(value=>!savedFormats.includes(value))) {
+    const problem = fileProblem(files[format],format);
+    if (problem) issues.push({field:format,label:format==='pdf'?'Файл PDF':'Файл Excel (.xlsx)',message:problem});
+  }
+  return issues;
+}
+
+export async function saveArchive(api, state, {companyId, form, files, isCurrent = () => true, onRecord, onStep, onProgress} = {}) {
   const check = () => { if (!isCurrent()) throw new DOMException('Раздел или компания изменены', 'AbortError'); };
   check();
-  const problem = periodProblem(form.period_start, form.period_end);
-  if (problem) throw Error(problem);
-  const title = String(form.title || '').trim();
-  if (!title || title.length > 160) throw Error('Укажите название отчёта: от 1 до 160 символов.');
-  if (/\p{C}/u.test(title)) throw Error('Название содержит недопустимые символы.');
   if (state.record && state.record.company_id !== companyId) throw Error('Отчёт относится к другой компании.');
   const missing = FORMATS.filter(format => !state.record?.formats?.includes(format));
-  for (const format of missing) {
-    const error = fileProblem(files[format], format);
-    if (error) throw Error(error);
-  }
+  const issues = archiveRequirements(form,files,state.record?.formats || []);
+  if (issues.length) throw Error(issues.map(issue=>issue.label+': '+issue.message).join(' '));
+  const title = String(form.title ?? '').trim();
+  const total = (state.record ? 0 : 1) + missing.length + 1;
+  let completed = 0;
+  const stage = label => {onStep?.(label);onProgress?.({completed,total,label});};
+  const confirmed = label => {completed++;stage(label);};
   if (!state.record) {
     state.fields ||= {company_id: companyId, title, period_start: form.period_start, period_end: form.period_end, request_key: state.requestKey};
     if (state.fields.company_id !== companyId) throw Error('Форма относится к другой компании. Откройте новую загрузку.');
-    onStep?.('Сохраняем версию отчёта…');
+    stage('Сохраняем версию отчёта…');
     check();
     let record;
     try {
@@ -99,11 +117,12 @@ export async function saveArchive(api, state, {companyId, form, files, isCurrent
     state.record = record;
     state.createUnknown = false;
     onRecord?.(record);
+    confirmed('Версия отчёта сохранена');
   }
   for (const format of FORMATS) {
     check();
     if (state.record.formats?.includes(format)) continue;
-    onStep?.(`Загружаем ${format === 'pdf' ? 'PDF' : 'Excel'}…`);
+    stage(`Загружаем ${format === 'pdf' ? 'PDF' : 'Excel'}…`);
     const record = await api(archiveFileUrl(state.record, format), {
       method: 'PUT', headers: {'Content-Type': TYPES[format], 'X-Filename': encodeURIComponent(files[format].name)}, body: files[format],
     });
@@ -111,9 +130,12 @@ export async function saveArchive(api, state, {companyId, form, files, isCurrent
     if (record.company_id !== companyId || record.id !== state.record.id) throw Error('Сервер вернул другую версию отчёта. Обновите страницу.');
     state.record = record;
     onRecord?.(record);
+    confirmed(`${format === 'pdf' ? 'PDF' : 'Excel'} сохранён`);
   }
+  stage('Проверяем готовность версии…');
   if (state.record.status !== 'ready' || !FORMATS.every(format => state.record.formats?.includes(format))) {
     throw Error('Версия сохранена как черновик. Обновите список и завершите загрузку недостающих файлов.');
   }
+  confirmed('PDF и Excel готовы');
   return state.record;
 }

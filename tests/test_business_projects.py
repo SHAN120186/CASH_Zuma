@@ -260,6 +260,28 @@ class BusinessProjectTests(unittest.TestCase):
         self.assertEqual(not_ready['status'], 'needs_data')
         self.assertEqual(not_ready['generations'], [])
 
+    def test_full_manual_narrative_draft_fits_project_body_limit(self):
+        from app.business_model import MAX_NARRATIVE_LENGTH, NARRATIVE_FIELDS
+        project, _ = self.create('manual')
+        narrative = ('Synthetic project narrative. ' * 1000)[:MAX_NARRATIVE_LENGTH]
+        inputs = {**model(), **{field: narrative for field in NARRATIVE_FIELDS}}
+        encoded = json.dumps({'revision': project['revision'], 'inputs': inputs}).encode()
+        self.assertGreater(len(encoded), 65536)
+        self.assertLess(len(encoded), 1024 * 1024)
+        saved = self.save_draft(project, inputs)
+        self.assertEqual(saved.status_code, 200, saved.text)
+        self.assertEqual(saved.json()['inputs'], inputs)
+        self.assertEqual(saved.json()['revision'], project['revision'] + 1)
+        rejected = self.client.put(f"/api/business-projects/{project['id']}/inputs",
+            params={'company_id': self.cid}, headers={**self.headers, 'Content-Type': 'application/json'},
+            content=b' ' * (1024 * 1024 + 1))
+        self.assertEqual(rejected.status_code, 413)
+        self.assertEqual(rejected.json(), {'detail': 'Неверный размер запроса.'})
+        current = self.client.get(f"/api/business-projects/{project['id']}",
+            params={'company_id': self.cid}, headers=self.headers).json()
+        self.assertEqual(current['revision'], saved.json()['revision'])
+        self.assertEqual(current['inputs'], inputs)
+
     def test_draft_edit_invalidates_current_generation_and_retains_immutable_reports(self):
         project, _ = self.create('manual')
         ready = self.generate(project).json()

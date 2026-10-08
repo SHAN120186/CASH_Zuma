@@ -1,16 +1,21 @@
 <script setup>
-import {ref,computed,onMounted,onUnmounted,nextTick,watch} from 'vue';
+import {ref,shallowRef,computed,onMounted,onUnmounted,nextTick,watch} from 'vue';
 import CashFlowReport from './CashFlowReport.vue';
 import ReportArchive from './ReportArchive.vue';
 import AuditHistory from './AuditHistory.vue';
 import PeriodFilter from './PeriodFilter.vue';
 import AppIcon from './AppIcon.vue';
+import OperationProgress from './OperationProgress.vue';
+import {createOperationProgress} from './operationProgress.js';
+import {invalidFormFields,focusInvalidField} from './formFeedback.js';
+import {isAppFileLink,fetchDownload} from './fileDownload.js';
 import CompanyCard from './CompanyCard.vue';
 import OverviewPage from './overview/OverviewPage.vue';
 import AdminCenter from './admin/AdminCenter.vue';
 import {loadRecentLogins,rememberLogin,matchingLogins,offerPasswordSave} from './loginPreferences.js';
 import {canPayRequest as canPayFor} from './overview/rights.js';
 import {reportDateForYear,validReportDate} from './cashflow/planView.js';
+import {toCents,formatAmount,amountTitle} from './overview/format.js';
 import RequestEditor from './requests/RequestEditor.vue';
 import RequestCard from './requests/RequestCard.vue';
 import PolicyPage from './requests/PolicyPage.vue';
@@ -33,6 +38,45 @@ const page=ref(location.hash.slice(1)||'home'),currency=ref('UZS'),days=ref(30),
 const companyId=ref(null),companyReady=ref(false),reportEditing=ref(false),reportScenario=ref('A');
 const company=computed(()=>boot.value.companies.find(c=>c.id===companyId.value));
 let companyEpoch=0;const pendingCalls=new Set();
+const globalProgress=ref({active:false,label:'',completed:0,total:0,error:''});
+let progressTimer;
+const requestProgress=createOperationProgress(value=>{
+ clearTimeout(progressTimer);globalProgress.value=value;
+ if(!value.active&&value.completed>0&&!value.error)progressTimer=setTimeout(()=>requestProgress.reset(),1800);
+});
+const validationFields=shallowRef([]);let feedbackForm=null;
+function clearFieldFeedback(){for(const {control} of validationFields.value){control.classList?.remove('form-field-invalid');control.removeAttribute?.('aria-invalid');control.removeAttribute?.('aria-errormessage')}validationFields.value=[];feedbackForm=null}
+function updateFieldFeedback(form){
+ const fields=invalidFormFields(form);clearFieldFeedback();feedbackForm=fields.length?form:null;validationFields.value=fields;
+ for(const {control} of fields){control.classList?.add('form-field-invalid');control.setAttribute?.('aria-invalid','true');control.setAttribute?.('aria-errormessage','form-validation-feedback')}
+}
+function showInvalidFields(event){if(!event.target?.form)return;event.preventDefault();updateFieldFeedback(event.target.form)}
+function updateInvalidFields(event){if(feedbackForm===event.target?.form)updateFieldFeedback(feedbackForm)}
+function cancelPending(){companyEpoch++;for(const call of pendingCalls)call.abort();pendingCalls.clear();requestProgress.reset();clearFieldFeedback()}
+const localProgressUrl=url=>/^\/api\/(?:business-projects|report-archives)(?:\/|\?|$)/.test(url);
+function requestLabel(url,method='GET'){
+ if(url==='/api/login')return 'Входим в систему…';
+ if(/\/import|\/plan-import/.test(url))return /\/commit/.test(url)?'Сохраняем импорт…':'Читаем и проверяем файл…';
+ if(method==='DELETE')return 'Удаляем запись…';
+ if(method!=='GET')return 'Сохраняем изменения…';
+ return 'Загружаем данные…';
+}
+async function downloadFile(event){
+ if(event.defaultPrevented||event.button!==0||event.ctrlKey||event.metaKey||event.shiftKey||event.altKey)return;
+ const link=event.target?.closest?.('a[href]');if(!link||link.hasAttribute('data-browser-download')||!isAppFileLink(link.href,location.origin))return;
+ event.preventDefault();
+ const epoch=companyEpoch,controller=new AbortController(),ticket=requestProgress.begin('Запрашиваем файл…',3);pendingCalls.add(controller);
+ try{
+  const result=await fetchDownload(link.href,{signal:controller.signal,headers:companyId.value?{'X-Company-ID':String(companyId.value)}:{},
+   onResponse:()=>requestProgress.advance(ticket,1,'Получаем файл…'),onBody:()=>requestProgress.advance(ticket,1,'Передаём файл браузеру…')});
+  if(epoch!==companyEpoch)throw new DOMException('Компания изменена','AbortError');
+  const blobUrl=URL.createObjectURL(result.blob),anchor=document.createElement('a');anchor.href=blobUrl;anchor.download=result.filename;anchor.dataset.browserDownload='true';anchor.hidden=true;document.body.append(anchor);anchor.click();anchor.remove();setTimeout(()=>URL.revokeObjectURL(blobUrl),60000);
+  requestProgress.complete(ticket,'Файл передан браузеру');
+ }catch(e){if(epoch===companyEpoch)requestProgress.fail(ticket,e.name==='AbortError'?'Скачивание отменено':e)}
+ finally{pendingCalls.delete(controller)}
+}
+onMounted(()=>{document.addEventListener('invalid',showInvalidFields,true);document.addEventListener('input',updateInvalidFields,true);document.addEventListener('change',updateInvalidFields,true);document.addEventListener('click',downloadFile)});
+onUnmounted(()=>{document.removeEventListener('invalid',showInvalidFields,true);document.removeEventListener('input',updateInvalidFields,true);document.removeEventListener('change',updateInvalidFields,true);document.removeEventListener('click',downloadFile);clearTimeout(progressTimer);cancelPending()});
 const companyUrl=url=>url+(url.includes('?')?'&':'?')+'company_id='+companyId.value;
 const reportAsOf=ref(new Date().toLocaleDateString('en-CA',{timeZone:'Asia/Tashkent'}));
 const boot=ref({accounts:[],companies:[],categories:[],roles:{}}),rows=ref([]),dash=ref(null),report=ref(null),preview=ref(null),search=ref(''),modal=ref(null),form=ref({}),formError=ref(''),saving=ref(false),documents=ref(null);
@@ -43,6 +87,8 @@ const has=p=>p==='requests-view'?['request','view','pay_bank','pay_cash','reques
 watch(()=>[company.value?.name,title.value],([name,section])=>{document.title=name?`${name} · ${section}`:'Cash Flow · Выбор компании'},{immediate:true});
 const status={pending:'На согласовании',approved:'Утверждена',paid:'Оплачена',draft:'Черновик',rejected:'Отклонена',returned:'На доработке',cancelled:'Закрыта без оплаты',expected:'Ожидается',received:'Получено'};
 const money=v=>{if(v==null)return '—';let s=String(v);if(currency.value==='UZS')s=s.replace(/\.00$/,'');const [a,b]=s.split('.');return a.replace(/\B(?=(\d{3})+(?!\d))/g,' ')+(b!==undefined?'.'+b:'')};
+// Headline balances: "5,32 млрд"; the exact figure goes into the tooltip (moneyTitle).
+const moneyShort=(v,cur=currency.value)=>formatAmount(toCents(v),cur), moneyTitle=(v,cur=currency.value)=>amountTitle(toCents(v),cur);
 const costGroups={fixed:'Постоянные затраты',variable:'Переменные затраты',other:'Прочие затраты'};
 const auditRefresh=ref(0),homeRefresh=ref(0),reportArchiveRefresh=ref(0);
 const menuOpen=ref(false),helpOpen=ref(false);
@@ -112,6 +158,7 @@ const forecastRows=computed(()=>(dash.value?.forecast||[]).map(d=>scenario.value
 // Оплату проводит плательщик канала (банк — pay_bank, касса — pay_cash), не участвовавший в заявке; сервер проверяет то же.
 const canPayRequest=r=>(r.actions||[]).includes('pay')&&canPayFor(r,user.value?.id,has);
 const editor=ref(null),cardId=ref(null);
+watch(()=>[page.value,modal.value,editor.value,documents.value,companyId.value,!!user.value],clearFieldFeedback);
 // Выход, истёкшая сессия или смена компании закрывают форму и карточку заявки.
 watch(()=>!!user.value&&companyReady.value,on=>{if(!on){editor.value=null;cardId.value=null}});
 function openRequest(r){cardId.value=r.id}
@@ -120,7 +167,18 @@ function editorClosed(){const back=editor.value?.request;editor.value=null;if(ba
 function editorOpenCard(id){editor.value=null;cardId.value=id;load()}
 function cardEdit(r){cardId.value=null;editor.value={request:r}}
 function cardPay(r){cardId.value=null;transaction(r)}
-async function api(url,opts={}){const epoch=companyEpoch,controller=new AbortController();pendingCalls.add(controller);try{const r=await fetch(url,{credentials:'same-origin',...opts,signal:controller.signal,headers:{'X-CSRF-Token':csrf.value,...(companyId.value?{'X-Company-ID':String(companyId.value)}:{}),...opts.headers}});let data;try{data=await r.json()}catch{throw Object.assign(Error('Некорректный ответ сервера'),{status:r.status})}if(epoch!==companyEpoch)throw new DOMException('Компания изменена','AbortError');if(!r.ok){if(r.status===401)user.value=null;throw Object.assign(Error(Array.isArray(data.detail)?data.detail.map(x=>`${x.loc?.slice(1).join('.')}: ${x.msg}`).join('; '):data.detail||'Ошибка запроса'),{status:r.status})}return data}finally{pendingCalls.delete(controller)}}
+async function api(url,opts={}){
+ const epoch=companyEpoch,controller=new AbortController();pendingCalls.add(controller);
+ const ticket=localProgressUrl(url)?null:requestProgress.begin(requestLabel(url,opts.method||'GET'));
+ try{
+  const r=await fetch(url,{credentials:'same-origin',...opts,signal:controller.signal,headers:{'X-CSRF-Token':csrf.value,...(companyId.value?{'X-Company-ID':String(companyId.value)}:{}),...opts.headers}});
+  let data;try{data=await r.json()}catch{throw Object.assign(Error('Некорректный ответ сервера'),{status:r.status})}
+  if(epoch!==companyEpoch)throw new DOMException('Компания изменена','AbortError');
+  if(!r.ok){if(r.status===401)user.value=null;throw Object.assign(Error(Array.isArray(data.detail)?data.detail.map(x=>`${x.loc?.slice(1).join('.')}: ${x.msg}`).join('; '):data.detail||'Ошибка запроса'),{status:r.status})}
+  if(ticket)requestProgress.complete(ticket,'Действие завершено');return data;
+ }catch(e){if(ticket&&epoch===companyEpoch){if(url==='/api/me'&&e.status===401)requestProgress.reset();else requestProgress.fail(ticket,e.name==='AbortError'?'Действие отменено':e)}throw e}
+ finally{pendingCalls.delete(controller)}
+}
 const post=(url,data={})=>api(url,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(data)});
 function flash(text){notice.value=text;setTimeout(()=>notice.value='',5500)}
 async function bootstrap(){boot.value=await api('/api/bootstrap');user.value=boot.value.user;csrf.value=boot.value.csrf;month.value=month.value.match(/^\d{4}-\d{2}$/)?month.value:boot.value.today.slice(0,7);if(!validReportDate(reportAsOf.value,year.value,boot.value.today)){const cutOff=reportDateForYear(year.value,boot.value.today);if(!cutOff)year.value=Number(boot.value.today.slice(0,4));reportAsOf.value=cutOff||boot.value.today}}
@@ -129,14 +187,14 @@ async function changeReportDate(value){if(!validReportDate(value,year.value,boot
 async function enter(){companyId.value=null;companyReady.value=false;if(user.value?.must_change_password)return;const data=await api('/api/companies');boot.value={accounts:[],categories:[],...data};user.value=data.user;csrf.value=data.csrf;}
 async function selectCompany(id){
  if(saving.value||modal.value||documents.value||editor.value||cardId.value){flash('Закройте текущую форму перед сменой компании.');return}
- companyEpoch++;for(const call of pendingCalls)call.abort();pendingCalls.clear();clearTimeout(searchTimer);
+ cancelPending();clearTimeout(searchTimer);
  companyReady.value=false;companyId.value=Number(id);busy.value=true;error.value='';notice.value='';
  rows.value=[];dash.value=null;report.value=null;preview.value=null;receipts.value=[];expandedRequest.value=null;
  search.value='';dateFrom.value='';dateTo.value='';requestStatus.value='';listPage.value=1;listTotal.value=0;showArchive.value=false;receiptsOpen.value=false;planMappings.value={};helpOpen.value=false;menuOpen.value=false;
  boot.value={...boot.value,accounts:[],categories:[],counterparties:[]};
  try{await bootstrap();companyReady.value=true;if(!nav.value.some(n=>n[0]===page.value))page.value=nav.value[0][0];await load()}catch(e){error.value=e.message}finally{busy.value=false}
 }
-function chooseCompany(){if(busy.value)return;if(modal.value||documents.value||editor.value||cardId.value||saving.value||reportEditing.value){flash('Закройте текущую форму перед сменой компании.');return}busy.value=true;companyReady.value=false;companyId.value=null;enter().catch(e=>{if(e.name!=='AbortError')error.value=e.message}).finally(()=>busy.value=false)}
+function chooseCompany(){if(busy.value)return;if(modal.value||documents.value||editor.value||cardId.value||saving.value||reportEditing.value){flash('Закройте текущую форму перед сменой компании.');return}cancelPending();busy.value=true;companyReady.value=false;companyId.value=null;enter().catch(e=>{if(e.name!=='AbortError')error.value=e.message}).finally(()=>busy.value=false)}
 async function chooseRecentLogin(username){login.value.username=username;login.value.password='';error.value='';await nextTick();passwordInput.value?.focus()}
 async function signIn(event){
  if(busy.value)return;
@@ -154,7 +212,7 @@ async function signIn(event){
   await enter();
  }catch(e){error.value=e.message}finally{busy.value=false}
 }
-async function logout(){try{await post('/api/logout')}finally{user.value=null;csrf.value=''}}
+async function logout(){cancelPending();busy.value=true;try{await post('/api/logout')}finally{cancelPending();user.value=null;csrf.value='';companyReady.value=false;companyId.value=null;busy.value=false}}
 async function goWith(name,opts={}){menuOpen.value=false;helpOpen.value=false;reportEditing.value=false;page.value=name;location.hash=name;search.value='';dateFrom.value=opts.from||'';dateTo.value=opts.to||'';requestStatus.value=opts.status||'';listPage.value=1;expandedRequest.value=null;receiptsOpen.value=false;rows.value=[];await load()}
 const canDecide=r=>canDecideRequest(r);
 async function go(name){menuOpen.value=false;helpOpen.value=false;reportEditing.value=false;page.value=name;location.hash=name;search.value='';dateFrom.value='';dateTo.value='';requestStatus.value='';listPage.value=1;expandedRequest.value=null;receiptsOpen.value=false;rows.value=[];await load()}
@@ -229,6 +287,8 @@ onMounted(async()=>{try{const r=await api('/api/me');user.value=r.user;csrf.valu
 </script>
 
 <template>
+ <aside v-if="globalProgress.active||globalProgress.completed||globalProgress.error" class="global-operation" aria-label="Ход выполнения действия"><OperationProgress v-bind="globalProgress"/><button v-if="!globalProgress.active" type="button" class="ghost tiny" aria-label="Скрыть индикатор выполнения" @click="requestProgress.reset()">Закрыть</button></aside>
+ <aside v-if="validationFields.length" id="form-validation-feedback" class="global-form-feedback" role="alert" aria-labelledby="form-validation-title"><strong id="form-validation-title">Заполните или исправьте поля</strong><p>Нажмите название, чтобы перейти к полю.</p><ul><li v-for="(field,index) in validationFields" :key="index"><button type="button" class="ghost" @click="focusInvalidField(field.control)">{{field.label}}</button><small>{{field.message}}</small></li></ul><button type="button" class="secondary tiny" @click="clearFieldFeedback">Закрыть подсказку</button></aside>
  <div v-if="availableRelease" class="release-notice" role="status"><span>Доступна версия {{availableRelease.version}}. Сохраните текущие изменения перед обновлением.</span><button class="secondary tiny" @click="refreshVersion">Обновить страницу</button></div>
  <div v-if="showRelease" class="modal-backdrop" @click.self="showRelease=false" @keydown.esc="showRelease=false"><section class="modal release-dialog" role="dialog" aria-modal="true" aria-labelledby="release-title" v-modal-focus><div class="section-head"><h2 id="release-title">Что нового · {{release.version}}</h2><button class="ghost icon-btn" aria-label="Закрыть список изменений" @click="showRelease=false"><AppIcon name="x"/></button></div><p class="sub">{{release.date}}</p><ul><li v-for="change in release.changes" :key="change">{{change}}</li></ul></section></div>
 
@@ -321,7 +381,7 @@ onMounted(async()=>{try{const r=await api('/api/me');user.value=r.user;csrf.valu
      <div class="tb"><div class="seg" role="group" aria-label="Показать счета"><button :class="{on:!showArchive}" @click="showArchive=false;load()">Активные</button><button :class="{on:showArchive}" @click="showArchive=true;load()">Архив</button></div><span class="sub"><b>{{visibleRows.length}}</b> · {{currency}}</span><div class="grow"><button v-if="has('write')" @click="account()"><AppIcon name="plus"/> Добавить счёт</button></div></div>
      <div class="acc-grid"><section v-for="a in visibleRows" :key="a.id" class="card ac-card" :class="{arch:a.archived}">
       <div class="ac-top"><span class="ic"><AppIcon :name="a.kind==='bank'?'accounts':'cash'"/></span><div><b>{{a.name}}</b><small>{{a.kind==='bank'?'Банковский счёт':'Касса'}}{{a.allow_overdraft?' · овердрафт разрешён':''}}</small></div><span class="pill" :class="a.archived?'warn':'fact'">{{a.archived?'Архив · ':''}}{{a.currency}}</span></div>
-      <div class="ac-l">Текущий остаток</div><div class="ac-v num">{{money(a.balance)}}<small>{{a.currency}}</small></div>
+      <div class="ac-l">Текущий остаток</div><div class="ac-v num" :title="moneyTitle(a.balance,a.currency)">{{moneyShort(a.balance,a.currency)}}<small>{{a.currency}}</small></div><div class="ac-x num">{{money(a.balance)}} {{a.currency}}</div>
       <div class="ac-o"><span>Начальный остаток на {{a.opening_date}}</span><b class="num">{{money(a.opening)}} {{a.currency}}</b></div>
       <div class="ac-b"><button v-if="has('write')&&!a.archived" class="secondary tiny" @click="account(a)"><AppIcon name="edit"/> Изменить</button><button v-if="has('users')&&has('write')" class="secondary tiny" @click="archiveAccount(a)"><AppIcon :name="a.archived?'restore':'archive'"/> {{a.archived?'Восстановить':'В архив'}}</button></div>
      </section></div>
@@ -352,7 +412,7 @@ onMounted(async()=>{try{const r=await api('/api/me');user.value=r.user;csrf.valu
       <div class="actions"><button class="secondary tiny" @click="openRequest(r)">Открыть заявку</button><button v-if="canPayRequest(r)" class="tiny" @click="transaction(r)">Факт оплаты</button></div>
      </section></div>
      <div v-if="listTotal>4" class="table-card rsp-wrap"><table class="rsp"><thead><tr><th>Заявка</th><th class="num">Сумма</th><th>Оплатить до</th><th>Этапы</th><th>Статус</th><th></th></tr></thead><tbody><template v-for="r in visibleRows" :key="r.id">
-      <tr><td data-l="Заявка"><b>{{r.number}}</b> · {{r.counterparty}}<small>{{r.account}}</small></td><td class="num" data-l="Сумма"><b>{{money(r.amount)}}</b> {{r.currency}}</td><td data-l="Оплатить до">{{r.date}}</td><td data-l="Этапы"><span class="mini"><template v-for="(s,i) in trkSteps(r)" :key="i"><i v-if="i"></i><u :class="s.c" :title="s.l">{{['З','П','Ф','Д','О'][i]}}</u></template></span></td><td data-l="Статус"><span class="pill" :class="statusClass(r)">{{stageLabel(r)}}</span></td><td data-l=""><div class="actions"><button class="secondary tiny" @click="openRequest(r)">Открыть</button><button v-if="canPayRequest(r)" class="tiny" @click="transaction(r)">Факт оплаты</button></div></td></tr>
+      <tr><td data-l="Заявка"><b class="nowrap">{{r.number}}</b>&nbsp;· {{r.counterparty}}<small>{{r.account}}</small></td><td class="num" data-l="Сумма"><b>{{money(r.amount)}}</b> {{r.currency}}</td><td data-l="Оплатить до">{{r.date}}</td><td data-l="Этапы"><span class="mini"><template v-for="(s,i) in trkSteps(r)" :key="i"><i v-if="i"></i><u :class="s.c" :title="s.l">{{['З','П','Ф','Д','О'][i]}}</u></template></span></td><td data-l="Статус"><span class="pill" :class="statusClass(r)">{{stageLabel(r)}}</span></td><td data-l=""><div class="actions"><button class="secondary tiny" @click="openRequest(r)">Открыть</button><button v-if="canPayRequest(r)" class="tiny" @click="transaction(r)">Факт оплаты</button></div></td></tr>
      </template></tbody></table></div>
      <section v-if="!visibleRows.length&&!busy" class="empty card"><b>Заявок не найдено</b><br>Измените период, статус или поисковый запрос.</section>
     </template>
@@ -362,10 +422,10 @@ onMounted(async()=>{try{const r=await api('/api/me');user.value=r.user;csrf.valu
     <template v-if="page==='calendar'&&dash">
      <div class="tb"><select v-model="scenario" aria-label="Сценарий"><option value="approved">Сценарий: утверждённые оплаты</option><option value="all">Сценарий: с заявками на согласовании</option></select><div class="seg" role="group" aria-label="Период"><button v-for="d in [7,30,90]" :key="d" :class="{on:days===d}" :aria-pressed="days===d" @click="days=d;load()">{{d}} дн.</button></div><select v-model="calendarOrder" aria-label="Сортировка по дате"><option value="asc">Сначала ближайшие</option><option value="desc">Сначала поздние</option></select><div class="grow actions"><button class="secondary" :aria-expanded="receiptsOpen" @click="showReceipts">Ожидаемые поступления</button><button v-if="has('schedule')" @click="receipt"><AppIcon name="plus"/> План поступления</button></div></div>
      <div v-if="calTiles" class="sumrow">
-      <div class="card tile"><div class="k">Поступления</div><div class="v num" :class="{pos:calTiles.inc>0}">{{calTiles.inc>0?'+':''}}{{money(calTiles.inc.toFixed(2))}}<small>{{currency}}</small></div><div class="d">за выбранный период</div></div>
-      <div class="card tile"><div class="k">Платежи</div><div class="v num">{{calTiles.out>0?'−':''}}{{money(calTiles.out.toFixed(2))}}<small>{{currency}}</small></div><div class="d">{{scenario==='all'?'с заявками на согласовании':'утверждённые'}}</div></div>
-      <div class="card tile"><div class="k">Минимальный остаток</div><div class="v num" :class="{neg:calTiles.low.risk}">{{money(calTiles.low.balance)}}<small>{{currency}}</small></div><div class="d">{{calTiles.low.date}} · резерв {{money(dash.reserve)}}</div></div>
-      <div class="card tile"><div class="k">Остаток на конец периода</div><div class="v num">{{money(calTiles.end.balance)}}<small>{{currency}}</small></div><div class="d">{{calTiles.end.date}}</div></div>
+      <div class="card tile"><div class="k">Поступления</div><div class="v num" :class="{pos:calTiles.inc>0}" :title="(calTiles.inc>0?'+':'')+moneyTitle(calTiles.inc.toFixed(2))">{{calTiles.inc>0?'+':''}}{{moneyShort(calTiles.inc.toFixed(2))}}<small>{{currency}}</small></div><div class="d"><span class="num">{{calTiles.inc>0?'+':''}}{{money(calTiles.inc.toFixed(2))}} {{currency}}</span> · за выбранный период</div></div>
+      <div class="card tile"><div class="k">Платежи</div><div class="v num" :title="(calTiles.out>0?'−':'')+moneyTitle(calTiles.out.toFixed(2))">{{calTiles.out>0?'−':''}}{{moneyShort(calTiles.out.toFixed(2))}}<small>{{currency}}</small></div><div class="d"><span class="num">{{calTiles.out>0?'−':''}}{{money(calTiles.out.toFixed(2))}} {{currency}}</span> · {{scenario==='all'?'с заявками на согласовании':'утверждённые'}}</div></div>
+      <div class="card tile"><div class="k">Минимальный остаток</div><div class="v num" :class="{neg:calTiles.low.risk}" :title="moneyTitle(calTiles.low.balance)">{{moneyShort(calTiles.low.balance)}}<small>{{currency}}</small></div><div class="d"><span class="num">{{money(calTiles.low.balance)}} {{currency}}</span> · {{calTiles.low.date}} · резерв {{money(dash.reserve)}}</div></div>
+      <div class="card tile"><div class="k">Остаток на конец периода</div><div class="v num" :title="moneyTitle(calTiles.end.balance)">{{moneyShort(calTiles.end.balance)}}<small>{{currency}}</small></div><div class="d"><span class="num">{{money(calTiles.end.balance)}} {{currency}}</span> · {{calTiles.end.date}}</div></div>
      </div>
      <section v-if="receiptsOpen" class="card" style="margin-bottom:16px"><div class="card-h"><h3>Ожидаемые поступления · {{currency}}</h3><span class="pill plan">План</span></div><div class="card-b"><p v-if="receiptsLoading" role="status">Загрузка…</p><div v-else-if="!receipts.length" class="empty" style="padding:22px 10px"><b style="display:block;color:var(--ink);font-size:16px;margin-bottom:4px">Ожидаемых поступлений нет</b>Добавьте план поступления, чтобы он попал в прогноз.<div v-if="has('schedule')" style="margin-top:14px"><button @click="receipt"><AppIcon name="plus"/> План поступления</button></div></div><div v-for="r in receipts" :key="r.id" class="receipt-row"><span>{{r.counterparty}}<small>{{r.date}}</small></span><strong class="num">{{money(r.amount)}} {{r.currency}}</strong><button v-if="has('write')" class="tiny" @click="transaction(r,true)">Подтвердить приход</button></div></div></section>
      <div class="table-card rsp-wrap"><table class="rsp"><thead><tr><th><button class="ghost tiny" style="font-weight:800;color:var(--em)" @click="calendarOrder=calendarOrder==='asc'?'desc':'asc'" aria-label="Сменить порядок по дате">Дата {{calendarOrder==='asc'?'↑':'↓'}}</button></th><th>События</th><th class="num">На начало дня</th><th class="num">Поступления</th><th class="num">Платежи</th><th class="num">Остаток</th></tr></thead><tbody><tr v-for="d in sortedForecast" :key="d.date" :class="{risk:d.risk}"><td data-l="Дата">{{d.date}}</td><td data-l="События"><div v-for="(e,i) in d.events" :key="i">{{e.kind==='in'?'↓':e.kind==='pending'?'◌':'↑'}} {{e.name}} {{e.kind==='pending'?'· на согласовании':''}} {{e.priority&&e.priority!=='normal'?'· '+priorities[e.priority]:''}} {{e.overdue?'· просрочка':''}}</div><span v-if="!d.events.length" class="muted">Событий нет</span></td><td class="num" data-l="На начало дня">{{money(d.opening)}}</td><td class="num pos" data-l="Поступления">{{Number(d.incoming)?'+'+money(d.incoming):'—'}}</td><td class="num" data-l="Платежи">{{Number(d.outgoing)?'−'+money(d.outgoing):'—'}}</td><td class="num" data-l="Остаток"><b :class="{neg:d.risk}">{{money(d.balance)}}</b><small v-for="a in d.account_shortfalls" :key="a.account_id">{{a.account}}: {{money(a.balance)}}</small><span v-if="d.risk" class="pill warn" style="margin-left:6px">ниже резерва</span></td></tr></tbody></table></div>
@@ -450,3 +510,6 @@ onMounted(async()=>{try{const r=await api('/api/me');user.value=r.user;csrf.valu
  <div v-if="modal" class="modal-backdrop"><form v-modal-focus class="modal" role="dialog" aria-modal="true" aria-labelledby="modal-title" @submit.prevent="save" @keydown.esc="!saving&&(modal=null)"><div class="section-head"><h2 id="modal-title">{{modal.title}}</h2><button type="button" class="ghost icon-btn" aria-label="Закрыть" @click="modal=null" :disabled="saving"><AppIcon name="x"/></button></div><p v-if="modal.note" class="form-note">{{modal.note}}</p><div class="form-grid"><label v-for="f in modalFields" :key="f.key" :class="{wide:f.type==='textarea'}">{{f.label}}<select v-if="f.type==='select'" v-model="form[f.key]" :required="f.required" :disabled="f.disabled"><option v-for="o in f.options" :key="o[0]" :value="o[0]">{{o[1]}}</option></select><textarea v-else-if="f.type==='textarea'" v-model="form[f.key]" :required="f.required" :minlength="f.minlength" maxlength="3000"></textarea><input v-else v-model="form[f.key]" :type="amountFields.includes(f.key)?'text':f.type" :inputmode="amountFields.includes(f.key)?'decimal':undefined" :pattern="amountFields.includes(f.key)?'[0-9]+([.][0-9]{1,2})?':undefined" :required="f.required" :disabled="f.disabled" :min="f.min" :max="f.max" :minlength="f.minlength" :step="f.step||'0.01'"></label></div><p v-if="categoryHint" class="warning category-hint" role="status">{{categoryHint}}</p><p v-if="formError" class="error">{{formError}}</p><div class="form-actions"><button type="button" class="secondary" @click="modal=null" :disabled="saving">Отмена</button><button :disabled="saving">{{saving?'Сохраняем…':modal.saveLabel||'Сохранить'}}</button></div></form></div>
  <div v-if="documents" class="modal-backdrop"><section class="modal"><div class="section-head"><h2>Документы · {{documents.ledger.reference}}</h2><button class="ghost icon-btn" aria-label="Закрыть" @click="documents=null"><AppIcon name="x"/></button></div><p v-for="d in documents.rows" :key="d.url"><a :href="companyUrl(d.url)">{{d.filename}} ↓</a></p><p v-if="!documents.rows.length" class="sub">Документов пока нет.</p><label v-if="documents.ledger.can_attach_document" class="button" style="margin-top:12px">Прикрепить PDF / изображение<input type="file" accept=".pdf,.png,.jpg,.jpeg" @change="attach" :disabled="saving" hidden></label><p class="sub" style="margin-top:12px">До 5 МБ. Документы доступны только авторизованным пользователям с правом просмотра реестра.</p></section></div>
 </template>
+<style>
+.global-operation{position:fixed;right:18px;bottom:18px;width:min(390px,calc(100vw - 36px));z-index:120;background:var(--surface);border:1px solid var(--line);border-radius:14px;padding:0 12px 8px;box-shadow:0 8px 32px rgba(var(--shade-rgb),.18)}.global-operation>.operation-progress{margin:10px 0 5px}.global-form-feedback{position:fixed;left:18px;bottom:18px;width:min(390px,calc(100vw - 36px));max-height:50vh;overflow:auto;z-index:120;background:var(--surface);border:1px solid var(--bad);border-radius:14px;padding:16px;box-shadow:0 8px 32px rgba(var(--shade-rgb),.18)}.global-form-feedback>strong{color:var(--bad)}.global-form-feedback p,.global-form-feedback small{font-size:12px;color:var(--muted)}.global-form-feedback ul{padding-left:18px;margin:8px 0}.global-form-feedback li{margin:6px 0}.global-form-feedback li button{padding:4px 0;white-space:normal;text-align:left}.global-form-feedback small{display:block}.form-field-invalid{border-color:var(--bad)!important;outline-color:var(--bad)!important;background:var(--bad-soft)!important}@media(max-width:820px){.global-form-feedback{bottom:14px;left:14px;width:calc(100vw - 28px);max-height:38vh}.global-operation{right:14px;bottom:14px;width:calc(100vw - 28px)}}
+</style>

@@ -3,6 +3,9 @@ import assert from 'node:assert/strict';
 import {reactive} from 'vue';
 import {compileComponent, mount, settle, text, find, all} from './helpers/mountVue.js';
 const component = await compileComponent(new URL('../src/NativeWorkbook.vue', import.meta.url));
+const progressComponent=await compileComponent(new URL('../src/OperationProgress.vue',import.meta.url));
+const progressView=await compileComponent(new URL('../src/NativeWorkbook.vue',import.meta.url),{'./OperationProgress.vue':progressComponent});
+const deferred=()=>{let resolve,reject;const promise=new Promise((done,fail)=>{resolve=done;reject=fail;});return{promise,resolve,reject};};
 const company = {id:2};
 const original = () => ({id:7,company_id:2,revision:4,can_edit:true,native_model:{source_name:'Synthetic.xlsx',sheet_count:28,
   parameters:[{key:'Input!B2',sheet:'Input',cell:'B2',label:'Investment',value:100,min:0,max:1000}],
@@ -182,5 +185,41 @@ test('native preparation never generates after a foreign preview response or aft
     resolve({...project,company_id:unmount?2:9});await pending;await settle();
     assert.equal(calls.length,1);
     if(!unmount)assert.match(text(view.container),/другой компании/);
+  }
+});
+
+test('native missing summary names parameters and archive month without default amounts, and attempts add accessible helpers',async t=>{
+  const project=readyOriginal();project.native_model.parameters[0].value=null;project.native_model.parameters[0].label='Новый кредит';project.native_model.parameters[1].value=null;
+  const calls=[];const view=mount(component,{company,project,stage:'report',api:async(...args)=>{calls.push(args);return project;}});t.after(view.unmount);await settle();
+  assert.deepEqual(view.state.missingFields.map(item=>item.label),['Новый кредит','Первый месяц периода в архиве']);assert.equal(view.state.parameters['Input!B2'],'');assert.equal(view.state.reportStart,'');
+  const summary=find(view.container,node=>node.props?.['aria-labelledby']==='native-missing-title');assert.match(text(summary),/Новый кредит/);assert.doesNotMatch(text(summary),/Read only source/);
+  const prepare=find(view.container,node=>node.tag==='button'&&text(node).includes('Подготовить бизнес-план'));assert.equal(prepare.props.disabled,false);
+  const field=()=>find(view.container,node=>node.props?.['data-native-field']==='Input!B2');assert.equal(field().props['aria-invalid'],false);
+  await view.state.generate();await settle();assert.equal(calls.length,0);assert.match(view.state.error,/Новый кредит.*Первый месяц/);assert.equal(field().props['aria-invalid'],true);
+  const help=find(view.container,node=>node.props?.id===field().props['aria-describedby']);assert.match(text(help),/Новый кредит/);
+  view.state.parameters['Input!B2']='0';await settle();assert.equal(field().props['aria-invalid'],false);assert.deepEqual(view.state.missingFields.map(item=>item.field),['period']);assert.equal(project.native_model.parameters[0].value,null);
+});
+
+test('native prepare shows checked preview and document generation stages and keeps errors below completion',async t=>{
+  for(const fail of [false,true]){
+    const project=readyOriginal(),preview=deferred(),generate=deferred();const calls=[];
+    const view=mount(progressView,{company,project,api:async(url,options)=>{calls.push({url,options});return url.includes('/preview?')?preview.promise:generate.promise;}});t.after(view.unmount);await settle();view.state.reportStart='2028-04';const pending=view.state.generate();await settle();
+    assert.equal(view.state.progress.completed,0);assert.equal(view.state.progress.total,2);assert.equal(find(view.container,node=>node.props?.role==='progressbar').props['aria-valuenow'],0);await settle();assert.equal(view.state.progress.completed,0);
+    preview.resolve({...project,revision:5});await settle();assert.equal(calls.length,2);assert.equal(view.state.progress.completed,1);assert.equal(find(view.container,node=>node.props?.role==='progressbar').props['aria-valuenow'],50);
+    if(fail)generate.reject(Error('PDF unavailable'));else generate.resolve({...project,revision:6,status:'ready'});await pending;await settle();assert.equal(view.state.progress.active,false);assert.equal(view.state.progress.completed,fail?1:2);assert.equal(find(view.container,node=>node.props?.role==='progressbar').props['aria-valuenow'],fail?50:100);if(fail)assert.match(view.state.progress.error,/PDF unavailable/);
+  }
+});
+
+test('native missing-field navigation opens the correct group and focuses its input',async t=>{
+  const project=readyOriginal(),events=[];const view=mount(component,{company,project,onData:()=>events.push('data'),onReport:()=>events.push('report'),api:async()=>project});t.after(view.unmount);await settle();
+  const group={tagName:'DETAILS',open:false,parentElement:null};let focused=false,scrolled=false;const target={parentElement:group,getAttribute:()=> 'Input!B2',focus:()=>{focused=true;},scrollIntoView:()=>{scrolled=true;}};
+  view.state.nativeForm={querySelectorAll:()=>[target]};await view.state.goToField('Input!B2');assert.equal(group.open,true);assert.equal(focused,true);assert.equal(scrolled,true);assert.deepEqual(events,['data']);
+  await view.state.goToField('period');assert.deepEqual(events,['data','report']);
+});
+
+test('company changes and unmount invalidate native progress and prevent late document generation',async t=>{
+  for(const unmount of [false,true]){
+    const project=readyOriginal(),activeCompany=reactive({...company}),preview=deferred(),calls=[];const view=mount(progressView,{company:activeCompany,project,api:async(...args)=>{calls.push(args);return preview.promise;}});if(!unmount)t.after(view.unmount);await settle();view.state.reportStart='2028-04';const pending=view.state.generate();await settle();
+    if(unmount)view.unmount();else activeCompany.id=9;await settle();preview.resolve({...project,revision:5});await pending;await settle();assert.equal(calls.length,1);assert.equal(view.state.progress.completed,0);assert.equal(view.state.progress.total,0);assert.equal(view.state.error,'');
   }
 });

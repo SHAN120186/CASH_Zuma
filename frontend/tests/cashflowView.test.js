@@ -24,6 +24,34 @@ function mountReport(extra = {}) {
 }
 const button = (root, label) => find(root, node => node.tag === 'button' && text(node) === label);
 
+test('mounted Cash Flow reveals the cut-off month and keeps the right-edge cue for hidden months', async t => {
+  const view = mountReport(); t.after(view.unmount);
+  const wrap = find(view.container, node => node.props?.['aria-label'] === 'Cash Flow по месяцам');
+  Object.assign(wrap, {layout:{left:100, width:638, height:300}, clientLeft:1, clientTop:1,
+    clientWidth:620, clientHeight:282, offsetWidth:639, offsetHeight:300, scrollWidth:1600});
+  const headers = all(wrap, node => node.tag === 'th' && 'data-m' in node.props);
+  assert.equal(headers.length, 12);
+  for (const header of headers) header.layout = {left:221 + Number(header.props['data-m']) * 120, width:120, height:32};
+  assert.equal(wrap.querySelector('th[data-m="9"]'), headers[9], 'selector finds the rendered October header');
+  await settle();
+  const visibleRight = wrap.getBoundingClientRect().left + wrap.clientLeft + wrap.clientWidth;
+  assert.equal(wrap.scrollLeft, 732);
+  assert.equal(headers[9].getBoundingClientRect().right, visibleRight - 32);
+  assert.equal(view.state.moreRight, true);
+  assert.deepEqual(view.state.bars, {x:17, y:16});
+  const frame = find(view.container, node => node.props?.class?.includes?.('cf-frame'));
+  assert.match(frame.props.class, /more/);
+  assert.equal(frame.props.style['--cf-bar-x'], '17px');
+  view.app._instance.props.asOf = '2026-03-15'; await settle();
+  assert.equal(wrap.scrollLeft, 0, 'earlier month returns to the leftmost visible position');
+  assert.equal(headers[2].getBoundingClientRect().right, 581);
+  view.state.setPer('q1');
+  view.app._instance.props.asOf = '2026-10-06'; await settle();
+  assert.deepEqual(view.state.indices, [0,1,2]);
+  assert.equal(wrap.querySelector('th[data-m="9"]'), null, 'the hidden October column is not fabricated');
+  assert.equal(wrap.scrollLeft, 0, 'cut-off outside the period uses the last rendered month');
+});
+
 test('scenario comparison labels partial, explicit-zero and missing plans without claiming a full subtotal', async t => {
   const replies = {
     A:{expense_plan:'100.00', expense_plan_complete:false, expense_plan_defined_rows:1, expense_plan_missing_rows:11},
@@ -141,7 +169,7 @@ test('mounted date input refuses a future cut-off before emitting and keeps its 
 test('mounted App returns from a past year to server today and rejects future or wrong-year cut-offs', async t => {
   globalThis.window = {addEventListener() {}, localStorage:{getItem:() => null}};
   globalThis.location = {hash:'#report'};
-  globalThis.document = {hidden:true, activeElement:null, querySelector:() => ({scrollIntoView() {}})};
+  globalThis.document = {hidden:true, activeElement:null, addEventListener() {}, removeEventListener() {}, querySelector:() => ({scrollIntoView() {}})};
   const previousFetch = globalThis.fetch, calls = [];
   globalThis.fetch = async url => {
     if (url === '/api/me') return {ok:false, status:401, json:async () => ({detail:'Synthetic unauthenticated startup'})};

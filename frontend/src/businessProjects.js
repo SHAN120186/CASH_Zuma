@@ -281,6 +281,13 @@ export function headerProblem(header) {
   return '';
 }
 
+export function missingHeaderFields(header = {}, mode = 'manual', native = false) {
+  const blank = value => value == null || !String(value).trim();
+  return [['title', 'Название проекта'], ...(!native ? [['start', 'Начало прогноза'], ['months', 'Прогноз, месяцев'],
+    ...(mode === 'manual' ? [['currency', 'Валюта модели']] : [])] : [])]
+    .filter(([field]) => blank(header[field])).map(([field, label]) => ({field, label}));
+}
+
 export function createBusinessState(project = null) {
   return {project, requestKey: createArchiveState().requestKey, createFields: null, createUnknown: false, uploaded: new Set(), sourceUploadStarted: false};
 }
@@ -318,7 +325,7 @@ export async function saveProjectDraft(api, project, companyId, inputs, isCurren
   return assertProject(result, companyId, project.id);
 }
 
-export async function uploadProjectFolder(api, state, {companyId, header, sources, mode = state.project?.mode || 'files', isCurrent = () => true, onProject, onStep} = {}) {
+export async function uploadProjectFolder(api, state, {companyId, header, sources, mode = state.project?.mode || 'files', isCurrent = () => true, onProject, onStep, onProgress} = {}) {
   const check = () => {if (!isCurrent()) throw new DOMException('Раздел или компания изменены', 'AbortError');};
   const remember = project => {check(); assertProject(project, companyId, state.project?.id); state.project = project; onProject?.(project);};
   check();
@@ -326,31 +333,34 @@ export async function uploadProjectFolder(api, state, {companyId, header, source
   if (problem) throw Error(problem);
   const picked = prepareSources(sources.map(item => item.file));
   if (picked.problems.length) throw Error(picked.problems.join(' '));
+  const total = Number(!state.project) + sources.filter(item => !state.uploaded.has(item.key)).length + 1;
+  let completed = 0;
+  const phase = (label, advance = false) => {check(); if (advance) completed++; onStep?.(label); onProgress?.({completed, total, label});};
   if (!state.project) {
     state.createFields ||= {company_id: companyId, title: header.title.trim(), request_key: state.requestKey, mode};
     if (state.createFields.company_id !== companyId) throw Error('Форма относится к другой компании.');
-    onStep?.('Создаём папку проекта…');
+    phase('Создаём папку проекта…');
     let project;
     try {project = await api(projectUrl(companyId), json(state.createFields));}
     catch (e) {if (e.status >= 400 && e.status < 500 && !state.createUnknown) state.createFields = null; else state.createUnknown = true; throw e;}
-    remember(project); state.createUnknown = false;
+    remember(project); state.createUnknown = false; phase('Папка проекта создана', true);
   }
   assertProject(state.project, companyId);
   if (state.project.can_edit === false) throw Error('Изменение этой папки недоступно.');
   for (const [index, item] of sources.entries()) {
     check(); if (state.uploaded.has(item.key)) continue;
-    onStep?.(`Загружаем ${index + 1} из ${sources.length}: ${item.relativePath}`);
+    phase(`Загружаем ${index + 1} из ${sources.length}: ${item.relativePath}`);
     state.sourceUploadStarted = true;
     const project = await api(projectUrl(companyId, state.project.id, 'sources') + '&expected_revision=' + state.project.revision, {
       method: 'PUT', body: item.file, headers: {'Content-Type': 'application/octet-stream', 'X-Filename': encodeURIComponent(item.name), 'X-Relative-Path': encodeURIComponent(item.relativePath)},
     });
-    remember(project); state.uploaded.add(item.key);
+    remember(project); state.uploaded.add(item.key); phase(`Файл загружен: ${item.relativePath}`, true);
   }
-  check(); onStep?.('Изучаем источники и рассчитываем бизнес-план и ТЭО…');
+  phase('Проверяем источники и параметры отчёта…');
   const overrides = mode === 'manual' ? {} : {title: header.title.trim(), start: header.start, months: Number(header.months)};
   if (mode !== 'manual' && header.currency) overrides.currency = header.currency;
   const project = await api(projectUrl(companyId, state.project.id, 'analyse'), json({revision: state.project.revision, overrides}));
-  remember(project); return project;
+  remember(project); phase('Источники проверены', true); return project;
 }
 
 export async function generateProject(api, project, companyId, inputs, confirmSources, isCurrent = () => true) {
