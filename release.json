@@ -6,13 +6,13 @@
     "В меню появился раздел «Отчёты» с вкладками: Cash Flow, Бизнес-планы и Архив отчётов. Вкладки также видны вверху каждой страницы отчётов.",
     "Готовый бизнес-план теперь виден сразу: в списке проектов есть кнопки «Бизнес-план · PDF», «Бизнес-план · Excel» и «ТЭО · PDF». Готовый проект открывается на шаге «Отчёт»; если файла ещё нет, указано, что сделать для расчёта.",
     "Под пустыми полями бизнес-плана и архива отчётов написано, что нужно внести, а в самом поле показан пример. Пример не сохраняется; ноль по-прежнему указывается явно.",
-    "Сохранены функции версии 2.17.1: ход выполнения операций, перечень незаполненных обязательных полей, оформление и защита групп Telegram."
+    "Сохранены функции версий 2.17.1 и 2.17.2: ход выполнения операций, перечень незаполненных обязательных полей, открытие готового проекта сразу на шаге «Отчёт» только при актуальном комплекте PDF и Excel, оформление и защита групп Telegram."
   ],
   "changes_uz": [
     "Interfeys ikki tilda: rus va oʻzbek (lotin). RU / UZ tugmasi kirish sahifasida va yuqori panelda; tanlov brauzerda saqlanadi. Summalar (ming, mln, mlrd), sanalar va server xabarlari tanlangan tilda koʻrsatiladi; foydalanuvchi maʼlumotlari tarjima qilinmaydi.",
     "Menyuda «Hisobotlar» boʻlimi paydo boʻldi: Cash Flow, Biznes-rejalar va Hisobotlar arxivi. Ushbu yorliqlar har bir hisobot sahifasining yuqorisida ham koʻrinadi.",
     "Tayyor biznes-reja endi darhol koʻrinadi: loyihalar roʻyxatida «Biznes-reja · PDF», «Biznes-reja · Excel» va «TIA · PDF» tugmalari bor. Tayyor loyiha «Hisobot» bosqichida ochiladi; fayl hali boʻlmasa, hisoblash uchun nima qilish kerakligi yozilgan.",
     "Biznes-reja va hisobotlar arxivining boʻsh maydonlari ostida nima yozish kerakligi koʻrsatiladi, maydonning oʻzida esa namuna beriladi. Namuna saqlanmaydi; nol avvalgidek aniq kiritiladi.",
-    "2.17.1 versiyasi imkoniyatlari saqlangan: amallar bajarilishi jarayoni, toʻldirilmagan majburiy maydonlar roʻyxati, dizayn va Telegram guruhlarini himoya qilish."
+    "2.17.1 va 2.17.2 versiyalari imkoniyatlari saqlangan: amallar bajarilishi jarayoni, toʻldirilmagan majburiy maydonlar roʻyxati, tayyor loyihani faqat PDF va Excel toʻplami dolzarb boʻlsa «Hisobot» bosqichida ochish, dizayn va Telegram guruhlarini himoya qilish."
   ]
 }

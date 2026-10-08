@@ -45,11 +45,16 @@ async function goToField(field){emit(field==='period'?'report':'data');await nex
 const generation = computed(() => (props.project.generations||[]).find(g=>g.native&&g.id===props.project.current_generation_id)
   || (previousGeneration.value?.projectId===props.project.id ? (props.project.generations||[]).find(g=>g.native&&g.id===previousGeneration.value.id) : null)
   || (props.project.current_generation_id==null ? (props.project.generations||[]).filter(g=>g.native).slice().sort((a,b)=>b.id-a.id)[0] : null));
+function currentNativeReport(project,companyId) {
+  if(project?.company_id!==companyId||project.status!=='ready'||!Number.isSafeInteger(project.revision)||project.revision<1||!Number.isSafeInteger(project.current_generation_id)||project.current_generation_id<1)return false;
+  const current=(project.generations||[]).find(item=>item.native&&item.id===project.current_generation_id),archive=current?.business_archive;
+  return current?.revision===project.revision&&Number.isSafeInteger(archive?.id)&&archive.id>0&&archive.company_id===companyId&&archive.status==='ready';
+}
 const files = computed(() => generation.value && props.project.company_id===props.company.id ? [['business_archive',N_('Бизнес-план')],['teo_archive',N_('ТЭО')]].flatMap(([key,title])=>{
-  const archive=generation.value[key];return archive?.company_id===props.company.id&&archive.status==='ready'?(key==='business_archive'?['pdf','xlsx']:['pdf']).map(format=>({title:`${tx(title)} · ${format==='pdf'?'PDF':'Excel'}`,format,secondary:key==='teo_archive',url:archiveFileUrl(archive,format)})):[];
+  const archive=generation.value[key];return Number.isSafeInteger(archive?.id)&&archive.id>0&&archive.company_id===props.company.id&&archive.status==='ready'?(key==='business_archive'?['pdf','xlsx']:['pdf']).map(format=>({title:`${tx(title)} · ${format==='pdf'?'PDF':'Excel'}`,format,secondary:key==='teo_archive',url:archiveFileUrl(archive,format)})):[];
 }):[]);
 const changed = computed(() => (model.value?.parameters || []).some(p => p.editable!==false && numericText(parameters.value[p.key]) !== numericText(displayValue(p,model.value.overrides?.[p.key] ?? p.value))));
-const stale = computed(() => changed.value || !generation.value || props.project.status!=='ready' || generation.value.id!==props.project.current_generation_id || generation.value.revision!==props.project.revision || reportStart.value+'-01'!==props.project.inputs?.start);
+const stale = computed(() => changed.value || !currentNativeReport(props.project,props.company.id) || generation.value?.id!==props.project.current_generation_id || reportStart.value+'-01'!==props.project.inputs?.start);
 const download = computed(() => `/api/business-projects/${props.project.id}/native.xlsx?company_id=${props.company.id}&revision=${props.project.revision}`);
 const kpis = computed(() => [['Стоим_проекта','F34',N_('Стоимость проекта')],['ВНД','D6',N_('NPV за три года')],['ВНД','E6',N_('IRR за три года')]].map(([sheet,cell,label]) => ({label,metric:(model.value?.metrics||[]).find(metric=>metric.sheet===sheet&&metric.cell===cell)}))); // i18n-ignore: sheet names are matched
 const history = computed(() => (props.project.generations||[]).filter(g=>g.native&&g.id!==generation.value?.id).slice().sort((a,b)=>b.id-a.id));
@@ -105,8 +110,15 @@ async function generate() {
     c.check();
     const updated=await props.api(`/api/business-projects/${c.id}/native/generate?company_id=${c.companyId}`,options({revision:checked.revision,start,overrides:values}));
     c.check();assertProject(updated,c.companyId,c.id);emit('updated',updated);
-    if(updated.status==='ready'){operation.complete(ticket,N_('Бизнес-план PDF и Excel готовы'));emit('generated');}
-    else{error.value=N_('Отчёт пока не готов. Проверьте замечания к исходным данным.');operation.fail(ticket,error.value);}
+    if(currentNativeReport(updated,c.companyId)){operation.complete(ticket,N_('Бизнес-план PDF и Excel готовы'));emit('generated');}
+    else{
+      const current=(updated.generations||[]).find(item=>item.native&&item.id===updated.current_generation_id&&item.revision===updated.revision),archive=current?.business_archive;
+      error.value=Number.isSafeInteger(archive?.id)&&archive.id>0&&archive.company_id===c.companyId&&archive.status==='deleted'
+        ?N_('Отчёт удалён из архива. Включите «Показать удалённые» в архиве отчётов и нажмите «Восстановить».')
+        :updated.status==='ready'?N_('Для текущей версии нет доступного комплекта PDF и Excel. Проверьте архив отчётов или подготовьте отчёт заново.')
+        :N_('Отчёт пока не готов. Проверьте замечания к исходным данным.');
+      operation.fail(ticket,error.value);
+    }
   } catch(e){if(active&&e.name!=='AbortError'&&props.project.id===c.id&&props.company.id===c.companyId){error.value=e.message;operation.fail(ticket,e.message);}}
   finally{if(active&&props.project.id===c.id&&props.company.id===c.companyId)busy.value=false;}
 }

@@ -377,6 +377,14 @@ export default {
   'Сервер мог сохранить черновик. Повторите загрузку или закройте форму и проверьте историю отчётов.': 'Server qoralamani saqlagan boʻlishi mumkin. Yuklashni takrorlang yoki shaklni yopib, hisobotlar tarixini tekshiring.',
   'Загружаем…': 'Yuklanmoqda…',
   'Загрузить PDF и Excel': 'PDF va Excelni yuklash',
+  // Merged from 2.17.2: availability of the current report set
+  'Расчёт сохранён': 'Hisob-kitob saqlangan',
+  'Бизнес-план готов. Скачайте PDF и Excel в разделе «Отчёт».': 'Biznes-reja tayyor. PDF va Excel fayllarini «Hisobot» boʻlimidan yuklab oling.',
+  'Для текущей версии нет доступного комплекта PDF и Excel. Проверьте архив отчётов или подготовьте отчёт заново.': 'Joriy versiya uchun PDF va Excel toʻplami mavjud emas. Hisobotlar arxivini tekshiring yoki hisobotni qaytadan tayyorlang.',
+  'Отчёт удалён из архива. Включите «Показать удалённые» в архиве отчётов и нажмите «Восстановить».': 'Hisobot arxivdan oʻchirilgan. Hisobotlar arxivida «Oʻchirilganlarni koʻrsatish»ni yoqing va «Tiklash»ni bosing.',
+  'Попросите автора проекта подготовить отчёт.': 'Loyiha muallifidan hisobotni tayyorlashni soʻrang.',
+  'Нажмите «Рассчитать бизнес-план», чтобы создать файлы.': 'Fayllarni yaratish uchun «Biznes-rejani hisoblash» tugmasini bosing.',
+  'Нажмите «Подготовить бизнес-план и Excel», чтобы создать файлы.': 'Fayllarni yaratish uchun «Biznes-reja va Excel faylini tayyorlash» tugmasini bosing.',
 };
 
 // [RegExp over the whole Russian message, Uzbek replacement with $1…] for texts with numbers or names.

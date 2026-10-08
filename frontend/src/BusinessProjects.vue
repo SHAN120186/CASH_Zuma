@@ -47,7 +47,7 @@ const changed = computed(() => !!current.value && JSON.stringify(inputsFromForm(
 const generations = computed(() => (current.value?.generations || []).slice().sort((a, b) =>
   Number(b.id === current.value?.current_generation_id) - Number(a.id === current.value?.current_generation_id) || b.id - a.id));
 const latest = computed(() => generations.value[0]);
-const reportsStale = computed(() => changed.value || current.value?.status !== 'ready' || latest.value?.revision !== current.value?.revision || latest.value?.id !== current.value?.current_generation_id);
+const reportsStale = computed(() => changed.value || !readyReport(current.value));
 const scheduleEntries = computed(() => {
   const entries = [{key: 'fixed', label: tx('Постоянные расходы'), object: form.value, field: 'fixed_costs'}, {key: 'equity', label: tx('Взносы в капитал'), object: form.value, field: 'equity'}];
   form.value.products.forEach((product, index) => {
@@ -72,7 +72,7 @@ const narrativeGroups = [
 ];
 const narrativeFields = group => NARRATIVE_FIELDS.filter(([field]) => narrativeGroups[group].includes(field));
 const workingCapitalScalars = computed(() => BUSINESS_SCALARS.filter(([field]) => field !== 'initial_investment'));
-const statusLabel = project => project.status === 'deleted' ? tx('Удалена · можно восстановить') : project.status === 'ready' ? tx('Отчёты готовы') : project.status === 'needs_data' ? tx('Нужны параметры') : tx('Папка проекта');
+const statusLabel = project => project.status === 'deleted' ? tx('Удалена · можно восстановить') : project.status === 'ready' ? tx('Расчёт сохранён') : project.status === 'needs_data' ? tx('Нужны параметры') : tx('Папка проекта');
 const money = value => value == null || String(value).trim() === '' || !Number.isFinite(Number(value)) ? '—' : formatCents(toCents(value), current.value?.inputs?.currency || form.value.currency || 'USD');
 const ratio = value => value == null ? '—' : new Intl.NumberFormat('ru-RU', {maximumFractionDigits: 2}).format(Number(value) * 100) + '%';
 
@@ -104,6 +104,20 @@ function setProject(project, replaceForm = false) {
     loadedSnapshot.value = JSON.stringify(inputsFromForm(form.value)); confirmed.value = false;
   }
 }
+function readyReport(project) {
+  if (project?.company_id !== props.company.id || project.status !== 'ready' || !Number.isSafeInteger(project.revision) || !Number.isSafeInteger(project.current_generation_id)) return false;
+  const generation = project.generations?.find(item => item.id === project.current_generation_id);
+  const archive = generation?.business_archive;
+  return generation?.revision === project.revision &&
+    Number.isSafeInteger(archive?.id) && archive.id > 0 && archive.company_id === props.company.id && archive.status === 'ready';
+}
+function deletedReport(project) {
+  const archive = project?.generations?.find(item => item.id === project.current_generation_id)?.business_archive;
+  return archive?.company_id === props.company.id && archive.status === 'deleted';
+}
+function unavailableReportMessage(project) {
+  return deletedReport(project) ? N_('Отчёт удалён из архива. Включите «Показать удалённые» в архиве отчётов и нажмите «Восстановить».') : N_('Для текущей версии нет доступного комплекта PDF и Excel. Проверьте архив отчётов или подготовьте отчёт заново.');
+}
 function newProject(mode = 'manual') {
   if (busy.value) return;
   operation.reset(); validationAttempted.value=false; headerAttempted.value=false;
@@ -124,11 +138,12 @@ async function openProject(project) {
     assertProject(detail, props.company.id, project.id);
     state.value = createBusinessState(detail); selected.value = []; ignored.value = []; selectionProblems.value = []; totalSize.value = 0;
     projectMode.value = detail.mode || 'files';
-    // A finished plan opens on its files; a viewer without edit rights has nothing else to see.
-    flowStage.value = detail.generations?.length && (detail.status === 'ready' || !detail.can_edit) ? 'report' : 'data';
+    // A current report opens on its files; a viewer without edit rights has nothing else to see.
+    flowStage.value = readyReport(detail) || !detail.can_edit && detail.generations?.length ? 'report' : 'data';
     const values = detail.inputs || detail.extraction?.inputs || {};
     header.value = {title: detail.title, start: values.start || '', months: values.months ?? 36, currency: values.currency || ''};
     setProject(detail, true);
+    if (detail.status === 'ready' && !readyReport(detail)) notice.value = unavailableReportMessage(detail);
     operation.complete(ticket,N_('Данные проекта загружены'));
   } catch (e) {if (active && request===detailRequest && companyId===props.company.id && e.name !== 'AbortError') {error.value = e.message; operation.fail(ticket,e.message);}}
   finally {if (active && request === detailRequest) action.value = '';}
@@ -200,9 +215,10 @@ async function upload() {
     if (!isCurrent()) return;
     setProject(project, true);
     operation.complete(ticket,N_('Файлы загружены, источники проверены'));
-    flowStage.value = 'data';
-    notice.value = project.generations?.length && !project.validation?.length ? N_('Бизнес-план и ТЭО сформированы. Скачайте PDF и Excel ниже.') : N_('Папка изучена. Проверьте замечания и заполните недостающие параметры ниже.');
-    if (project.generations?.length) emit('generated');
+    const ready = readyReport(project);
+    flowStage.value = ready ? 'report' : 'data';
+    notice.value = ready ? N_('Бизнес-план готов. Скачайте PDF и Excel в разделе «Отчёт».') : project.status === 'ready' ? unavailableReportMessage(project) : N_('Папка изучена. Проверьте замечания и заполните недостающие параметры ниже.');
+    if (ready) emit('generated');
     await loadProjects();
   } catch (e) {if (isCurrent() && e.name !== 'AbortError') {error.value = uploadFailureMessage(e, workingState); operation.fail(ticket,error.value); await recoverConflict(e);}}
   finally {if (active && state.value === workingState && props.company.id === companyId) {action.value = ''; step.value = '';}}
@@ -223,7 +239,7 @@ async function generate() {
     const detail = await generateProject(props.api, saved, companyId, inputs, confirmed.value, isCurrent);
     if (!isCurrent()) return;
     setProject(detail, true);
-    if (detail.validation?.length || detail.status !== 'ready') {notice.value = N_('Проверьте замечания. Новый комплект отчётов появится после заполнения обязательных данных.'); operation.fail(ticket,notice.value);flowStage.value='data';}
+    if (detail.validation?.length || !readyReport(detail)) {notice.value = deletedReport(detail) || !detail.validation?.length ? unavailableReportMessage(detail) : N_('Проверьте замечания. Новый комплект отчётов появится после заполнения обязательных данных.'); operation.fail(ticket,notice.value);flowStage.value='data';}
     else {operation.complete(ticket,N_('Бизнес-план PDF и расчётный Excel готовы'));notice.value = N_('Бизнес-план и расчётный Excel готовы.'); flowStage.value = 'report'; emit('generated');}
     await loadProjects();
   } catch (e) {if (active && current.value?.id===id && companyId===props.company.id && e.name !== 'AbortError') {error.value = e.message; operation.fail(ticket,e.message); await recoverConflict(e);}}
@@ -362,6 +378,7 @@ function scheduleField(entry, month = null) {
             <p v-if="!originalReports.some(file=>file.format==='PDF')" class="sub bp-note">{{current.native_model?tx('Для нового PDF выполните пересчёт оригинала и нажмите «Сформировать бизнес-план и ТЭО по оригиналу». PDF будет подготовлен по Word из этой папки.'):tx('Для PDF с исходным оформлением добавьте PDF, экспортированный из исходного Word, через «Выбрать отдельные файлы».')}}</p>
           </details>
           <details class="bp-details"><summary>{{tx('Исходные файлы проекта · {n}', {n: current.files?.length||0})}}</summary><ul class="bp-files"><li v-for="file in current.files||[]" :key="file.relative_path"><span>{{file.relative_path||file.filename}}</span><small>{{sourceSize(file.size||0)}} <a v-if="canEdit&&file.download_url" :href="file.download_url">{{tx('Скачать исходник')}}</a></small></li></ul></details>
+          <p v-if="flowStage==='report'&&!readyReport(current)" class="sub" role="status">{{tx(unavailableReportMessage(current))}}<template v-if="!deletedReport(current)"> {{canEdit ? current.native_model ? tx('Нажмите «Подготовить бизнес-план и Excel», чтобы создать файлы.') : tx('Нажмите «Рассчитать бизнес-план», чтобы создать файлы.') : tx('Попросите автора проекта подготовить отчёт.')}}</template></p>
           <NativeWorkbook v-if="current.native_model" :hidden="flowStage==='project'" :stage="flowStage" :api="api" :company="company" :project="current" @report="goStage('report')" @data="goStage('data')" @updated="setProject($event,true)" @generated="flowStage='report';emit('generated');loadProjects()" @working="nativeWorking"/>
           <template v-if="!current.native_model">
           <section v-if="canEdit&&requiredFields.length" class="bp-missing-summary" :class="{'bp-validation-attempted':validationAttempted}" aria-labelledby="bp-missing-title"><h4 id="bp-missing-title" aria-live="polite">{{tx('Не заполнены обязательные поля · {n}', {n: requiredFields.length})}}</h4><ul><li v-for="item in requiredFields" :key="item.field"><button type="button" class="ghost tiny" :disabled="busy" @click="goToField(item.field)">{{guidance(item.field).label||fieldLabel(item.field)}}</button></li></ul><p class="sub">{{tx('Нажмите название, чтобы открыть нужную группу и перейти к полю. Явный ноль считается заполненным значением.')}}</p></section>
