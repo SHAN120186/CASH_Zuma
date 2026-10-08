@@ -1,13 +1,18 @@
 {
-  "version": "2.17.1",
+  "version": "2.18.0",
   "date": "2026-10-08",
   "changes": [
-    "При ожидании ответа, загрузке файлов, сохранении и подготовке отчётов показываются индикатор загрузки, название действия и процент завершённых этапов.",
-    "Незаполненные обязательные поля перечисляются по названиям; переход к полю раскрывает нужную группу, а ошибка видна рядом с вводом.",
-    "Для оригинала UZGERMED отдельно показывается ход проверки расчёта и создания PDF/Excel; ошибка не выдаётся за завершение.",
-    "В архиве виден прогресс загрузки пары файлов и указано, каких данных или файлов не хватает.",
-    "Сохранены обновления оформления из основной ветки: значения на графике остатка, компактные суммы, мобильные карточки и прокрутка Cash Flow.",
-    "Сохранено опубликованное подключение Telegram-группы к одной компании и проверка принадлежности данных сводки.",
-    "Финансовые формулы, права доступа, черновики и восстановление отчётов сохранены."
+    "Два языка интерфейса: русский и узбекский (латиница). Переключатель RU / UZ на странице входа и в верхней панели; выбор запоминается в браузере. Суммы (ming, mln, mlrd), даты и сообщения сервера показываются на выбранном языке; данные пользователей не переводятся.",
+    "В меню появился раздел «Отчёты» с вкладками: Cash Flow, Бизнес-планы и Архив отчётов. Вкладки также видны вверху каждой страницы отчётов.",
+    "Готовый бизнес-план теперь виден сразу: в списке проектов есть кнопки «Бизнес-план · PDF», «Бизнес-план · Excel» и «ТЭО · PDF». Готовый проект открывается на шаге «Отчёт»; если файла ещё нет, указано, что сделать для расчёта.",
+    "Под пустыми полями бизнес-плана и архива отчётов написано, что нужно внести, а в самом поле показан пример. Пример не сохраняется; ноль по-прежнему указывается явно.",
+    "Сохранены функции версии 2.17.1: ход выполнения операций, перечень незаполненных обязательных полей, оформление и защита групп Telegram."
+  ],
+  "changes_uz": [
+    "Interfeys ikki tilda: rus va oʻzbek (lotin). RU / UZ tugmasi kirish sahifasida va yuqori panelda; tanlov brauzerda saqlanadi. Summalar (ming, mln, mlrd), sanalar va server xabarlari tanlangan tilda koʻrsatiladi; foydalanuvchi maʼlumotlari tarjima qilinmaydi.",
+    "Menyuda «Hisobotlar» boʻlimi paydo boʻldi: Cash Flow, Biznes-rejalar va Hisobotlar arxivi. Ushbu yorliqlar har bir hisobot sahifasining yuqorisida ham koʻrinadi.",
+    "Tayyor biznes-reja endi darhol koʻrinadi: loyihalar roʻyxatida «Biznes-reja · PDF», «Biznes-reja · Excel» va «TIA · PDF» tugmalari bor. Tayyor loyiha «Hisobot» bosqichida ochiladi; fayl hali boʻlmasa, hisoblash uchun nima qilish kerakligi yozilgan.",
+    "Biznes-reja va hisobotlar arxivining boʻsh maydonlari ostida nima yozish kerakligi koʻrsatiladi, maydonning oʻzida esa namuna beriladi. Namuna saqlanmaydi; nol avvalgidek aniq kiritiladi.",
+    "2.17.1 versiyasi imkoniyatlari saqlangan: amallar bajarilishi jarayoni, toʻldirilmagan majburiy maydonlar roʻyxati, dizayn va Telegram guruhlarini himoya qilish."
   ]
 }

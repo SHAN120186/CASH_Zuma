@@ -692,3 +692,17 @@ button:active:not(:disabled),.button:active{transform:translateY(1px)}
 .rq-missing{margin-top:8px;text-align:right}
 .route-steps{margin-top:16px}
 @media (max-width:700px){.rq-missing{text-align:left}}
+
+/* Reports: root menu item with nested tabs, and the tab strip on report pages */
+.nav-root .nav-chev{margin-left:auto;transition:transform .15s ease;opacity:.7}
+.nav-root .nav-chev.open{transform:rotate(180deg)}
+.nav-tree{display:grid;gap:2px;margin:2px 0 6px 14px;padding-left:10px;border-left:1px solid rgba(var(--on-dark-rgb),.14)}
+.nav-sub{min-height:34px;font-size:13px}
+.report-tabs{display:flex;gap:6px;flex-wrap:wrap;margin:0 0 18px;padding:4px;border:1px solid var(--line);border-radius:14px;background:var(--surface);width:max-content;max-width:100%}
+.report-tabs button{display:inline-flex;align-items:center;gap:7px;min-height:36px;padding:0 14px;border:0;border-radius:10px;background:transparent;color:var(--muted);font-weight:700;box-shadow:none}
+.report-tabs button:hover{background:var(--surface-muted);color:var(--text)}
+.report-tabs button.on{background:var(--primary);color:#fff}
+@media(max-width:560px){.report-tabs{width:100%}.report-tabs button{flex:1;justify-content:center;padding:0 8px}}
+.login-lang{display:flex;justify-content:flex-end;margin-bottom:8px}
+.head-actions{display:flex;align-items:center;gap:10px}
+.topbar-r{display:flex;align-items:center;gap:10px}

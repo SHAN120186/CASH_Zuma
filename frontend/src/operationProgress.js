@@ -1,3 +1,4 @@
+import {N_} from './i18n/index.js';
 const count = value => Number.isFinite(Number(value)) && Number(value) > 0 ? Math.floor(Number(value)) : 0;
 export function progressPercent(completed, total) {
   const size = count(total);
@@ -55,7 +56,7 @@ export function createOperationProgress(onChange = () => {}) {
       const item=pending(ticket);if(!item)return false;
       if(!item.total)item.total=item.completed+1;
       item.completed=Math.min(item.completed,item.total-1);item.ended=true;
-      item.error=String(error?.message||error||'Действие не завершено.');publish();return true;
+      item.error=String(error?.message||error||N_('Действие не завершено.'));publish();return true;
     },
     reset() {epoch++;records=new Map();state={active:false,label:'',completed:0,total:0,error:''};onChange({...state});},
   };

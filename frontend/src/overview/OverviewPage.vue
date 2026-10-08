@@ -6,6 +6,7 @@ import AppIcon from '../AppIcon.vue';
 import {toCents, formatCents, formatAmount, amountTitle, formatShortDate, addDays, sameDayPreviousMonth} from './format.js';
 import {balanceHistory, monthPlanFact} from './history.js';
 import {canPayAny} from './rights.js';
+import {tx, N_} from '../i18n/index.js';
 
 const props = defineProps({
   api: {type: Function, required: true},
@@ -129,7 +130,7 @@ async function load() {
       const entries = await allPages('/api/ledger', {currency: c, date_from: start, date_to: today}, MAX_PAGES, gen);
       if (gen !== generation) return;
       if (entries.items.length < entries.total) {
-        patch(gen, {historyNote: 'За 30 дней слишком много операций для графика на этом экране. Полная история — в разделе «Операции».'});
+        patch(gen, {historyNote: N_('За 30 дней слишком много операций для графика на этом экране. Полная история — в разделе «Операции».')});
       } else {
         patch(gen, {history: balanceHistory({today, days: HISTORY_DAYS, accounts: first.accounts, entries: entries.items})});
       }
@@ -209,16 +210,16 @@ const kpi = computed(() => {
 });
 const monthStart = computed(() => props.today.slice(0, 8) + '01');
 const kpiCards = computed(() => {
-  const k = kpi.value, cur = props.currency, since = `с ${formatShortDate(monthStart.value)} · факт`;
+  const k = kpi.value, cur = props.currency, since = tx('с {date} · факт', {date: formatShortDate(monthStart.value)});
   if (!k) return [];
   // Tiles show compact amounts; the exact figure is in the tooltip.
   const low = k.low ? toCents(k.low.balance) : null;
   return [
-    {label: 'Доходы', value: formatAmount(k.inflow, cur), title: amountTitle(k.inflow, cur), tone: 'in', note: since},
-    {label: 'Расходы', value: formatAmount(k.outflow, cur), title: amountTitle(k.outflow, cur), tone: 'out', note: since},
-    {label: 'Чистый поток', value: formatAmount(k.net, cur, {sign: true}), title: amountTitle(k.net, cur, {sign: true}), tone: k.net >= 0 ? 'in' : 'out', note: 'доходы − расходы месяца'},
-    {label: `Прогноз на ${s.value.dashDays ?? horizon.value} дней`, value: formatAmount(k.end, cur), title: amountTitle(k.end, cur), tone: '',
-     note: k.low ? `минимум ${formatAmount(low, cur)} · ${formatShortDate(k.low.date)}` : '', noteTitle: k.low ? 'минимум ' + amountTitle(low, cur) : ''},
+    {label: tx('Доходы'), value: formatAmount(k.inflow, cur), title: amountTitle(k.inflow, cur), tone: 'in', note: since},
+    {label: tx('Расходы'), value: formatAmount(k.outflow, cur), title: amountTitle(k.outflow, cur), tone: 'out', note: since},
+    {label: tx('Чистый поток'), value: formatAmount(k.net, cur, {sign: true}), title: amountTitle(k.net, cur, {sign: true}), tone: k.net >= 0 ? 'in' : 'out', note: tx('доходы − расходы месяца')},
+    {label: tx('Прогноз на {n} дней', {n: s.value.dashDays ?? horizon.value}), value: formatAmount(k.end, cur), title: amountTitle(k.end, cur), tone: '',
+     note: k.low ? tx('минимум {amount} · {date}', {amount: formatAmount(low, cur), date: formatShortDate(k.low.date)}) : '', noteTitle: k.low ? tx('минимум {amount}', {amount: amountTitle(low, cur)}) : ''},
   ];
 });
 
@@ -250,8 +251,8 @@ const risks = computed(() => {
   const forecast = d?.forecast || [];
   const reserveDay = forecast.find(x => x.reserve_risk);
   if (reserveDay) {
-    out.push({level: 'bad', title: 'Остаток опустится ниже резерва',
-      text: `${formatShortDate(reserveDay.date)}: ${formatCents(toCents(reserveDay.balance), cur)} ${cur} при резерве ${formatCents(toCents(d.reserve), cur)}`,
+    out.push({level: 'bad', title: tx('Остаток опустится ниже резерва'),
+      text: tx('{date}: {amount} {currency} при резерве {reserve}', {date: formatShortDate(reserveDay.date), amount: formatCents(toCents(reserveDay.balance), cur), currency: cur, reserve: formatCents(toCents(d.reserve), cur)}),
       go: ['calendar']});
   }
   // Every account that goes negative within the forecast, with its first such day.
@@ -262,24 +263,26 @@ const risks = computed(() => {
   if (short.size) {
     const list = [...short.values()];
     out.push({level: list.every(a => a.allow_overdraft) ? 'warn' : 'bad',
-      title: list.length === 1 ? 'Счёт уйдёт в минус' : `${list.length} ${plural(list.length, 'счёт уйдёт', 'счёта уйдут', 'счетов уйдут')} в минус`,
+      title: list.length === 1 ? tx('Счёт уйдёт в минус') : plural(list.length, tx('{n} счёт уйдёт в минус', {n: list.length}),
+        tx('{n} счёта уйдут в минус', {n: list.length}), tx('{n} счетов уйдут в минус', {n: list.length})),
       text: list.slice(0, 3)
-        .map(a => `${a.account}, ${formatShortDate(a.date)}: ${formatCents(toCents(a.balance), cur)}${a.allow_overdraft ? ' (овердрафт разрешён)' : ''}`).join(' · ')
-        + (list.length > 3 ? ` и ещё ${list.length - 3}` : ''),
+        .map(a => `${a.account}, ${formatShortDate(a.date)}: ${formatCents(toCents(a.balance), cur)}${a.allow_overdraft ? ' ' + tx('(овердрафт разрешён)') : ''}`).join(' · ')
+        + (list.length > 3 ? ' ' + tx('и ещё {n}', {n: list.length - 3}) : ''),
       go: ['calendar']});
   }
   const reserve = toCents(d?.reserve);
   if (reserve && available.value != null && available.value < reserve) {
-    out.push({level: 'bad', title: 'Доступно меньше минимального резерва', text: `Резерв ${formatCents(reserve, cur)} ${cur}`, go: ['accounts']});
+    out.push({level: 'bad', title: tx('Доступно меньше минимального резерва'), text: tx('Резерв {amount} {currency}', {amount: formatCents(reserve, cur), currency: cur}), go: ['accounts']});
   }
   const over = (s.value.budgets || []).filter(b => b.limit != null && (toCents(b.remaining) ?? 0) < 0);
   if (over.length) {
-    out.push({level: 'warn', title: over.length === 1 ? 'Бюджет статьи превышен' : `Превышен бюджет ${over.length} ${plural(over.length, 'статьи', 'статей', 'статей')}`,
-      text: over.slice(0, 3).map(b => `${b.category}: перерасход ${formatCents(-toCents(b.remaining), cur)}`).join(' · '), go: ['budgets']});
+    out.push({level: 'warn', title: over.length === 1 ? tx('Бюджет статьи превышен')
+      : plural(over.length, tx('Превышен бюджет {n} статьи', {n: over.length}), tx('Превышен бюджет {n} статей', {n: over.length}), tx('Превышен бюджет {n} статей', {n: over.length})),
+      text: over.slice(0, 3).map(b => tx('{category}: перерасход {amount}', {category: b.category, amount: formatCents(-toCents(b.remaining), cur)})).join(' · '), go: ['budgets']});
   }
   const overdue = payments.value.filter(r => r.date < props.today);
   if (overdue.length) {
-    out.push({level: 'warn', title: overdue.length === 1 ? 'Просрочена утверждённая выплата' : `Просрочено утверждённых выплат: ${overdue.length}`,
+    out.push({level: 'warn', title: overdue.length === 1 ? tx('Просрочена утверждённая выплата') : tx('Просрочено утверждённых выплат: {n}', {n: overdue.length}),
       text: overdue.slice(0, 2).map(r => `${r.number} · ${r.counterparty}`).join(' · '), go: ['requests', {status: 'approved'}]});
   }
   return out;
@@ -287,10 +290,10 @@ const risks = computed(() => {
 // Sources that failed: the risk list is incomplete, never «всё в порядке».
 const riskGaps = computed(() => {
   const e = s.value.errors, gaps = [];
-  if (e.now || e.accounts) gaps.push('доступный остаток');
-  if (e.dash) gaps.push('прогноз');
-  if (e.budgets) gaps.push('бюджеты');
-  if (e.approved) gaps.push('утверждённые заявки');
+  if (e.now || e.accounts) gaps.push(tx('доступный остаток'));
+  if (e.dash) gaps.push(tx('прогноз'));
+  if (e.budgets) gaps.push(tx('бюджеты'));
+  if (e.approved) gaps.push(tx('утверждённые заявки'));
   return gaps;
 });
 
@@ -300,20 +303,21 @@ const chips = computed(() => {
   if (approver.value) {
     const n = e.pending ? null : decisions.value.length;
     out.push({target: 'ov-decisions', text: count(n, s.value.pendingLoaded < s.value.pendingTotal),
-      words: `${plural(n ?? 0, 'заявка ждёт', 'заявки ждут', 'заявок ждут')} вашего решения`, tone: n ? 'hot' : ''});
+      words: plural(n ?? 0, tx('заявка ждёт вашего решения'), tx('заявки ждут вашего решения'), tx('заявок ждут вашего решения')), tone: n ? 'hot' : ''});
   }
   const pay = e.approved ? null : payments.value.length;
   out.push({target: 'ov-payments', text: count(pay, s.value.approvedLoaded < s.value.approvedTotal),
-    words: `${plural(pay ?? 0, 'платёж', 'платежа', 'платежей')} к оплате`, tone: pay ? 'hot' : ''});
+    words: plural(pay ?? 0, tx('платёж к оплате'), tx('платежа к оплате'), tx('платежей к оплате')), tone: pay ? 'hot' : ''});
   const gaps = riskGaps.value.length, n = risks.value.length;
   out.push({target: 'ov-risks', text: gaps && !n && !s.value.requestsLoading ? '—' : count(n, gaps > 0),
-    words: plural(n, 'риск', 'риска', 'рисков'), tone: n ? 'bad' : ''});
+    words: plural(n, tx('риск'), tx('риска'), tx('рисков')), tone: n ? 'bad' : ''});
   return out;
 });
 
 const planFact = computed(() => monthPlanFact(s.value.report, Number(props.today.slice(5, 7)) - 1));
 const pct = (fact, plan) => (plan ? Math.round((fact / plan) * 100) : null);
-const pfLabel = (label, v) => (v.plan == null ? `${label}: план не задан` : v.plan === 0 ? `${label}: план равен нулю` : `${label}: выполнено ${pct(v.fact, v.plan)}% плана`);
+const pfLabel = (label, v) => (v.plan == null ? tx('{label}: план не задан', {label}) : v.plan === 0 ? tx('{label}: план равен нулю', {label})
+  : tx('{label}: выполнено {pct}% плана', {label, pct: pct(v.fact, v.plan)}));
 
 function scrollTo(id) {
   const el = document.getElementById(id);
@@ -322,14 +326,15 @@ function scrollTo(id) {
   el.scrollIntoView({behavior: reduce ? 'auto' : 'smooth', block: 'start'});
   el.focus({preventScroll: true});
 }
-const stage = r => ({check: 'Проверка бухгалтера', finance: 'Финансовая проверка', director: 'Решение директора'}[r.approval_stage] || 'Согласование');
+const STAGES = {check: N_('Проверка бухгалтера'), finance: N_('Финансовая проверка'), director: N_('Решение директора')};
+const stage = r => (STAGES[r.approval_stage] ? tx(STAGES[r.approval_stage]) : tx('Согласование'));
 const signedLedger = t => (t.kind === 'out' ? -1 : t.kind === 'in' ? 1 : 0) * (toCents(t.amount) ?? 0);
 </script>
 
 <template>
  <div class="ov">
-  <section class="ov-today" aria-label="Что требует внимания сегодня">
-   <span class="ov-today-label">Сегодня</span>
+  <section class="ov-today" :aria-label="tx('Что требует внимания сегодня')">
+   <span class="ov-today-label">{{tx('Сегодня')}}</span>
    <template v-if="s.loading"><span class="ov-chip sk-chip" aria-hidden="true"></span><span class="ov-chip sk-chip" aria-hidden="true"></span></template>
    <template v-else>
     <button v-for="chip in chips" :key="chip.target" type="button" class="ov-chip" :class="chip.tone" @click="scrollTo(chip.target)">
@@ -341,11 +346,12 @@ const signedLedger = t => (t.kind === 'out' ? -1 : t.kind === 'in' ? 1 : 0) * (t
   <div class="ov-top">
    <BalanceCard class="ov-main" :state="balanceState" :error="s.errors.now" :company="company?.name || ''" :as-of="s.now?.day || today"
     :currency="currency" :available="available" :on-accounts="onAccounts" :reserved="reserved" :change="change"
-    :history="s.history" :history-note="s.errors.history ? 'График не загрузился: ' + s.errors.history : s.errors.accounts ? 'Счета не загрузились: ' + s.errors.accounts : s.errors.archived ? 'Архивные счета не загрузились, история остатка недоступна: ' + s.errors.archived : s.historyNote"
+    :history="s.history" :history-note="s.errors.history ? tx('График не загрузился: {error}', {error: tx(s.errors.history)}) : s.errors.accounts ? tx('Счета не загрузились: {error}', {error: tx(s.errors.accounts)})
+     : s.errors.archived ? tx('Архивные счета не загрузились, история остатка недоступна: {error}', {error: tx(s.errors.archived)}) : tx(s.historyNote)"
     :can-open-report="has('export')" :can-add-account="has('write')" :can-open-day="has('ledger')"
     @retry="load" @open-report="emit('go', 'report')" @add-account="emit('go', 'accounts')" @open-day="d => emit('go', 'ledger', {from: d, to: d})"/>
 
-   <div class="ov-kpis" role="group" aria-label="Показатели месяца">
+   <div class="ov-kpis" role="group" :aria-label="tx('Показатели месяца')">
     <template v-if="kpi && balanceState !== 'empty'">
      <div v-for="k in kpiCards" :key="k.label" class="ov-kpi">
       <span class="kpi-l">{{k.label}}</span>
@@ -354,75 +360,75 @@ const signedLedger = t => (t.kind === 'out' ? -1 : t.kind === 'in' ? 1 : 0) * (t
      </div>
     </template>
     <template v-else-if="s.loading"><div v-for="n in 4" :key="n" class="ov-kpi" aria-hidden="true"><span class="sk sk-l"></span><span class="sk sk-v"></span><span class="sk sk-l"></span></div></template>
-    <div v-else-if="balanceState === 'empty'" class="ov-kpi kpi-err"><span class="kpi-l">Показатели месяца</span><span class="kpi-s">Появятся вместе со счётом в {{currency}}.</span></div>
-    <div v-else class="ov-kpi kpi-err"><span class="kpi-l">Показатели месяца не загрузились</span><span class="kpi-s">{{s.errors.dash || 'Нет данных'}}</span><button type="button" class="secondary tiny" @click="load">Повторить</button></div>
+    <div v-else-if="balanceState === 'empty'" class="ov-kpi kpi-err"><span class="kpi-l">{{tx('Показатели месяца')}}</span><span class="kpi-s">{{tx('Появятся вместе со счётом в {currency}.', {currency})}}</span></div>
+    <div v-else class="ov-kpi kpi-err"><span class="kpi-l">{{tx('Показатели месяца не загрузились')}}</span><span class="kpi-s">{{s.errors.dash ? tx(s.errors.dash) : tx('Нет данных')}}</span><button type="button" class="secondary tiny" @click="load">{{tx('Повторить')}}</button></div>
    </div>
   </div>
 
   <div class="ov-grid">
    <section v-if="approver" id="ov-decisions" class="panel span-7" tabindex="-1" aria-labelledby="ov-dec-h">
-    <header class="panel-h"><h2 id="ov-dec-h">Ждут вашего решения</h2><button type="button" class="ghost tiny" @click="emit('go', 'requests', {status: 'pending'})">Все заявки <AppIcon name="arrow"/></button></header>
+    <header class="panel-h"><h2 id="ov-dec-h">{{tx('Ждут вашего решения')}}</h2><button type="button" class="ghost tiny" @click="emit('go', 'requests', {status: 'pending'})">{{tx('Все заявки')}} <AppIcon name="arrow"/></button></header>
     <div v-if="s.loading || s.requestsLoading" class="panel-sk" aria-hidden="true"><span class="sk"></span><span class="sk"></span></div>
-    <p v-else-if="s.errors.pending" class="panel-err">Заявки не загрузились: {{s.errors.pending}}</p>
+    <p v-else-if="s.errors.pending" class="panel-err">{{tx('Заявки не загрузились: {error}', {error: tx(s.errors.pending)})}}</p>
     <ul v-else-if="decisions.length" class="rows">
      <li v-for="r in decisions.slice(0, SHOWN_ROWS)" :key="r.id">
       <button type="button" class="row" @click="emit('go', 'requests', {status: 'pending'})">
-       <span class="row-main"><b>{{r.number}} · {{r.counterparty}}</b><small>{{r.purpose}}</small><small>{{stage(r)}} · до {{formatShortDate(r.date)}}<template v-if="r.priority !== 'normal'"> · <em class="prio">{{r.priority === 'urgent' ? 'срочно' : 'высокий приоритет'}}</em></template></small>
-        <span v-if="track" class="trk"><template v-for="(st, i) in track(r)" :key="i"><span v-if="i" class="ln"></span><span class="st" :class="st.c === 'skip' ? '' : st.c"><u>{{marks[st.c]}}</u>{{st.l}}</span></template></span></span>
+       <span class="row-main"><b>{{r.number}} · {{r.counterparty}}</b><small>{{r.purpose}}</small><small>{{stage(r)}} · {{tx('до {date}', {date: formatShortDate(r.date)})}}<template v-if="r.priority !== 'normal'"> · <em class="prio">{{r.priority === 'urgent' ? tx('срочно') : tx('высокий приоритет')}}</em></template></small>
+        <span v-if="track" class="trk"><template v-for="(st, i) in track(r)" :key="i"><span v-if="i" class="ln"></span><span class="st" :class="st.c === 'skip' ? '' : st.c"><u>{{marks[st.c]}}</u>{{tx(st.l)}}</span></template></span></span>
        <span class="row-amt">{{formatCents(toCents(r.amount), r.currency)}} <small>{{r.currency}}</small></span>
       </button>
      </li>
     </ul>
-    <div v-else class="ov-empty"><span class="empty-ic" aria-hidden="true">✓</span><p>Решений от вас по {{currency}} сейчас не требуется.</p></div>
-    <p v-if="decisions.length > SHOWN_ROWS" class="panel-note">Ещё {{decisions.length - SHOWN_ROWS}} — в разделе «Заявки».</p>
-    <p v-if="s.pendingLoaded < s.pendingTotal" class="panel-note">Прочитаны {{s.pendingLoaded}} из {{s.pendingTotal}} заявок на согласовании; остальные — в разделе «Заявки».</p>
-    <p v-if="s.dash?.pending_count" class="ov-pend-total">Всего на согласовании: <b>{{s.dash.pending_count}}</b> {{plural(s.dash.pending_count, 'заявка', 'заявки', 'заявок')}} на сумму <b :title="amountTitle(toCents(s.dash.pending_amount), currency)">{{formatAmount(toCents(s.dash.pending_amount), currency)}}</b> {{currency}}</p>
+    <div v-else class="ov-empty"><span class="empty-ic" aria-hidden="true">✓</span><p>{{tx('Решений от вас по {currency} сейчас не требуется.', {currency})}}</p></div>
+    <p v-if="decisions.length > SHOWN_ROWS" class="panel-note">{{tx('Ещё {n} — в разделе «Заявки».', {n: decisions.length - SHOWN_ROWS})}}</p>
+    <p v-if="s.pendingLoaded < s.pendingTotal" class="panel-note">{{tx('Прочитаны {loaded} из {total} заявок на согласовании; остальные — в разделе «Заявки».', {loaded: s.pendingLoaded, total: s.pendingTotal})}}</p>
+    <p v-if="s.dash?.pending_count" class="ov-pend-total">{{tx('Всего на согласовании:')}} <b>{{s.dash.pending_count}}</b> {{plural(s.dash.pending_count, tx('заявка на сумму'), tx('заявки на сумму'), tx('заявок на сумму'))}} <b :title="amountTitle(toCents(s.dash.pending_amount), currency)">{{formatAmount(toCents(s.dash.pending_amount), currency)}}</b> {{currency}}</p>
    </section>
    <section v-else class="panel span-7" aria-labelledby="ov-pend-h">
-    <header class="panel-h"><h2 id="ov-pend-h">На согласовании</h2><button v-if="has('requests-view')" type="button" class="ghost tiny" @click="emit('go', 'requests', {status: 'pending'})">Все заявки <AppIcon name="arrow"/></button></header>
+    <header class="panel-h"><h2 id="ov-pend-h">{{tx('На согласовании')}}</h2><button v-if="has('requests-view')" type="button" class="ghost tiny" @click="emit('go', 'requests', {status: 'pending'})">{{tx('Все заявки')}} <AppIcon name="arrow"/></button></header>
     <div v-if="s.loading" class="panel-sk" aria-hidden="true"><span class="sk"></span></div>
-    <p v-else-if="s.dash?.pending_count" class="ov-pend"><b>{{s.dash.pending_count}}</b> {{plural(s.dash.pending_count, 'заявка', 'заявки', 'заявок')}} на сумму <b :title="amountTitle(toCents(s.dash.pending_amount), currency)">{{formatAmount(toCents(s.dash.pending_amount), currency)}}</b> {{currency}}</p>
-    <p v-else-if="!s.dash && s.errors.dash" class="panel-err">Сводка не загрузилась: {{s.errors.dash}}</p>
+    <p v-else-if="s.dash?.pending_count" class="ov-pend"><b>{{s.dash.pending_count}}</b> {{plural(s.dash.pending_count, tx('заявка на сумму'), tx('заявки на сумму'), tx('заявок на сумму'))}} <b :title="amountTitle(toCents(s.dash.pending_amount), currency)">{{formatAmount(toCents(s.dash.pending_amount), currency)}}</b> {{currency}}</p>
+    <p v-else-if="!s.dash && s.errors.dash" class="panel-err">{{tx('Сводка не загрузилась: {error}', {error: tx(s.errors.dash)})}}</p>
     <div v-if="s.requestsLoading && !s.loading" class="panel-sk" aria-hidden="true"><span class="sk"></span><span class="sk"></span></div>
-    <p v-else-if="s.errors.pending" class="panel-err">Заявки не загрузились: {{s.errors.pending}}</p>
+    <p v-else-if="s.errors.pending" class="panel-err">{{tx('Заявки не загрузились: {error}', {error: tx(s.errors.pending)})}}</p>
     <ul v-else-if="pendingPreview.length" class="rows">
      <li v-for="r in pendingPreview" :key="r.id">
       <div class="row static">
-       <span class="row-main"><b>{{r.number}} · {{r.counterparty}}</b><small>{{r.purpose}}</small><small>до {{formatShortDate(r.date)}}</small>
-        <span v-if="track" class="trk"><template v-for="(st, i) in track(r)" :key="i"><span v-if="i" class="ln"></span><span class="st" :class="st.c === 'skip' ? '' : st.c"><u>{{marks[st.c]}}</u>{{st.l}}</span></template></span></span>
+       <span class="row-main"><b>{{r.number}} · {{r.counterparty}}</b><small>{{r.purpose}}</small><small>{{tx('до {date}', {date: formatShortDate(r.date)})}}</small>
+        <span v-if="track" class="trk"><template v-for="(st, i) in track(r)" :key="i"><span v-if="i" class="ln"></span><span class="st" :class="st.c === 'skip' ? '' : st.c"><u>{{marks[st.c]}}</u>{{tx(st.l)}}</span></template></span></span>
        <span class="row-amt">{{formatCents(toCents(r.amount), r.currency)}} <small>{{r.currency}}</small></span>
       </div>
      </li>
     </ul>
-    <div v-else-if="!s.loading" class="ov-empty"><span class="empty-ic ok" aria-hidden="true">✓</span><p>Заявок на согласовании в {{currency}} нет.</p></div>
+    <div v-else-if="!s.loading" class="ov-empty"><span class="empty-ic ok" aria-hidden="true">✓</span><p>{{tx('Заявок на согласовании в {currency} нет.', {currency})}}</p></div>
    </section>
 
    <section id="ov-risks" class="panel span-5" tabindex="-1" aria-labelledby="ov-risk-h">
-    <header class="panel-h"><h2 id="ov-risk-h">Риски</h2></header>
+    <header class="panel-h"><h2 id="ov-risk-h">{{tx('Риски')}}</h2></header>
     <div v-if="s.loading" class="panel-sk" aria-hidden="true"><span class="sk"></span><span class="sk"></span></div>
     <template v-else>
-     <p v-if="riskGaps.length" class="panel-err">Не удалось проверить: {{riskGaps.join(', ')}}. Список рисков может быть неполным.</p>
+     <p v-if="riskGaps.length" class="panel-err">{{tx('Не удалось проверить: {list}. Список рисков может быть неполным.', {list: riskGaps.join(', ')})}}</p>
      <ul v-if="risks.length" class="risks">
       <li v-for="(r, i) in risks" :key="i" :class="r.level">
        <button type="button" class="risk" @click="emit('go', ...r.go)"><b>{{r.title}}</b><small>{{r.text}}</small></button>
       </li>
      </ul>
-     <p v-else-if="s.requestsLoading" class="panel-note">Проверяем утверждённые выплаты…</p>
-     <div v-else-if="!riskGaps.length" class="ov-empty"><span class="empty-ic ok" aria-hidden="true">✓</span><p>Рисков по {{currency}} не видно: остаток выше резерва, бюджеты в пределах лимитов, просрочек нет.</p></div>
+     <p v-else-if="s.requestsLoading" class="panel-note">{{tx('Проверяем утверждённые выплаты…')}}</p>
+     <div v-else-if="!riskGaps.length" class="ov-empty"><span class="empty-ic ok" aria-hidden="true">✓</span><p>{{tx('Рисков по {currency} не видно: остаток выше резерва, бюджеты в пределах лимитов, просрочек нет.', {currency})}}</p></div>
     </template>
     <p v-if="s.dash" class="ov-reserve">
-     <span>Минимальный резерв: <b :title="amountTitle(toCents(s.dash.reserve), currency)">{{formatAmount(toCents(s.dash.reserve), currency)}}</b> {{currency}}</span>
-     <button v-if="has('budget')" type="button" class="ghost tiny" @click="emit('edit-reserve', s.dash.reserve)">Изменить</button>
+     <span>{{tx('Минимальный резерв:')}} <b :title="amountTitle(toCents(s.dash.reserve), currency)">{{formatAmount(toCents(s.dash.reserve), currency)}}</b> {{currency}}</span>
+     <button v-if="has('budget')" type="button" class="ghost tiny" @click="emit('edit-reserve', s.dash.reserve)">{{tx('Изменить')}}</button>
     </p>
    </section>
 
    <section v-if="balanceState === 'empty'" class="panel span-8" aria-labelledby="ov-start-h">
-    <header class="panel-h"><h2 id="ov-start-h">С чего начать</h2></header>
-    <p class="panel-note">Три шага, чтобы прогноз и отчёты заработали.</p>
+    <header class="panel-h"><h2 id="ov-start-h">{{tx('С чего начать')}}</h2></header>
+    <p class="panel-note">{{tx('Три шага, чтобы прогноз и отчёты заработали.')}}</p>
     <ol class="ov-steps">
-     <li><span class="n" aria-hidden="true">1</span><div><b>Добавьте счёт или кассу</b><small>Укажите валюту и подтверждённый остаток на начало учёта.</small><button v-if="has('write')" type="button" class="tiny" @click="emit('go', 'accounts')">К счетам</button></div></li>
-     <li><span class="n" aria-hidden="true">2</span><div><b>Задайте минимальный резерв</b><small>Ниже этого остатка прогноз покажет предупреждение.</small></div></li>
-     <li><span class="n" aria-hidden="true">3</span><div><b>Загрузите операции или создайте заявки</b><small>Банковскую выписку можно загрузить в разделе «Импорт».</small></div></li>
+     <li><span class="n" aria-hidden="true">1</span><div><b>{{tx('Добавьте счёт или кассу')}}</b><small>{{tx('Укажите валюту и подтверждённый остаток на начало учёта.')}}</small><button v-if="has('write')" type="button" class="tiny" @click="emit('go', 'accounts')">{{tx('К счетам')}}</button></div></li>
+     <li><span class="n" aria-hidden="true">2</span><div><b>{{tx('Задайте минимальный резерв')}}</b><small>{{tx('Ниже этого остатка прогноз покажет предупреждение.')}}</small></div></li>
+     <li><span class="n" aria-hidden="true">3</span><div><b>{{tx('Загрузите операции или создайте заявки')}}</b><small>{{tx('Банковскую выписку можно загрузить в разделе «Импорт».')}}</small></div></li>
     </ol>
    </section>
    <ForecastCard v-else class="panel span-8" :state="forecastState" :error="s.errors.dash" :forecast="s.dash?.forecast || []" :days="s.dashDays ?? horizon"
@@ -430,31 +436,32 @@ const signedLedger = t => (t.kind === 'out' ? -1 : t.kind === 'in' ? 1 : 0) * (t
     :incoming7="toCents(s.dash?.incoming7)" :outgoing7="toCents(s.dash?.outgoing7)" @horizon="d => emit('update:days', d)" @retry="reloadForecast"/>
 
    <section class="panel span-4" aria-labelledby="ov-acc-h">
-    <header class="panel-h"><h2 id="ov-acc-h">Где находятся деньги</h2><span class="pill fact">Факт</span></header>
-    <p v-if="accountList.length" class="panel-note">{{accountList.length}} {{plural(accountList.length, 'счёт', 'счёта', 'счетов')}} в {{currency}} · <button type="button" class="linkish" @click="emit('go', 'accounts')">Банк и касса</button></p>
+    <header class="panel-h"><h2 id="ov-acc-h">{{tx('Где находятся деньги')}}</h2><span class="pill fact">{{tx('Факт')}}</span></header>
+    <p v-if="accountList.length" class="panel-note">{{plural(accountList.length, tx('{n} счёт в {currency}', {n: accountList.length, currency}),
+     tx('{n} счёта в {currency}', {n: accountList.length, currency}), tx('{n} счетов в {currency}', {n: accountList.length, currency}))}} · <button type="button" class="linkish" @click="emit('go', 'accounts')">{{tx('Банк и касса')}}</button></p>
     <div v-if="s.loading" class="panel-sk" aria-hidden="true"><span class="sk"></span><span class="sk"></span></div>
-    <p v-else-if="s.errors.accounts" class="panel-err">Счета не загрузились: {{s.errors.accounts}}</p>
+    <p v-else-if="s.errors.accounts" class="panel-err">{{tx('Счета не загрузились: {error}', {error: tx(s.errors.accounts)})}}</p>
     <ul v-else-if="accountList.length" class="ov-acc">
      <li v-for="a in accountList" :key="a.id">
       <span class="ov-acc-ic" aria-hidden="true"><AppIcon :name="a.kind === 'bank' ? 'accounts' : 'cash'"/></span>
-      <span class="ov-acc-main"><b>{{a.name}}</b><small>{{a.kind === 'bank' ? 'Банковский счёт' : 'Касса'}}</small></span>
+      <span class="ov-acc-main"><b>{{a.name}}</b><small>{{a.kind === 'bank' ? tx('Банковский счёт') : tx('Касса')}}</small></span>
       <span class="ov-acc-amt" :title="amountTitle(toCents(a.balance), a.currency)">{{formatAmount(toCents(a.balance), a.currency)}} <small>{{a.currency}}</small></span>
      </li>
     </ul>
-    <div v-else class="ov-empty"><span class="empty-ic" aria-hidden="true"><AppIcon name="accounts"/></span><p>Нет счетов в {{currency}}.</p></div>
+    <div v-else class="ov-empty"><span class="empty-ic" aria-hidden="true"><AppIcon name="accounts"/></span><p>{{tx('Нет счетов в {currency}.', {currency})}}</p></div>
    </section>
 
    <section id="ov-payments" class="panel span-7" tabindex="-1" aria-labelledby="ov-pay-h">
-    <header class="panel-h"><h2 id="ov-pay-h">Платежи</h2><button v-if="has('requests-view')" type="button" class="ghost tiny" @click="emit('go', 'requests', {status: 'approved'})">{{canPay ? 'К оплате' : 'Все утверждённые'}} <AppIcon name="arrow"/></button></header>
-    <h3 class="ov-sub">Сегодня и просроченные</h3>
+    <header class="panel-h"><h2 id="ov-pay-h">{{tx('Платежи')}}</h2><button v-if="has('requests-view')" type="button" class="ghost tiny" @click="emit('go', 'requests', {status: 'approved'})">{{canPay ? tx('К оплате') : tx('Все утверждённые')}} <AppIcon name="arrow"/></button></header>
+    <h3 class="ov-sub">{{tx('Сегодня и просроченные')}}</h3>
     <div v-if="s.loading || s.requestsLoading" class="panel-sk" aria-hidden="true"><span class="sk"></span><span class="sk"></span></div>
-    <p v-else-if="s.errors.approved" class="panel-err">Платежи не загрузились: {{s.errors.approved}}</p>
+    <p v-else-if="s.errors.approved" class="panel-err">{{tx('Платежи не загрузились: {error}', {error: tx(s.errors.approved)})}}</p>
     <div v-else-if="payments.length" class="tbl-wrap">
      <table class="tbl" role="table">
-      <thead role="rowgroup"><tr role="row"><th role="columnheader" scope="col">Срок</th><th role="columnheader" scope="col">Получатель</th><th role="columnheader" scope="col">Счёт</th><th role="columnheader" scope="col" class="r">Сумма</th></tr></thead>
+      <thead role="rowgroup"><tr role="row"><th role="columnheader" scope="col">{{tx('Срок')}}</th><th role="columnheader" scope="col">{{tx('Получатель')}}</th><th role="columnheader" scope="col">{{tx('Счёт')}}</th><th role="columnheader" scope="col" class="r">{{tx('Сумма')}}</th></tr></thead>
       <tbody role="rowgroup">
        <tr v-for="r in payments.slice(0, SHOWN_ROWS)" :key="r.id" role="row" :class="{late: r.date < today}">
-        <td role="cell" class="nowrap">{{formatShortDate(r.date)}}<small v-if="r.date < today" class="late-l">просрочено</small></td>
+        <td role="cell" class="nowrap">{{formatShortDate(r.date)}}<small v-if="r.date < today" class="late-l">{{tx('просрочено')}}</small></td>
         <td role="cell"><b>{{r.counterparty}}</b><small>{{r.number}} · {{r.purpose}}</small></td>
         <td role="cell" class="nowrap acc">{{r.account}}</td>
         <td role="cell" class="r nowrap num">{{formatCents(toCents(r.amount), r.currency)}} <small class="cur">{{r.currency}}</small></td>
@@ -462,55 +469,55 @@ const signedLedger = t => (t.kind === 'out' ? -1 : t.kind === 'in' ? 1 : 0) * (t
       </tbody>
      </table>
     </div>
-    <div v-else class="ov-empty"><span class="empty-ic ok" aria-hidden="true">✓</span><p>Утверждённых платежей в {{currency}} со сроком по сегодня нет.</p></div>
-    <p v-if="payments.length > SHOWN_ROWS" class="panel-note">Ещё {{payments.length - SHOWN_ROWS}} — в разделе «Заявки».</p>
-    <p v-if="s.approvedLoaded < s.approvedTotal" class="panel-note">Прочитаны {{s.approvedLoaded}} из {{s.approvedTotal}} утверждённых заявок; остальные — в разделе «Заявки».</p>
-    <h3 class="ov-sub">Ближайшие выплаты · план</h3>
+    <div v-else class="ov-empty"><span class="empty-ic ok" aria-hidden="true">✓</span><p>{{tx('Утверждённых платежей в {currency} со сроком по сегодня нет.', {currency})}}</p></div>
+    <p v-if="payments.length > SHOWN_ROWS" class="panel-note">{{tx('Ещё {n} — в разделе «Заявки».', {n: payments.length - SHOWN_ROWS})}}</p>
+    <p v-if="s.approvedLoaded < s.approvedTotal" class="panel-note">{{tx('Прочитаны {loaded} из {total} утверждённых заявок; остальные — в разделе «Заявки».', {loaded: s.approvedLoaded, total: s.approvedTotal})}}</p>
+    <h3 class="ov-sub">{{tx('Ближайшие выплаты · план')}}</h3>
     <div v-if="s.loading || s.dashLoading" class="panel-sk" aria-hidden="true"><span class="sk"></span></div>
-    <p v-else-if="s.errors.dash" class="panel-err">Прогноз выплат не загрузился: {{s.errors.dash}}</p>
+    <p v-else-if="s.errors.dash" class="panel-err">{{tx('Прогноз выплат не загрузился: {error}', {error: tx(s.errors.dash)})}}</p>
     <ul v-else-if="upcoming.length" class="ov-upc">
      <li v-for="(p, i) in upcoming" :key="(p.id ?? 'x') + '-' + i">
       <span class="ov-upc-d">{{formatShortDate(p.date)}}</span>
-      <span class="ov-upc-n">{{p.name}}<small>утверждено</small></span>
+      <span class="ov-upc-n">{{p.name}}<small>{{tx('утверждено')}}</small></span>
       <span class="ov-upc-a" :title="amountTitle(toCents(p.amount), currency)">{{formatAmount(toCents(p.amount), currency)}} <small>{{currency}}</small></span>
      </li>
     </ul>
-    <p v-else class="panel-note">Нет утверждённых выплат на ближайшие {{s.dashDays ?? horizon}} дней.</p>
+    <p v-else class="panel-note">{{tx('Нет утверждённых выплат на ближайшие {n} дней.', {n: s.dashDays ?? horizon})}}</p>
    </section>
 
    <section class="panel span-5" aria-labelledby="ov-pf-h">
     <header class="panel-h">
-     <h2 id="ov-pf-h">План и факт месяца</h2>
-     <div class="seg" role="group" aria-label="Сценарий плана">
-      <button v-for="[k, l] in [['A','А'],['B','Б'],['V','В']]" :key="k" type="button" :class="{on: scenario === k}" :aria-pressed="scenario === k" @click="scenario = k">{{l}}</button>
+     <h2 id="ov-pf-h">{{tx('План и факт месяца')}}</h2>
+     <div class="seg" role="group" :aria-label="tx('Сценарий плана')">
+      <button v-for="[k, l] in [['A',tx('А')],['B',tx('Б')],['V',tx('В')]]" :key="k" type="button" :class="{on: scenario === k}" :aria-pressed="scenario === k" @click="scenario = k">{{l}}</button>
      </div>
     </header>
-    <p v-if="s.errors.report" class="panel-err">План не загрузился: {{s.errors.report}}</p>
+    <p v-if="s.errors.report" class="panel-err">{{tx('План не загрузился: {error}', {error: tx(s.errors.report)})}}</p>
     <div v-else-if="!planFact" class="panel-sk" aria-hidden="true"><span class="sk"></span><span class="sk"></span></div>
     <div v-else class="ov-pf">
-     <div v-for="[key, label, cls] in [['income','Поступления','in'],['expense','Выплаты','out']]" :key="key" class="ov-pf-row">
-      <div class="ov-pf-top"><span>{{label}}</span><span class="ov-pf-num"><b :title="amountTitle(planFact[key].fact, currency)">{{formatAmount(planFact[key].fact, currency)}}</b> <template v-if="planFact[key].plan != null">из <span :title="amountTitle(planFact[key].plan, currency)">{{formatAmount(planFact[key].plan, currency)}}</span></template><template v-else>· план не задан</template></span></div>
+     <div v-for="[key, label, cls] in [['income',tx('Поступления'),'in'],['expense',tx('Выплаты'),'out']]" :key="key" class="ov-pf-row">
+      <div class="ov-pf-top"><span>{{label}}</span><span class="ov-pf-num"><b :title="amountTitle(planFact[key].fact, currency)">{{formatAmount(planFact[key].fact, currency)}}</b> <template v-if="planFact[key].plan != null">{{tx('из')}} <span :title="amountTitle(planFact[key].plan, currency)">{{formatAmount(planFact[key].plan, currency)}}</span></template><template v-else>· {{tx('план не задан')}}</template></span></div>
       <div class="bar" :class="cls" role="img" :aria-label="pfLabel(label, planFact[key])">
        <span :style="{width: planFact[key].plan ? Math.min(100, pct(planFact[key].fact, planFact[key].plan)) + '%' : '0%'}"></span>
       </div>
-      <small v-if="planFact[key].plan === 0" class="ov-pf-pct">План равен нулю</small>
-      <small v-else-if="planFact[key].plan != null" class="ov-pf-pct">{{pct(planFact[key].fact, planFact[key].plan)}}% плана</small>
+      <small v-if="planFact[key].plan === 0" class="ov-pf-pct">{{tx('План равен нулю')}}</small>
+      <small v-else-if="planFact[key].plan != null" class="ov-pf-pct">{{tx('{pct}% плана', {pct: pct(planFact[key].fact, planFact[key].plan)})}}</small>
      </div>
-     <p class="panel-note">План задаётся по всем статьям; пока хотя бы одна статья без плана, итог плана не определён.</p>
+     <p class="panel-note">{{tx('План задаётся по всем статьям; пока хотя бы одна статья без плана, итог плана не определён.')}}</p>
     </div>
    </section>
 
    <section class="panel span-12" aria-labelledby="ov-ops-h">
-    <header class="panel-h"><h2 id="ov-ops-h">Последние операции</h2><button v-if="has('ledger')" type="button" class="ghost tiny" @click="emit('go', 'ledger')">Все операции <AppIcon name="arrow"/></button></header>
+    <header class="panel-h"><h2 id="ov-ops-h">{{tx('Последние операции')}}</h2><button v-if="has('ledger')" type="button" class="ghost tiny" @click="emit('go', 'ledger')">{{tx('Все операции')}} <AppIcon name="arrow"/></button></header>
     <div v-if="s.loading" class="panel-sk" aria-hidden="true"><span class="sk"></span><span class="sk"></span><span class="sk"></span></div>
-    <p v-else-if="s.errors.latest" class="panel-err">Операции не загрузились: {{s.errors.latest}}</p>
+    <p v-else-if="s.errors.latest" class="panel-err">{{tx('Операции не загрузились: {error}', {error: tx(s.errors.latest)})}}</p>
     <div v-else-if="s.latest && s.latest.length" class="tbl-wrap">
      <table class="tbl" role="table">
-      <thead role="rowgroup"><tr role="row"><th role="columnheader" scope="col">Дата</th><th role="columnheader" scope="col">Операция</th><th role="columnheader" scope="col" class="cat">Статья</th><th role="columnheader" scope="col">Счёт</th><th role="columnheader" scope="col" class="r">Сумма</th></tr></thead>
+      <thead role="rowgroup"><tr role="row"><th role="columnheader" scope="col">{{tx('Дата')}}</th><th role="columnheader" scope="col">{{tx('Операция')}}</th><th role="columnheader" scope="col" class="cat">{{tx('Статья')}}</th><th role="columnheader" scope="col">{{tx('Счёт')}}</th><th role="columnheader" scope="col" class="r">{{tx('Сумма')}}</th></tr></thead>
       <tbody role="rowgroup">
        <tr v-for="t in s.latest" :key="t.id" role="row">
         <td role="cell" class="nowrap">{{formatShortDate(t.date)}}</td>
-        <td role="cell"><b>{{t.counterparty || (t.kind === 'transfer' ? 'Внутренний перевод' : '—')}}</b><small>{{t.reference}}<template v-if="t.reversal_of"> · сторно</template><template v-else-if="t.reversed"> · отменена сторно</template></small></td>
+        <td role="cell"><b>{{t.counterparty || (t.kind === 'transfer' ? tx('Внутренний перевод') : '—')}}</b><small>{{t.reference}}<template v-if="t.reversal_of"> · {{tx('сторно')}}</template><template v-else-if="t.reversed"> · {{tx('отменена сторно')}}</template></small></td>
         <td role="cell" class="cat">{{t.category}}</td>
         <td role="cell" class="nowrap acc">{{t.account}}<template v-if="t.to_account"> → {{t.to_account}}</template></td>
         <td role="cell" class="r nowrap num" :class="t.kind === 'in' ? 'in' : t.kind === 'out' ? 'out' : ''">{{t.kind === 'transfer' ? formatCents(toCents(t.amount), t.currency) : formatCents(signedLedger(t), t.currency, {sign: true})}} <small class="cur">{{t.currency}}</small></td>
@@ -518,7 +525,7 @@ const signedLedger = t => (t.kind === 'out' ? -1 : t.kind === 'in' ? 1 : 0) * (t
       </tbody>
      </table>
     </div>
-    <div v-else class="ov-empty"><span class="empty-ic" aria-hidden="true">⇄</span><p>Операций в {{currency}} пока нет.</p></div>
+    <div v-else class="ov-empty"><span class="empty-ic" aria-hidden="true">⇄</span><p>{{tx('Операций в {currency} пока нет.', {currency})}}</p></div>
    </section>
   </div>
  </div>

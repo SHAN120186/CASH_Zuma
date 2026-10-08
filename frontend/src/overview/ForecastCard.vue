@@ -2,6 +2,7 @@
 import {computed, nextTick, onBeforeUnmount, onMounted, ref, watch} from 'vue';
 import {toCents, formatCents, formatCompact, formatShortDate, formatLongDate} from './format.js';
 import {makeScale, smoothPath, tickIndexes} from './chart.js';
+import {tx} from '../i18n/index.js';
 
 // Balance forecast from /api/dashboard, day by day, against the minimum
 // reserve. Day 0 is today's planned end-of-day balance, as the server
@@ -23,11 +24,12 @@ const emit = defineEmits(['horizon', 'retry']);
 const points0 = computed(() => props.forecast.map(d => ({...d, cents: toCents(d.balance)})).filter(d => d.cents != null));
 const summary = computed(() => {
   const bad = points0.value.find(d => d.risk);
-  if (bad) return `Проверьте ликвидность: ${formatLongDate(bad.date)}`;
-  if (!props.hasEvents) return 'Будущие события пока не зарегистрированы';
+  if (bad) return tx('Проверьте ликвидность: {date}', {date: formatLongDate(bad.date)});
+  if (!props.hasEvents) return tx('Будущие события пока не зарегистрированы');
   if (!points0.value.length) return '';
   const min = Math.min(...points0.value.map(d => d.cents));
-  return `Минимум ${formatCents(min, props.currency)} ${props.currency}` + (props.reserve ? ' — выше резерва' : '');
+  const params = {amount: formatCents(min, props.currency), currency: props.currency};
+  return props.reserve ? tx('Минимум {amount} {currency} — выше резерва', params) : tx('Минимум {amount} {currency}', params);
 });
 
 const plot = ref(null);
@@ -81,12 +83,13 @@ function key(event) {
   // The first key press shows today; later presses move day by day.
   active.value = home ?? (active.value == null ? 0 : Math.min(n - 1, Math.max(0, active.value + step)));
 }
-const dayLabel = i => (i === 0 ? 'Сегодня, на конец дня' : 'План (прогноз)');
+const dayLabel = i => (i === 0 ? tx('Сегодня, на конец дня') : tx('План (прогноз)'));
 const valueText = computed(() => {
   const d = points0.value[current.value];
   if (!d) return '';
-  return `${formatLongDate(d.date)}, ${dayLabel(current.value).toLowerCase()}: остаток ${formatCents(d.cents, props.currency)} ${props.currency}`
-    + (d.reserve_risk ? ', ниже минимального резерва' : d.risk ? ', есть счёт в минусе' : '');
+  return tx('{date}, {label}: остаток {amount} {currency}', {date: formatLongDate(d.date), label: dayLabel(current.value).toLowerCase(),
+    amount: formatCents(d.cents, props.currency), currency: props.currency})
+    + (d.reserve_risk ? ', ' + tx('ниже минимального резерва') : d.risk ? ', ' + tx('есть счёт в минусе') : '');
 });
 
 const tip = ref(null), tipSize = ref({w: 200, h: 90});
@@ -105,19 +108,19 @@ const tipStyle = computed(() => {
  <section class="fc" aria-labelledby="fc-h">
   <header class="fc-head">
    <div class="fc-titles">
-    <h2 id="fc-h">Прогноз остатка</h2>
+    <h2 id="fc-h">{{tx('Прогноз остатка')}}</h2>
     <p v-if="state === 'ready' && summary" class="fc-sub">{{summary}}</p>
    </div>
-   <div class="seg" role="group" aria-label="Горизонт прогноза">
-    <button v-for="d in [7, 30, 90]" :key="d" type="button" :class="{on: horizon === d}" :aria-pressed="horizon === d" @click="emit('horizon', d)">{{d}} дн.</button>
+   <div class="seg" role="group" :aria-label="tx('Горизонт прогноза')">
+    <button v-for="d in [7, 30, 90]" :key="d" type="button" :class="{on: horizon === d}" :aria-pressed="horizon === d" @click="emit('horizon', d)">{{tx('{n} дн.', {n: d})}}</button>
    </div>
   </header>
 
   <div v-if="state === 'loading'" class="fc-sk" aria-hidden="true"></div>
-  <div v-else-if="state === 'error'" class="fc-err"><p>Прогноз на {{horizon}} дней не загрузился: {{error}}</p><button type="button" class="secondary tiny" @click="emit('retry')">Повторить</button></div>
+  <div v-else-if="state === 'error'" class="fc-err"><p>{{tx('Прогноз на {n} дней не загрузился: {error}', {n: horizon, error: tx(error)})}}</p><button type="button" class="secondary tiny" @click="emit('retry')">{{tx('Повторить')}}</button></div>
   <template v-else-if="points.length">
-   <div ref="plot" class="fc-plot" tabindex="0" role="slider" aria-roledescription="график"
-        :aria-label="`Прогноз остатка на ${days} дней. ${summary}. Стрелки выбирают день, Escape скрывает подсказку.`"
+   <div ref="plot" class="fc-plot" tabindex="0" role="slider" :aria-roledescription="tx('график')"
+        :aria-label="tx('Прогноз остатка на {n} дней.', {n: days}) + ' ' + summary + '. ' + tx('Стрелки выбирают день, Escape скрывает подсказку.')"
         :aria-valuemin="0" :aria-valuemax="points.length - 1" :aria-valuenow="current" :aria-valuetext="valueText"
         @pointermove="move" @pointerleave="active = null" @keydown="key" @blur="active = null">
     <svg :viewBox="`0 0 ${box.width} ${box.height}`" :width="box.width" :height="box.height" aria-hidden="true">
@@ -136,24 +139,24 @@ const tipStyle = computed(() => {
     <div v-if="activeDay" ref="tip" class="fc-tip" :style="tipStyle" aria-hidden="true">
      <b>{{formatLongDate(activeDay.date)}}</b>
      <small>{{dayLabel(active)}}</small>
-     <span>Остаток <em>{{formatCents(activeDay.cents, currency)}} {{currency}}</em></span>
-     <span v-if="toCents(activeDay.incoming)">Поступления <em class="in">+{{formatCents(toCents(activeDay.incoming), currency)}}</em></span>
-     <span v-if="toCents(activeDay.outgoing)">Выплаты <em class="out">−{{formatCents(toCents(activeDay.outgoing), currency)}}</em></span>
-     <small v-if="activeDay.reserve_risk" class="warn">Ниже минимального резерва</small>
-     <small v-else-if="activeDay.risk" class="warn">Есть счёт в минусе</small>
+     <span>{{tx('Остаток')}} <em>{{formatCents(activeDay.cents, currency)}} {{currency}}</em></span>
+     <span v-if="toCents(activeDay.incoming)">{{tx('Поступления')}} <em class="in">+{{formatCents(toCents(activeDay.incoming), currency)}}</em></span>
+     <span v-if="toCents(activeDay.outgoing)">{{tx('Выплаты')}} <em class="out">−{{formatCents(toCents(activeDay.outgoing), currency)}}</em></span>
+     <small v-if="activeDay.reserve_risk" class="warn">{{tx('Ниже минимального резерва')}}</small>
+     <small v-else-if="activeDay.risk" class="warn">{{tx('Есть счёт в минусе')}}</small>
     </div>
    </div>
    <div class="fc-axis" aria-hidden="true"><span v-for="t in ticks" :key="'l' + t.i">{{formatShortDate(points0[t.i].date)}}</span></div>
    <ul class="fc-legend" aria-hidden="true">
-    <li><i class="k-today"></i>Сегодня, на конец дня</li>
-    <li><i class="k-plan"></i>План / прогноз</li>
-    <li v-if="reserveY != null"><i class="k-res"></i>Минимальный резерв {{formatCents(reserve, currency)}} {{currency}}</li>
+    <li><i class="k-today"></i>{{tx('Сегодня, на конец дня')}}</li>
+    <li><i class="k-plan"></i>{{tx('План / прогноз')}}</li>
+    <li v-if="reserveY != null"><i class="k-res"></i>{{tx('Минимальный резерв {amount} {currency}', {amount: formatCents(reserve, currency), currency})}}</li>
    </ul>
   </template>
-  <p v-else class="fc-note">Прогноз появится после первых операций и заявок.</p>
+  <p v-else class="fc-note">{{tx('Прогноз появится после первых операций и заявок.')}}</p>
 
   <p v-if="state === 'ready'" class="fc-week">
-   Ближайшие 7 дней · план: поступления <b :class="{in: incoming7}">{{formatCents(incoming7, currency, {sign: true})}}</b> · выплаты <b :class="{out: outgoing7}">{{outgoing7 == null ? '—' : formatCents(-outgoing7, currency)}}</b> {{currency}}
+   {{tx('Ближайшие 7 дней · план: поступления')}} <b :class="{in: incoming7}">{{formatCents(incoming7, currency, {sign: true})}}</b> · {{tx('выплаты')}} <b :class="{out: outgoing7}">{{outgoing7 == null ? '—' : formatCents(-outgoing7, currency)}}</b> {{currency}}
   </p>
  </section>
 </template>

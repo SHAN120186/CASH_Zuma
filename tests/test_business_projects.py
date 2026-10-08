@@ -282,6 +282,35 @@ class BusinessProjectTests(unittest.TestCase):
         self.assertEqual(current['revision'], saved.json()['revision'])
         self.assertEqual(current['inputs'], inputs)
 
+    def test_project_list_offers_the_latest_finished_business_plan_files(self):
+        project, _ = self.create('manual')
+        listing = lambda: {item['id']: item for item in self.client.get('/api/business-projects',
+            params={'company_id': self.cid}, headers=self.headers).json()['items']}
+        self.assertIsNone(listing()[project['id']]['latest_report'])
+        ready = self.generate(project).json()
+        latest = listing()[project['id']]['latest_report']
+        self.assertEqual(latest['generation_id'], ready['current_generation_id'])
+        self.assertTrue(latest['current'])
+        self.assertEqual(latest['business_archive']['status'], 'ready')
+        self.assertEqual(latest['business_archive']['company_id'], self.cid)
+        self.assertEqual(latest['teo_archive']['status'], 'ready')
+        archive = latest['business_archive']['id']
+        for fmt in ('pdf', 'xlsx'):
+            file = self.client.get(f'/api/report-archives/{archive}/files/{fmt}', params={'company_id': self.cid},
+                                   headers=self.headers)
+            self.assertEqual(file.status_code, 200, file.text)
+        # A changed draft keeps the earlier finished files available, marked as not current.
+        saved = self.save_draft(ready, {**model(), 'opening_cash': 600}).json()
+        latest = listing()[project['id']]['latest_report']
+        self.assertEqual(latest['generation_id'], ready['current_generation_id'])
+        self.assertFalse(latest['current'])
+        # Another company never sees the project or its files.
+        other = self.client.get('/api/business-projects', params={'company_id': self.other}, headers=self.headers)
+        self.assertNotIn(saved['id'], [item['id'] for item in other.json().get('items', [])] if other.status_code == 200 else [])
+        removed = self.remove(saved)
+        self.assertEqual(removed.status_code, 200, removed.text)
+        self.assertNotIn(saved['id'], listing())
+
     def test_draft_edit_invalidates_current_generation_and_retains_immutable_reports(self):
         project, _ = self.create('manual')
         ready = self.generate(project).json()

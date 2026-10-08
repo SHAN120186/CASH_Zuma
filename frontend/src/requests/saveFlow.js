@@ -13,19 +13,24 @@
 //    в неё статус «черновик» и не создаёт вторую заявку: дальнейшие изменения — в карточке с причиной.
 
 import {DOC_KINDS, REQUIRED_DOCS, STATUS} from './workflow.js';
+import {tx, N_} from '../i18n/index.js';
 
-export const RETRY_REASON = 'Повторное сохранение формы после ошибки загрузки файла';
+// Причина уходит на сервер по-русски (её видно в истории заявки); при показе она переводится.
+export const RETRY_REASON = N_('Повторное сохранение формы после ошибки загрузки файла');
 export const KIND_ORDER = ['internal', 'contract', 'other'];
 const EDITABLE = ['draft', 'returned'];
 const FIELDS = ['company_id', 'account_id', 'channel', 'currency', 'category_id', 'amount', 'counterparty', 'purpose', 'priority', 'date', 'project'];
 
+// Постоянные сообщения хранятся по-русски (N_) и переводятся формой при показе;
+// сообщения с номером, статусом или текстом сервера собираются на текущем языке (tx).
 export const MESSAGES = {
-  unknownCreate: 'Сервер не ответил при создании черновика: он мог сохраниться. Чтобы не создать вторую заявку, закройте форму и найдите черновик в списке заявок.',
-  alreadySent: n => `Заявка ${n} уже отправлена на согласование. Дальнейшие изменения — в карточке заявки с указанием причины.`,
-  closed: (n, status) => `Заявка ${n} уже в статусе «${STATUS[status] || status}»: форма её не меняет. Откройте карточку заявки.`,
-  statusChanged: (n, status) => `Статус заявки ${n} изменился: «${STATUS[status] || status}». Закройте форму и откройте карточку заявки.`,
-  stale: v => `Состояние заявки обновлено с сервера${v ? ' (версия ' + v + ')' : ''}. Проверьте поля и нажмите кнопку ещё раз.`,
-  noReply: 'Сервер не ответил. Нажмите кнопку ещё раз: форма сначала проверит состояние заявки на сервере.',
+  unknownCreate: N_('Сервер не ответил при создании черновика: он мог сохраниться. Чтобы не создать вторую заявку, закройте форму и найдите черновик в списке заявок.'),
+  alreadySent: n => tx('Заявка {n} уже отправлена на согласование. Дальнейшие изменения — в карточке заявки с указанием причины.', {n}),
+  closed: (n, status) => tx('Заявка {n} уже в статусе «{status}»: форма её не меняет. Откройте карточку заявки.', {n, status: tx(STATUS[status] || status)}),
+  statusChanged: (n, status) => tx('Статус заявки {n} изменился: «{status}». Закройте форму и откройте карточку заявки.', {n, status: tx(STATUS[status] || status)}),
+  stale: v => (v ? tx('Состояние заявки обновлено с сервера (версия {v}). Проверьте поля и нажмите кнопку ещё раз.', {v})
+    : tx('Состояние заявки обновлено с сервера. Проверьте поля и нажмите кнопку ещё раз.')),
+  noReply: N_('Сервер не ответил. Нажмите кнопку ещё раз: форма сначала проверит состояние заявки на сервере.'),
 };
 
 export function createSaveState(request = null) {
@@ -63,7 +68,7 @@ export function missingRequired(saved = [], files = []) {
 }
 
 export function missingMessage(missing) {
-  return 'Для отправки прикрепите: ' + missing.map(k => '«' + DOC_KINDS[k] + '»').join(', ') + '. Черновик можно сохранить без файлов.';
+  return tx('Для отправки прикрепите: {list}. Черновик можно сохранить без файлов.', {list: missing.map(k => '«' + tx(DOC_KINDS[k]) + '»').join(', ')});
 }
 
 // Ответ сервера не получен (сеть, прерванный запрос, шлюз): исход операции неизвестен.
@@ -170,9 +175,10 @@ export async function saveRequest(api, state, {fields, files = [], saved = [], s
           'Content-Type': 'application/octet-stream', 'X-Filename': encodeURIComponent(item.name), 'X-Request-Version': String(state.version)}});
       } catch (e) {
         if (e.status === 409 || e.status === 428) return conflictOr(api, state, e, 'upload', onServer);
-        const why = unknownOutcome(e) ? 'сервер не ответил' : clause(e.message);
-        return fail('upload_failed', `Файл «${item.name}» не загружен: ${why}. Черновик ${state.number || ''} сохранён; исправьте и нажмите кнопку ещё раз — `
-          + 'уже загруженные файлы повторно не отправляются.', {step: 'upload', file: item.key});
+        const why = unknownOutcome(e) ? tx('сервер не ответил') : clause(tx(e.message));
+        const message = tx('Файл «{name}» не загружен: {why}. Черновик {number} сохранён; исправьте и нажмите кнопку ещё раз — уже загруженные файлы повторно не отправляются.',
+          {name: item.name, why, number: state.number || ''});
+        return fail('upload_failed', message, {step: 'upload', file: item.key});
       }
       state.uploaded.add(item.key);
       if (res?.request_version != null) state.version = res.request_version;
@@ -188,7 +194,8 @@ export async function saveRequest(api, state, {fields, files = [], saved = [], s
     catch (e) {
       if (unknownOutcome(e)) return fail('failed', MESSAGES.noReply, {step: 'submit'});
       const server = await refetch(api, state, onServer);
-      return fail('submit_failed', `Черновик ${state.number || ''} сохранён, но не отправлен: ${clause(e.message)}.`, {step: 'submit', request: server});
+      return fail('submit_failed', tx('Черновик {number} сохранён, но не отправлен: {reason}.', {number: state.number || '', reason: clause(tx(e.message))}),
+        {step: 'submit', request: server});
     }
     remember(state, request);
   }
@@ -198,7 +205,7 @@ export async function saveRequest(api, state, {fields, files = [], saved = [], s
 async function conflictOr(api, state, e, step, onServer) {
   if (e.status === 409 || e.status === 428) {
     const server = await refetch(api, state, onServer);
-    return {ok: false, code: 'stale', message: `${e.message} ${MESSAGES.stale(server?.version)}`, step, request: server};
+    return {ok: false, code: 'stale', message: `${tx(e.message)} ${MESSAGES.stale(server?.version)}`, step, request: server};
   }
   return {ok: false, code: 'failed', message: unknownOutcome(e) ? MESSAGES.noReply : e.message, step};
 }

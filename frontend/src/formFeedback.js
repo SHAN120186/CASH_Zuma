@@ -1,6 +1,10 @@
-const COMMON_LABELS = {username:'Логин', password:'Пароль', title:'Название', name:'Название', amount:'Сумма', currency:'Валюта',
-  date:'Дата', start:'Начало периода', end:'Конец периода', period_start:'Начало периода', period_end:'Конец периода',
-  account_id:'Счёт', category_id:'Статья', counterparty:'Контрагент', purpose:'Назначение платежа', reference:'Номер документа'};
+import {tx,N_} from './i18n/index.js';
+
+// Fallback field names (Russian source text) translated when a message is built.
+const COMMON_LABELS = {username:N_('Логин'), password:N_('Пароль'), title:N_('Название'), name:N_('Название'), amount:N_('Сумма'), currency:N_('Валюта'),
+  date:N_('Дата'), start:N_('Начало периода'), end:N_('Конец периода'), period_start:N_('Начало периода'), period_end:N_('Конец периода'),
+  account_id:N_('Счёт'), category_id:N_('Статья'), counterparty:N_('Контрагент'), purpose:N_('Назначение платежа'), reference:N_('Номер документа')};
+const commonLabel = key => Object.hasOwn(COMMON_LABELS, key ?? '') ? tx(COMMON_LABELS[key]) : '';
 
 function labelText(label) {
   const copy = label.cloneNode?.(true);
@@ -15,17 +19,18 @@ export function controlLabel(control) {
   const explicit = control.getAttribute?.('aria-label');
   const legend = ['radio','checkbox'].includes(control.type) ? control.closest?.('fieldset')?.querySelector('legend')?.textContent : '';
   const associated = Array.from(control.labels || []).map(labelText).filter(Boolean).join(' ');
-  const value = explicit || legend || associated || COMMON_LABELS[control.name] || COMMON_LABELS[control.id] || control.placeholder || 'Обязательное поле';
+  // Visible names come from the rendered form, which is already in the interface language.
+  const value = explicit || legend || associated || commonLabel(control.name) || commonLabel(control.id) || control.placeholder || tx('Обязательное поле');
   return String(value).replace(/\s+/g,' ').replace(/\s*\*\s*$/,'').trim();
 }
 
 export function controlProblem(control) {
   const label = controlLabel(control), validity = control.validity || {};
-  if (validity.valueMissing) return {label, message:`Не заполнено: ${label}.`};
-  if (validity.badInput || validity.typeMismatch || validity.patternMismatch) return {label, message:`Проверьте формат поля «${label}».`};
-  if (validity.rangeUnderflow || validity.rangeOverflow) return {label, message:`Значение поля «${label}» вне допустимого диапазона.`};
-  if (validity.tooShort || validity.tooLong) return {label, message:`Проверьте длину поля «${label}».`};
-  return {label, message:`Проверьте поле «${label}».`};
+  if (validity.valueMissing) return {label, message:tx('Не заполнено: {label}.', {label})};
+  if (validity.badInput || validity.typeMismatch || validity.patternMismatch) return {label, message:tx('Проверьте формат поля «{label}».', {label})};
+  if (validity.rangeUnderflow || validity.rangeOverflow) return {label, message:tx('Значение поля «{label}» вне допустимого диапазона.', {label})};
+  if (validity.tooShort || validity.tooLong) return {label, message:tx('Проверьте длину поля «{label}».', {label})};
+  return {label, message:tx('Проверьте поле «{label}».', {label})};
 }
 
 export function invalidFormFields(form) {

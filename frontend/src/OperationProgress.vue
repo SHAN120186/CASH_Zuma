@@ -1,6 +1,7 @@
 <script setup>
 import {computed,ref,watch,onUnmounted} from 'vue';
 import {progressPercent} from './operationProgress.js';
+import {tx} from './i18n/index.js';
 const props=defineProps({active:{type:Boolean,default:false},label:{type:String,default:''},
   completed:{type:Number,default:0},total:{type:Number,default:0},error:{type:String,default:''}});
 const totalCount=computed(()=>Number.isFinite(props.total)&&props.total>0?Math.floor(props.total):0);
@@ -18,16 +19,20 @@ watch(()=>[props.active,props.completed,props.total,props.error,props.label],()=
 },{immediate:true});
 onUnmounted(clearCompletionTimer);
 const visible=computed(()=>props.active||completionVisible.value||!!props.error);
+// Labels and errors arrive as Russian source text (or server messages) and are translated here.
+// Several failures are joined with " · ": each part is translated when the whole is not known.
+const labelText=computed(()=>props.label?tx(props.label):tx('Выполняем действие'));
+const errorText=computed(()=>{const whole=tx(props.error);return whole!==props.error?whole:props.error.split(' · ').map(part=>tx(part)).join(' · ')});
 </script>
 <template>
   <section v-if="visible" class="operation-progress" :class="{'has-error':!!error}" role="status" aria-live="polite" aria-atomic="true">
-    <div class="operation-progress-title"><span v-if="active" class="operation-spinner" aria-hidden="true"></span><strong>{{label||'Выполняем действие'}}</strong><b v-if="percent!==null" class="operation-percent">{{percent}}%</b></div>
-    <div class="operation-progress-track" role="progressbar" :aria-label="label||'Прогресс действия'" aria-valuemin="0" aria-valuemax="100" :aria-valuenow="percent===null?undefined:percent" :aria-valuetext="percent===null?'Ожидаем ответ сервера':percent+'%'">
+    <div class="operation-progress-title"><span v-if="active" class="operation-spinner" aria-hidden="true"></span><strong>{{labelText}}</strong><b v-if="percent!==null" class="operation-percent">{{percent}}%</b></div>
+    <div class="operation-progress-track" role="progressbar" :aria-label="label?tx(label):tx('Прогресс действия')" aria-valuemin="0" aria-valuemax="100" :aria-valuenow="percent===null?undefined:percent" :aria-valuetext="percent===null?tx('Ожидаем ответ сервера'):percent+'%'">
       <span v-if="percent!==null" :style="{width:percent+'%'}"></span><span v-else class="operation-indeterminate"></span>
     </div>
-    <p class="operation-progress-caption">{{totalCount?'Прогресс этапов · '+completedCount+' из '+totalCount:'Ожидаем ответ сервера · количество этапов пока неизвестно'}}</p>
-    <p v-if="active" class="operation-progress-caption">{{totalCount?'Процент показывает завершённые этапы. Ожидаем завершения текущего этапа.':'Обновим прогресс после ответа сервера.'}}</p>
-    <p v-if="error" class="operation-progress-error">{{error}}</p>
+    <p class="operation-progress-caption">{{totalCount?tx('Прогресс этапов · {done} из {total}',{done:completedCount,total:totalCount}):tx('Ожидаем ответ сервера · количество этапов пока неизвестно')}}</p>
+    <p v-if="active" class="operation-progress-caption">{{totalCount?tx('Процент показывает завершённые этапы. Ожидаем завершения текущего этапа.'):tx('Обновим прогресс после ответа сервера.')}}</p>
+    <p v-if="error" class="operation-progress-error">{{errorText}}</p>
   </section>
 </template>
 <style scoped>

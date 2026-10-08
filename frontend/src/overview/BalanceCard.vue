@@ -2,6 +2,7 @@
 import {computed, nextTick, onBeforeUnmount, onMounted, ref, useId, watch} from 'vue';
 import {formatCents, formatAmount, amountTitle, formatAxisLabels, formatPercent, formatShortDate, formatLongDate} from './format.js';
 import {makeScale, smoothPath, tickIndexes} from './chart.js';
+import {tx} from '../i18n/index.js';
 
 const props = defineProps({
   state: {type: String, default: 'loading'}, // loading | ready | empty | error
@@ -96,7 +97,8 @@ const summary = computed(() => {
   const h = props.history || [];
   if (h.length < 2) return '';
   const min = h.reduce((a, d) => (d.balance < a.balance ? d : a), h[0]);
-  return `Остаток за ${h.length} дней: с ${formatCents(h[0].balance, props.currency)} до ${formatCents(h.at(-1).balance, props.currency)} ${props.currency}, минимум ${formatCents(min.balance, props.currency)} ${formatShortDate(min.date)}.`;
+  return tx('Остаток за {n} дней: с {from} до {to} {currency}, минимум {min} {date}.', {n: h.length, from: formatCents(h[0].balance, props.currency),
+    to: formatCents(h.at(-1).balance, props.currency), currency: props.currency, min: formatCents(min.balance, props.currency), date: formatShortDate(min.date)});
 });
 // The plot is a slider over the days: screen readers read this text for the
 // selected day (today until another one is chosen).
@@ -104,7 +106,8 @@ const current = computed(() => active.value ?? Math.max(0, (props.history || [])
 const valueText = computed(() => {
   const d = props.history?.[current.value];
   if (!d) return '';
-  return `${formatLongDate(d.date)}: остаток ${formatCents(d.balance, props.currency)}, приход ${formatCents(d.income, props.currency)}, расход ${formatCents(d.expense, props.currency)} ${props.currency}`;
+  return tx('{date}: остаток {balance}, приход {income}, расход {expense} {currency}', {date: formatLongDate(d.date), balance: formatCents(d.balance, props.currency),
+    income: formatCents(d.income, props.currency), expense: formatCents(d.expense, props.currency), currency: props.currency});
 });
 
 function nearest(event) {
@@ -147,29 +150,29 @@ function key(event) {
  <article class="bal" :class="'is-' + state" aria-labelledby="bal-title">
   <header class="bal-head">
    <div class="bal-titles">
-    <h2 id="bal-title">Доступный остаток</h2>
-    <p class="bal-sub"><span class="bal-company">{{company}}</span><span v-if="asOf" class="bal-asof">на {{formatLongDate(asOf)}}</span></p>
+    <h2 id="bal-title">{{tx('Доступный остаток')}}</h2>
+    <p class="bal-sub"><span class="bal-company">{{company}}</span><span v-if="asOf" class="bal-asof">{{tx('на {date}', {date: formatLongDate(asOf)})}}</span></p>
    </div>
-   <button v-if="canOpenReport" type="button" class="bal-icon" aria-label="Открыть отчёт Cash Flow" title="Отчёт Cash Flow" @click="emit('open-report')">
+   <button v-if="canOpenReport" type="button" class="bal-icon" :aria-label="tx('Открыть отчёт Cash Flow')" :title="tx('Отчёт Cash Flow')" @click="emit('open-report')">
     <svg viewBox="0 0 24 24" width="20" height="20" aria-hidden="true"><path d="M6 19v-5M12 19V9M18 19V5" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round"/></svg>
    </button>
   </header>
 
-  <div v-if="state === 'loading'" class="bal-skel" role="status" aria-label="Загружаем доступный остаток">
+  <div v-if="state === 'loading'" class="bal-skel" role="status" :aria-label="tx('Загружаем доступный остаток')">
    <span class="sk sk-amount"></span><span class="sk sk-pill"></span><span class="sk sk-chart"></span>
   </div>
 
   <div v-else-if="state === 'error'" class="bal-state" role="alert">
-   <p class="bal-state-title">Не удалось получить остаток</p>
-   <p class="bal-state-text">{{error || 'Сервер не ответил. Данные на экране не изменены.'}}</p>
-   <p v-if="onAccounts != null" class="bal-state-text">На счетах сейчас: <b :title="amountTitle(onAccounts, currency)">{{formatAmount(onAccounts, currency)}}</b> {{currency}}</p>
-   <button type="button" class="secondary tiny" @click="emit('retry')">Повторить</button>
+   <p class="bal-state-title">{{tx('Не удалось получить остаток')}}</p>
+   <p class="bal-state-text">{{error ? tx(error) : tx('Сервер не ответил. Данные на экране не изменены.')}}</p>
+   <p v-if="onAccounts != null" class="bal-state-text">{{tx('На счетах сейчас:')}} <b :title="amountTitle(onAccounts, currency)">{{formatAmount(onAccounts, currency)}}</b> {{currency}}</p>
+   <button type="button" class="secondary tiny" @click="emit('retry')">{{tx('Повторить')}}</button>
   </div>
 
   <div v-else-if="state === 'empty'" class="bal-state">
-   <p class="bal-state-title">Нет счетов в {{currency}}</p>
-   <p class="bal-state-text">Остаток появится, когда в компании будет счёт или касса в этой валюте.</p>
-   <button v-if="canAddAccount" type="button" class="tiny" @click="emit('add-account')">Добавить счёт</button>
+   <p class="bal-state-title">{{tx('Нет счетов в {currency}', {currency})}}</p>
+   <p class="bal-state-text">{{tx('Остаток появится, когда в компании будет счёт или касса в этой валюте.')}}</p>
+   <button v-if="canAddAccount" type="button" class="tiny" @click="emit('add-account')">{{tx('Добавить счёт')}}</button>
   </div>
 
   <template v-else>
@@ -177,20 +180,21 @@ function key(event) {
     <span class="bal-num">{{amountText}}</span><span class="bal-cur">{{currency}}</span>
    </p>
    <div class="bal-meta">
-    <span v-if="change && change.ratio != null" class="bal-delta" :class="direction" :title="'По сравнению с ' + formatLongDate(change.since)">
+    <span v-if="change && change.ratio != null" class="bal-delta" :class="direction" :title="tx('По сравнению с {date}', {date: formatLongDate(change.since)})">
      <svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true"><path v-if="direction === 'up'" d="M4 12 12 4M6 4h6v6"/><path v-else-if="direction === 'down'" d="M4 4l8 8M12 6v6H6"/><path v-else d="M3 8h10"/></svg>
-     <span>{{formatPercent(change.ratio)}} за месяц</span>
+     <span>{{tx('{percent} за месяц', {percent: formatPercent(change.ratio)})}}</span>
     </span>
-    <span v-else class="bal-delta flat">Нет данных для сравнения с прошлым месяцем</span>
+    <span v-else class="bal-delta flat">{{tx('Нет данных для сравнения с прошлым месяцем')}}</span>
    </div>
    <p class="bal-split">
-    На счетах <b :title="amountTitle(onAccounts, currency)">{{formatAmount(onAccounts, currency)}}</b> · в резерве утверждённых заявок <b :title="amountTitle(reserved, currency)">{{formatAmount(reserved, currency)}}</b> {{currency}}
+    {{tx('На счетах')}} <b :title="amountTitle(onAccounts, currency)">{{formatAmount(onAccounts, currency)}}</b> · {{tx('в резерве утверждённых заявок')}} <b :title="amountTitle(reserved, currency)">{{formatAmount(reserved, currency)}}</b> {{currency}}
    </p>
 
    <figure v-if="points.length > 1" class="bal-chart">
     <figcaption class="sr">{{summary}}</figcaption>
-    <div ref="plot" class="bal-plot" tabindex="0" role="slider" aria-roledescription="график"
-         :aria-label="'График остатка на счетах. ' + summary + ' Стрелки выбирают день' + (canOpenDay ? ', Enter открывает операции дня' : '') + ', Escape скрывает подсказку.'"
+    <div ref="plot" class="bal-plot" tabindex="0" role="slider" :aria-roledescription="tx('график')"
+         :aria-label="tx('График остатка на счетах.') + ' ' + summary + ' '
+           + (canOpenDay ? tx('Стрелки выбирают день, Enter открывает операции дня, Escape скрывает подсказку.') : tx('Стрелки выбирают день, Escape скрывает подсказку.'))"
          :aria-valuemin="0" :aria-valuemax="points.length - 1" :aria-valuenow="current" :aria-valuetext="valueText"
          :class="{clickable: canOpenDay}" @pointermove="move" @pointerleave="active = null" @click="click" @keydown="key" @blur="active = null">
      <svg :viewBox="`0 0 ${box.width} ${box.height}`" :width="box.width" :height="box.height" aria-hidden="true">
@@ -222,15 +226,15 @@ function key(event) {
      <span v-if="activeDay" class="bal-dot" :style="{left: points[active][0] + 'px', top: points[active][1] + 'px'}" aria-hidden="true"></span>
      <div v-if="activeDay" ref="tip" class="bal-tip" :style="tipStyle" aria-hidden="true">
       <b>{{formatLongDate(activeDay.date)}}</b>
-      <span>Остаток <em>{{formatCents(activeDay.balance, currency)}} {{currency}}</em></span>
-      <span>Приход <em :class="{in: activeDay.income}">{{formatCents(activeDay.income, currency, {sign: true})}}</em></span>
-      <span>Расход <em :class="{out: activeDay.expense}">{{activeDay.expense ? '−' + formatCents(activeDay.expense, currency) : formatCents(0, currency)}}</em></span>
-      <small v-if="canOpenDay">{{viaKeys ? 'Enter — операции этого дня' : 'Нажмите, чтобы открыть операции дня'}}</small>
+      <span>{{tx('Остаток')}} <em>{{formatCents(activeDay.balance, currency)}} {{currency}}</em></span>
+      <span>{{tx('Приход')}} <em :class="{in: activeDay.income}">{{formatCents(activeDay.income, currency, {sign: true})}}</em></span>
+      <span>{{tx('Расход')}} <em :class="{out: activeDay.expense}">{{activeDay.expense ? '−' + formatCents(activeDay.expense, currency) : formatCents(0, currency)}}</em></span>
+      <small v-if="canOpenDay">{{viaKeys ? tx('Enter — операции этого дня') : tx('Нажмите, чтобы открыть операции дня')}}</small>
      </div>
     </div>
     <div class="bal-axis" aria-hidden="true"><span v-for="t in ticks" :key="'l' + t.i">{{formatShortDate(history[t.i].date)}}</span></div>
    </figure>
-   <p v-else class="bal-note">История остатка появится после первых операций.</p>
+   <p v-else class="bal-note">{{tx('История остатка появится после первых операций.')}}</p>
    <p v-if="historyNote" class="bal-note">{{historyNote}}</p>
   </template>
  </article>

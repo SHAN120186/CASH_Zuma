@@ -172,7 +172,28 @@ def summary(s, project, user):
             'can_edit': owner and project.status != 'deleted',
             'can_delete': owner and project.status != 'deleted',
             'can_restore': owner and project.status == 'deleted',
-            'created_at': timestamp(project.created_at), 'updated_at': timestamp(project.updated_at)}
+            'created_at': timestamp(project.created_at), 'updated_at': timestamp(project.updated_at),
+            'latest_report': latest_report(s, project)}
+
+
+def latest_report(s, project):
+    # The project list offers the newest published business plan directly, so a
+    # finished PDF/Excel is found without opening the project form. Files are
+    # still served by the report-archive route with its own permission checks.
+    if project.status == 'deleted':
+        return None
+    for gen in s.scalars(select(BusinessGeneration).where(BusinessGeneration.project_id == project.id,
+                                                          BusinessGeneration.company_id == project.company_id)
+                         .order_by(BusinessGeneration.id.desc()).limit(5)):
+        business = archive_meta(s, gen.business_archive_id)
+        if business['status'] != 'ready' or business['company_id'] != project.company_id:
+            continue
+        teo = archive_meta(s, gen.teo_archive_id)
+        return {'generation_id': gen.id, 'revision': gen.revision, 'created_at': timestamp(gen.created_at),
+                'current': gen.fingerprint == project.current_fingerprint and gen.revision == project.revision,
+                'business_archive': business,
+                'teo_archive': teo if teo['status'] == 'ready' and teo['company_id'] == project.company_id else None}
+    return None
 
 
 def current_source_issues(extraction, inputs):
