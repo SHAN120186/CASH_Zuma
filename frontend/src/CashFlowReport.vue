@@ -79,7 +79,7 @@ const periodLabel=computed(()=>per.value==='year'?`${props.year} год`:per.val
 const exportUrl=ext=>`/api/export/report.${ext}?year=${props.year}&currency=${props.currency}&mode=${mode.value}&start_month=${start.value}&end_month=${end.value}&company_id=${props.companyId}&scenario=${props.scenario}&as_of=${props.asOf}`;
 async function edit(){editMonth.value=editorMonth(props.asOf,props.year,start.value,end.value);editor.value=true;saved.value=false;resetDraft();await nextTick();document.querySelector('.plan-editor')?.scrollIntoView({block:'start'})}
 function resetDraft(){const m=Number(editMonth.value)-1;draft.value=props.report.rows.map(r=>({category:r.category,category_id:r.category_id,kind:r.kind,amount:r.plan[m]==null?'':r.plan[m].replace('-','')}));opening.value=props.report.plan_opening_input[m]??'';reason.value='';error.value=''}
-async function save(){saving.value=true;error.value='';const month=Number(editMonth.value);try{await props.api('/api/cash-plan',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({company_id:props.companyId,scenario:props.scenario,month:`${props.year}-${String(month).padStart(2,'0')}`,currency:props.currency,version:props.report.plan_versions[month-1],opening:opening.value===''?null:String(opening.value),reason:reason.value,items:draft.value.map(({category,...r})=>({...r,amount:r.amount===''?null:String(r.amount)}))})});editor.value=false;saved.value=true;savedMonth.value=month;mode.value='plan';per.value='custom';start.value=month;end.value=month;emit('refresh');await nextTick();wrap.value?.scrollIntoView({block:'nearest'})}catch(e){error.value=e.message}finally{saving.value=false}}
+async function save(){saving.value=true;error.value='';const month=Number(editMonth.value);try{await props.api('/api/cash-plan',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({company_id:props.companyId,scenario:props.scenario,month:`${props.year}-${String(month).padStart(2,'0')}`,currency:props.currency,version:props.report.plan_versions[month-1],opening:opening.value===''?null:String(opening.value),reason:reason.value,items:draft.value.map(({category,...r})=>({...r,amount:r.amount===''?null:String(r.amount)}))})});editor.value=false;saved.value=true;savedMonth.value=month;mode.value='plan';per.value='custom';start.value=month;end.value=month;emit('refresh');await nextTick();wrap.value?.scrollIntoView?.({block:'nearest'})}catch(e){error.value=e.message}finally{saving.value=false}}
 function loadNote(){note.value=props.report.notes?.[`${props.year}-${String(noteMonth.value).padStart(2,'0')}:net`]||''}
 async function saveNote(){saving.value=true;error.value='';try{await props.api('/api/plan-note',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({company_id:props.companyId,scenario:props.scenario,month:`${props.year}-${String(noteMonth.value).padStart(2,'0')}`,currency:props.currency,indicator:'net',note:note.value})});saved.value=true;emit('refresh')}catch(e){error.value=e.message}finally{saving.value=false}}
 async function makeGroup(){error.value='';try{const q=new URLSearchParams({company_id:props.companyId,currency:props.currency,scenario:props.scenario,month:groupMonth.value,day:groupDay.value});groupText.value=(await props.api('/api/group-report?'+q)).text;groupOpen.value=true}catch(e){error.value=e.message}}
@@ -89,9 +89,10 @@ async function copyGroup(){await navigator.clipboard.writeText(groupText.value);
 // After loading (and when the period, view or units change) the month of "Факт по дату" is
 // scrolled into view; a shadow on the right edge shows that more columns are hidden there.
 const wrap=ref(null),moreRight=ref(false),bars=ref({x:0,y:0});
-function edges(){const el=wrap.value;if(!el)return;moreRight.value=el.scrollLeft+el.clientWidth<el.scrollWidth-1;bars.value={x:Math.max(0,el.offsetWidth-el.clientWidth-2*el.clientLeft),y:Math.max(0,el.offsetHeight-el.clientHeight-2*el.clientTop)}}
+const isElement=el=>!!el&&typeof el.querySelector==='function'&&typeof el.getBoundingClientRect==='function';
+function edges(){const el=wrap.value;if(!isElement(el))return;moreRight.value=el.scrollLeft+el.clientWidth<el.scrollWidth-1;bars.value={x:Math.max(0,el.offsetWidth-el.clientWidth-2*el.clientLeft),y:Math.max(0,el.offsetHeight-el.clientHeight-2*el.clientTop)}}
 function showAsOfMonth(){
- const el=wrap.value;if(!el)return;
+ const el=wrap.value;if(!isElement(el))return;
  const list=indices.value,y=Number(String(props.asOf).slice(0,4)),m=Number(String(props.asOf).slice(5,7))-1;
  const target=y===Number(props.year)?Math.min(Math.max(m,list[0]),list.at(-1)):y>Number(props.year)?list.at(-1):list[0];
  const th=el.querySelector(`th[data-m="${target}"]`);
@@ -102,7 +103,7 @@ function showAsOfMonth(){
 // Column widths can still change after the first scroll (web font, window size): the month
 // is aligned again unless the user has scrolled the table themselves since.
 let resize,autoLeft=null;
-function resized(){const el=wrap.value;if(el&&autoLeft!=null&&Math.abs(el.scrollLeft-autoLeft)<2)showAsOfMonth();else edges()}
+function resized(){const el=wrap.value;if(isElement(el)&&autoLeft!=null&&Math.abs(el.scrollLeft-autoLeft)<2)showAsOfMonth();else edges()}
 onMounted(()=>{nextTick(showAsOfMonth);if(typeof ResizeObserver==='function'&&wrap.value){resize=new ResizeObserver(resized);resize.observe(wrap.value);if(wrap.value.firstElementChild)resize.observe(wrap.value.firstElementChild)}});
 onBeforeUnmount(()=>resize?.disconnect());
 watch(()=>[props.asOf,props.year,props.currency,props.scenario,mode.value,unit.value,start.value,end.value].join('|'),()=>nextTick(showAsOfMonth));
