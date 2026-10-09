@@ -1,4 +1,4 @@
-"""Patch verified financial text slots in the retained UZGERMED Word template.
+"""Patch verified financial text slots in retained company Word templates.
 
 No DOCX reconstruction or Office execution happens here. Only w:t character
 data in verified slots is changed; runs, tables, VML fallback copies, styles,
@@ -46,6 +46,43 @@ PHARMACEUTICAL_MARKET_TEXT = 'Оценка фармацевтического р
 PROFIT_CELLS = tuple(column+str(row) for row in (18,41,64) for column in 'BCDEFGHIJKLM')
 CASH_FLOW_CELLS = tuple(column+str(row) for row,columns in ((30,'CDEFGHIJKLMN'),(56,'BCDEFGHIJKLM'),(81,'BCDEFGHIJKLM')) for column in columns)
 CUMULATIVE_CASH_CELLS = tuple(column+str(row) for row,columns in ((32,'CDEFGHIJKLMN'),(58,'BCDEFGHIJKLM'),(83,'BCDEFGHIJKLM')) for column in columns)
+
+ZUMA_PROFILE = 'zuma-36m-usd'
+ZUMA_LOCATION_PARAGRAPH = 333
+ZUMA_LOCATION_TEXT = ('Участок осуществления проекта, расположен по адресу: Республика Узбекистан, '
+                      'Ташкентская область, Ю. Чирчик район, Бордонкул К.Ф.Й., Дустлик мах. '
+                      'Общая площадь территории составляет 10\u00a0880,00 кв.м.')
+ZUMA_LOCATION_EVIDENCE = ('Предприятие расположено в Паркентском районе Ташкентской области и осуществляет '
+                          'производственную деятельность на территории СЭЗ «Parkent-Farm».')
+ZUMA_LOCATION_REPLACEMENT = ('Производственная площадка предприятия расположена в Паркентском районе '
+                             'Ташкентской области, на территории СЭЗ «Parkent-Farm».')
+
+
+def _bindings(xml, spans, profile_id=None):
+    """Select an inspected layout by its company markers, not by file name.
+
+    Expected profiles bind the Word to the selected Excel. Unlabelled synthetic
+    legacy fixtures retain the old layout only when no expected profile is given.
+    """
+    def text(index):
+        key=('paragraph',index)
+        return ''.join(n.value for n in _text_nodes(xml,spans[key])) if key in spans else ''
+    identity=' '.join((text(7)+' '+text(52)).upper().split())
+    zuma='ZUMA-PHARMA' in identity
+    if profile_id == ZUMA_PROFILE and not zuma or zuma and profile_id not in (None,ZUMA_PROFILE):
+        raise ValueError('Excel и Word относятся к разным шаблонам компании. Добавьте оригинальную пару одной фирмы.')
+    if profile_id not in (None,ZUMA_PROFILE,'uzgermed-36m-usd'):
+        raise ValueError('Профиль Word не поддерживается.')
+    if profile_id == 'uzgermed-36m-usd' and 'UZGERMED PHARM' not in identity:
+        raise ValueError('Word не содержит название компании выбранного Excel. Добавьте оригинальный Word этой фирмы.')
+    return {'profile_id':ZUMA_PROFILE if zuma else 'uzgermed-36m-usd',
+            'staff':385 if zuma else STAFF_PARAGRAPH,
+            'staff_cells':('B35','B56') if zuma else ('B35','B48'),
+            'credit':{12:2,144:1} if zuma else CREDIT_PARAGRAPHS,
+            'vat':400 if zuma else VAT_PARAGRAPH,
+            'no_loss':401 if zuma else NO_LOSS_PARAGRAPH,
+            'positive_cash':420 if zuma else POSITIVE_CASH_PARAGRAPH,
+            'sector':478 if zuma else OBSOLETE_SECTOR_PARAGRAPH}
 
 
 def _tag_end(raw,start):
@@ -286,9 +323,9 @@ def prepare_pdf_layout(raw):
     return _package_document(raw,patched)
 
 
-def report_sources(raw):
+def report_sources(raw,profile_id=None):
     """Return the verified source-cell targets actually present in this template."""
-    xml=_read(raw);spans=_containers(xml);sources=[]
+    xml=_read(raw);spans=_containers(xml);bindings=_bindings(xml,spans,profile_id);sources=[]
     for word_row,excel_row in COST_ROWS:
         for word_column,excel_column in COST_COLUMNS:
             key=('cell',0,word_row,word_column)
@@ -298,18 +335,18 @@ def report_sources(raw):
     sources.append({'sheet':'Стоим_проекта','cell':'B38'})
     sources.extend({'sheet':'ТОЧКА','cell':cell} for _,cell,_ in BREAK_EVEN)
     if _has_utility_table(xml,spans):sources.extend({'sheet':'Труд','cell':cell} for _,_,cell in UTILITY_CELLS)
-    key=('paragraph',STAFF_PARAGRAPH)
+    key=('paragraph',bindings['staff'])
     if key in spans:
         old=''.join(n.value for n in _text_nodes(xml,spans[key]))
-        if all(pattern.search(old) for pattern,_ in STAFF_SLOTS):sources.extend({'sheet':'Труд','cell':cell} for cell in ('B35','B48'))
-    if any(('paragraph',index) in spans and CREDIT_AMOUNT.search(''.join(n.value for n in _text_nodes(xml,spans['paragraph',index]))) for index in CREDIT_PARAGRAPHS):
+        if all(pattern.search(old) for pattern,_ in STAFF_SLOTS):sources.extend({'sheet':'Труд','cell':cell} for cell in bindings['staff_cells'])
+    if any(('paragraph',index) in spans and CREDIT_AMOUNT.search(''.join(n.value for n in _text_nodes(xml,spans['paragraph',index]))) for index in bindings['credit']):
         sources.append({'sheet':'Стоим_проекта','cell':'D34'})
-    key=('paragraph',VAT_PARAGRAPH)
+    key=('paragraph',bindings['vat'])
     if key in spans:
         old=''.join(n.value for n in _text_nodes(xml,spans[key]))
         if VAT_TEXT.fullmatch(old):sources.append({'sheet':'НДС','cell':'F4'})
-    for index,expected,sheet,cells in ((NO_LOSS_PARAGRAPH,NO_LOSS_TEXT,'Приб_Убыт',PROFIT_CELLS),
-                                       (POSITIVE_CASH_PARAGRAPH,POSITIVE_CASH_TEXT,'Поток_нал',CASH_FLOW_CELLS+CUMULATIVE_CASH_CELLS)):
+    for index,expected,sheet,cells in ((bindings['no_loss'],NO_LOSS_TEXT,'Приб_Убыт',PROFIT_CELLS),
+                                       (bindings['positive_cash'],POSITIVE_CASH_TEXT,'Поток_нал',CASH_FLOW_CELLS+CUMULATIVE_CASH_CELLS)):
         key=('paragraph',index)
         if key in spans and ' '.join(''.join(n.value for n in _text_nodes(xml,spans[key])).split())==expected:
             sources.extend({'sheet':sheet,'cell':cell} for cell in cells)
@@ -321,7 +358,7 @@ def _has_utility_table(xml,spans):
                for row,label in ((2,'Электроэнергия'),(3,'Газ'),(4,'ВСЕГО')))
 
 
-def patch_business_docx(raw,values):
+def patch_business_docx(raw,values,profile_id=None):
     """Return (docx_bytes, metadata), updating only verified template bindings.
 
     Table0 maps project cost, table6 maps break-even, and explicit prose slots
@@ -330,7 +367,7 @@ def patch_business_docx(raw,values):
     a market-share statement with no model binding. Unverified text or embedded
     pictures are not guessed or rewritten.
     """
-    xml=_read(raw);spans=_containers(xml);patches=[];edits=[];mapped=[]
+    xml=_read(raw);spans=_containers(xml);bindings=_bindings(xml,spans,profile_id);patches=[];edits=[];mapped=[]
     def cell(table,row,column,sheet,address,scale=1,optional=False):
         key=('cell',table,row,column)
         if key not in spans:raise ValueError('The Word table structure does not match the retained template')
@@ -350,7 +387,7 @@ def patch_business_docx(raw,values):
     if _has_utility_table(xml,spans):
         for row,column,address in UTILITY_CELLS:cell(5,row,column,'Труд',address)
     paragraphs=0
-    for index,expected in CREDIT_PARAGRAPHS.items():
+    for index,expected in bindings['credit'].items():
         key=('paragraph',index)
         if key not in spans:continue
         nodes=_text_nodes(xml,spans[key]);old=''.join(n.value for n in nodes)
@@ -365,19 +402,20 @@ def patch_business_docx(raw,values):
             if before!=after:
                 _replace(nodes,match.start('amount'),match.end('amount'),after,patches)
                 edits.append({**binding,'before':before,'after':after})
-    key=('paragraph',STAFF_PARAGRAPH)
+    key=('paragraph',bindings['staff'])
     if key in spans:
         nodes=_text_nodes(xml,spans[key]);old=''.join(n.value for n in nodes)
         matches=[pattern.search(old) for pattern,_ in STAFF_SLOTS]
         if all(matches):
-            for match,(_,addresses) in zip(matches,STAFF_SLOTS):
+            production,admin=bindings['staff_cells']
+            for match,addresses in zip(matches,((production,admin),(admin,),(production,))):
                 before=match['amount'];after=_format(sum(_value(values,'Труд',address) for address in addresses),before)
-                binding={'kind':'paragraph','paragraph':STAFF_PARAGRAPH,'sheet':'Труд','addresses':list(addresses),'start':match.start('amount'),'end':match.end('amount')}
+                binding={'kind':'paragraph','paragraph':bindings['staff'],'sheet':'Труд','addresses':list(addresses),'start':match.start('amount'),'end':match.end('amount')}
                 mapped.append(binding);paragraphs+=1
                 if before!=after:
                     _replace(nodes,match.start('amount'),match.end('amount'),after,patches)
                     edits.append({**binding,'before':before,'after':after})
-    key=('paragraph',VAT_PARAGRAPH)
+    key=('paragraph',bindings['vat'])
     if key in spans:
         nodes=_text_nodes(xml,spans[key]);old=''.join(n.value for n in nodes);match=VAT_TEXT.fullmatch(old)
         if match:
@@ -387,15 +425,15 @@ def patch_business_docx(raw,values):
             before=match['amount'];digits=format(number,'f').rstrip('0').rstrip('.') if number else '0'
             if number==number.to_integral():digits=format(number.quantize(Decimal(1)),'f')
             after=digits.replace('.',',' if ',' in before or '.' not in before else '.')+'%'
-            binding={'kind':'paragraph','paragraph':VAT_PARAGRAPH,'sheet':'НДС','address':'F4','start':match.start('amount'),'end':match.end('amount')}
+            binding={'kind':'paragraph','paragraph':bindings['vat'],'sheet':'НДС','address':'F4','start':match.start('amount'),'end':match.end('amount')}
             mapped.append(binding);paragraphs+=1
             if before!=after:
                 _replace(nodes,match.start('amount'),match.end('amount'),after,patches)
                 edits.append({**binding,'before':before,'after':after})
     for index,expected,sheet,cells,comparison,replacement in (
-            (NO_LOSS_PARAGRAPH,NO_LOSS_TEXT,'Приб_Убыт',PROFIT_CELLS,'nonnegative',
+            (bindings['no_loss'],NO_LOSS_TEXT,'Приб_Убыт',PROFIT_CELLS,'nonnegative',
              'В пересчитанном прогнозе имеются месяцы с убытком. Помесячные результаты представлены в финансовом приложении.'),
-            (POSITIVE_CASH_PARAGRAPH,POSITIVE_CASH_TEXT,'Поток_нал',CASH_FLOW_CELLS+CUMULATIVE_CASH_CELLS,'positive',
+            (bindings['positive_cash'],POSITIVE_CASH_TEXT,'Поток_нал',CASH_FLOW_CELLS+CUMULATIVE_CASH_CELLS,'positive',
              'Помесячный и кумулятивный поток наличности представлены в пересчитанном финансовом приложении. Положительный поток на протяжении всего периода не подтверждается.')):
         key=('paragraph',index)
         if key not in spans:continue
@@ -411,16 +449,30 @@ def patch_business_docx(raw,values):
         edits.append({**binding,'before':old,'after':replacement,'reason':'fresh_monthly_results_do_not_support_source_conclusion'})
     # This exact retained paragraph refers to another industry. Correct only
     # its verified slot, without guessing market growth or changing custom prose.
-    key=('paragraph',OBSOLETE_SECTOR_PARAGRAPH)
+    key=('paragraph',bindings['sector'])
     if key in spans:
         nodes=_text_nodes(xml,spans[key]);old=''.join(n.value for n in nodes)
         if old==OBSOLETE_SECTOR_TEXT:
-            binding={'kind':'narrative','paragraph':OBSOLETE_SECTOR_PARAGRAPH}
+            binding={'kind':'narrative','paragraph':bindings['sector']}
             mapped.append(binding)
             leading=len(old)-len(old.lstrip());trailing=len(old.rstrip())
             _replace(nodes,leading,trailing,PHARMACEUTICAL_MARKET_TEXT,patches)
             edits.append({**binding,'before':old,'after':PHARMACEUTICAL_MARKET_TEXT,
                           'reason':'obsolete_sector_reference'})
+    # Replace a verified leftover from another company only when the retained
+    # ZUMA document itself supplies its actual production location. No floor
+    # area or legal-address-to-factory inference is added.
+    key=('paragraph',ZUMA_LOCATION_PARAGRAPH)
+    evidence=('paragraph',146)
+    if bindings['profile_id']==ZUMA_PROFILE and key in spans and evidence in spans:
+        nodes=_text_nodes(xml,spans[key]);old=''.join(n.value for n in nodes)
+        confirmed=''.join(n.value for n in _text_nodes(xml,spans[evidence]))
+        if old==ZUMA_LOCATION_TEXT and ZUMA_LOCATION_EVIDENCE in confirmed:
+            binding={'kind':'narrative','paragraph':ZUMA_LOCATION_PARAGRAPH,'source_paragraph':146}
+            mapped.append(binding)
+            _replace(nodes,0,len(old),ZUMA_LOCATION_REPLACEMENT,patches)
+            edits.append({**binding,'before':old,'after':ZUMA_LOCATION_REPLACEMENT,
+                          'reason':'unrelated_company_location_corrected_from_source'})
     # Several numeric mentions may share one w:t node. Merge their character
     # edits before serialising, so one edit cannot overwrite another.
     by_span={}
@@ -435,7 +487,7 @@ def patch_business_docx(raw,values):
         for left,right,replacement in sorted(node['edits'],reverse=True):text=text[:left]+replacement+text[right:]
         patched=patched[:start]+escape(text).encode('utf8')+patched[end:]
     ET.fromstring(patched,forbid_dtd=True,forbid_entities=True,forbid_external=True)
-    return _package_document(raw,patched),{'edits':edits,'updated_fields':len(edits),'mapped_fields':mapped,
+    return _package_document(raw,patched),{'profile_id':bindings['profile_id'],'edits':edits,'updated_fields':len(edits),'mapped_fields':mapped,
              'mapped_table_cells':sum(i['kind']=='table' for i in mapped),'mapped_paragraph_mentions':paragraphs,
              'preserved_other_zip_parts':True,'preserved_media':True,
              'scope':'verified_project_cost_utilities_break_even_credit_vat_staff_monthly_conclusions_sector_prose','unmapped_numeric_text':'retained_without_inference'}

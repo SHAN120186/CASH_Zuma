@@ -26,20 +26,23 @@ from .business_sources import _xlsx, MAX_CELLS, MAX_FILE_BYTES
 
 NS = {"s": "http://schemas.openxmlformats.org/spreadsheetml/2006/main"}
 REL_ID = "{http://schemas.openxmlformats.org/officeDocument/2006/relationships}id"
-FUNCTIONS = frozenset({"SUM", "IF", "AVERAGEA", "SUMPRODUCT", "EDATE", "IFERROR", "NPV", "IRR", "TRANSPOSE"})
+FUNCTIONS = frozenset({"SUM", "IF", "AVERAGEA", "SUMPRODUCT", "EDATE", "IFERROR", "NPV", "IRR", "TRANSPOSE", "VLOOKUP", "MATCH", "INDEX", "UPPER", "SUBSTITUTE"})
 CELL = re.compile(r"\$?([A-Za-z]{1,3})\$?([1-9][0-9]{0,4})\Z")
 MAX_FORMULA = 16_000
 MAX_TOKENS = 4096
 MAX_DEPTH = 256
-MAX_OPERATIONS = 2_000_000
+# The inspected 121-product model has bounded recipe lookups over 983 rows.
+# Keep a finite budget while allowing its exact MATCH/INDEX chains to finish.
+MAX_OPERATIONS = 10_000_000
 ERROR_CODES = {"#REF!", "#DIV/0!", "#VALUE!", "#NAME?", "#N/A", "#NUM!", "#NULL!"}
 TOKEN = re.compile(r'''\s*(?:(?P<error>\#(?:REF!|DIV/0!|VALUE!|NAME\?|N/A|NUM!|NULL!))|(?P<number>(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][+-]?\d+)?)|(?P<string>"(?:[^"]|"")*")|(?P<quoted>'(?:[^']|'')*')|(?P<ident>\$?[A-Za-z_\\\u0080-\uffff][A-Za-z0-9_.$\\\u0080-\uffff]*)|(?P<op><>|<=|>=|[+\-*/^%(),:!<>=&]))''')
 
 
 class ExcelError(Exception):
-    def __init__(self, code="#VALUE!", reason=""):
+    def __init__(self, code="#VALUE!", reason="", *, fatal=False):
         self.code = code
         self.reason = reason or code
+        self.fatal = fatal  # unsupported execution must not become IFERROR's financial zero
         super().__init__(self.reason)
 
 
@@ -114,6 +117,35 @@ def _finite(value):
     if isinstance(value, float) and not math.isfinite(value):
         raise ExcelError("#NUM!", "Numeric calculation overflow")
     return value
+
+
+def _lookup_tokens(value):
+    """Excel wildcard tokens; uploaded patterns never become regular expressions."""
+    tokens = []
+    index = 0
+    while index < len(value):
+        character = value[index]
+        if character == "~" and index + 1 < len(value) and value[index + 1] in "*?~":
+            index += 1
+            tokens.append(('literal', value[index].casefold()))
+        elif character in '*?':
+            if character != '*' or not tokens or tokens[-1][0] != '*':
+                tokens.append((character, ''))
+        else:
+            tokens.append(('literal', character.casefold()))
+        index += 1
+    return ''.join(token[1] for token in tokens) if all(token[0] == 'literal' for token in tokens) else tokens
+
+
+def _text_value(value):
+    value = _scalar(value)
+    if value is None:
+        return ''
+    if isinstance(value, bool):
+        return 'TRUE' if value else 'FALSE'
+    if isinstance(value, (int, float)):
+        return format(value, '.15g')
+    return str(value)
 
 
 def _preflight(raw):
@@ -368,6 +400,10 @@ class Workbook:
             result = self._cell(sheet, anchor)
             if isinstance(result, ExcelError):
                 return result
+            # A legacy single-cell CSE formula (e.g. INDEX/MATCH) may return
+            # a scalar even though OOXML declares it as an array formula.
+            if height == width == 1 and not isinstance(result, Matrix):
+                return 0.0 if result is None else result
             if not isinstance(result, Matrix) or len(result.rows) != height or any(len(r) != width for r in result.rows):
                 return ExcelError("#VALUE!", "Array result does not match its declared output range")
             value=result.rows[row][col]
@@ -418,7 +454,7 @@ class Workbook:
     def evaluate(self, node, sheet, depth=0):
         self.operations += 1
         if self.operations > MAX_OPERATIONS or depth > MAX_DEPTH:
-            raise ExcelError("#VALUE!", "Calculation complexity limit")
+            raise ExcelError("#VALUE!", "Calculation complexity limit", fatal=True)
         kind = node[0]
         if kind == "literal": return node[1]
         if kind == "error": raise ExcelError(node[1], "Broken reference in formula")
@@ -470,7 +506,7 @@ class Workbook:
         c1, c2 = sorted((c1,c2)); r1,r2 = sorted((r1,r2))
         count = (c2-c1+1)*(r2-r1+1)
         if count > MAX_CELLS or self.operations + count > MAX_OPERATIONS:
-            raise ExcelError("#VALUE!", "Range exceeds calculation bounds")
+            raise ExcelError("#VALUE!", "Range exceeds calculation bounds", fatal=True)
         self.operations += count
         return Matrix(tuple(tuple(self.value(sheet, _col(c)+str(r)) for c in range(c1,c2+1)) for r in range(r1,r2+1)))
 
@@ -531,11 +567,168 @@ class Workbook:
                 value=self.evaluate(arguments[0],sheet,depth)
                 if not isinstance(value,Matrix): _scalar(value)
                 elif any(isinstance(v,ExcelError) for v in value.flat()):
+                    blocker = next((v for v in value.flat() if isinstance(v, ExcelError) and v.fatal), None)
+                    if blocker is not None:
+                        raise blocker
                     fallback=self.evaluate(arguments[1],sheet,depth)
                     return Matrix(tuple(tuple(fallback if isinstance(v,ExcelError) else v for v in row) for row in value.rows),False)
                 return value
-            except ExcelError: return self.evaluate(arguments[1],sheet,depth)
+            except ExcelError as error:
+                if error.fatal:
+                    raise
+                return self.evaluate(arguments[1],sheet,depth)
+        if name == 'INDEX':
+            if not 2 <= len(arguments) <= 3:
+                raise ExcelError('#VALUE!', 'INDEX expects an array, row and optional column')
+            row = math.trunc(_number(self.evaluate(arguments[1], sheet, depth)))
+            column = math.trunc(_number(self.evaluate(arguments[2], sheet, depth))) if len(arguments) == 3 else 1
+            if row < 1 or column < 1:
+                raise ExcelError('#NAME?', 'Unsupported whole-row/column INDEX', fatal=True)
+            node = arguments[0]
+            if node[0] == 'range':
+                target_sheet = self.sheet(node[1] or sheet)
+                c1, r1 = _address(node[2]); c2, r2 = _address(node[3])
+                c1, c2 = sorted((c1, c2)); r1, r2 = sorted((r1, r2))
+                if row > r2 - r1 + 1 or column > c2 - c1 + 1:
+                    raise ExcelError('#REF!', 'INDEX position exceeds the array')
+                # Only the selected address is a value dependency. Evaluating
+                # the entire cost column would create false circular references.
+                returned = _scalar(self.value(target_sheet, _col(c1 + column - 1) + str(r1 + row - 1)))
+            else:
+                table = self.evaluate(node, sheet, depth)
+                if not isinstance(table, Matrix):
+                    table = Matrix(((_scalar(table),),))
+                if row > len(table.rows) or column > len(table.rows[0]):
+                    raise ExcelError('#REF!', 'INDEX position exceeds the array')
+                returned = _scalar(table.rows[row - 1][column - 1])
+            return 0.0 if returned is None else returned
+        if name == 'VLOOKUP' and 3 <= len(arguments) <= 4 and arguments[1][0] == 'range':
+            if len(arguments) != 4 or _number(self.evaluate(arguments[3], sheet, depth)) != 0:
+                raise ExcelError('#NAME?', 'Unsupported approximate VLOOKUP', fatal=True)
+            lookup = _scalar(self.evaluate(arguments[0], sheet, depth))
+            column = math.trunc(_number(self.evaluate(arguments[2], sheet, depth)))
+            node = arguments[1]
+            target_sheet = self.sheet(node[1] or sheet)
+            c1, r1 = _address(node[2]); c2, r2 = _address(node[3])
+            c1, c2 = sorted((c1, c2)); r1, r2 = sorted((r1, r2))
+            if (c2 - c1 + 1) * (r2 - r1 + 1) > MAX_CELLS:
+                raise ExcelError('#VALUE!', 'Range exceeds calculation bounds', fatal=True)
+            if column < 1:
+                raise ExcelError('#VALUE!', 'VLOOKUP column must be positive')
+            if column > c2 - c1 + 1:
+                raise ExcelError('#REF!', 'VLOOKUP column exceeds the table')
+            tokens = _lookup_tokens(lookup) if isinstance(lookup, str) else None
+            for row in range(r1, r2 + 1):
+                self.operations += 1
+                if self.operations > MAX_OPERATIONS:
+                    raise ExcelError('#VALUE!', 'Calculation complexity limit', fatal=True)
+                candidate = self.value(target_sheet, _col(c1) + str(row))
+                if isinstance(candidate, ExcelError):
+                    continue
+                if self.lookup_matches(lookup, _scalar(candidate), tokens):
+                    # Unselected return cells are not evaluated or added as
+                    # dependencies: they may legitimately refer to this lookup.
+                    returned = _scalar(self.value(target_sheet, _col(c1 + column - 1) + str(row)))
+                    return 0.0 if returned is None else returned
+            raise ExcelError('#N/A', 'VLOOKUP exact match was not found')
+        if name == 'MATCH' and 2 <= len(arguments) <= 3 and arguments[1][0] == 'range':
+            if len(arguments) != 3 or _number(self.evaluate(arguments[2], sheet, depth)) != 0:
+                raise ExcelError('#NAME?', 'Unsupported approximate MATCH', fatal=True)
+            lookup = _scalar(self.evaluate(arguments[0], sheet, depth))
+            node = arguments[1]
+            target_sheet = self.sheet(node[1] or sheet)
+            c1, r1 = _address(node[2]); c2, r2 = _address(node[3])
+            c1, c2 = sorted((c1, c2)); r1, r2 = sorted((r1, r2))
+            if c1 != c2 and r1 != r2:
+                raise ExcelError('#N/A', 'MATCH needs a one-dimensional array')
+            count = max(c2 - c1 + 1, r2 - r1 + 1)
+            if count > MAX_CELLS:
+                raise ExcelError('#VALUE!', 'Range exceeds calculation bounds', fatal=True)
+            tokens = _lookup_tokens(lookup) if isinstance(lookup, str) else None
+            for index in range(count):
+                self.operations += 1
+                if self.operations > MAX_OPERATIONS:
+                    raise ExcelError('#VALUE!', 'Calculation complexity limit', fatal=True)
+                cell = _col(c1 + (index if r1 == r2 else 0)) + str(r1 + (index if c1 == c2 else 0))
+                candidate = self.value(target_sheet, cell)
+                if not isinstance(candidate, ExcelError) and self.lookup_matches(lookup, _scalar(candidate), tokens):
+                    return float(index + 1)
+            raise ExcelError('#N/A', 'MATCH exact value was not found')
         values=[self.evaluate(arg,sheet,depth) for arg in arguments]
+        if name == 'UPPER':
+            if len(values) != 1:
+                raise ExcelError('#VALUE!', 'UPPER expects one argument')
+            result = _text_value(values[0]).upper()
+            if len(result) > 120000:
+                raise ExcelError('#VALUE!', 'Text calculation exceeds supported length', fatal=True)
+            return result
+        if name == 'SUBSTITUTE':
+            if not 3 <= len(values) <= 4:
+                raise ExcelError('#VALUE!', 'SUBSTITUTE expects three or four arguments')
+            text, old, new = map(_text_value, values[:3])
+            if len(values) == 4:
+                instance = math.trunc(_number(values[3]))
+                if instance < 1:
+                    raise ExcelError('#VALUE!', 'SUBSTITUTE instance must be positive')
+                position, start = -1, 0
+                for _ in range(instance):
+                    self.operations += 1
+                    if self.operations > MAX_OPERATIONS:
+                        raise ExcelError('#VALUE!', 'Calculation complexity limit', fatal=True)
+                    position = text.find(old, start)
+                    if position < 0:
+                        return text
+                    start = position + max(1, len(old))
+                if old and len(text) - len(old) + len(new) > 120000:
+                    raise ExcelError('#VALUE!', 'Text calculation exceeds supported length', fatal=True)
+                result = text[:position] + new + text[position + len(old):] if old else text
+            else:
+                if old and len(text) + text.count(old) * (len(new) - len(old)) > 120000:
+                    raise ExcelError('#VALUE!', 'Text calculation exceeds supported length', fatal=True)
+                result = text.replace(old, new) if old else text
+            if len(result) > 120000:
+                raise ExcelError('#VALUE!', 'Text calculation exceeds supported length', fatal=True)
+            return result
+        if name == 'MATCH':
+            if not 2 <= len(values) <= 3:
+                raise ExcelError('#VALUE!', 'MATCH expects two or three arguments')
+            if len(values) != 3 or _number(values[2]) != 0:
+                raise ExcelError('#NAME?', 'Unsupported approximate MATCH', fatal=True)
+            lookup = _scalar(values[0])
+            table = values[1]
+            if not isinstance(table, Matrix) or (len(table.rows) != 1 and len(table.rows[0]) != 1):
+                raise ExcelError('#N/A', 'MATCH needs a one-dimensional array')
+            tokens = _lookup_tokens(lookup) if isinstance(lookup, str) else None
+            for index, candidate in enumerate(table.flat(), 1):
+                if not isinstance(candidate, ExcelError) and self.lookup_matches(lookup, _scalar(candidate), tokens):
+                    return float(index)
+            raise ExcelError('#N/A', 'MATCH exact value was not found')
+        if name == "VLOOKUP":
+            if not 3 <= len(values) <= 4:
+                raise ExcelError("#VALUE!", "VLOOKUP expects three or four arguments")
+            # The supplied native models use exact FALSE lookups. A sorted
+            # approximate lookup must not silently receive exact semantics.
+            if len(values) != 4 or _number(values[3]) != 0:
+                raise ExcelError("#NAME?", "Unsupported approximate VLOOKUP", fatal=True)
+            lookup = _scalar(values[0])
+            table = values[1]
+            if not isinstance(table, Matrix) or not table.rows or not table.rows[0]:
+                raise ExcelError("#VALUE!", "VLOOKUP needs a rectangular table")
+            column = math.trunc(_number(values[2]))
+            if column < 1:
+                raise ExcelError("#VALUE!", "VLOOKUP column must be positive")
+            if column > len(table.rows[0]):
+                raise ExcelError("#REF!", "VLOOKUP column exceeds the table")
+            tokens = _lookup_tokens(lookup) if isinstance(lookup, str) else None
+            for row in table.rows:
+                candidate = row[0]
+                if isinstance(candidate, ExcelError):
+                    continue  # an unrelated table error is not a returned value
+                candidate = _scalar(candidate)
+                if self.lookup_matches(lookup, candidate, tokens):
+                    returned = _scalar(row[column - 1])
+                    return 0.0 if returned is None else returned
+            raise ExcelError("#N/A", "VLOOKUP exact match was not found")
         if name in ("SUM","AVERAGEA"):
             items=[]
             for value in values:
@@ -599,6 +792,38 @@ class Workbook:
                 except (OverflowError,ZeroDivisionError) as error:raise ExcelError("#NUM!","NPV cannot be represented") from error
             return _irr(flows,_number(values[1]) if len(values)==2 else 0.1)
         raise ExcelError("#NAME?","Unsupported function")
+
+    def lookup_matches(self, lookup, candidate, tokens):
+        if tokens is None:
+            if isinstance(lookup, bool):
+                return isinstance(candidate, bool) and lookup == candidate
+            numeric = lambda value: value is None or isinstance(value, (int, float)) and not isinstance(value, bool)
+            return numeric(lookup) and numeric(candidate) and (lookup or 0) == (candidate or 0)
+        if not isinstance(candidate, str):
+            return candidate is None and tokens == ''
+        if isinstance(tokens, str):
+            return candidate.casefold() == tokens
+        # Greedy wildcard matching has a bounded operation budget. There is
+        # no regex backtracking from an uploaded lookup expression.
+        text = [character.casefold() for character in candidate]
+        index = position = 0
+        star = restart = -1
+        while position < len(text):
+            self.operations += 1
+            if self.operations > MAX_OPERATIONS:
+                raise ExcelError('#VALUE!', 'Calculation complexity limit', fatal=True)
+            if index < len(tokens) and (tokens[index][0] == '?' or
+                    tokens[index] == ('literal', text[position])):
+                index += 1; position += 1
+            elif index < len(tokens) and tokens[index][0] == '*':
+                star = index; restart = position; index += 1
+            elif star >= 0:
+                restart += 1; position = restart; index = star + 1
+            else:
+                return False
+        while index < len(tokens) and tokens[index][0] == '*':
+            index += 1
+        return index == len(tokens)
 
 
 def _irr(flows,guess):

@@ -95,8 +95,8 @@ export default {
 
   // Business plans: source files and original documents
   'Файлы и импорт оригинала · необязательно': 'Fayllar va asl modelni import qilish · ixtiyoriy',
-  'Можно приложить документы к ручному проекту или использовать исходные Word и Excel UZGERMED.':
-    'Qoʻlda tuzilgan loyihaga hujjatlarni ilova qilish yoki UZGERMEDning manba Word va Excel fayllaridan foydalanish mumkin.',
+  'Можно приложить документы к ручному проекту или использовать исходные Word и Excel выбранной компании.':
+    'Qoʻlda tuzilgan loyihaga hujjatlarni ilova qilish yoki tanlangan kompaniyaning manba Word va Excel fayllaridan foydalanish mumkin.',
   'Импорт оригинальных Word и Excel': 'Asl Word va Excel fayllarini import qilish',
   'Оригинальная модель: 36 месяцев, USD. Период для поиска отчётов выбирается ниже, перед формированием.':
     'Asl model: 36 oy, USD. Hisobotlarni qidirish davri quyida, tayyorlashdan oldin tanlanadi.',

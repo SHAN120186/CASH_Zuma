@@ -148,8 +148,14 @@ def build_teo_pdf(values, profile, source_manifest, parameters=None, start_metad
         annual.append({field: sum((row[field] for row in months[year * 12:(year + 1) * 12]), Decimal(0)) for field in fields})
     investment = {key: _number(values, 'Стоим_проекта', cell) for key, cell in {
         'total': 'F34', 'own': 'B34', 'new_loan': 'D34', 'old_debt': 'E34',
-        'assets': 'B27', 'own_working': 'B28', 'new_working': 'D28',
+        'assets': 'B27', 'new_working': 'D28',
         'insurance': 'B30', 'commission': 'B31', 'other': 'B33'}.items()}
+    # ZUMA has no B28 entry. Preserve that source absence in the report;
+    # the workbook's arithmetic treatment of blank is not a declared input 0.
+    zuma_blank_working = (profile.get('profile_id') == 'zuma-36m-usd' and
+                          values.get('Стоим_проекта', {}).get('B28') is None)
+    investment['own_working'] = ('Нет записи в исходной модели' if zuma_blank_working
+                                 else _number(values, 'Стоим_проекта', 'B28'))
     npv = _number(values, 'ВНД', 'D6')
     irr = _number(values, 'ВНД', 'E6')
     discount = _number(values, 'ВНД', 'C3')
@@ -245,6 +251,9 @@ def build_teo_pdf(values, profile, source_manifest, parameters=None, start_metad
     ], [width * .48, width * .26, width * .26])
     body('Остаток прежних кредитов входит в исходную стоимость проекта. Стоимость основных средств '
          'в расчёте проекта и база амортизации различаются в оригинале; они не сложены повторно.', 'small')
+    if zuma_blank_working:
+        body('Собственный оборотный капитал в Стоим_проекта!B28 не заполнен в оригинале ZUMA. '
+             'Отсутствующая запись сохранена; её значение не объявлено подтверждённым нулём.', 'small')
     heading('4. Годовая выручка, затраты и прибыль')
     labels = [('gross_sales', 'Реализация с НДС'), ('revenue', 'Выручка без НДС'), ('cogs', 'Производственная себестоимость'),
               ('period_costs', 'Расходы периода'), ('interest', 'Проценты по всем кредитам'), ('property_tax', 'Налог на имущество по модели'),

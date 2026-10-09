@@ -83,6 +83,40 @@ def items(raw, files=None):
     return {item["key"]: item for item in describe_inputs(raw, files)["items"]}
 
 
+def test_zuma_input_map_covers_last_product_and_actual_payroll_without_inventing_capital():
+    raw = workbook({
+        'Стоим_проекта': {'B4': 'ООО "ZUMA-PHARMA"', 'A10': 'Здания', 'B10': (7, '84/курс')},
+        'План производства': {'E129': (12, '+SUM(E8:E128)'),
+                             'F130': (120, '+SUMPRODUCT(E8:E128,F8:F128)'),
+                             'A128': 'Последний препарат', 'C128': 80, 'D128': 90,
+                             'F128': (3, '(200/(+курс))*(+ВНД!$W$41)'),
+                             'B128': (2, 'Калькуляцияя!I148/курс')},
+        'Труд': {'A15': 'Производство', 'B15': (20, '21-1'), 'C15': 5,
+                 'A48': 'Рекрутер', 'B48': 1, 'C48': 4,
+                 'D54': (6, 'D52*12%')},
+    }, native=True)
+    fields = items(raw)
+    assert fields['План производства!C128']['editable']
+    assert fields['План производства!F128']['value'] == 200
+    assert not fields['План производства!B128']['editable']
+    assert not fields['Труд!B15']['editable']
+    assert fields['Труд!B48']['editable']
+    assert fields['Труд!D54']['value'] == .12
+    assert 'Труд!D50' not in fields
+    assert 'Стоим_проекта!B28' not in fields
+    assert fields['Стоим_проекта!B10']['label'] == 'Здания — исходная стоимость'
+    changed = apply_updates(raw, {'План производства!C128': 85, 'Труд!D54': .13})
+    sheets, _ = _xlsx(changed)
+    assert sheets['План производства']['C128']['value'] == '85'
+    assert sheets['Труд']['D54']['formula'] == '=D52*13%'
+    try:
+        apply_updates(raw, {'Стоим_проекта!B28': 0})
+    except ValueError:
+        pass
+    else:
+        raise AssertionError('Absent own working capital must not become an input zero')
+
+
 def parts(raw):
     with ZipFile(BytesIO(raw)) as archive:
         return {member.filename: archive.read(member) for member in archive.infolist()}

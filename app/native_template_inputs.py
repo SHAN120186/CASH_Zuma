@@ -1,4 +1,4 @@
-"""Explicit, reviewable numeric inputs for the original UZGERMED workbook.
+"""Explicit, reviewable numeric inputs for the original company workbooks.
 
 Source workbooks supply proposals, never automatic writes. Only documented
 scalar inputs and a few exact literal-bearing formulas are writable. The ZIP
@@ -22,7 +22,7 @@ from .business_sources import (
     MAX_NUMERIC_TEXT, MIN_NUMERIC_EXPONENT,
     NS, DOC_REL_NS, SourceReadError,
 )
-from .native_uzgermed import PARAMETERS, READ_ONLY_PARAMETERS, _recognized
+from .native_uzgermed import PARAMETERS, READ_ONLY_PARAMETERS, _recognized, profile_spec
 from .native_workbook import _patch_sheet
 
 
@@ -37,6 +37,7 @@ _NET_FORMULA = re.compile(
 _PAYROLL_RATE = {
     "D34": re.compile(r"=D33\*(?P<input>" + _NUMBER + r")%\Z"),
     "D50": re.compile(r"=D48\*(?P<input>" + _NUMBER + r")%\Z"),
+    "D54": re.compile(r"=D52\*(?P<input>" + _NUMBER + r")%\Z"),
 }
 _CELL = re.compile(r"([A-Z]{1,3})([1-9][0-9]{0,4})\Z")
 _MAX_VALUE = Decimal("1e15")
@@ -151,7 +152,7 @@ def _load(raw: bytes) -> tuple[dict, dict, list]:
         raise SourceReadError("Шаблон должен быть Excel-файлом допустимого размера.")
     sheets, notes = _xlsx(raw)
     if not _recognized(sheets):
-        raise SourceReadError("Нужен исходный финансовый шаблон UZGERMED с узнаваемой структурой.")
+        raise SourceReadError("Нужен исходный финансовый шаблон UZGERMED или ZUMA с узнаваемой структурой.")
     layout = _layout(raw)
     return sheets, layout, notes
 
@@ -167,6 +168,7 @@ def _inside_array(layout: dict, address: str) -> bool:
 
 def _inputs(sheets: dict, layout: dict) -> tuple[list, dict, list]:
     items, bindings, warnings = [], {}, []
+    specification = profile_spec(sheets)
 
     def add(sheet, cell, group, label, unit, low=0, high=1e15, *,
             mode="scalar", required=False, readonly=False, integer=False, period=""):
@@ -248,7 +250,7 @@ def _inputs(sheets: dict, layout: dict) -> tuple[list, dict, list]:
     if items and items[-1]["key"] == "ВНД!W41":
         items[-1]["help"] = "Общий множитель для базовых цен всех препаратов. Это исходный коэффициент модели; перенос прайса сам его не меняет."
     plan = sheets.get("План производства", {})
-    for row in range(8, 48):
+    for row in range(8, specification['product_stop']):
         name = str(plan.get("A" + str(row), {}).get("value") or "").strip()
         if not name:
             continue
@@ -264,10 +266,15 @@ def _inputs(sheets: dict, layout: dict) -> tuple[list, dict, list]:
         add("План производства", "F" + str(row), "Цены", name + " — базовая цена", price_unit, 0, 1e12, mode="price")
         add("План производства", "B" + str(row), "Себестоимость", name + " — базовая себестоимость", price_unit, 0, 1e12, mode="unit")
 
-    for cell, label in {"B10": "Оборудование", "B14": "Транспорт", "B18": "Здания и сооружения",
-                        "B21": "Прочие капитальные затраты"}.items():
+    asset_labels = {"B10": "Оборудование", "B14": "Транспорт", "B18": "Здания и сооружения",
+                    "B21": "Прочие капитальные затраты"}
+    if specification['id'] == 'zuma-36m-usd':
+        asset_labels = {cell: str(sheets['Стоим_проекта'].get('A' + cell[1:], {}).get('value') or cell).strip()
+                        for cell in asset_labels}
+    for cell, label in asset_labels.items():
         add("Стоим_проекта", cell, "Активы и инвестиции", label + " — исходная стоимость", "UZS", mode="unit")
-    add("Стоим_проекта", "B28", "Оборотный капитал", "Чистый оборотный капитал (390−600)", "тыс. UZS", -1e15, 1e15, mode="net")
+    if specification['own_working']:
+        add("Стоим_проекта", "B28", "Оборотный капитал", "Чистый оборотный капитал (390−600)", "тыс. UZS", -1e15, 1e15, mode="net")
     add("Стоим_проекта", "B33", "Активы и инвестиции", "Прочие затраты проекта", "USD")
     for row in (5, 6, 7, 8, 9, 10, 11, 12, 13):
         caption = str(sheets.get("амортизац", {}).get("A" + str(row), {}).get("value") or "Группа " + str(row)).strip()
@@ -275,7 +282,7 @@ def _inputs(sheets: dict, layout: dict) -> tuple[list, dict, list]:
     for row in (6, 8, 9, 11, 12):
         caption = str(sheets.get("амортизац", {}).get("A" + str(row), {}).get("value") or "Группа " + str(row)).strip()
         add("амортизац", "B" + str(row), "Амортизация", caption + " — стоимость для амортизации", "UZS", mode="unit")
-    for row in (*range(15, 33), *range(37, 48)):
+    for row in (*range(15, 33), *range(37, specification['staff_stop'])):
         caption = str(sheets.get("Труд", {}).get("A" + str(row), {}).get("value") or "").strip()
         if not caption:
             continue
@@ -285,7 +292,7 @@ def _inputs(sheets: dict, layout: dict) -> tuple[list, dict, list]:
         label = str(sheets.get("Труд", {}).get("A" + str(row), {}).get("value") or "Коммунальные расходы " + str(row)).strip()
         add("Труд", "D" + str(row), "Коммунальные расходы", label + " — тариф", "UZS/ед.", mode="unit")
         add("Труд", "E" + str(row), "Коммунальные расходы", label + " — затраты за месяц", "UZS/мес.", mode="unit")
-    for cell in ("D34", "D50"):
+    for cell in ("D34", specification['staff_tax']):
         add("Труд", cell, "Персонал", "Социальный налог — " + ("производство" if cell == "D34" else "АУП"),
             "доля", 0, 1, mode="payroll_rate")
     for row, label in {13: "Готовая продукция: экспорт", 14: "Готовая продукция: местные продажи",
@@ -333,7 +340,7 @@ def _proposal(item: dict, value: float, source: str, digest: str, sheet: str,
 
 def _products(sheets: dict, warnings: list) -> dict:
     names = defaultdict(list)
-    for row in range(8, 48):
+    for row in range(8, profile_spec(sheets)['product_stop']):
         cell = sheets.get("План производства", {}).get("A" + str(row), {})
         if cell.get("error"):
             continue
@@ -487,7 +494,7 @@ def describe_inputs(raw: bytes, files: list | None = None) -> dict:
         sheets, layout, notes = _load(raw)
     except Exception:
         # Parser diagnostics are deliberately public and exclude uploaded data.
-        return {"items": [], "warnings": [{"code": "unsupported_template", "message": "Не удалось безопасно прочитать исходный шаблон UZGERMED."}]}
+        return {"items": [], "warnings": [{"code": "unsupported_template", "message": "Не удалось безопасно прочитать исходный финансовый шаблон."}]}
     items, _, warnings = _inputs(sheets, layout)
     by_key = {item["key"]: item for item in items}
     products = _products(sheets, warnings)

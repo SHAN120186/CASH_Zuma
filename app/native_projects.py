@@ -19,8 +19,9 @@ from sqlalchemy import select, func
 from uuid import NAMESPACE_URL, uuid5
 
 router = APIRouter()
-GENERATOR_VERSION = '1.3'
-WORD_COVERAGE_NOTE = ('В Word обновляются расчётные таблицы и фразы по проверенным связям с Excel. '
+GENERATOR_VERSION = '1.4'
+WORD_COVERAGE_NOTE = ('В Word обновляются расчётные таблицы, НДС, численность и фразы по проверенным связям с Excel. '
+                      'При расхождении финансовых цифр Word и Excel новый PDF использует пересчитанный Excel. '
                       'Описательные разделы, логотипы и сертификаты сохраняются из шаблона; '
                       'при новом проекте проверьте их актуальность.')
 
@@ -362,7 +363,7 @@ def generate_native(data: NativeGenerateIn, request: Request, id: int = Path(gt=
                 parameters=data.overrides, start_metadata={'kind':'archive_period',
                     'label':f'Период архива с {data.start.isoformat()}; расчёт по месяцам 1–36'})
             # Validate all monthly TEO dependencies before starting Office.
-            word, _ = patch_business_docx(templates[0]['content'], fresh['values'])
+            word, _ = patch_business_docx(templates[0]['content'], fresh['values'], profile_id=profile['profile_id'])
             output = {'business_pdf':docx_to_pdf(word),'business_xlsx':workbook,
                       'teo_pdf':teo_pdf,
                       'teo_xlsx':workbook}

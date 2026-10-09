@@ -1,4 +1,4 @@
-"""Inspectable input/output addresses for the supplied UZGERMED workbook.
+"""Inspectable input/output addresses for the supplied company workbooks.
 
 This module only reads OOXML. It does not alter a workbook, invent missing
 numbers, evaluate formulas, or substitute a generic financial model.
@@ -6,6 +6,7 @@ numbers, evaluate formulas, or substitute a generic financial model.
 from collections import Counter
 from decimal import Decimal, InvalidOperation
 import math
+import re
 from xml.etree.ElementTree import ParseError
 from zipfile import BadZipFile
 
@@ -14,6 +15,7 @@ from .business_sources import _xlsx, SourceReadError
 
 
 PROFILE_ID = 'uzgermed-36m-usd'
+ZUMA_PROFILE_ID = 'zuma-36m-usd'
 REQUIRED_SHEETS = frozenset({
     'Фин_план', 'Стоим_проекта', 'РКЛ', 'Производ. с учетом загрузки',
     'План производства', 'План_продаж', 'НДС', 'Раб_капит',
@@ -88,6 +90,40 @@ METRICS = (
     ('Поток_нал', 'M83', 'Накопленный денежный поток · 36-й месяц', 'USD'),
 )
 
+# ZUMA uses the same financial statement layout, with a larger product table.
+# These are separate addresses: UZGERMED E48/F49 are individual ZUMA products.
+ZUMA_METRICS = tuple(
+    (sheet, {'E48': 'E129', 'F49': 'F130'}.get(cell, cell), label, unit)
+    if sheet == 'План производства' else (sheet, cell, label, unit)
+    for sheet, cell, label, unit in METRICS
+)
+
+
+def profile_spec(sheets):
+    """Recognize an inspected model layout; never infer a company from filename."""
+    if not REQUIRED_SHEETS.issubset(sheets):
+        return None
+    company = ' '.join(_text(sheets, 'Стоим_проекта', 'B4').upper().split())
+    markers = ('СТОИМОСТЬ ПРОЕКТА' in _text(sheets, 'Стоим_проекта', 'A2').upper() and
+               'ФИНАНСОВЫЙ ПЛАН' in _text(sheets, 'Фин_план', 'A2').upper() and
+               all(token in _text(sheets, 'ВНД', 'A1').upper() for token in ('NPV', 'IRR')))
+    if not markers:
+        return None
+    if 'UZGERMED PHARM' in company:
+        return {'id': PROFILE_ID, 'company': 'UZGERMED PHARM', 'product_stop': 48,
+                'metrics': METRICS, 'staff_stop': 48, 'staff_tax': 'D50',
+                'own_working': True}
+    if re.search(r'\bZUMA[\s_-]+PHARMA\b', company):
+        plan = sheets.get('План производства', {})
+        totals = {'E129': '=SUM(E8:E128)', 'F130': '=SUMPRODUCT(E8:E128,F8:F128)'}
+        if not all(re.sub(r'^=\+?', '=', re.sub(r'\s+', '', str(plan.get(cell, {}).get('formula') or ''))).upper()
+                   == formula for cell, formula in totals.items()):
+            return None
+        return {'id': ZUMA_PROFILE_ID, 'company': 'ZUMA-PHARMA', 'product_stop': 129,
+                'metrics': ZUMA_METRICS, 'staff_stop': 52, 'staff_tax': 'D54',
+                'own_working': False}
+    return None
+
 
 def _number(value):
     if value is None or isinstance(value, bool):
@@ -108,13 +144,7 @@ def _text(sheets, sheet, cell):
 
 
 def _recognized(sheets):
-    if not REQUIRED_SHEETS.issubset(sheets):
-        return False
-    company = ' '.join(_text(sheets, 'Стоим_проекта', 'B4').upper().split())
-    return ('UZGERMED PHARM' in company and
-            'СТОИМОСТЬ ПРОЕКТА' in _text(sheets, 'Стоим_проекта', 'A2').upper() and
-            'ФИНАНСОВЫЙ ПЛАН' in _text(sheets, 'Фин_план', 'A2').upper() and
-            all(token in _text(sheets, 'ВНД', 'A1').upper() for token in ('NPV', 'IRR')))
+    return profile_spec(sheets) is not None
 
 
 def describe_profile(raw, values=None):
@@ -131,12 +161,13 @@ def describe_profile(raw, values=None):
         return {'supported': False, 'profile_id': PROFILE_ID, 'title': '', 'sheet_count': 0,
                 'parameters': [], 'metrics': [], 'source_notes': [],
                 'issues': [{'code': 'unreadable_workbook', 'reason': 'Не удалось прочитать структуру книги.'}]}
-    profile = {'supported': _recognized(sheets), 'profile_id': PROFILE_ID,
+    specification = profile_spec(sheets)
+    profile = {'supported': specification is not None, 'profile_id': specification['id'] if specification else PROFILE_ID,
                'title': '', 'sheet_count': len(sheets), 'parameters': [], 'metrics': [],
                'issues': [], 'source_notes': notes}
     if not profile['supported']:
         return profile
-    profile.update(title='Бизнес-план UZGERMED PHARM · исходная модель 36 месяцев',
+    profile.update(title=f"Бизнес-план {specification['company']} · исходная модель 36 месяцев",
                    currency='USD', months=36)
     error_counts = Counter(str(c.get('value')) for cells in sheets.values() for c in cells.values()
                            if c.get('error'))
@@ -155,7 +186,7 @@ def describe_profile(raw, values=None):
             profile['issues'].append({'sheet': sheet, 'cell': address, 'code': code,
                 'reason': 'В исходной ячейке нужна конечная числовая константа; формула или ошибка не заменяется числом.'})
         profile['parameters'].append(parameter)
-    for sheet, address, label, unit in METRICS:
+    for sheet, address, label, unit in specification['metrics']:
         cell = sheets.get(sheet, {}).get(address, {})
         original = None if cell.get('error') else _number(cell.get('numeric_text', cell.get('value')))
         metric = {'key': f'{sheet}!{address}', 'sheet': sheet, 'cell': address,

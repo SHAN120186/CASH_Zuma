@@ -66,6 +66,21 @@ def test_report_reads_all36_fresh_results_and_preserves_method_and_provenance():
         assert 'Страница' in page.extract_text()
 
 
+def test_zuma_unfilled_own_working_capital_is_displayed_as_absence_not_zero():
+    values = synthetic_values()
+    del values['Стоим_проекта']['B28']
+    meta = {**profile(), 'profile_id': 'zuma-36m-usd', 'title': 'ZUMA — синтетический пример'}
+    reader = PdfReader(BytesIO(build_teo_pdf(values, meta, [])))
+    text = '\n'.join(page.extract_text() for page in reader.pages)
+    assert 'Нет записи в исходной модели' in text
+    assert 'не объявлено подтверждённым нулём' in ' '.join(text.split())
+    with pytest.raises(NativeTeoError, match='B28'):
+        build_teo_pdf(values, profile(), [])
+    values['Стоим_проекта']['B28'] = '#REF!'
+    with pytest.raises(NativeTeoError, match='B28'):
+        build_teo_pdf(values, meta, [])
+
+
 def test_report_records_selected_template_updates_with_provenance():
     meta = profile()
     meta.update(input_review={'items': [

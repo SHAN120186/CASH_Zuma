@@ -5,6 +5,7 @@ import re
 import sys
 import unittest
 from zipfile import ZipFile, ZIP_DEFLATED
+from unittest.mock import patch
 from defusedxml import ElementTree as ET
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
@@ -36,6 +37,93 @@ def text(cell,value):return '<c r="'+cell+'" t="inlineStr"><is><t>'+value+'</t><
 
 
 class NativeWorkbookTests(unittest.TestCase):
+    def test_exact_lookup_is_case_insensitive_wildcard_escaped_and_first_match(self):
+        raw = workbook(row(1, text('A1', 'Alpha 10') + numeric('B1', 7)) +
+                       row(2, text('A2', 'Alpha 20') + numeric('B2', 8)) +
+                       row(3, text('A3', 'A*B') + numeric('B3', 9)) +
+                       row(4, numeric('A4', 12) + numeric('B4', 10)) +
+                       row(5, text('A5', '12') + numeric('B5', 11)) +
+                       row(6, formula('C6', 'VLOOKUP("alpha ?0",A1:B5,2,FALSE)') +
+                              formula('D6', 'VLOOKUP("A~*B",A1:B5,2,0)') +
+                              formula('E6', 'VLOOKUP(12,A1:B5,2,FALSE)') +
+                              formula('F6', 'VLOOKUP("12",A1:B5,2,FALSE)') +
+                              formula('G6', 'MATCH("alpha*",A1:A5,0)')))
+        _, result = recalculate(raw)
+        self.assertEqual([result['values']['Main'][cell] for cell in ('C6', 'D6', 'E6', 'F6', 'G6')],
+                         [7, 9, 10, 11, 1])
+
+    def test_index_match_recipe_chain_uses_fresh_values_and_selected_dependency(self):
+        raw = workbook(row(1, text('A1', 'one') + text('B1', 'cost') + numeric('C1', 2)) +
+                       row(2, text('A2', 'two') + text('B2', 'cost') + numeric('C2', 3)) +
+                       row(3, text('A3', 'one') + text('B3', 'price') + formula('C3', 'D4')) +
+                       row(4, formula('D4', 'INDEX(C1:C3,MATCH(1,(A1:A3="one")*(B1:B3="cost"),0))', attributes=' t="array" ref="D4"') +
+                              formula('E4', 'INDEX(A1:C3,2,3)') +
+                              formula('F4', 'UPPER(SUBSTITUTE("one one","one","two",2))')))
+        _, result = recalculate(raw, {'Main': {'C1': 5}})
+        self.assertEqual(result['values']['Main']['D4'], 5)
+        self.assertEqual(result['values']['Main']['E4'], 3)
+        self.assertEqual(result['values']['Main']['F4'], 'ONE TWO')
+        self.assertNotIn('Main!C3', result['dependencies']['Main!D4'])
+        self.assertTrue(result['complete'])
+
+    def test_lookup_failures_and_unsupported_modes_are_honest_errors(self):
+        raw = workbook(row(1, text('A1', 'x') + '<c r="B1" t="e"><v>#REF!</v></c>') +
+                       row(2, formula('C2', 'VLOOKUP("x",A1:B1,2,FALSE)') +
+                              formula('D2', 'VLOOKUP("missing",A1:B1,2,FALSE)') +
+                              formula('E2', 'VLOOKUP("x",A1:B1,3,FALSE)') +
+                              formula('F2', 'VLOOKUP("x",A1:B1,2,TRUE)') +
+                              formula('G2', 'MATCH("x",A1:A1,1)') +
+                              formula('H2', 'INDEX(A1:B1,2,1)')))
+        _, result = recalculate(raw)
+        self.assertEqual([result['values']['Main'][cell] for cell in ('C2', 'D2', 'E2', 'F2', 'G2', 'H2')],
+                         ['#REF!', '#N/A', '#REF!', '#NAME?', '#NAME?', '#REF!'])
+        self.assertFalse(result['used_cached_formula_results'])
+
+    def test_vlookup_unselected_return_cell_can_depend_on_the_lookup(self):
+        raw = workbook(row(1, formula('A1', 'VLOOKUP("x",A2:B3,2,FALSE)')) +
+                       row(2, text('A2', 'x') + numeric('B2', 7)) +
+                       row(3, text('A3', 'y') + formula('B3', 'A1+1')))
+        _, result = recalculate(raw)
+        self.assertTrue(result['complete'])
+        self.assertEqual(result['values']['Main']['A1'], 7)
+        self.assertEqual(result['values']['Main']['B3'], 8)
+        self.assertNotIn('Main!B3', result['dependencies']['Main!A1'])
+        self.assertNotIn('Main!A3', result['dependencies']['Main!A1'])
+
+    def test_match_unsearched_key_can_depend_on_the_match(self):
+        raw = workbook(row(1, formula('A1', 'MATCH("x",B2:B3,0)')) +
+                       row(2, text('B2', 'x')) +
+                       row(3, formula('B3', 'A1+1')))
+        _, result = recalculate(raw)
+        self.assertTrue(result['complete'])
+        self.assertEqual(result['values']['Main']['A1'], 1)
+        self.assertEqual(result['values']['Main']['B3'], 2)
+        self.assertNotIn('Main!B3', result['dependencies']['Main!A1'])
+
+    def test_iferror_cannot_turn_unsupported_execution_into_a_ready_financial_zero(self):
+        raw = workbook(row(1, numeric('A1', 1) + numeric('B1', 7)) +
+                       row(2, numeric('A2', 2) + numeric('B2', 8)) +
+                       row(3, formula('C3', 'IFERROR(VLOOKUP(1,A1:B2,2,TRUE),0)') +
+                              formula('D3', 'IFERROR(MATCH(1,A1:A2,1),0)') +
+                              formula('E3', 'IFERROR(INDEX(A1:B2,0,1),0)') +
+                              formula('F3', 'IFERROR(VLOOKUP(9,A1:B2,2,FALSE),0)')))
+        _, result = recalculate(raw)
+        self.assertFalse(result['complete'])
+        self.assertEqual([result['values']['Main'][cell] for cell in ('C3', 'D3', 'E3', 'F3')],
+                         ['#NAME?', '#NAME?', '#NAME?', 0])
+
+    def test_lookup_and_text_expansion_keep_finite_limits(self):
+        raw = workbook(row(1, text('A1', 'a' * 1000) + text('B1', 'b' * 1000) +
+                             formula('C1', 'SUBSTITUTE(A1,"a",B1)')))
+        _, result = recalculate(raw)
+        self.assertEqual(result['values']['Main']['C1'], '#VALUE!')
+        pattern = '*a' * 30 + 'z'
+        raw = workbook(row(1, text('A1', 'a' * 1000) + numeric('B1', 1)) +
+                       row(2, formula('C2', 'VLOOKUP("' + pattern + '",A1:B1,2,FALSE)')))
+        with patch('app.native_workbook.MAX_OPERATIONS', 100):
+            _, result = recalculate(raw)
+        self.assertEqual(result['values']['Main']['C2'], '#VALUE!')
+
     def test_fresh_arithmetic_overrides_and_untouched_parts(self):
         raw=workbook(row(1,numeric('A1',3)+formula('B1','A1*2')+formula('C1','B1+1')),
             extras={'xl/drawings/drawing1.xml':b'<unchanged/>','custom.bin':b'\x01\x00synthetic'})
