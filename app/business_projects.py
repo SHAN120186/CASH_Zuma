@@ -63,6 +63,7 @@ class ProjectIn(BaseModel):
     title: str = Field(min_length=1, max_length=160)
     request_key: UUID
     mode: Literal['manual', 'files'] = 'files'
+    template_id: int | None = Field(default=None, gt=0)
 
     @field_validator('title')
     @classmethod
@@ -325,12 +326,15 @@ def restore_project(request: Request, id: int = Path(gt=0), company_id: int = Qu
 
 @router.post('/api/business-projects')
 def create_project(data: ProjectIn, request: Request):
+    if data.template_id is not None and data.mode == 'manual':
+        raise HTTPException(422, 'Для выбранного оригинального шаблона используйте проект с файлами.')
     with unit(True) as s:
         user, company = authorize(s, request, 'import', company_id=data.company_id)
         project = s.scalar(select(BusinessProject).where(BusinessProject.request_key == str(data.request_key),
                                                         BusinessProject.company_id == company.id))
         if project and (project.title != data.title or project.created_by != user.id or
-                        project_mode(json.loads(project.extraction_json)) != data.mode):
+                        project_mode(json.loads(project.extraction_json)) != data.mode or
+                        json.loads(project.extraction_json).get('template_selected', {}).get('id') != data.template_id):
             raise HTTPException(409, 'Ключ создания уже используется другим проектом.')
         if project is None:
             project = BusinessProject(company_id=company.id, title=data.title, request_key=str(data.request_key),
@@ -340,6 +344,10 @@ def create_project(data: ProjectIn, request: Request):
                 project.inputs_json = dump({'title': data.title})
             s.add(project)
             s.flush()
+            if data.template_id is not None:
+                from .business_templates import use_template
+                use_template(s, project, data.template_id, user)
+                s.flush()
             log(s, user, 'Создан проект бизнес-плана', 'business_project', project.id)
         return detail(s, project, user)
 
@@ -498,13 +506,18 @@ async def put_source(request: Request, id: int = Path(gt=0), company_id: int = Q
             s.add(BusinessSourceFile(company_id=company.id, project_id=id, relative_path=relative_path,
                                      filename=filename, sha256=sha, content=content, size=len(content)))
         project.revision += 1
-        if project_mode(json.loads(project.extraction_json)) == 'manual':
+        prior_extraction = json.loads(project.extraction_json)
+        selected_template = prior_extraction.get('template_selected')
+        if project_mode(prior_extraction) == 'manual':
             extraction = {**manual_extraction(), 'sources_pending': True}
             extraction['manual_fields'] = list(json.loads(project.inputs_json))
             project.extraction_json = dump(extraction)
             project.status = 'needs_data'
         else:
-            project.status, project.inputs_json, project.extraction_json = 'draft', '{}', dump({'mode': 'files', 'sources_pending': True})
+            extraction = {'mode': 'files', 'sources_pending': True}
+            if selected_template:
+                extraction['template_selected'] = selected_template
+            project.status, project.inputs_json, project.extraction_json = 'draft', '{}', dump(extraction)
         project.current_fingerprint = ''
         project.updated_at = now()
         s.flush()
@@ -561,8 +574,11 @@ def save_inputs(data: DraftIn, request: Request, id: int = Path(gt=0), company_i
         active(project)
         records, updated_at = sources(s, id), project.updated_at
         files = expanded_sources(records)
-    from .native_projects import native_candidate
-    if native_candidate(files):
+        stored_extraction = json.loads(project.extraction_json)
+    from .native_projects import native_candidate, require_template_candidate
+    candidate = native_candidate(files)
+    require_template_candidate(candidate, stored_extraction)
+    if candidate:
         raise HTTPException(409, 'В папке есть оригинальная финансовая модель. Используйте её параметры и пересчёт, чтобы сохранить исходную методику.')
     with unit(True) as s:
         user, _ = authorize(s, request, 'import', company_id=company_id)
@@ -680,8 +696,9 @@ def persist_generation(request, id, company_id, revision, inputs, extraction, so
 def analyse_project(data: AnalyseIn, request: Request, id: int = Path(gt=0), company_id: int = Query(gt=0)):
     files, source_manifest, stored_extraction, title, updated_at = snapshot(request, id, company_id, data.revision, allow_manual=True)
     mode = project_mode(stored_extraction)
-    from .native_projects import native_candidate
+    from .native_projects import native_candidate, require_template_candidate, review_description
     candidate = native_candidate(files)
+    require_template_candidate(candidate, stored_extraction)
     if candidate:
         # Keep the supplied workbook's assumptions and layout. Generic defaults
         # cannot replace an established financial model merely because its
@@ -691,7 +708,11 @@ def analyse_project(data: AnalyseIn, request: Request, id: int = Path(gt=0), com
             project = get(s, BusinessProject, id)
             own(project, user)
             revision_ok(project, data.revision, updated_at)
-            project.extraction_json = dump({'native': candidate['profile'], 'issues': [], 'inputs': {}, 'mode': mode})
+            profile = {**candidate['profile'], 'input_review': review_description(candidate, files)}
+            extraction = {'native': profile, 'issues': [], 'inputs': {}, 'mode': mode}
+            if stored_extraction.get('template_selected'):
+                extraction['template_selected'] = stored_extraction['template_selected']
+            project.extraction_json = dump(extraction)
             if mode != 'manual':
                 project.inputs_json = dump({'title': title, **data.overrides})
             project.status, project.updated_at = 'needs_data', now()
@@ -717,8 +738,10 @@ def analyse_project(data: AnalyseIn, request: Request, id: int = Path(gt=0), com
 @router.post('/api/business-projects/{id}/generate')
 def generate_project(data: GenerateIn, request: Request, id: int = Path(gt=0), company_id: int = Query(gt=0)):
     files, source_manifest, extraction, _, updated_at = snapshot(request, id, company_id, data.revision, allow_manual=True)
-    from .native_projects import native_candidate
-    if native_candidate(files):
+    from .native_projects import native_candidate, require_template_candidate
+    candidate = native_candidate(files)
+    require_template_candidate(candidate, extraction)
+    if candidate:
         raise HTTPException(409, 'В папке есть оригинальная финансовая модель. Используйте «Пересчитать оригинал и проверить цифры», чтобы сохранить её формулы и оформление.')
     if project_mode(extraction) == 'manual':
         # Re-read optional attachments before publication so newly uploaded

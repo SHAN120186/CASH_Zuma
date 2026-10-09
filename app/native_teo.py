@@ -277,6 +277,9 @@ def build_teo_pdf(values, profile, source_manifest, parameters=None, start_metad
 
     heading('7. Замечания к исходной методике')
     notes = quality_notes(values)
+    for note in profile.get('quality_notes', []):
+        if isinstance(note, str) and note not in notes:
+            notes.append(note)
     if notes:
         for index, note in enumerate(notes, 1): body(f'{index}. {note}')
     else:
@@ -298,6 +301,32 @@ def build_teo_pdf(values, profile, source_manifest, parameters=None, start_metad
         control_rows.append([_text(control.get('label'), 160), formatted + (' ' + unit if unit != 'доля' else ''), f'{sheet}!{cell}'])
     if control_rows:
         table(['Параметр', 'Значение', 'Ячейка'], control_rows, [width * .49, width * .23, width * .28], compact=True)
+    review = profile.get('input_review', {})
+    updates = profile.get('data_updates', {})
+    decisions = profile.get('review_decisions', {})
+    if isinstance(review, dict) and isinstance(updates, dict) and updates:
+        bindings = {item.get('key'): item for item in review.get('items', []) if isinstance(item, dict)}
+        changed_rows = []
+        for key, updated in updates.items():
+            item = bindings.get(key)
+            if not item:
+                raise NativeTeoError('Новое значение не связано с разрешённым полем шаблона.')
+            decision = decisions.get(key, {})
+            proposal = next((p for p in item.get('proposals', [])
+                             if p.get('id') == decision.get('proposal_id')), None)
+            source = ('Введено пользователем' if not proposal else
+                      f"{proposal.get('source', '')} · {proposal.get('sheet', '')}!{proposal.get('cell', '')}")
+            unit = _text(item.get('unit'), 40)
+            changed_rows.append([_text(item.get('label'), 200),
+                                 _amount(Decimal(str(updated))) + (' ' + unit if unit else ''),
+                                 source])
+        if changed_rows:
+            heading('Согласованные новые данные шаблона')
+            body('Ниже перечислены входные значения, выбранные для этой версии. '
+                 'Остальные исходные данные и методика сохранены из шаблона. '
+                 'Цены в сумах указаны до пересчёта валюты и коэффициентов книги.', 'small')
+            table(['Поле', 'Новое значение', 'Источник'], changed_rows,
+                  [width * .43, width * .23, width * .34], compact=True)
     heading('9. Источники и границы отчёта')
     manifest = source_manifest if isinstance(source_manifest, list) else [source_manifest] if isinstance(source_manifest, dict) else []
     for source in manifest[:12]:

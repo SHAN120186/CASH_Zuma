@@ -40,6 +40,9 @@ NO_LOSS_PARAGRAPH = 522
 NO_LOSS_TEXT = 'Убытки в течение всего горизонта планирования производственной деятельности предприятия не наблюдаются.'
 POSITIVE_CASH_PARAGRAPH = 538
 POSITIVE_CASH_TEXT = 'Поток наличности в целом по проекту на протяжении всего горизонта планирования будет положительным. Кумулятивный поток наличности на протяжении всего периода будет положительным.'
+OBSOLETE_SECTOR_PARAGRAPH = 597
+OBSOLETE_SECTOR_TEXT = 'Анализ существующего положения на рынке текстиля позволяет сделать вывод, что данный рынок бурно развивается. '
+PHARMACEUTICAL_MARKET_TEXT = 'Оценка фармацевтического рынка требует актуальных данных о спросе, ценах и конкурентах.'
 PROFIT_CELLS = tuple(column+str(row) for row in (18,41,64) for column in 'BCDEFGHIJKLM')
 CASH_FLOW_CELLS = tuple(column+str(row) for row,columns in ((30,'CDEFGHIJKLMN'),(56,'BCDEFGHIJKLM'),(81,'BCDEFGHIJKLM')) for column in columns)
 CUMULATIVE_CASH_CELLS = tuple(column+str(row) for row,columns in ((32,'CDEFGHIJKLMN'),(58,'BCDEFGHIJKLM'),(83,'BCDEFGHIJKLM')) for column in columns)
@@ -406,6 +409,18 @@ def patch_business_docx(raw,values):
         leading=len(old)-len(old.lstrip());trailing=len(old.rstrip())
         _replace(nodes,leading,trailing,replacement,patches)
         edits.append({**binding,'before':old,'after':replacement,'reason':'fresh_monthly_results_do_not_support_source_conclusion'})
+    # This exact retained paragraph refers to another industry. Correct only
+    # its verified slot, without guessing market growth or changing custom prose.
+    key=('paragraph',OBSOLETE_SECTOR_PARAGRAPH)
+    if key in spans:
+        nodes=_text_nodes(xml,spans[key]);old=''.join(n.value for n in nodes)
+        if old==OBSOLETE_SECTOR_TEXT:
+            binding={'kind':'narrative','paragraph':OBSOLETE_SECTOR_PARAGRAPH}
+            mapped.append(binding)
+            leading=len(old)-len(old.lstrip());trailing=len(old.rstrip())
+            _replace(nodes,leading,trailing,PHARMACEUTICAL_MARKET_TEXT,patches)
+            edits.append({**binding,'before':old,'after':PHARMACEUTICAL_MARKET_TEXT,
+                          'reason':'obsolete_sector_reference'})
     # Several numeric mentions may share one w:t node. Merge their character
     # edits before serialising, so one edit cannot overwrite another.
     by_span={}
@@ -423,4 +438,4 @@ def patch_business_docx(raw,values):
     return _package_document(raw,patched),{'edits':edits,'updated_fields':len(edits),'mapped_fields':mapped,
              'mapped_table_cells':sum(i['kind']=='table' for i in mapped),'mapped_paragraph_mentions':paragraphs,
              'preserved_other_zip_parts':True,'preserved_media':True,
-             'scope':'verified_project_cost_utilities_break_even_credit_vat_staff_monthly_conclusions','unmapped_numeric_text':'retained_without_inference'}
+             'scope':'verified_project_cost_utilities_break_even_credit_vat_staff_monthly_conclusions_sector_prose','unmapped_numeric_text':'retained_without_inference'}

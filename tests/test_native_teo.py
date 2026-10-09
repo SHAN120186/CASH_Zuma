@@ -66,6 +66,25 @@ def test_report_reads_all36_fresh_results_and_preserves_method_and_provenance():
         assert 'Страница' in page.extract_text()
 
 
+def test_report_records_selected_template_updates_with_provenance():
+    meta = profile()
+    meta.update(input_review={'items': [
+        {'key': 'price:test', 'label': 'Цена синтетического продукта', 'unit': 'UZS',
+         'proposals': [{'id': 'proposal-test', 'source': 'prices.xlsx', 'sheet': 'Prices', 'cell': 'B2'}]},
+        {'key': 'volume:test', 'label': 'Объём синтетического продукта', 'unit': 'шт', 'proposals': []},
+    ]}, data_updates={'price:test': 125, 'volume:test': 80},
+        review_decisions={'price:test': {'choice': 'source', 'proposal_id': 'proposal-test'},
+                          'volume:test': {'choice': 'manual'}},
+        quality_notes=['Контрольная заметка исходного шаблона.'])
+    reader = PdfReader(BytesIO(build_teo_pdf(synthetic_values(), meta, [])))
+    text = '\n'.join(page.extract_text() for page in reader.pages)
+    assert 'Согласованные новые данные шаблона' in text
+    assert '125.00 UZS' in text and '80.00 шт' in text
+    assert 'prices.xlsx' in text and 'Prices!B2' in text
+    assert 'Введено пользователем' in text
+    assert 'Контрольная заметка исходного шаблона.' in text
+
+
 @pytest.mark.parametrize('bad', [None, '', '#REF!', '#DIV/0!', 'NaN', 'Infinity', True])
 def test_required_error_never_falls_back_to_original_metric_or_zero(bad):
     values = synthetic_values()

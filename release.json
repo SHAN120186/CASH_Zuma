@@ -1,18 +1,18 @@
 {
-  "version": "2.18.0",
-  "date": "2026-10-08",
+  "version": "2.19.0",
+  "date": "2026-10-10",
   "changes": [
-    "Два языка интерфейса: русский и узбекский (латиница). Переключатель RU / UZ на странице входа и в верхней панели; выбор запоминается в браузере. Суммы (ming, mln, mlrd), даты и сообщения сервера показываются на выбранном языке; данные пользователей не переводятся.",
-    "В меню появился раздел «Отчёты» с вкладками: Cash Flow, Бизнес-планы и Архив отчётов. Вкладки также видны вверху каждой страницы отчётов.",
-    "Готовый бизнес-план теперь виден сразу: в списке проектов есть кнопки «Бизнес-план · PDF», «Бизнес-план · Excel» и «ТЭО · PDF». Готовый проект открывается на шаге «Отчёт»; если файла ещё нет, указано, что сделать для расчёта.",
-    "Под пустыми полями бизнес-плана и архива отчётов написано, что нужно внести, а в самом поле показан пример. Пример не сохраняется; ноль по-прежнему указывается явно.",
-    "Сохранены функции версий 2.17.1 и 2.17.2: ход выполнения операций, перечень незаполненных обязательных полей, открытие готового проекта сразу на шаге «Отчёт» только при актуальном комплекте PDF и Excel, оформление и защита групп Telegram."
+    "Оригинальные Excel и Word можно сохранить как приватный шаблон. Новый проект получает собственные копии этой пары; шаблон доступен его автору в выбранной компании.",
+    "Создание отчёта упрощено: выбор шаблона, загрузка новых документов, проверка изменений. По умолчанию видны расхождения; остальные поля можно найти по группе и названию.",
+    "Объёмы производства, базовые цены и чистый оборотный капитал распознаются из проверенных форматов Excel как предложения. Для отличающихся значений и дубликатов нужно выбрать источник, исходное значение или ручной ввод.",
+    "Новые значения записываются в разрешённые входы оригинальной финансовой модели с сохранением расчётных формул и оформления. PDF и Excel формируются после проверки; ТЭО содержит согласованные изменения и их источники.",
+    "Численность, зарплаты, тарифы и другие доступные входы можно изменить по документам. Себестоимость по рецептурам и неподдерживаемые кредитные графики требуют обновления исходного Excel; описательные разделы Word сохраняются из шаблона."
   ],
   "changes_uz": [
-    "Interfeys ikki tilda: rus va oʻzbek (lotin). RU / UZ tugmasi kirish sahifasida va yuqori panelda; tanlov brauzerda saqlanadi. Summalar (ming, mln, mlrd), sanalar va server xabarlari tanlangan tilda koʻrsatiladi; foydalanuvchi maʼlumotlari tarjima qilinmaydi.",
-    "Menyuda «Hisobotlar» boʻlimi paydo boʻldi: Cash Flow, Biznes-rejalar va Hisobotlar arxivi. Ushbu yorliqlar har bir hisobot sahifasining yuqorisida ham koʻrinadi.",
-    "Tayyor biznes-reja endi darhol koʻrinadi: loyihalar roʻyxatida «Biznes-reja · PDF», «Biznes-reja · Excel» va «TIA · PDF» tugmalari bor. Tayyor loyiha «Hisobot» bosqichida ochiladi; fayl hali boʻlmasa, hisoblash uchun nima qilish kerakligi yozilgan.",
-    "Biznes-reja va hisobotlar arxivining boʻsh maydonlari ostida nima yozish kerakligi koʻrsatiladi, maydonning oʻzida esa namuna beriladi. Namuna saqlanmaydi; nol avvalgidek aniq kiritiladi.",
-    "2.17.1 va 2.17.2 versiyalari imkoniyatlari saqlangan: amallar bajarilishi jarayoni, toʻldirilmagan majburiy maydonlar roʻyxati, tayyor loyihani faqat PDF va Excel toʻplami dolzarb boʻlsa «Hisobot» bosqichida ochish, dizayn va Telegram guruhlarini himoya qilish."
+    "Asl Excel va Word fayllarini shaxsiy shablon sifatida saqlash mumkin. Yangi loyiha shu juftlikning oʻz nusxalarini oladi; shablon tanlangan kompaniyada uning muallifiga ochiq.",
+    "Hisobot yaratish soddalashtirildi: shablonni tanlash, yangi hujjatlarni yuklash, oʻzgarishlarni tekshirish. Avval farqlar koʻrinadi; boshqa maydonlarni guruh va nom boʻyicha topish mumkin.",
+    "Ishlab chiqarish hajmlari, bazaviy narxlar va sof aylanma kapital tekshirilgan Excel formatlaridan taklif sifatida olinadi. Farqli qiymatlar va takrorlar uchun manba, asl qiymat yoki qoʻlda kiritish tanlanadi.",
+    "Yangi qiymatlar asl moliyaviy modelning ruxsat etilgan kirish maydonlariga yoziladi, hisoblash formulalari va dizayn saqlanadi. PDF va Excel tekshiruvdan soʻng yaratiladi; TIA kelishilgan oʻzgarishlar va manbalarini koʻrsatadi.",
+    "Xodimlar soni, ish haqi, tariflar va boshqa mavjud kirishlarni hujjatlar asosida oʻzgartirish mumkin. Retseptura tannarxi va qoʻllab-quvvatlanmaydigan kredit jadvallari uchun asl Excel yangilanadi; Word tavsif boʻlimlari shablondan saqlanadi."
   ]
 }

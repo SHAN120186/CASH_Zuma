@@ -179,20 +179,32 @@ class BusinessProjectTests(unittest.TestCase):
         self.assertEqual(response.status_code, 200, response.text)
         return response.json(), source
 
-    def native_preview(self, project, overrides=None, client=None, headers=None, **params):
+    def native_preview(self, project, overrides=None, client=None, headers=None,
+                       data_updates=None, review_decisions=None, source_sha256=None, confirm_source_basis=None, **params):
+        body = {'revision': project['revision'], 'overrides': overrides or {}}
+        for key, value in {'data_updates': data_updates, 'review_decisions': review_decisions,
+                           'source_sha256': source_sha256, 'confirm_source_basis': confirm_source_basis}.items():
+            if value is not None:
+                body[key] = value
         return (client or self.client).post(f"/api/business-projects/{project['id']}/native/preview",
             params={'company_id': self.cid, **params}, headers=headers or self.headers,
-            json={'revision': project['revision'], 'overrides': overrides or {}})
+            json=body)
 
     def native_download(self, project, client=None, headers=None, **params):
         return (client or self.client).get(f"/api/business-projects/{project['id']}/native.xlsx",
             params={'company_id': self.cid, 'revision': project['revision'], **params},
             headers=headers or self.headers)
 
-    def native_generate(self, project, overrides=None, start='2027-01-01', client=None, headers=None, **params):
+    def native_generate(self, project, overrides=None, start='2027-01-01', client=None, headers=None,
+                        data_updates=None, review_decisions=None, source_sha256=None, confirm_source_basis=None, **params):
+        body = {'revision': project['revision'], 'start': start, 'overrides': overrides or {}}
+        for key, value in {'data_updates': data_updates, 'review_decisions': review_decisions,
+                           'source_sha256': source_sha256, 'confirm_source_basis': confirm_source_basis}.items():
+            if value is not None:
+                body[key] = value
         return (client or self.client).post(f"/api/business-projects/{project['id']}/native/generate",
             params={'company_id': self.cid, **params}, headers=headers or self.headers,
-            json={'revision': project['revision'], 'start': start, 'overrides': overrides or {}})
+            json=body)
 
     def native_complete_folder(self, changes=None):
         project, source = self.native_folder(changes)
@@ -210,6 +222,283 @@ class BusinessProjectTests(unittest.TestCase):
         teo = stack.enter_context(patch('app.native_teo.build_teo_pdf',
             return_value=b'%PDF-1.4\nSynthetic native TEO\n%%EOF\n'))
         return stack, patched, rendered, teo
+
+    def native_review_description(self, values=(8, 9)):
+        # A deterministic synthetic source review lets these API tests verify
+        # decisions independently of the document parser's own fixture tests.
+        return {'items': [{'key': 'Стоим_проекта!B38', 'group': 'Основные условия',
+                           'label': 'Курс проекта', 'sheet': 'Стоим_проекта', 'cell': 'B38',
+                           'unit': 'UZS/USD', 'value': 7, 'editable': True, 'min': 0.000001,
+                           'max': 1000000, 'requires_decision': False,
+                           'proposals': [{'id': f'source-{index}', 'value': value, 'source': f'Evidence-{index}.xlsx',
+                                          'sheet': 'Параметры', 'cell': 'B2', 'unit': 'UZS/USD', 'period': '2027',
+                                          'source_sha256': str(index)*64} for index, value in enumerate(values, 1)]}],
+                'warnings': []}
+
+    def test_native_input_review_applies_selected_source_and_preserves_uploaded_original(self):
+        project, source = self.native_folder()
+        decisions = {'Стоим_проекта!B38': {'choice': 'source', 'proposal_id': 'source-1'}}
+        updates = {'Стоим_проекта!B38': 8}
+        with patch('app.native_template_inputs.describe_inputs', side_effect=lambda *_: self.native_review_description()):
+            initial = self.client.get(f"/api/business-projects/{project['id']}", params={'company_id': self.cid}).json()
+            self.assertFalse(initial['native_model']['input_review']['complete'])
+            response = self.native_preview(project, data_updates=updates, review_decisions=decisions,
+                                           source_sha256=hashlib.sha256(source).hexdigest())
+            self.assertEqual(response.status_code, 200, response.text)
+            reviewed = response.json()
+            profile = reviewed['native_model']
+            self.assertTrue(profile['input_review']['complete'])
+            self.assertEqual(profile['data_updates'], updates)
+            self.assertEqual(profile['review_decisions'], decisions)
+            self.assertEqual(profile['source_sha256'], hashlib.sha256(source).hexdigest())
+            self.assertEqual(profile['input_review']['items'][0]['original_value'], 7)
+            self.assertEqual(profile['input_review']['items'][0]['value'], 8)
+            self.assertEqual(profile['overrides']['Стоим_проекта!B38'], 8)
+            self.assertEqual(next(m['calculated'] for m in profile['metrics'] if m['key'] == 'ВНД!D6'), 16)
+            downloaded = self.native_download(reviewed)
+            self.assertEqual(downloaded.status_code, 200, downloaded.text[:100])
+            self.assertEqual(self.client.get(project['files'][0]['download_url']).content, source)
+            from app.native_workbook import recalculate
+            self.assertEqual(recalculate(downloaded.content)[1]['values']['Стоим_проекта']['B38'], 8)
+        with unit() as s:
+            self.assertEqual(s.scalar(select(func.count()).select_from(ReportArchiveFile)), 0)
+
+    def test_native_input_review_rejects_missing_decisions_unknown_keys_and_forged_proposals(self):
+        project, _, word = self.native_complete_folder()
+        key = 'Стоим_проекта!B38'
+        invalid = [
+            ({}, {}), ({key: 8}, {}), ({key: 8}, {key: {'choice': 'manual', 'proposal_id': 'source-1'}}),
+            ({key: 8}, {key: {'choice': 'keep'}}), ({}, {key: {'choice': 'manual'}}),
+            ({key: 8}, {key: {'choice': 'source'}}), ({key: 8}, {key: {'choice': 'source', 'proposal_id': 'forged'}}),
+            ({key: 9}, {key: {'choice': 'source', 'proposal_id': 'source-1'}}),
+            ({key: True}, {key: {'choice': 'manual'}}), ({key: '8'}, {key: {'choice': 'manual'}}),
+            ({key: 1e99}, {key: {'choice': 'manual'}}), ({'ВНД!D6': 100}, {key: {'choice': 'keep'}}),
+            ({key: 8}, {'Unknown!A1': {'choice': 'manual'}}), ({key: 8}, {key: {'choice': 'automatic'}}),
+        ]
+        stack, patched, rendered, teo = self.native_renderers(word)
+        with stack, patch('app.native_template_inputs.describe_inputs', side_effect=lambda *_: self.native_review_description()):
+            for updates, decisions in invalid:
+                with self.subTest(updates=updates, decisions=decisions):
+                    self.assertEqual(self.native_preview(project, data_updates=updates, review_decisions=decisions).status_code, 422)
+                    self.assertEqual(self.native_generate(project, data_updates=updates, review_decisions=decisions).status_code, 422)
+            conflict = self.native_preview(project, {key: 9}, data_updates={key: 8}, review_decisions={key: {'choice': 'manual'}})
+            self.assertEqual(conflict.status_code, 422)
+            bypass = self.client.post(f"/api/business-projects/{project['id']}/native/preview",
+                params={'company_id': self.cid}, headers=self.headers,
+                json={'revision': project['revision'], 'review_confirmed': True})
+            self.assertEqual(bypass.status_code, 422)
+            patched.assert_not_called(); rendered.assert_not_called(); teo.assert_not_called()
+        with unit() as s:
+            self.assertEqual(s.scalar(select(func.count()).select_from(ReportArchiveFile)), 0)
+            self.assertEqual(s.scalar(select(func.count()).select_from(Ledger)), 0)
+
+    def test_native_input_review_decisions_are_immutable_report_provenance_and_retries_are_canonical(self):
+        project, source, word = self.native_complete_folder()
+        key, updates = 'Стоим_проекта!B38', {'Стоим_проекта!B38': 8}
+        source_choice = {key: {'choice': 'source', 'proposal_id': 'source-1'}}
+        stack, _, rendered, _ = self.native_renderers(word)
+        with stack, patch('app.native_template_inputs.describe_inputs', side_effect=lambda *_: self.native_review_description()):
+            response = self.native_generate(project, data_updates=updates, review_decisions=source_choice)
+            self.assertEqual(response.status_code, 200, response.text)
+            ready = response.json()
+            first_id = ready['current_generation_id']
+            again = self.native_generate(ready, {key: 8}, data_updates=updates, review_decisions=source_choice)
+            self.assertEqual(again.status_code, 200, again.text)
+            self.assertEqual(again.json()['current_generation_id'], first_id)
+            manual = self.native_generate(again.json(), data_updates=updates, review_decisions={key: {'choice': 'manual'}})
+            self.assertEqual(manual.status_code, 200, manual.text)
+            self.assertNotEqual(manual.json()['current_generation_id'], first_id)
+            self.assertEqual(rendered.call_count, 2)
+            self.assertEqual(self.client.get(project['files'][0]['download_url']).content, source)
+        with unit() as s:
+            inputs = json.loads(s.get(BusinessGeneration, first_id).inputs_json)
+            self.assertEqual(inputs['native_data_updates'], updates)
+            self.assertEqual(inputs['native_review_decisions'], source_choice)
+            self.assertEqual(inputs['native_overrides'], {})
+            self.assertEqual(s.scalar(select(func.count()).select_from(ReportArchiveFile)), 8)
+
+    def test_native_input_review_equal_duplicate_sources_require_an_explicit_keep(self):
+        project, _ = self.native_folder()
+        key = 'Стоим_проекта!B38'
+        with patch('app.native_template_inputs.describe_inputs', side_effect=lambda *_: self.native_review_description((7, 7))):
+            self.assertEqual(self.native_preview(project).status_code, 422)
+            response = self.native_preview(project, review_decisions={key: {'choice': 'keep'}})
+            self.assertEqual(response.status_code, 200, response.text)
+            self.assertTrue(response.json()['native_model']['input_review']['complete'])
+            self.assertEqual(response.json()['native_model']['data_updates'], {})
+            self.assertEqual(next(m['calculated'] for m in response.json()['native_model']['metrics'] if m['key'] == 'ВНД!D6'), 14)
+        with patch('app.native_template_inputs.describe_inputs', side_effect=lambda *_: self.native_review_description((7,))):
+            self.assertEqual(self.native_preview(project).status_code, 200)
+
+    def test_native_input_review_requires_source_basis_confirmation_only_for_selected_uncertain_source(self):
+        project, source, word = self.native_complete_folder()
+        key, updates = 'Стоим_проекта!B38', {'Стоим_проекта!B38': 8}
+        description = self.native_review_description()
+        description['items'][0]['proposals'][0]['basis_confirmation'] = True
+        choices = {key: {'choice': 'source', 'proposal_id': 'source-1'}}
+        stack, _, rendered, _ = self.native_renderers(word)
+        with stack, patch('app.native_template_inputs.describe_inputs', return_value=description):
+            rejected = self.native_preview(project, data_updates=updates, review_decisions=choices)
+            self.assertEqual(rejected.status_code, 422)
+            self.assertIn('подтвердите валюту, единицы, период и базу цен', rejected.json()['detail'])
+            self.assertEqual(self.native_generate(project, data_updates=updates, review_decisions=choices).status_code, 422)
+            rendered.assert_not_called()
+            self.assertEqual(self.native_preview(project, review_decisions={key: {'choice': 'keep'}}).status_code, 200)
+            self.assertEqual(self.native_preview(project, data_updates=updates, review_decisions={key: {'choice': 'manual'}}).status_code, 200)
+            checked = self.native_preview(project, data_updates=updates, review_decisions=choices, confirm_source_basis=True)
+            self.assertEqual(checked.status_code, 200, checked.text)
+            profile = checked.json()['native_model']
+            self.assertTrue(profile['confirm_source_basis'])
+            self.assertTrue(profile['input_review']['source_basis_confirmation_required'])
+            self.assertTrue(profile['input_review']['complete'])
+            self.assertEqual(self.native_download(checked.json()).status_code, 200)
+            ready = self.native_generate(checked.json(), data_updates=updates, review_decisions=choices, confirm_source_basis=True)
+            self.assertEqual(ready.status_code, 200, ready.text)
+            self.assertTrue(ready.json()['native_model']['confirm_source_basis'])
+            self.assertEqual(rendered.call_count, 1)
+            self.assertEqual(self.client.get(project['files'][0]['download_url']).content, source)
+            self.assertEqual(self.native_preview(project, data_updates=updates, review_decisions=choices, confirm_source_basis='true').status_code, 422)
+        with unit() as s:
+            generation = s.get(BusinessGeneration, ready.json()['current_generation_id'])
+            self.assertTrue(json.loads(generation.inputs_json)['native_confirm_source_basis'])
+        # An equal proposal left unused never asks for source-basis confirmation.
+        equal = self.native_review_description((7,))
+        equal['items'][0]['proposals'][0]['basis_confirmation'] = True
+        with patch('app.native_template_inputs.describe_inputs', return_value=equal):
+            unchanged = self.native_preview(project)
+            self.assertEqual(unchanged.status_code, 200, unchanged.text)
+            self.assertFalse(unchanged.json()['native_model']['confirm_source_basis'])
+            self.assertFalse(unchanged.json()['native_model']['input_review']['source_basis_confirmation_required'])
+
+    def test_native_input_review_source_sha_and_proposal_ids_cannot_reuse_a_new_source_revision(self):
+        project, source = self.native_folder()
+        key = 'Стоим_проекта!B38'
+        choices = {key: {'choice': 'source', 'proposal_id': 'source-1'}}
+        with patch('app.native_template_inputs.describe_inputs', side_effect=lambda *_: self.native_review_description()):
+            reviewed = self.native_preview(project, data_updates={key: 8}, review_decisions=choices).json()
+            changed = self.upload(reviewed, b'Changed evidence', 'updated-evidence.txt').json()
+            self.assertEqual(self.native_preview(reviewed, data_updates={key: 8}, review_decisions=choices).status_code, 409)
+            self.assertEqual(self.native_download(reviewed).status_code, 409)
+            self.assertEqual(self.native_download(changed).status_code, 409)
+            self.assertEqual(self.native_preview(changed, data_updates={key: 8}, review_decisions=choices, source_sha256='0'*64).status_code, 409)
+        description = self.native_review_description()
+        description['items'][0]['proposals'][0]['id'] = 'new-source-1'
+        with patch('app.native_template_inputs.describe_inputs', return_value=description):
+            response = self.native_preview(changed, data_updates={key: 8}, review_decisions=choices,
+                                           source_sha256=hashlib.sha256(source).hexdigest())
+            self.assertEqual(response.status_code, 422)
+
+    def test_native_input_review_blank_input_requires_explicit_number_and_not_keep_or_zero_default(self):
+        project, _ = self.native_folder({('Стоим_проекта', 'B38'): (None, None)})
+        key = 'Стоим_проекта!B38'
+        item = next(item for item in project['native_model']['input_review']['items'] if item['key'] == key)
+        self.assertIsNone(item['value'])
+        self.assertTrue(item['requires_decision'])
+        self.assertEqual(self.native_preview(project).status_code, 422)
+        self.assertEqual(self.native_preview(project, review_decisions={key: {'choice': 'keep'}}).status_code, 422)
+        response = self.native_preview(project, data_updates={key: 8}, review_decisions={key: {'choice': 'manual'}})
+        self.assertEqual(response.status_code, 200, response.text)
+        self.assertEqual(next(m['calculated'] for m in response.json()['native_model']['metrics'] if m['key'] == 'ВНД!D6'), 16)
+
+    def test_native_input_review_unused_staff_blanks_stay_optional_until_role_explicitly_selected(self):
+        from app.native_uzgermed import REQUIRED_SHEETS
+        with patch('test_native_uzgermed.REQUIRED_SHEETS', REQUIRED_SHEETS | {'Труд'}):
+            project, source = self.native_folder({('Труд', 'A16'): ('Synthetic unused role', None),
+                                                  ('Труд', 'B16'): (None, None), ('Труд', 'C16'): (None, None)})
+        keys = ('Труд!B16', 'Труд!C16')
+        items = {item['key']: item for item in project['native_model']['input_review']['items']}
+        for key in keys:
+            self.assertIsNone(items[key]['value'])
+            self.assertFalse(items[key]['required'])
+            self.assertFalse(items[key]['requires_decision'])
+        original = self.native_preview(project)
+        self.assertEqual(original.status_code, 200, original.text)
+        self.assertTrue(original.json()['native_model']['input_review']['complete'])
+        self.assertEqual(original.json()['native_model']['data_updates'], {})
+        self.assertEqual(self.native_download(original.json()).status_code, 200)
+        for key, value in zip(keys, (2, 50)):
+            selected = self.native_preview(project, data_updates={key: value}, review_decisions={key: {'choice': 'manual'}})
+            self.assertEqual(selected.status_code, 422)
+            self.assertIn('численность и зарплату выбранной должности', selected.json()['detail'])
+        complete = self.native_preview(project, data_updates={keys[0]: 2, keys[1]: 50},
+                                       review_decisions={key: {'choice': 'manual'} for key in keys})
+        self.assertEqual(complete.status_code, 200, complete.text)
+        self.assertEqual(complete.json()['native_model']['data_updates'], {keys[0]: 2, keys[1]: 50})
+        self.assertEqual(self.client.get(project['files'][0]['download_url']).content, source)
+
+    def test_selected_template_marker_survives_upload_and_analysis_and_blocks_generic_fallback(self):
+        project, _ = self.native_folder()
+        marker = {'id': 17, 'title': 'Synthetic original template', 'xlsx_sha256': project['native_model']['source_sha256']}
+        with unit(True) as s:
+            record = s.get(BusinessProject, project['id'])
+            extraction = json.loads(record.extraction_json)
+            record.extraction_json = json.dumps({**extraction, 'template_selected': marker})
+        uploaded = self.upload(project, b'Synthetic evidence', 'evidence.txt')
+        self.assertEqual(uploaded.status_code, 200, uploaded.text)
+        uploaded = uploaded.json()
+        self.assertEqual(uploaded['extraction']['template_selected'], marker)
+        analysed = self.analyse(uploaded)
+        self.assertEqual(analysed.status_code, 200, analysed.text)
+        analysed = analysed.json()
+        self.assertEqual(analysed['extraction']['template_selected'], marker)
+        self.assertIn('input_review', analysed['native_model'])
+        with patch('app.native_projects.native_candidate', return_value=None):
+            for response in (self.analyse(analysed), self.generate(analysed), self.save_draft(analysed, model())):
+                self.assertEqual(response.status_code, 422, response.text)
+                self.assertIn('выбранного шаблона', response.json()['detail'])
+        corrupted = self.upload(analysed, synthetic_source('.xlsx'), 'Synthetic/native.xlsx')
+        self.assertEqual(corrupted.status_code, 422, corrupted.text)
+        current = self.client.get(f"/api/business-projects/{project['id']}", params={'company_id': self.cid}).json()
+        self.assertEqual(current['revision'], analysed['revision'])
+        self.assertEqual(current['extraction']['template_selected'], marker)
+        with unit() as s:
+            self.assertEqual(s.scalar(select(func.count()).select_from(ReportArchiveFile)), 0)
+
+    def test_original_template_project_creation_checks_template_id_on_idempotent_retries(self):
+        source = native_fixture()
+        body = {'company_id': self.cid, 'title': 'Synthetic template project', 'request_key': str(uuid4()), 'template_id': 17}
+        def use_template(session, project, template_id, user):
+            self.assertIsNotNone(project.id)
+            project.extraction_json = json.dumps({'mode': 'files', 'sources_pending': True,
+                                                  'template_selected': {'id': template_id, 'title': 'Synthetic template'}})
+            project.revision = 1
+            session.add(BusinessSourceFile(company_id=self.cid, project_id=project.id, filename='native.xlsx',
+                relative_path='template/native.xlsx', content=source, size=len(source), sha256=hashlib.sha256(source).hexdigest()))
+        with patch('app.business_templates.use_template', side_effect=use_template) as copied:
+            response = self.client.post('/api/business-projects', json=body, headers=self.headers)
+            self.assertEqual(response.status_code, 200, response.text)
+            project = response.json()
+            self.assertEqual(project['extraction']['template_selected']['id'], 17)
+            self.assertEqual(project['source_count'], 1)
+            self.assertTrue(project['native_model'])
+            repeat = self.client.post('/api/business-projects', json=body, headers=self.headers)
+            self.assertEqual(repeat.status_code, 200, repeat.text)
+            self.assertEqual(repeat.json()['id'], project['id'])
+            self.assertEqual(self.client.post('/api/business-projects', json={**body, 'template_id': 18}, headers=self.headers).status_code, 409)
+            self.assertEqual(self.client.post('/api/business-projects', json={**body, 'mode': 'manual'}, headers=self.headers).status_code, 422)
+            copied.assert_called_once()
+
+    def test_identical_template_copies_are_one_model_but_different_models_are_rejected(self):
+        project, source, word = self.native_complete_folder()
+        copied = self.upload(project, source, 'Another folder/native-copy.xlsx')
+        self.assertEqual(copied.status_code, 200, copied.text)
+        copied = self.upload(copied.json(), word, 'Another folder/Бизнес-план-копия.docx')
+        self.assertEqual(copied.status_code, 200, copied.text)
+        copied = copied.json()
+        stack, _, rendered, _ = self.native_renderers(word)
+        with stack:
+            ready = self.native_generate(copied)
+            self.assertEqual(ready.status_code, 200, ready.text)
+            rendered.assert_called_once()
+        with unit() as s:
+            generation = s.get(BusinessGeneration, ready.json()['current_generation_id'])
+            self.assertEqual(len(json.loads(generation.source_manifest_json)), 4)
+        different = native_fixture({('Стоим_проекта', 'B38'): (9, None)})
+        response = self.upload(ready.json(), different, 'Another folder/different-model.xlsx')
+        self.assertEqual(response.status_code, 422, response.text)
+        self.assertIn('несколько оригинальных', response.json()['detail'])
+        current = self.client.get(f"/api/business-projects/{project['id']}", params={'company_id': self.cid}).json()
+        self.assertEqual(current['source_count'], 4)
 
     def test_manual_project_generates_four_files_without_sources_or_analysis(self):
         project, body = self.create('manual')

@@ -111,6 +111,7 @@ test('manual project starts without files, saves missing values as a draft and e
   };
   const view=mount(component,{api,company});t.after(view.unmount);await settle();
   await button(view.container,'Новый проект').props.onClick();await settle();
+  assert.equal(view.state.projectMode,'template');await button(view.container,'Создать проект вручную').props.onClick();await settle();
   assert.equal(view.state.projectMode,'manual');assert.equal(view.state.selected.length,0);
   view.state.header.title='Manual synthetic';
   await button(view.container,'Сохранить и перейти к данным').props.onClick();await settle();
@@ -275,6 +276,7 @@ test('mounted optional original import keeps the 36-month choice and exposes bus
   };
   const view = mount(component, {api, company, onGenerated: () => generated++}); t.after(view.unmount);
   await settle(); await button(view.container, 'Новый проект').props.onClick(); await settle();
+  await button(view.container,'Создать проект вручную').props.onClick();await settle();
   assert.equal(view.state.projectMode, 'manual');
   await button(view.container, 'Импорт оригинальных Word и Excel').props.onClick(); await settle();
   assert.equal(view.state.header.months, 36);
@@ -608,7 +610,7 @@ test('opening a current ready generic or native project immediately exposes its 
     const project=availableProject(native);const view=mount(reportsComponent,{company,api:async url=>url.includes('/41?')?project:{items:[project],can_upload:true}});t.after(view.unmount);
     await settle();await view.state.openProject(project);await settle();assert.equal(view.state.flowStage,'report');assert.equal(view.state.current.files.length,0);
     assert.deepEqual(visibleReportLinks(view.container).map(node=>node.props.href),['/api/report-archives/401/files/pdf?company_id=2','/api/report-archives/401/files/xlsx?company_id=2']);
-    assert.doesNotMatch(view.state.notice,/нет доступного/);assert.equal(button(view.container,'3. Отчёт').props['aria-current'],'step');
+    assert.doesNotMatch(view.state.notice,/нет доступного/);assert.equal(button(view.container,native?'3. Проверка и отчёт':'3. Отчёт').props['aria-current'],'step');
   }
 });
 

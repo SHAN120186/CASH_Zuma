@@ -20,8 +20,9 @@ jobs:
       - run: python -m pip install --upgrade pip==26.2.1
       - run: python -m pip install -r requirements.txt httpx==0.28.1 pytest==9.1.1
       - run: python -m unittest tests.test_business_model tests.test_business_sources tests.test_business_exports -q
-      - run: python -m pytest tests/test_native_workbook.py tests/test_native_uzgermed.py tests/test_native_documents.py tests/test_native_teo.py tests/test_native_renderer.py -q
+      - run: python -m pytest tests/test_native_workbook.py tests/test_native_uzgermed.py tests/test_native_documents.py tests/test_native_teo.py tests/test_native_renderer.py tests/test_native_template_inputs.py -q
       - run: python -m unittest tests.test_business_projects -q
+      - run: python -m unittest tests.test_business_templates -q
       - run: python tests/test_site.py
       - run: python tests/test_access.py
       - run: python -m unittest tests.test_future_reservations -q
@@ -64,3 +65,4 @@ jobs:
       - run: python -m unittest tests.test_group_registration -q
       - run: python -m unittest tests.test_future_reservations -q
       - run: python -m unittest tests.test_business_projects -q
+      - run: python -m unittest tests.test_business_templates -q

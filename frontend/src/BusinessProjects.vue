@@ -24,10 +24,19 @@ const operation = createOperationProgress(value => {progress.value = value;});
 const showDeleted = ref(false);
 const confirmed = ref(false), loadedSnapshot = ref('');
 const projectMode = ref('manual'), flowStage = ref('project');
-let active = true, listRequest = 0, detailRequest = 0;
+const templates=ref([]),templatesLoading=ref(false),templateError=ref(''),selectedTemplateId=ref('');
+const templateTitle=ref(''),templateSave=ref(null);
+let active = true, listRequest = 0, detailRequest = 0, templateRequest=0;
 const busy = computed(() => !!action.value), editing = computed(() => !!state.value);
-const uploadRequirement = computed(() => projectMode.value === 'manual' || current.value?.native_model ? (!header.value.title.trim() ? N_('Укажите название проекта.') : '') : headerProblem(header.value));
-const canEdit = computed(() => !!current.value?.can_edit && current.value.status !== 'deleted');
+const nativeFlow=computed(()=>projectMode.value==='template'||!!current.value?.native_model);
+const importOriginalPair=computed(()=>projectMode.value==='template'&&!current.value);
+const originalPairProblem=computed(()=>importOriginalPair.value&&(selected.value.filter(file=>/\.xlsx$/i.test(file.name)).length!==1||selected.value.filter(file=>/\.docx$/i.test(file.name)).length!==1)?N_('Выберите один оригинальный Excel (.xlsx) и один Word бизнес-плана (.docx).'):'' );
+const uploadRequirement = computed(() => projectMode.value === 'manual' || nativeFlow.value ? (!header.value.title.trim() ? N_('Укажите название проекта.') : originalPairProblem.value) : headerProblem(header.value));
+const canEdit = computed(() => !!current.value?.can_edit && current.value.company_id===props.company.id && current.value.status !== 'deleted');
+const canSaveTemplate=computed(()=>{
+  const words=(current.value?.files||[]).filter(file=>{const name=(file.filename||file.relative_path||'').split(/[\\/]/).pop();return /\.docx$/i.test(name)&&/лекарство_производство|бизнес|business/i.test(name);});
+  return canEdit.value&&!!current.value?.native_model&&new Set(words.map(file=>file.sha256||file.relative_path||file.filename)).size===1;
+});
 const visibleProjects = computed(() => projects.value.filter(project => showDeleted.value || project.status !== 'deleted'));
 const originalReports = computed(() => originalReportFiles(current.value, props.company.id));
 const review = computed(() => projectReview(current.value?.extraction, current.value?.validation));
@@ -37,7 +46,7 @@ const blockingSources = computed(() => sourceProblems.value.filter(issue => issu
 const validation = computed(() => review.value.fields);
 const requiredFields = computed(() => missingRequiredFields(form.value));
 const remainingRequirements = computed(() => requiredFields.value);
-const headerMissing = computed(() => missingHeaderFields(header.value, projectMode.value, !!current.value?.native_model));
+const headerMissing = computed(() => missingHeaderFields(header.value, projectMode.value, nativeFlow.value));
 const savedValidation = computed(() => changed.value ? [] : validation.value.filter(issue => !requiredFields.value.some(item => item.field === issue.field)));
 const referenceNotes = computed(() => review.value.references);
 const evidence = computed(() => evidenceRows(current.value?.extraction));
@@ -78,9 +87,9 @@ const ratio = value => value == null ? '—' : new Intl.NumberFormat('ru-RU', {m
 
 watch(editing, value => emit('editing', value));
 watch(() => props.refresh, loadProjects);
-watch(() => props.company.id, () => {operation.reset(); validationAttempted.value=false; headerAttempted.value=false; listRequest++; detailRequest++; state.value = null; current.value = null; projects.value = []; selected.value = []; action.value = ''; error.value = ''; notice.value = ''; loadProjects();});
+watch(() => props.company.id, () => {operation.reset(); validationAttempted.value=false; headerAttempted.value=false; listRequest++; detailRequest++; templateRequest++; state.value = null; current.value = null; projects.value = []; templates.value=[]; templateError.value=''; selectedTemplateId.value='';templateTitle.value='';templateSave.value=null; selected.value = []; action.value = ''; error.value = ''; notice.value = ''; loadProjects();});
 onMounted(loadProjects);
-onUnmounted(() => {active = false; operation.reset(); listRequest++; detailRequest++; emit('editing', false);});
+onUnmounted(() => {active = false; operation.reset(); listRequest++; detailRequest++; templateRequest++; emit('editing', false);});
 
 async function loadProjects() {
   const request = ++listRequest, companyId = props.company.id; listLoading.value = true;
@@ -90,9 +99,16 @@ async function loadProjects() {
     if (!active || request !== listRequest || companyId !== props.company.id) return;
     projects.value = (response.items || []).filter(project => project.company_id === companyId);
     canUpload.value = !!response.can_upload;
+    if(canUpload.value&&state.value&&projectMode.value==='template'&&!current.value)loadTemplates();else if(!canUpload.value){templates.value=[];templateRequest++;templatesLoading.value=false;}
     if (ticket) operation.complete(ticket, N_('Проекты загружены'));
   } catch (e) {if (active && request === listRequest && e.name !== 'AbortError') {error.value = e.message; if(ticket)operation.fail(ticket,e.message);}}
   finally {if (active && request === listRequest) listLoading.value = false;}
+}
+async function loadTemplates(){
+  const request=++templateRequest,companyId=props.company.id;templatesLoading.value=true;templateError.value='';
+  try{const response=await props.api(`/api/business-templates?company_id=${companyId}`);if(!active||request!==templateRequest||companyId!==props.company.id)return;templates.value=(response.items||[]).filter(item=>Number.isSafeInteger(item.id)&&item.id>0&&typeof item.title==='string'&&typeof item.xlsx_name==='string'&&typeof item.docx_name==='string');}
+  catch(e){if(active&&request===templateRequest&&companyId===props.company.id&&e.name!=='AbortError'){templates.value=[];templateError.value=e.message;}}
+  finally{if(active&&request===templateRequest)templatesLoading.value=false;}
 }
 function setProject(project, replaceForm = false) {
   assertProject(project, props.company.id);
@@ -123,9 +139,11 @@ function newProject(mode = 'manual') {
   operation.reset(); validationAttempted.value=false; headerAttempted.value=false;
   state.value = createBusinessState(); current.value = null;
   projectMode.value = mode; flowStage.value = 'project';
+  selectedTemplateId.value='';templateTitle.value='';templateSave.value=null;
   header.value = {title: '', start: '', months: 36, currency: ''};
   form.value = formFromInputs(); selected.value = []; ignored.value = []; selectionProblems.value = [];
   error.value = ''; notice.value = ''; totalSize.value = 0; confirmed.value = false;
+  if(mode==='template')loadTemplates();
 }
 async function openProject(project) {
   if (busy.value) return;
@@ -137,6 +155,7 @@ async function openProject(project) {
     if (!active || request !== detailRequest) return;
     assertProject(detail, props.company.id, project.id);
     state.value = createBusinessState(detail); selected.value = []; ignored.value = []; selectionProblems.value = []; totalSize.value = 0;
+    templateTitle.value=detail.title;templateSave.value=null;
     projectMode.value = detail.mode || 'files';
     // A current report opens on its files; a viewer without edit rights has nothing else to see.
     flowStage.value = readyReport(detail) || !detail.can_edit && !detail.can_restore && detail.status !== 'deleted' && detail.generations?.length ? 'report' : 'data';
@@ -149,6 +168,41 @@ async function openProject(project) {
   finally {if (active && request === detailRequest) action.value = '';}
 }
 function closeProject() {if (busy.value) return; operation.reset(); state.value = null; current.value = null; selected.value = []; error.value = ''; notice.value = ''; loadProjects();}
+const postJson=body=>({method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
+async function useTemplate(){
+  if(busy.value||current.value||!canUpload.value||projectMode.value!=='template')return;
+  const workingState=state.value,companyId=props.company.id,template=templates.value.find(item=>item.id===Number(selectedTemplateId.value))||(workingState?.createFields?.template_id?{id:workingState.createFields.template_id}:null);
+  if(!workingState||!template||!header.value.title.trim()||header.value.title.trim().length>160)return;
+  const isCurrent=()=>active&&workingState===state.value&&companyId===props.company.id;
+  const ticket=operation.begin(N_('Копируем оригинальные Excel и Word…'),2);
+  action.value='template';error.value='';notice.value='';
+  try{
+    workingState.createFields||={company_id:companyId,title:header.value.title.trim(),mode:'files',template_id:template.id,request_key:workingState.requestKey};
+    let project;
+    try{project=await props.api(projectUrl(companyId),postJson(workingState.createFields));}
+    catch(e){if(e.status>=400&&e.status<500&&!workingState.createUnknown)workingState.createFields=null;else workingState.createUnknown=true;throw e;}
+    if(!isCurrent())return;assertProject(project,companyId);workingState.createUnknown=false;setProject(project,true);
+    operation.advance(ticket,1,N_('Проверяем исходные значения шаблона…'));
+    const detail=await props.api(projectUrl(companyId,project.id,'analyse'),postJson({revision:project.revision,overrides:{}}));
+    if(!isCurrent())return;assertProject(detail,companyId,project.id);setProject(detail,true);templateTitle.value=detail.title;
+    flowStage.value='data';operation.complete(ticket,N_('Шаблон скопирован. Можно добавить новые данные.'));
+    notice.value=N_('Добавьте новые документы или проверьте исходные значения и перейдите к отчёту.');await loadProjects();
+  }catch(e){if(isCurrent()&&e.name!=='AbortError'){error.value=e.message;operation.fail(ticket,e.message);await recoverConflict(e);}}
+  finally{if(isCurrent())action.value='';}
+}
+async function saveTemplate(){
+  if(busy.value||!canSaveTemplate.value)return;
+  const project=current.value,companyId=props.company.id,title=templateTitle.value.trim();
+  if(!title||title.length>160){error.value=N_('Укажите название шаблона: до 160 символов.');return;}
+  const matches=templateSave.value&&templateSave.value.projectId===project.id&&templateSave.value.revision===project.revision&&templateSave.value.title===title;
+  if(!matches)templateSave.value={projectId:project.id,revision:project.revision,title,request_key:createBusinessState().requestKey};
+  const body={revision:project.revision,title,request_key:templateSave.value.request_key};
+  const isCurrent=()=>active&&current.value?.id===project.id&&companyId===props.company.id;
+  const ticket=operation.begin(N_('Сохраняем оригинальную пару как шаблон…'),1);action.value='save-template';error.value='';notice.value='';
+  try{const saved=await props.api(projectUrl(companyId,project.id,'save-template'),postJson(body));if(!isCurrent())return;if(!Number.isSafeInteger(saved.id)||saved.id<1)throw Error(N_('Сервер не вернул сохранённый шаблон. Обновите список шаблонов.'));operation.complete(ticket,N_('Шаблон Excel и Word сохранён'));notice.value=N_('Шаблон сохранён для вашей компании. Выберите его при создании следующего проекта.');await loadTemplates();}
+  catch(e){if(isCurrent()&&e.name!=='AbortError'){error.value=e.message;operation.fail(ticket,e.message);await recoverConflict(e);}}
+  finally{if(isCurrent())action.value='';}
+}
 async function changeProjectState(project, restore = false) {
   if (busy.value || project.company_id !== props.company.id || !(restore ? project.can_restore : project.can_delete)) return;
   const companyId = props.company.id;
@@ -174,23 +228,28 @@ function chooseSources(event) {
 }
 async function recoverConflict(e) {
   if (e.status !== 409 || !current.value) return;
+  const companyId=props.company.id,id=current.value.id;
   try {
-    const detail = await props.api(projectUrl(props.company.id, current.value.id));
-    if (!active) return;
+    const detail = await props.api(projectUrl(companyId,id));
+    if (!active||props.company.id!==companyId||current.value?.id!==id) return;
     setProject(detail); confirmed.value = false;
     error.value = N_('Папка уже изменена. Список файлов и версия обновлены. Проверьте параметры и повторите действие; ваши изменения формы сохранены.');
   } catch { /* Keep the original error and local inputs if refreshing also failed. */ }
 }
 async function upload() {
   if (busy.value || !selected.value.length || selectionProblems.value.length) return;
+  if(current.value?!canEdit.value:!canUpload.value)return;
+  if(uploadRequirement.value){headerAttempted.value=true;error.value=tx(uploadRequirement.value);return;}
   const workingState = state.value, companyId = props.company.id;
   const isCurrent = () => active && state.value === workingState && props.company.id === companyId;
-  const preliminary = !current.value && projectMode.value==='manual' ? 2 : current.value&&!current.value.native_model&&changed.value ? 1 : 0;
-  const total = preliminary + Number(!current.value&&projectMode.value!=='manual') + selected.value.filter(item=>!workingState.uploaded.has(item.key)).length + 1;
+  const nativeUpload=nativeFlow.value;
+  const preliminary = !current.value && projectMode.value==='manual' ? 2 : !current.value&&nativeUpload ? 1 : current.value&&!current.value.native_model&&changed.value ? 1 : 0;
+  const total = preliminary + Number(!current.value&&projectMode.value!=='manual'&&!nativeUpload) + selected.value.filter(item=>!workingState.uploaded.has(item.key)).length + 1;
   const ticket=operation.begin(N_('Готовим проект к загрузке…'),total); let prepared=0;
   headerAttempted.value=true;
   action.value = 'upload'; error.value = ''; notice.value = '';
   try {
+    if(!current.value&&nativeUpload){operation.stage(ticket,N_('Создаём проект…'));const created=await createProjectDraft(props.api,workingState,companyId,header.value.title,'files',isCurrent);setProject(created);operation.advance(ticket);prepared++;}
     if (!current.value && projectMode.value === 'manual') {
       operation.stage(ticket,N_('Создаём проект…'));
       const created = await createProjectDraft(props.api, workingState, companyId, header.value.title, 'manual', isCurrent);
@@ -201,19 +260,21 @@ async function upload() {
       operation.advance(ticket); prepared++;
       setProject(saved, true);
     }
-    if (current.value && !current.value.native_model && changed.value) {
+    if (current.value && !current.value.native_model && !nativeUpload && changed.value) {
       operation.stage(ticket,N_('Сохраняем изменения перед загрузкой…'));
       const saved = await saveProjectDraft(props.api, current.value, companyId, inputsFromForm(form.value), isCurrent);
       operation.advance(ticket); prepared++;
       setProject(saved, true);
     }
     const project = await uploadProjectFolder(props.api, workingState, {companyId, header: {...header.value}, sources: selected.value,
-      mode: projectMode.value, isCurrent,
+      // Existing files-mode projects need no guessed forecast date during native source analysis.
+      mode: nativeUpload?'manual':projectMode.value, isCurrent,
       onProject: project => setProject(project), onStep: value => {step.value = value;},
       onProgress: value => {if(isCurrent())operation.progress(ticket,{...value,completed:prepared+value.completed,total:prepared+value.total});},
     });
     if (!isCurrent()) return;
     setProject(project, true);
+    templateTitle.value=project.title;
     operation.complete(ticket,N_('Файлы загружены, источники проверены'));
     const ready = readyReport(project);
     flowStage.value = ready ? 'report' : 'data';
@@ -247,6 +308,7 @@ async function generate() {
 }
 async function saveDraft(nextStage = null) {
   if (busy.value || current.value && (!canEdit.value || current.value.native_model)) return false;
+  if(!current.value&&!canUpload.value)return false;
   const workingState = state.value, companyId = props.company.id;
   const isCurrent = () => active && state.value === workingState && props.company.id === companyId;
   const ticket=operation.begin(current.value?N_('Сохраняем черновик…'):N_('Создаём проект…'),current.value?1:2);
@@ -272,6 +334,7 @@ async function saveDraft(nextStage = null) {
 }
 async function goStage(stage) {
   if (busy.value) return;
+  if(projectMode.value==='template'&&!current.value){flowStage.value='project';return;}
   if (!current.value && stage === 'project' || current.value?.native_model || current.value && !canEdit.value) {flowStage.value = stage; return;}
   if (!current.value || changed.value) {await saveDraft(stage); return;}
   flowStage.value = stage;
@@ -329,9 +392,9 @@ function scheduleField(entry, month = null) {
 
 <template>
   <section class="card business-projects" aria-labelledby="business-projects-title">
-    <div class="card-h"><div><h3 id="business-projects-title">{{tx('Бизнес-план')}}</h3><p class="sub">{{tx('{company} · данные проекта и автоматический расчёт', {company: company.name})}}</p></div><button v-if="canUpload&&!editing" :disabled="busy||listLoading" @click="newProject()"><AppIcon name="plus"/> {{tx('Новый проект')}}</button></div>
+    <div class="card-h"><div><h3 id="business-projects-title">{{tx('Бизнес-план')}}</h3><p class="sub">{{tx('{company} · данные проекта и автоматический расчёт', {company: company.name})}}</p></div><button v-if="canUpload&&!editing" :disabled="busy||listLoading" @click="newProject('template')"><AppIcon name="plus"/> {{tx('Новый проект')}}</button></div>
     <div class="card-b">
-      <p class="sub bp-intro">{{tx('Создайте проект, заполните данные и получите бизнес-план PDF с расчётным Excel. Черновик можно сохранить в любой момент. Исходные документы можно добавить при необходимости.')}}</p>
+      <p class="sub bp-intro">{{tx('Выберите сохранённые Excel и Word, добавьте новые документы и проверьте только изменения. Сайт сформирует бизнес-план в структуре оригинала и пересчитанный Excel.')}}</p>
       <div class="bp-actions"><a class="button secondary" :href="templateUrl(company.id)"><AppIcon name="download"/> {{tx('Шаблон исходных данных · Excel')}}</a><button class="ghost" :disabled="busy||listLoading" @click="loadProjects"><AppIcon name="refresh"/> {{tx('Обновить папки')}}</button></div>
       <p v-if="error" class="error" role="alert">{{tx(error)}}</p><p v-if="notice" class="notice" role="status">{{tx(notice)}}</p>
       <OperationProgress v-if="progress.total&&action!=='native'" v-bind="progress"/>
@@ -344,34 +407,45 @@ function scheduleField(entry, month = null) {
         <div v-if="current?.can_delete||current?.can_restore" class="bp-actions"><button v-if="current.can_delete" class="secondary tiny" :disabled="busy" @click="changeProjectState(current)">{{tx('Удалить папку и её отчёты')}}</button><button v-if="current.can_restore" class="secondary tiny" :disabled="busy" @click="changeProjectState(current,true)">{{tx('Восстановить папку и отчёты')}}</button></div>
         <p v-if="current?.status==='deleted'" class="warning">{{tx('Папка удалена. Для нового расчёта сначала восстановите её. Исходные файлы сохранены.')}}</p>
         <p v-if="current&&!canEdit" class="sub">{{tx('Просмотр проекта и готовых отчётов. Изменять исходные данные может автор папки с правом импорта.')}}</p>
-        <nav class="bp-actions bp-flow" :aria-label="tx('Этапы проекта')"><button v-for="[stage,label] in [['project',tx('1. Проект')],['data',tx('2. Данные')],['report',tx('3. Отчёт')]]" :key="stage" type="button" :class="flowStage===stage?'':'secondary'" :aria-current="flowStage===stage?'step':undefined" :disabled="busy||!current&&stage==='report'" @click="goStage(stage)">{{label}}</button></nav>
-        <div v-if="!current||canEdit" ref="headerForm" :hidden="flowStage!=='project'" class="bp-upload-area">
+        <nav class="bp-actions bp-flow" :aria-label="tx('Этапы проекта')"><button v-for="[stage,label] in nativeFlow?[['project',tx('1. Шаблон')],['data',tx('2. Новые данные')],['report',tx('3. Проверка и отчёт')]]:[['project',tx('1. Проект')],['data',tx('2. Данные')],['report',tx('3. Отчёт')]]" :key="stage" type="button" :class="flowStage===stage?'':'secondary'" :aria-current="flowStage===stage?'step':undefined" :disabled="busy||!current&&stage!=='project'&&nativeFlow||!current&&stage==='report'" @click="goStage(stage)">{{label}}</button></nav>
+        <section v-if="projectMode==='template'&&!current" class="bp-template-choice" :hidden="flowStage!=='project'">
+          <h3>{{tx('Оригинальный шаблон компании')}}</h3><p class="sub">{{tx('Excel содержит ваши формулы и исходные значения, Word — разделы и оформление бизнес-плана. Сохранённая пара доступна вам внутри выбранной компании.')}}</p>
+          <p v-if="templatesLoading" role="status" class="sub">{{tx('Загружаем шаблоны…')}}</p><p v-if="templateError" class="warning" role="alert">{{tx(templateError)}} <button class="ghost tiny" type="button" :disabled="busy||templatesLoading" @click="loadTemplates">{{tx('Обновить шаблоны')}}</button></p>
+          <label v-if="templates.length">{{tx('Сохранённый шаблон')}}<select v-model="selectedTemplateId" :disabled="busy||!!state.createFields"><option value="">{{tx('Выберите шаблон')}}</option><option v-for="template in templates" :key="template.id" :value="template.id">{{template.title}}</option></select></label>
+          <p v-if="!templatesLoading&&!templates.length" class="sub">{{tx('Сохранённых шаблонов пока нет. Загрузите оригинальные Excel и Word ниже; затем сохраните их для следующих расчётов.')}}</p>
+          <p v-if="selectedTemplateId" class="sub">{{templates.find(template=>template.id===Number(selectedTemplateId))?.xlsx_name}} · {{templates.find(template=>template.id===Number(selectedTemplateId))?.docx_name}}</p>
+          <button v-if="selectedTemplateId" type="button" :disabled="busy||!header.title.trim()" @click="useTemplate">{{tx('Использовать шаблон и перейти к новым данным')}}</button>
+          <p v-if="state.createUnknown" class="warning">{{tx('Сервер мог создать папку. Повторите загрузку: она продолжится в том же проекте.')}}</p>
+          <div class="bp-actions"><button type="button" class="ghost tiny" :disabled="busy||!!state.createFields" @click="selectedTemplateId=''">{{tx('Загрузить другую оригинальную пару')}}</button><button type="button" class="ghost tiny" :disabled="busy||!!state.createFields" @click="newProject('manual')">{{tx('Создать проект вручную')}}</button></div>
+        </section>
+        <div v-if="!current||canEdit" ref="headerForm" :hidden="current?.native_model?flowStage!=='data':flowStage!=='project'" class="bp-upload-area">
           <section v-if="headerMissing.length" class="bp-missing-summary" aria-labelledby="bp-header-missing-title"><h4 id="bp-header-missing-title">{{tx('Не заполнены поля проекта')}}</h4><ul><li v-for="item in headerMissing" :key="item.field"><button type="button" class="ghost tiny" :disabled="busy" @click="goToHeader(item.field)">{{tx(item.label)}}</button></li></ul><p class="sub">{{tx('Для сохранения черновика достаточно названия; остальные поля можно заполнить позже.')}}</p></section>
-          <div class="bp-fields">
+          <div class="bp-fields" v-if="!current?.native_model">
             <label class="bp-wide" data-bp-header="title">{{tx('Название проекта')}} <span class="bp-required-tag">{{tx('Обязательно')}}</span><input v-model="header.title" maxlength="160" :aria-invalid="headerAttempted&&headerMissing.some(item=>item.field==='title')" :disabled="busy||!!state.createFields||!!current" :placeholder="tx('Производство лекарственных препаратов')"><small>{{tx('Заполнится из имени папки, если своё название ещё не указано.')}}</small></label>
-            <template v-if="!current?.native_model">
+            <template v-if="!nativeFlow">
               <label data-bp-header="start">{{tx('Начало прогноза')}} <span class="bp-required-tag">{{tx('Обязательно')}}</span><input type="month" :value="header.start.slice(0,7)" min="2000-01" max="2100-12" :disabled="busy" @input="setStart(header,$event)"><small>{{tx('Выберите первый месяц расчёта. Дата загрузки и дата баланса не заменяют начало прогноза.')}}</small></label>
               <label data-bp-header="months">{{tx('Прогноз, месяцев')}}<input v-model="header.months" type="number" min="1" max="60" step="1" :disabled="busy"><small>{{tx('От 1 до 60; по умолчанию 36 месяцев')}}</small></label>
               <label data-bp-header="currency">{{tx('Валюта модели')}}<select v-model="header.currency" :disabled="busy"><option value="">{{projectMode==='manual'?tx('Выберите валюту'):tx('Определить из источников')}}</option><option>USD</option><option>UZS</option><option>EUR</option></select></label>
             </template>
           </div>
           <div v-if="!current&&projectMode==='manual'" class="bp-actions"><button :disabled="busy||!header.title.trim()" @click="saveDraft('data')"><AppIcon name="check"/> {{tx('Сохранить и перейти к данным')}}</button><span class="sub">{{tx('Файлы не обязательны')}}</span></div>
-          <details class="bp-details" :open="projectMode==='files'&&!current"><summary>{{tx('Файлы и импорт оригинала · необязательно')}}</summary>
-          <p class="sub">{{tx('Можно приложить документы к ручному проекту или использовать исходные Word и Excel UZGERMED.')}}</p>
+          <details v-if="!importOriginalPair||!selectedTemplateId" class="bp-details" :open="nativeFlow||projectMode==='files'&&!current"><summary>{{current?.native_model?tx('Добавить новые документы'):importOriginalPair?tx('Загрузить оригинальные Excel и Word'):tx('Файлы и импорт оригинала · необязательно')}}</summary>
+          <p class="sub">{{importOriginalPair?tx('Выберите один оригинальный Excel (.xlsx) и один Word бизнес-плана (.docx).'):current?.native_model?tx('Добавьте новые балансы, прайс-листы, договоры или расчётные таблицы. Сайт предложит изменения к исходным значениям; вы выберете, какие принять.'):tx('Можно приложить документы к ручному проекту или использовать исходные Word и Excel UZGERMED.')}}</p>
           <button v-if="!current&&projectMode==='manual'&&!state.createFields" type="button" class="secondary tiny" @click="projectMode='files'">{{tx('Импорт оригинальных Word и Excel')}}</button>
           <p class="sub bp-note">{{current?.native_model?tx('Оригинальная модель: 36 месяцев, USD. Период для поиска отчётов выбирается ниже, перед формированием.'):tx('Начало прогноза задаётся отдельно от даты загрузки.')}} {{tx('При добавлении новых источников анализ заново проверит финансовые параметры; готовые версии останутся в истории.')}}</p>
-          <div class="bp-actions"><label class="button"><AppIcon name="import"/> {{tx('Выбрать папку')}}<input type="file" webkitdirectory multiple :accept="SOURCE_ACCEPT" hidden :disabled="busy" @change="chooseSources"></label><label class="button secondary"><AppIcon name="file"/> {{tx('Выбрать отдельные файлы')}}<input type="file" multiple :accept="SOURCE_ACCEPT" hidden :disabled="busy" @change="chooseSources"></label></div>
+          <div class="bp-actions"><label v-if="!importOriginalPair" class="button"><AppIcon name="import"/> {{tx('Выбрать папку')}}<input type="file" webkitdirectory multiple :accept="SOURCE_ACCEPT" hidden :disabled="busy" @change="chooseSources"></label><label class="button secondary"><AppIcon name="file"/> {{importOriginalPair?tx('Выбрать Excel и Word'):tx('Выбрать отдельные файлы')}}<input type="file" multiple :accept="importOriginalPair?'.xlsx,.docx':SOURCE_ACCEPT" hidden :disabled="busy" @change="chooseSources"></label></div>
           <p class="sub bp-note">{{tx('PDF, XLSX, XLTX, DOCX, CSV, TXT, JSON, ZIP, PNG и JPEG. До 100 файлов, 20 МБ на файл и 100 МБ на папку. Поддерживаемый оригинальный Excel пересчитывается по своим формулам; изображения и договоры сохраняются как источники.')}}</p>
           <p v-for="problem in selectionProblems" :key="problem" class="error" role="alert">{{tx(problem)}}</p>
           <details v-if="ignored.length" class="bp-details"><summary>{{tx('Пропущены служебные файлы: {n}', {n: ignored.length})}}</summary><ul><li v-for="item in ignored" :key="item.name">{{item.name}} — {{tx(item.reason)}}</li></ul></details>
           <details v-if="selected.length" class="bp-details" :open="selected.some(item=>!state.uploaded.has(item.key))"><summary>{{tx('Выбрано {n} файлов · {size}', {n: selected.length, size: sourceSize(totalSize)})}}</summary><ul class="bp-files"><li v-for="item in selected" :key="item.key"><span>{{item.relativePath}}</span><small>{{sourceSize(item.size)}} {{state.uploaded.has(item.key)?tx('· загружен'):''}}</small></li></ul></details>
           <p v-if="state.createUnknown" class="warning">{{tx('Сервер мог создать папку. Повторите загрузку: она продолжится в том же проекте.')}}</p>
           <p v-if="selected.length&&uploadRequirement" class="warning" role="status">{{tx('Перед загрузкой: {problem}', {problem: tx(uploadRequirement)})}}</p>
-          <button :disabled="busy||!selected.length||selectionProblems.length>0||!!uploadRequirement" @click="upload"><AppIcon name="import"/> {{current?tx('Добавить файлы и выполнить анализ'):tx('Импортировать файлы проекта')}}</button>
+          <button :disabled="busy||!selected.length||selectionProblems.length>0||!!uploadRequirement" @click="upload"><AppIcon name="import"/> {{current?tx('Добавить файлы и выполнить анализ'):importOriginalPair?tx('Загрузить оригинал и перейти к новым данным'):tx('Импортировать файлы проекта')}}</button>
           </details>
         </div>
 
         <template v-if="current">
+          <details v-if="canSaveTemplate" class="bp-details bp-save-template" :hidden="flowStage==='report'"><summary>{{tx('Сохранить оригинальную пару для следующих расчётов')}}</summary><p class="sub">{{tx('Шаблон хранит исходные Excel и Word. Изменения этого расчёта сохраняются в проекте и в готовых отчётах.')}}</p><label>{{tx('Название шаблона')}}<input v-model="templateTitle" maxlength="160" :disabled="busy" :placeholder="current.title"></label><button type="button" class="secondary" :disabled="busy||!templateTitle.trim()" @click="saveTemplate">{{tx('Сохранить Excel и Word как шаблон')}}</button></details>
           <details v-if="originalReports.length" class="bp-details" aria-labelledby="bp-original-title"><summary>{{tx('Исходные документы · {n}', {n: originalReports.length})}}</summary>
             <h3 id="bp-original-title">{{tx('Готовый бизнес-план из вашей папки')}}</h3>
             <p class="sub bp-note">{{tx('Загруженные документы сохраняют свои разделы, таблицы, оформление, формулы и исходные суммы. Скачивание выдаёт исходный файл. Изменения параметров ниже попадут в отдельный новый расчёт.')}}</p>
@@ -516,6 +590,7 @@ function scheduleField(entry, month = null) {
 <style scoped>
 .bp-missing-summary{margin:16px 0;padding:14px 16px;border:1px solid var(--line);border-radius:12px;background:var(--emx)}.bp-missing-summary h4{margin:0 0 10px}.bp-missing-summary ul{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:6px 16px;margin:0;padding-left:20px;max-height:360px;overflow:auto}.bp-missing-summary button{white-space:normal;text-align:left}.bp-validation-attempted{border-color:#b42318}.bp-field-help{color:#b42318!important;line-height:1.5}.bp-field-error input,.bp-field-error select,.bp-field-error textarea{border-color:#b42318!important;background:var(--paper,#fff)!important}.bp-field-error{color:#b42318}@media(max-width:700px){.bp-missing-summary ul{grid-template-columns:1fr}}
 .business-projects [hidden]{display:none!important}.bp-fieldset details>label{display:grid;gap:6px;max-width:460px}.bp-narratives{margin-top:16px}.bp-flow{margin-top:20px}
+.bp-template-choice{padding:18px;border:1px solid var(--line);border-radius:14px;margin:16px 0}.bp-template-choice>label,.bp-save-template>label{display:grid;gap:6px;margin:14px 0;max-width:540px}.bp-save-template>button{margin-top:10px}
 .bp-empty-hint{color:var(--muted);font-size:12px;line-height:1.5}.bp-empty-hint::before{content:'✎ ';color:var(--primary)}
 .bp-project-row{display:grid;gap:8px;align-content:start}.bp-ready-files{display:grid;gap:4px;padding:10px 12px;border:1px solid var(--line);border-radius:12px;background:var(--surface)}.bp-ready-files .bp-actions{margin:4px 0 0;gap:6px}.bp-ready-files .button.primary{background:var(--primary);color:#fff;border-color:var(--primary)}.bp-no-file{line-height:1.5}
 .bp-original-list{display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:14px}.bp-original-list b{overflow-wrap:anywhere}.bp-original-list .button{margin-top:auto;white-space:normal}
