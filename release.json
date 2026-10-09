@@ -1,7 +1,8 @@
 {
-  "version": "2.19.5",
+  "version": "2.19.6",
   "date": "2026-10-10",
   "changes": [
+    "В ТЭО уточнено пояснение NPV и IRR: используются годовые потоки ВНД!B3:B6 согласно исходным формулам. Расчётные значения не изменены.",
     "Уменьшен расход памяти при пересчёте больших оригинальных моделей: общие диапазоны формул проверяются без многократного хранения одинаковых связей. Финансовые формулы и проверка ошибок сохраняются.",
     "Добавлена отдельная поддержка оригинальных Excel и Word ZUMA-PHARMA: своя карта продукции, персонала и финансовых абзацев. Формулы поиска и связанные рецептуры сохраняются и пересчитываются; новая пара проверяется по компании.",
     "Финансовый текст Word сверяется с пересчитанным Excel. В шаблоне ZUMA исправлены проверенные остаточные ссылки на другую отрасль и площадку; отсутствующая площадь не угадывается.",
@@ -14,6 +15,7 @@
     "Длинные названия файлов и кнопки выбора шаблона переносятся на узком экране. В ТЭО дата архива отдельно обозначена и не подменяет начало финансового прогноза."
   ],
   "changes_uz": [
+    "TIAda NPV va IRR izohi aniqlashtirildi: yillik oqimlar ВНД!B3:B6 kataklaridagi asl formulalar bo‘yicha olinadi. Hisoblangan qiymatlar oʻzgartirilmadi.",
     "Katta asl modellarni qayta hisoblashda xotira sarfi kamaytirildi: formulalarning umumiy diapazonlari bir xil bogʻliqliklarni takror saqlamasdan tekshiriladi. Moliyaviy formulalar va xatolar nazorati saqlanadi.",
     "ZUMA-PHARMA asl Excel va Word shablonlari uchun alohida mahsulot, xodimlar va moliyaviy matn xaritasi qoʻshildi. Qidiruv formulalari va retseptura bogʻliqliklari saqlanadi va qayta hisoblanadi; fayllar juftligi kompaniya boʻyicha tekshiriladi.",
     "Word moliyaviy matni qayta hisoblangan Excel bilan solishtiriladi. ZUMA shablonidagi boshqa tarmoq va korxona maydoniga tegishli eski jumlalar tuzatildi; tasdiqlanmagan maydon taxmin qilinmaydi.",

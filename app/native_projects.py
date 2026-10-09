@@ -19,7 +19,7 @@ from sqlalchemy import select, func
 from uuid import NAMESPACE_URL, uuid5
 
 router = APIRouter()
-GENERATOR_VERSION = '1.4'
+GENERATOR_VERSION = '1.5'
 WORD_COVERAGE_NOTE = ('В Word обновляются расчётные таблицы, НДС, численность и фразы по проверенным связям с Excel. '
                       'При расхождении финансовых цифр Word и Excel новый PDF использует пересчитанный Excel. '
                       'Описательные разделы, логотипы и сертификаты сохраняются из шаблона; '

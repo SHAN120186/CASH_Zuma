@@ -60,6 +60,8 @@ def test_report_reads_all36_fresh_results_and_preserves_method_and_provenance():
     assert '999' not in text  # no stale profile original or parameter fallback
     assert 'образец.xlsx' in text and 'SHA-256' in text
     assert 'момент 0' in text and 'лет 4-8' in text
+    assert 'ВНД!B3:B6' in text
+    assert 'и три годовых денежных потока после погашения кредитов' not in ' '.join(text.split())
     assert 'Нет записи' in text
     assert 'относительные месяцы 1-36' in text
     for page in reader.pages:
