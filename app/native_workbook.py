@@ -301,6 +301,7 @@ class Workbook:
         self.overrides, self.repairs = {}, {}
         self.cache, self.visiting, self.ast = {}, set(), {}
         self.dependencies,self.stack = {},[]
+        self.range_dependencies = set()
         self.operations = 0
         with ZipFile(BytesIO(raw)) as archive:
             root = ET.fromstring(archive.read("xl/workbook.xml"))
@@ -508,7 +509,19 @@ class Workbook:
         if count > MAX_CELLS or self.operations + count > MAX_OPERATIONS:
             raise ExcelError("#VALUE!", "Range exceeds calculation bounds", fatal=True)
         self.operations += count
-        return Matrix(tuple(tuple(self.value(sheet, _col(c)+str(r)) for c in range(c1,c2+1)) for r in range(r1,r2+1)))
+        # Recipe formulas repeatedly inspect the same large ranges. Store
+        # their cell edges once instead of copying thousands of tuples into
+        # every referring formula. Value evaluation and error handling stay
+        # unchanged; the dependency gate traverses this shared range node.
+        range_key = (sheet, _col(c1) + str(r1) + ':' + _col(c2) + str(r2))
+        self.range_dependencies.add(range_key)
+        if self.stack:
+            self.dependencies.setdefault(self.stack[-1], set()).add(range_key)
+        self.stack.append(range_key)
+        try:
+            return Matrix(tuple(tuple(self.value(sheet, _col(c)+str(r)) for c in range(c1,c2+1)) for r in range(r1,r2+1)))
+        finally:
+            self.stack.pop()
 
     @staticmethod
     def binary(operator, left, right):
@@ -970,6 +983,8 @@ def recalculate(raw,overrides=None,repairs=None):
     result['values'] is a fresh sheet/cell map (errors are their Excel tokens).
     result['unresolved'] includes formula failures; no result uses a cached value.
     Every formula cache receives its fresh value or fresh Excel error token.
+    ``dependency_ranges`` identifies shared virtual range nodes in the graph;
+    dependency_issues traverses them and counts only actual worksheet cells.
     The caller must decide which unresolved dependencies block its
     official output. Original uploaded bytes and all unaffected ZIP parts survive.
     """
@@ -1024,6 +1039,7 @@ def recalculate(raw,overrides=None,repairs=None):
             "differences":differences,"complete":not issues,"used_cached_formula_results":False,
             "chart_cache_status":"fresh_with_gaps" if chart_issues else "fresh",
             "chart_caches_updated":chart_count,"chart_issues":chart_issues,"notes":workbook.notes,
+            "dependency_ranges":[sheet+'!'+cell for sheet,cell in sorted(workbook.range_dependencies)],
             "dependencies":{sheet+'!'+cell:[s+'!'+c for s,c in sorted(edges)] for (sheet,cell),edges in workbook.dependencies.items()}}
 
 
@@ -1038,15 +1054,19 @@ def dependency_issues(result,targets):
     if not isinstance(targets,list) or len(targets)>MAX_CELLS:raise ValueError('Invalid report output targets')
     pending=[str(t['sheet'])+'!'+_canonical(t['cell']) for t in targets]
     visited=set();graph=result.get('dependencies',{})
+    range_nodes = set(result.get('dependency_ranges', []))
+    cell_count = 0
     while pending:
         key=pending.pop()
         if key in visited:continue
         visited.add(key)
-        if len(visited)>MAX_CELLS:raise ValueError('Report dependency limit')
+        if key not in range_nodes:
+            cell_count += 1
+        if cell_count>MAX_CELLS or len(visited)>MAX_CELLS+len(range_nodes):raise ValueError('Report dependency limit')
         pending.extend(graph.get(key,[]))
     issues=[i for i in result.get('issues',[]) if i['sheet']+'!'+i['cell'] in visited]
     known={i['sheet']+'!'+i['cell'] for i in issues}
-    for key in visited-known:
+    for key in visited-known-range_nodes:
         sheet,cell=key.rsplit('!',1)
         value=result.get('values',{}).get(sheet,{}).get(cell)
         if value in ERROR_CODES if isinstance(value,str) else False:
@@ -1057,4 +1077,4 @@ def dependency_issues(result,targets):
                            'message':'Report worksheet is absent','root':True,'action':'Restore the report worksheet'})
     issues.sort(key=lambda i:(not i.get('root'),i['sheet'],i['cell']))
     return {'issues':issues,'root_issues':[i for i in issues if i.get('root')],
-            'error_count':len(issues),'complete':not issues,'dependency_count':len(visited)}
+            'error_count':len(issues),'complete':not issues,'dependency_count':cell_count}

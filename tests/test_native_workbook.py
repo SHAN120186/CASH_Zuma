@@ -124,6 +124,28 @@ class NativeWorkbookTests(unittest.TestCase):
             _, result = recalculate(raw)
         self.assertEqual(result['values']['Main']['C2'], '#VALUE!')
 
+    def test_repeated_recipe_ranges_share_edges_and_keep_error_dependency_gate(self):
+        cells = [row(index, numeric('A' + str(index), index)) for index in range(1, 51)]
+        cells += [row(index, formula('C' + str(index), 'SUM(A1:A50)')) for index in range(1, 201)]
+        _, result = recalculate(workbook(''.join(cells)))
+        shared = 'Main!A1:A50'
+        self.assertEqual(result['dependency_ranges'], [shared])
+        self.assertEqual(len(result['dependencies'][shared]), 50)
+        self.assertEqual(sum(len(edges) for edges in result['dependencies'].values()), 250)
+        self.assertEqual(result['values']['Main']['C200'], 1275)
+        checked = dependency_issues(result, {'Main': ['C1']})
+        self.assertTrue(checked['complete'])
+        self.assertEqual(checked['dependency_count'], 51)  # virtual node is not a financial cell
+        # Shared ranges must not hide an error in any referenced source cell.
+        raw = workbook(row(1, '<c r="A1" t="e"><v>#REF!</v></c>' + numeric('A2', 3) +
+                           formula('C1', 'IFERROR(SUM(A1:A2),0)') +
+                           formula('D1', 'SUM(A1:A2)')))
+        _, result = recalculate(raw)
+        self.assertEqual(result['values']['Main']['C1'], 0)
+        checked = dependency_issues(result, {'Main': ['C1']})
+        self.assertFalse(checked['complete'])
+        self.assertTrue(any(item['cell'] == 'A1' for item in checked['issues']))
+
     def test_fresh_arithmetic_overrides_and_untouched_parts(self):
         raw=workbook(row(1,numeric('A1',3)+formula('B1','A1*2')+formula('C1','B1+1')),
             extras={'xl/drawings/drawing1.xml':b'<unchanged/>','custom.bin':b'\x01\x00synthetic'})
