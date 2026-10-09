@@ -149,3 +149,15 @@ def test_calendar_metadata_labels_report_without_changing_financial_results():
     assert 'Календарное начало не подтверждено' not in text
     assert 'не переносит автоматически' in ' '.join(text.split())
     assert '1 200.00' in text
+
+
+def test_archive_period_never_claims_confirmed_calendar_start_or_changes_results():
+    values = synthetic_values()
+    reader = PdfReader(BytesIO(build_teo_pdf(values, profile(), [], start_metadata={
+        'kind': 'archive_period', 'confirmed': True, 'label': 'Период архива с 2026-10-01'})))
+    text = ' '.join('\n'.join(page.extract_text() for page in reader.pages).split())
+    assert 'Период архива с 2026-10-01' in text
+    assert 'Дата архива не меняет календарные даты исходной модели.' in text
+    assert 'Подтверждённый календарный период' not in text
+    assert 'тестового генератора' not in text
+    assert '1 200.00' in text

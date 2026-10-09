@@ -1,5 +1,5 @@
 {
-  "version": "2.19.1",
+  "version": "2.19.2",
   "date": "2026-10-10",
   "changes": [
     "Оригинальные Excel и Word можно сохранить как приватный шаблон. Новый проект получает собственные копии этой пары; шаблон доступен его автору в выбранной компании.",
@@ -7,7 +7,7 @@
     "Объёмы производства, базовые цены и чистый оборотный капитал распознаются из проверенных форматов Excel как предложения. Для отличающихся значений и дубликатов нужно выбрать источник, исходное значение или ручной ввод.",
     "Новые значения записываются в разрешённые входы оригинальной финансовой модели с сохранением расчётных формул и оформления. PDF и Excel формируются после проверки; ТЭО содержит согласованные изменения и их источники.",
     "Численность, зарплаты, тарифы и другие доступные входы можно изменить по документам. Себестоимость по рецептурам и неподдерживаемые кредитные графики требуют обновления исходного Excel; описательные разделы Word сохраняются из шаблона.",
-    "Длинные названия файлов и кнопки выбора шаблона переносятся на узком экране."
+    "Длинные названия файлов и кнопки выбора шаблона переносятся на узком экране. В ТЭО дата архива отдельно обозначена и не подменяет начало финансового прогноза."
   ],
   "changes_uz": [
     "Asl Excel va Word fayllarini shaxsiy shablon sifatida saqlash mumkin. Yangi loyiha shu juftlikning oʻz nusxalarini oladi; shablon tanlangan kompaniyada uning muallifiga ochiq.",
@@ -15,6 +15,6 @@
     "Ishlab chiqarish hajmlari, bazaviy narxlar va sof aylanma kapital tekshirilgan Excel formatlaridan taklif sifatida olinadi. Farqli qiymatlar va takrorlar uchun manba, asl qiymat yoki qoʻlda kiritish tanlanadi.",
     "Yangi qiymatlar asl moliyaviy modelning ruxsat etilgan kirish maydonlariga yoziladi, hisoblash formulalari va dizayn saqlanadi. PDF va Excel tekshiruvdan soʻng yaratiladi; TIA kelishilgan oʻzgarishlar va manbalarini koʻrsatadi.",
     "Xodimlar soni, ish haqi, tariflar va boshqa mavjud kirishlarni hujjatlar asosida oʻzgartirish mumkin. Retseptura tannarxi va qoʻllab-quvvatlanmaydigan kredit jadvallari uchun asl Excel yangilanadi; Word tavsif boʻlimlari shablondan saqlanadi.",
-    "Tor ekranda uzun fayl nomlari va shablon tanlash tugmalari keyingi qatorga oʻtadi."
+    "Tor ekranda uzun fayl nomlari va shablon tanlash tugmalari keyingi qatorga oʻtadi. TIAda arxiv sanasi alohida koʻrsatiladi va moliyaviy prognoz boshlanishini almashtirmaydi."
   ]
 }

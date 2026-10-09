@@ -127,7 +127,7 @@ def _optional_draw(values, cell):
 
 
 def build_teo_pdf(values, profile, source_manifest, parameters=None, start_metadata=None):
-    """Build a five-page A4 report from required fresh native output addresses.
+    """Build an A4 report from required fresh native output addresses.
 
     Optional metadata labels the report only. It never overrides financial
     results. Unrelated errors elsewhere in the workbook stay source issues;
@@ -203,13 +203,15 @@ def build_teo_pdf(values, profile, source_manifest, parameters=None, start_metad
     body(title, 'heading')
     body('Горизонт: месяцы 1-36, годы 1-3. Валюта расчётов: доллары США (USD). '
          'Суммы приведены в долларах, без деления на тысячи или миллионы.')
-    if isinstance(start_metadata, dict) and start_metadata.get('confirmed') and start_metadata.get('label'):
+    if isinstance(start_metadata, dict) and start_metadata.get('kind') == 'archive_period' and start_metadata.get('label'):
+        body(_text(start_metadata['label'], 160), 'small')
+        body('Дата архива не меняет календарные даты исходной модели. Финансовые таблицы сохраняют относительные месяцы 1-36.', 'small')
+    elif isinstance(start_metadata, dict) and start_metadata.get('confirmed') and start_metadata.get('label'):
         body('Подтверждённый календарный период: ' + _text(start_metadata['label'], 160), 'small')
     else:
         body('Календарное начало не подтверждено: даты графика прежних кредитов и подпись начального остатка расходятся. '
              'Использованы относительные месяцы исходной модели.', 'small')
-    body('Расчёты выполнены заново по формулам загруженной книги. Сохранённые результаты Excel '
-         'и условные параметры тестового генератора не использованы для заполнения этого ТЭО.')
+    body('ТЭО подготовлено по заново рассчитанным значениям исходной финансовой книги.')
     heading('1. Инвестиции и источники финансирования')
     table(['Показатель', 'Сумма, USD', 'Источник'], [
         ['Стоимость проекта', investment['total'], 'Стоим_проекта!F34'],
