@@ -204,14 +204,28 @@ async function bootstrap(){boot.value=await api('/api/bootstrap');user.value=boo
 async function changeReportYear(value){const cutOff=reportDateForYear(value,boot.value.today);if(!cutOff){flash(N_('Будущий год недоступен: дата факта не может быть позже сегодня.'));return}year.value=Number(value);reportAsOf.value=cutOff;await load()}
 async function changeReportDate(value){if(!validReportDate(value,year.value,boot.value.today)){flash(N_('Дата отчёта должна быть в выбранном году и не позже сегодня.'));return}reportAsOf.value=value;await load()}
 async function enter(){companyId.value=null;companyReady.value=false;if(user.value?.must_change_password)return;const data=await api('/api/companies');boot.value={accounts:[],categories:[],...data};user.value=data.user;csrf.value=data.csrf;}
-async function selectCompany(id){
+async function selectCompany(id,targetPage=null){
  if(saving.value||modal.value||documents.value||editor.value||cardId.value){flash(N_('Закройте текущую форму перед сменой компании.'));return}
  cancelPending();clearTimeout(searchTimer);
+ const selectionEpoch=companyEpoch;
  companyReady.value=false;companyId.value=Number(id);busy.value=true;error.value='';notice.value='';
  rows.value=[];dash.value=null;report.value=null;preview.value=null;receipts.value=[];expandedRequest.value=null;
  search.value='';dateFrom.value='';dateTo.value='';requestStatus.value='';listPage.value=1;listTotal.value=0;showArchive.value=false;receiptsOpen.value=false;planMappings.value={};helpOpen.value=false;menuOpen.value=false;
  boot.value={...boot.value,accounts:[],categories:[],counterparties:[]};
- try{await bootstrap();companyReady.value=true;if(!nav.value.some(n=>n[0]===page.value))page.value=nav.value[0][0];await load()}catch(e){error.value=e.message}finally{busy.value=false}
+ try{
+  await bootstrap();if(selectionEpoch!==companyEpoch||companyId.value!==Number(id)||!user.value)return;
+  if(['business','reports'].includes(targetPage)){
+   if(has('export')&&nav.value.some(n=>n[0]===targetPage)){page.value=targetPage;location.hash=targetPage;}
+   else flash(N_('У вашей роли нет прав на это действие.'));
+  }
+  if(!nav.value.some(n=>n[0]===page.value))page.value=nav.value[0][0];
+  companyReady.value=true;await load();
+ }catch(e){if(selectionEpoch===companyEpoch&&e.name!=='AbortError')error.value=e.message}finally{if(selectionEpoch===companyEpoch)busy.value=false}
+}
+async function openCompanyReport({companyId:id,page:targetPage}={}){
+ if(busy.value||!has('export')||!['business','reports'].includes(targetPage)||!selectableCompanies.value.some(c=>c.id===id))return;
+ if(saving.value||modal.value||documents.value||editor.value||cardId.value||reportEditing.value){flash(N_('Закройте текущую форму перед сменой компании.'));return;}
+ await selectCompany(id,targetPage);
 }
 function chooseCompany(){if(busy.value)return;if(modal.value||documents.value||editor.value||cardId.value||saving.value||reportEditing.value){flash(N_('Закройте текущую форму перед сменой компании.'));return}cancelPending();busy.value=true;companyReady.value=false;companyId.value=null;enter().catch(e=>{if(e.name!=='AbortError')error.value=e.message}).finally(()=>busy.value=false)}
 async function chooseRecentLogin(username){login.value.username=username;login.value.password='';error.value='';await nextTick();passwordInput.value?.focus()}
@@ -352,7 +366,7 @@ onMounted(async()=>{try{const r=await api('/api/me');user.value=r.user;csrf.valu
   <header><div class="brand"><span class="mark" aria-hidden="true">CF</span><h1 class="bname">Cash Flow</h1></div><div class="head-actions"><LanguageSwitch compact/><button class="secondary" @click="logout">{{tx('Выйти')}}</button></div></header>
   <main :aria-label="tx('Выбор компании')">
    <p v-if="error" class="error" role="alert">{{tx(error)}}</p><p v-if="busy" role="status">{{tx('Открываем компанию…')}}</p>
-   <div class="company-grid"><CompanyCard v-for="c in selectableCompanies" :key="c.id" :company="c" :disabled="busy" @select="selectCompany"/></div>
+   <div class="company-grid"><CompanyCard v-for="c in selectableCompanies" :key="c.id" :company="c" :disabled="busy" :can-reports="has('export')" @select="selectCompany" @report="openCompanyReport"/></div>
    <p v-if="!busy&&!selectableCompanies.length" class="sub">{{tx('Нет доступных компаний. Обратитесь к администратору.')}}</p>
   </main>
   <footer class="company-credit">{{tx('Разработка и собственность компании')}} <strong>Sh.A.</strong></footer>

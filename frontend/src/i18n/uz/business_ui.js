@@ -2,6 +2,7 @@
 // Key: the exact Russian text; value: the Uzbek text with the same {placeholders}.
 // Terms: бизнес-план — biznes-reja, ТЭО — TIA, исходный — manba, оригинал — asl, расчёт — hisob-kitob.
 export default {
+  'Открыть {section} компании {name}': '{name} kompaniyasining «{section}» boʻlimini ochish',
   // Business plans: project list and progress messages
   'ТЭО': 'TIA',
   'Бизнес-план · PDF': 'Biznes-reja · PDF',

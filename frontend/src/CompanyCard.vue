@@ -2,10 +2,11 @@
 import AppIcon from './AppIcon.vue';
 import {tx} from './i18n/index.js';
 
-const props=defineProps({company:{type:Object,required:true},disabled:Boolean});
-defineEmits(['select']);
+const props=defineProps({company:{type:Object,required:true},disabled:Boolean,canReports:Boolean});
+const emit=defineEmits(['select','report']);
 const finePointer=window.matchMedia('(hover: hover) and (pointer: fine)');
 const reducedMotion=window.matchMedia('(prefers-reduced-motion: reduce)');
+function openReport(page){if(props.disabled||!props.canReports)return;emit('report',{companyId:props.company.id,page});}
 
 function reset(event){
  const style=event.currentTarget.style;
@@ -33,5 +34,12 @@ function followPointer(event){
    <b>{{company.code==='ZUMA'?'ZUMA':company.name}}</b>
    <span class="company-enter" aria-hidden="true"><AppIcon name="arrow"/></span>
   </button>
+  <div v-if="canReports" class="company-report-actions">
+   <button type="button" class="secondary" :disabled="disabled" :aria-label="tx('Открыть {section} компании {name}',{section:tx('Бизнес-планы'),name:company.name})" @click="openReport('business')"><AppIcon name="business"/> {{tx('Бизнес-планы')}}</button>
+   <button type="button" class="secondary" :disabled="disabled" :aria-label="tx('Открыть {section} компании {name}',{section:tx('Архив отчётов'),name:company.name})" @click="openReport('reports')"><AppIcon name="reports"/> {{tx('Архив отчётов')}}</button>
+  </div>
  </div>
 </template>
+<style scoped>
+.company-report-actions{display:grid;gap:8px;margin-top:12px;min-width:0}.company-report-actions button{width:100%;max-width:100%;min-width:0;white-space:normal;overflow-wrap:anywhere;padding:8px 12px;font-size:13px;line-height:1.4}.company-report-actions .app-icon{flex-shrink:0}
+</style>

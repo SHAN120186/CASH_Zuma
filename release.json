@@ -1,7 +1,8 @@
 {
-  "version": "2.19.2",
+  "version": "2.19.3",
   "date": "2026-10-10",
   "changes": [
+    "Из карточки ZUMA и других доступных компаний можно сразу открыть бизнес-планы или архив отчётов. Переход проверяет права выбранной фирмы; проекты, шаблоны и файлы компаний хранятся отдельно.",
     "Оригинальные Excel и Word можно сохранить как приватный шаблон. Новый проект получает собственные копии этой пары; шаблон доступен его автору в выбранной компании.",
     "Создание отчёта упрощено: выбор шаблона, загрузка новых документов, проверка изменений. По умолчанию видны расхождения; остальные поля можно найти по группе и названию.",
     "Объёмы производства, базовые цены и чистый оборотный капитал распознаются из проверенных форматов Excel как предложения. Для отличающихся значений и дубликатов нужно выбрать источник, исходное значение или ручной ввод.",
@@ -10,6 +11,7 @@
     "Длинные названия файлов и кнопки выбора шаблона переносятся на узком экране. В ТЭО дата архива отдельно обозначена и не подменяет начало финансового прогноза."
   ],
   "changes_uz": [
+    "ZUMA va boshqa mavjud kompaniyalar kartasidan biznes-rejalar yoki hisobotlar arxivini bevosita ochish mumkin. Oʻtishda tanlangan kompaniya huquqlari tekshiriladi; loyihalar, shablonlar va fayllar alohida saqlanadi.",
     "Asl Excel va Word fayllarini shaxsiy shablon sifatida saqlash mumkin. Yangi loyiha shu juftlikning oʻz nusxalarini oladi; shablon tanlangan kompaniyada uning muallifiga ochiq.",
     "Hisobot yaratish soddalashtirildi: shablonni tanlash, yangi hujjatlarni yuklash, oʻzgarishlarni tekshirish. Avval farqlar koʻrinadi; boshqa maydonlarni guruh va nom boʻyicha topish mumkin.",
     "Ishlab chiqarish hajmlari, bazaviy narxlar va sof aylanma kapital tekshirilgan Excel formatlaridan taklif sifatida olinadi. Farqli qiymatlar va takrorlar uchun manba, asl qiymat yoki qoʻlda kiritish tanlanadi.",
