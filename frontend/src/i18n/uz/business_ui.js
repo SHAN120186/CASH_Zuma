@@ -262,6 +262,7 @@ export default {
   // Calculation by the original workbook (NativeWorkbook.vue)
   'Расчёт по оригиналу': 'Asl model boʻyicha hisob-kitob',
   'Полный бизнес-план PDF и Excel сохраняют структуру и методику ваших Word и Excel.': 'Toʻliq biznes-reja PDF va Excel fayllari Word va Excel fayllaringizning tuzilmasi va metodikasini saqlaydi.',
+  'PDF сохраняет разделы и таблицы Word. При замене шрифтов на сервере переносы и количество страниц могут отличаться от оригинала.': 'PDF Word boʻlimlari va jadvallarini saqlaydi. Serverda shriftlar almashtirilganda qator va sahifa oʻtishlari hamda sahifalar soni asl hujjatdan farq qilishi mumkin.',
   '1. Финансирование': '1. Moliyalashtirish',
   'Курс, новый кредит и годовая ставка. Ставка также влияет на NPV оригинала.': 'Kurs, yangi kredit va yillik stavka. Stavka asl modeldagi NPVga ham taʼsir qiladi.',
   '2. Производство': '2. Ishlab chiqarish',

@@ -133,6 +133,7 @@ async function generate() {
   <section v-if="model" class="native-workbook" aria-labelledby="native-model-title">
     <h3 id="native-model-title">{{tx('Расчёт по оригиналу')}}</h3>
     <p class="sub">{{tx('Полный бизнес-план PDF и Excel сохраняют структуру и методику ваших Word и Excel.')}}</p>
+    <p class="sub" :hidden="stage!=='report'">{{tx('PDF сохраняет разделы и таблицы Word. При замене шрифтов на сервере переносы и количество страниц могут отличаться от оригинала.')}}</p>
     <OperationProgress v-if="progress.total" v-bind="progress"/>
     <section v-if="canEdit&&missingFields.length" class="native-missing-summary" aria-labelledby="native-missing-title"><h4 id="native-missing-title" aria-live="polite">{{tx('Не заполнены обязательные поля · {n}',{n:missingFields.length})}}</h4><ul><li v-for="item in missingFields" :key="item.field"><button type="button" class="ghost tiny" :disabled="busy" @click="goToField(item.field)">{{tx(item.label)}}</button></li></ul><p class="sub">{{tx('Нажмите название, чтобы перейти к полю. Пустое значение не заменяется нулём.')}}</p></section>
     <p v-if="error" class="error" role="alert">{{tx(error)}}</p>
