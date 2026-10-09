@@ -214,6 +214,83 @@ def _package_document(raw,xml):
     return output.getvalue()
 
 
+@dataclass(frozen=True)
+class TocPage:
+    bookmark:str
+    page:int
+    nodes:tuple[Text,...]
+
+
+def toc_page_fields(raw):
+    """Locate cached PAGEREF digits inside an existing complex TOC field.
+
+    Field instructions, hyperlinks and run properties are retained. Body page
+    references are deliberately excluded: the renderer only maps TOC links.
+    """
+    xml=_read(raw);parser=expat.ParserCreate(namespace_separator='|')
+    fields=[];result=[];bookmarks=set();capture=None;elements=0;seen_toc=False
+    def start(name,attributes):
+        nonlocal capture,elements,seen_toc
+        elements+=1
+        if elements>200000:raise ValueError('Document XML complexity limit')
+        if name==WORD+'|bookmarkStart':bookmarks.add(attributes.get(WORD+'|name',''))
+        if name==WORD+'|fldChar':
+            kind=attributes.get(WORD+'|fldCharType')
+            if kind=='begin':
+                fields.append({'instruction':'','separated':False,'toc':False,'nodes':[]})
+            elif kind=='separate' and fields:
+                field=fields[-1];field['separated']=True
+                field['toc']=bool(re.match(r'^\s*TOC(?:\s|$)',field['instruction'],re.I))
+                seen_toc=seen_toc or field['toc']
+            elif kind=='end' and fields:
+                field=fields.pop();instruction=field['instruction']
+                if any(parent['toc'] for parent in fields) and re.match(r'^\s*PAGEREF(?:\s|$)',instruction,re.I):
+                    match=re.fullmatch(r'\s*PAGEREF\s+(_Toc\d+)\s*(?:\\h\s*)?',instruction,re.I)
+                    value=''.join(node.value for node in field['nodes'])
+                    if not match or not field['separated'] or not re.fullmatch(r'[0-9]{1,5}',value):
+                        raise ValueError('Оглавление Word содержит неподдерживаемое поле номера страницы.')
+                    result.append(TocPage(match[1],int(value),tuple(field['nodes'])))
+        if name==WORD+'|fldSimple' and any(field['toc'] for field in fields):
+            raise ValueError('Оглавление Word содержит неподдерживаемое простое поле.')
+        if name in (WORD+'|t',WORD+'|instrText'):
+            position=parser.CurrentByteIndex;opening_end=_tag_end(xml,position)
+            capture={'name':name,'start':opening_end,'text':''}
+    def text(value):
+        if capture is not None:capture['text']+=value
+    def end(name):
+        nonlocal capture
+        if capture is None or capture['name']!=name:return
+        if fields:
+            field=fields[-1]
+            if name==WORD+'|instrText' and not field['separated']:
+                field['instruction']+=capture['text']
+            elif name==WORD+'|t' and field['separated'] and capture['text']:
+                field['nodes'].append(Text(capture['start'],parser.CurrentByteIndex,capture['text']))
+        capture=None
+    parser.StartElementHandler=start;parser.CharacterDataHandler=text;parser.EndElementHandler=end
+    parser.Parse(xml,True)
+    if seen_toc and (fields or not result or len(result)>500):
+        raise ValueError('Не удалось однозначно прочитать оглавление Word.')
+    names=[field.bookmark for field in result]
+    if len(set(names))!=len(names) or any(name not in bookmarks for name in names):
+        raise ValueError('В оглавлении Word отсутствует или повторяется ссылка на раздел.')
+    return result
+
+
+def update_toc_pages(raw,pages):
+    """Patch only cached numeric text; preserve the original native TOC."""
+    fields=toc_page_fields(raw)
+    if len(fields)!=len(pages) or any(type(page) is not int or not 1<=page<=10000 for page in pages):
+        raise ValueError('Номера страниц PDF не совпадают со структурой оглавления Word.')
+    xml=_read(raw);patches=[]
+    for field,page in zip(fields,pages):
+        if field.page==page:continue
+        for index,node in enumerate(field.nodes):
+            patches.append((node.start,node.end,str(page).encode('utf8') if index==0 else b''))
+    for start,end,replacement in sorted(patches,reverse=True):xml=xml[:start]+replacement+xml[end:]
+    return _package_document(raw,xml)
+
+
 def _paragraph_spans(raw):
     parser=expat.ParserCreate(namespace_separator='|');stack=[];spans=[]
     def start(name,attributes):
