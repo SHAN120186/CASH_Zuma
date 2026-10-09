@@ -1,18 +1,20 @@
 {
-  "version": "2.19.0",
+  "version": "2.19.1",
   "date": "2026-10-10",
   "changes": [
     "Оригинальные Excel и Word можно сохранить как приватный шаблон. Новый проект получает собственные копии этой пары; шаблон доступен его автору в выбранной компании.",
     "Создание отчёта упрощено: выбор шаблона, загрузка новых документов, проверка изменений. По умолчанию видны расхождения; остальные поля можно найти по группе и названию.",
     "Объёмы производства, базовые цены и чистый оборотный капитал распознаются из проверенных форматов Excel как предложения. Для отличающихся значений и дубликатов нужно выбрать источник, исходное значение или ручной ввод.",
     "Новые значения записываются в разрешённые входы оригинальной финансовой модели с сохранением расчётных формул и оформления. PDF и Excel формируются после проверки; ТЭО содержит согласованные изменения и их источники.",
-    "Численность, зарплаты, тарифы и другие доступные входы можно изменить по документам. Себестоимость по рецептурам и неподдерживаемые кредитные графики требуют обновления исходного Excel; описательные разделы Word сохраняются из шаблона."
+    "Численность, зарплаты, тарифы и другие доступные входы можно изменить по документам. Себестоимость по рецептурам и неподдерживаемые кредитные графики требуют обновления исходного Excel; описательные разделы Word сохраняются из шаблона.",
+    "Длинные названия файлов и кнопки выбора шаблона переносятся на узком экране."
   ],
   "changes_uz": [
     "Asl Excel va Word fayllarini shaxsiy shablon sifatida saqlash mumkin. Yangi loyiha shu juftlikning oʻz nusxalarini oladi; shablon tanlangan kompaniyada uning muallifiga ochiq.",
     "Hisobot yaratish soddalashtirildi: shablonni tanlash, yangi hujjatlarni yuklash, oʻzgarishlarni tekshirish. Avval farqlar koʻrinadi; boshqa maydonlarni guruh va nom boʻyicha topish mumkin.",
     "Ishlab chiqarish hajmlari, bazaviy narxlar va sof aylanma kapital tekshirilgan Excel formatlaridan taklif sifatida olinadi. Farqli qiymatlar va takrorlar uchun manba, asl qiymat yoki qoʻlda kiritish tanlanadi.",
     "Yangi qiymatlar asl moliyaviy modelning ruxsat etilgan kirish maydonlariga yoziladi, hisoblash formulalari va dizayn saqlanadi. PDF va Excel tekshiruvdan soʻng yaratiladi; TIA kelishilgan oʻzgarishlar va manbalarini koʻrsatadi.",
-    "Xodimlar soni, ish haqi, tariflar va boshqa mavjud kirishlarni hujjatlar asosida oʻzgartirish mumkin. Retseptura tannarxi va qoʻllab-quvvatlanmaydigan kredit jadvallari uchun asl Excel yangilanadi; Word tavsif boʻlimlari shablondan saqlanadi."
+    "Xodimlar soni, ish haqi, tariflar va boshqa mavjud kirishlarni hujjatlar asosida oʻzgartirish mumkin. Retseptura tannarxi va qoʻllab-quvvatlanmaydigan kredit jadvallari uchun asl Excel yangilanadi; Word tavsif boʻlimlari shablondan saqlanadi.",
+    "Tor ekranda uzun fayl nomlari va shablon tanlash tugmalari keyingi qatorga oʻtadi."
   ]
 }
