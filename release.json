@@ -1,13 +1,13 @@
 {
-  "version": "2.19.7",
+  "version": "2.19.8",
   "date": "2026-10-10",
   "changes": [
+    "На экране выбора компании оставлена только карточка фирмы. Кнопки «Бизнес-планы» и «Архив отчётов» под карточкой убраны; разделы доступны в меню выбранной компании.",
     "Оглавление PDF бизнес-плана обновляется по фактическим страницам серверного документа. Структура и оформление исходного Word сохраняются.",
     "В ТЭО уточнено пояснение NPV и IRR: используются годовые потоки ВНД!B3:B6 согласно исходным формулам. Расчётные значения не изменены.",
     "Уменьшен расход памяти при пересчёте больших оригинальных моделей: общие диапазоны формул проверяются без многократного хранения одинаковых связей. Финансовые формулы и проверка ошибок сохраняются.",
     "Добавлена отдельная поддержка оригинальных Excel и Word ZUMA-PHARMA: своя карта продукции, персонала и финансовых абзацев. Формулы поиска и связанные рецептуры сохраняются и пересчитываются; новая пара проверяется по компании.",
     "Финансовый текст Word сверяется с пересчитанным Excel. В шаблоне ZUMA исправлены проверенные остаточные ссылки на другую отрасль и площадку; отсутствующая площадь не угадывается.",
-    "Из карточки ZUMA и других доступных компаний можно сразу открыть бизнес-планы или архив отчётов. Переход проверяет права выбранной фирмы; проекты, шаблоны и файлы компаний хранятся отдельно.",
     "Оригинальные Excel и Word можно сохранить как приватный шаблон. Новый проект получает собственные копии этой пары; шаблон доступен его автору в выбранной компании.",
     "Создание отчёта упрощено: выбор шаблона, загрузка новых документов, проверка изменений. По умолчанию видны расхождения; остальные поля можно найти по группе и названию.",
     "Объёмы производства, базовые цены и чистый оборотный капитал распознаются из проверенных форматов Excel как предложения. Для отличающихся значений и дубликатов нужно выбрать источник, исходное значение или ручной ввод.",
@@ -16,12 +16,12 @@
     "Длинные названия файлов и кнопки выбора шаблона переносятся на узком экране. В ТЭО дата архива отдельно обозначена и не подменяет начало финансового прогноза."
   ],
   "changes_uz": [
+    "Kompaniyani tanlash ekranida faqat kompaniya kartasi qoldirildi. Karta ostidagi «Biznes-rejalar» va «Hisobotlar arxivi» tugmalari olib tashlandi; bo‘limlar tanlangan kompaniya menyusida mavjud.",
     "Biznes-reja PDF mundarijasi serverda yaratilgan hujjatning haqiqiy sahifalari bo‘yicha yangilanadi. Asl Word tuzilishi va dizayni saqlanadi.",
     "TIAda NPV va IRR izohi aniqlashtirildi: yillik oqimlar ВНД!B3:B6 kataklaridagi asl formulalar bo‘yicha olinadi. Hisoblangan qiymatlar oʻzgartirilmadi.",
     "Katta asl modellarni qayta hisoblashda xotira sarfi kamaytirildi: formulalarning umumiy diapazonlari bir xil bogʻliqliklarni takror saqlamasdan tekshiriladi. Moliyaviy formulalar va xatolar nazorati saqlanadi.",
     "ZUMA-PHARMA asl Excel va Word shablonlari uchun alohida mahsulot, xodimlar va moliyaviy matn xaritasi qoʻshildi. Qidiruv formulalari va retseptura bogʻliqliklari saqlanadi va qayta hisoblanadi; fayllar juftligi kompaniya boʻyicha tekshiriladi.",
     "Word moliyaviy matni qayta hisoblangan Excel bilan solishtiriladi. ZUMA shablonidagi boshqa tarmoq va korxona maydoniga tegishli eski jumlalar tuzatildi; tasdiqlanmagan maydon taxmin qilinmaydi.",
-    "ZUMA va boshqa mavjud kompaniyalar kartasidan biznes-rejalar yoki hisobotlar arxivini bevosita ochish mumkin. Oʻtishda tanlangan kompaniya huquqlari tekshiriladi; loyihalar, shablonlar va fayllar alohida saqlanadi.",
     "Asl Excel va Word fayllarini shaxsiy shablon sifatida saqlash mumkin. Yangi loyiha shu juftlikning oʻz nusxalarini oladi; shablon tanlangan kompaniyada uning muallifiga ochiq.",
     "Hisobot yaratish soddalashtirildi: shablonni tanlash, yangi hujjatlarni yuklash, oʻzgarishlarni tekshirish. Avval farqlar koʻrinadi; boshqa maydonlarni guruh va nom boʻyicha topish mumkin.",
     "Ishlab chiqarish hajmlari, bazaviy narxlar va sof aylanma kapital tekshirilgan Excel formatlaridan taklif sifatida olinadi. Farqli qiymatlar va takrorlar uchun manba, asl qiymat yoki qoʻlda kiritish tanlanadi.",

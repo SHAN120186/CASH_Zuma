@@ -53,7 +53,7 @@ async function fixture(t,handle,component=appComponent) {
 }
 
 for(const [page,label,endpoint] of [['business','Бизнес-планы','/api/business-projects?'],['reports','Архив отчётов','/api/report-archives?']]){
-  test(`ZUMA company-card shortcut opens ${page} only after scoped bootstrap, with the right company before report loading`,async t=>{
+  test(`ZUMA opens ${page} from its internal menu after ordinary scoped company selection`,async t=>{
     const calls=[];const {view}=await fixture(t,async(url,options)=>{
       calls.push({url,companyId:options.headers['X-Company-ID']});
       if(url==='/api/bootstrap'){assert.equal(view.state.companyId,2);assert.equal(view.state.companyReady,false);return {ok:true,status:200,json:async()=>bootstrapBody()};}
@@ -61,37 +61,39 @@ for(const [page,label,endpoint] of [['business','Бизнес-планы','/api/
       return {ok:true,status:200,json:async()=>({items:[],can_upload:false})};
     },reportEntryApp);
     view.state.chooseCompany();await settle();
-    const actions=find(view.container,node=>node.props?.class==='company-report-actions'),button=find(actions,node=>node.tag==='button'&&text(node).trim()===label);
-    assert.ok(button);button.props.onClick();await settle();
+    assert.equal(find(view.container,node=>node.props?.class==='company-report-actions'),undefined);
+    const card=find(view.container,node=>node.props?.class==='company-card');assert.ok(card);card.props.onClick();await settle();
+    assert.equal(view.state.companyReady,true);assert.equal(view.state.page,'home');assert.equal(calls.length,1);
+    const button=find(view.container,node=>node.tag==='button'&&text(node).trim()===label);assert.ok(button);button.props.onClick();await settle();
     assert.equal(view.state.companyId,2);assert.equal(view.state.page,page);assert.equal(location.hash,'#'+page);
     assert.equal(calls[0].url,'/api/bootstrap');assert.ok(calls.some(call=>call.url.startsWith(endpoint)));assert.ok(calls.every(call=>call.companyId==='2'));
   });
 }
 
-test('report shortcut rechecks the selected company export permission and never loads reports after denial or failed bootstrap',async t=>{
+test('ordinary selection never loads reports after denied permission or failed bootstrap',async t=>{
   for(const failure of ['no_export','bootstrap_rejected']){
     const calls=[];const {view,cleanup}=await fixture(t,async(url,options)=>{
       calls.push({url,companyId:options.headers['X-Company-ID']});
       if(url==='/api/bootstrap')return failure==='bootstrap_rejected'?{ok:false,status:403,json:async()=>({detail:'Synthetic company denied'})}:{ok:true,status:200,json:async()=>bootstrapBody({...user,role:'employee',permissions:['request']})};
       return {ok:true,status:200,json:async()=>({items:[],total:0})};
     },reportEntryApp);
-    view.state.chooseCompany();await settle();await view.state.openCompanyReport({companyId:2,page:'reports'});await settle();
+    view.state.chooseCompany();await settle();await view.state.selectCompany(2);await settle();
     assert.equal(calls.filter(call=>/^\/api\/(?:business-projects|report-archives)/.test(call.url)).length,0);
     assert.notEqual(view.state.page,'reports');assert.equal(location.hash,'#home');assert.ok(calls.every(call=>call.companyId==='2'));
-    if(failure==='no_export')assert.match(view.state.notice,/нет прав/);else {assert.equal(view.state.companyReady,false);assert.equal(view.state.error,'Synthetic company denied');}cleanup();
+    if(failure==='no_export'){
+      assert.equal(view.state.companyReady,true);assert.equal(find(view.container,node=>node.tag==='button'&&text(node).trim()==='Архив отчётов'),undefined);
+    }else {assert.equal(view.state.companyReady,false);assert.equal(view.state.error,'Synthetic company denied');}cleanup();
   }
 });
 
-test('busy, unfinished forms and unavailable company or page cannot start company-report navigation',async t=>{
+test('unfinished forms still prevent ordinary company selection',async t=>{
   const calls=[];const {view}=await fixture(t,async(url,options)=>{calls.push({url,options});return {ok:true,status:200,json:async()=>bootstrapBody()};});
-  for(const [key,value] of [['busy',true],['saving',true],['reportEditing',true]]){
-    view.state[key]=value;await view.state.openCompanyReport({companyId:2,page:'business'});view.state[key]=false;
-  }
-  await view.state.openCompanyReport({companyId:999,page:'business'});await view.state.openCompanyReport({companyId:2,page:'users'});assert.equal(calls.length,0);assert.equal(view.state.page,'home');
-  view.state.user={...user,permissions:['view']};await view.state.openCompanyReport({companyId:2,page:'reports'});assert.equal(calls.length,0);
+  view.state.saving=true;await view.state.selectCompany(3);view.state.saving=false;
+  view.state.reportEditing=true;view.state.chooseCompany();await settle();view.state.reportEditing=false;
+  assert.equal(calls.length,0);assert.equal(view.state.companyId,2);assert.equal(view.state.page,'home');
 });
 
-test('a late company bootstrap cannot reopen reports after logout, unmount or a newer company selection',async t=>{
+test('a late ordinary company bootstrap cannot restore selection after logout, unmount or a newer company',async t=>{
   for(const cancellation of ['logout','unmount','company']){
     const response=deferred(),calls=[];let pendingSignal;
     const {view,unmount,cleanup}=await fixture(t,async(url,options)=>{
@@ -99,7 +101,7 @@ test('a late company bootstrap cannot reopen reports after logout, unmount or a 
       if(url==='/api/bootstrap'&&options.headers['X-Company-ID']==='2'){pendingSignal=options.signal;return {ok:true,status:200,json:()=>response.promise};}
       return {ok:true,status:200,json:async()=>bootstrapBody()};
     },reportEntryApp);
-    view.state.chooseCompany();await settle();const pending=view.state.openCompanyReport({companyId:2,page:'business'});await settle();
+    view.state.chooseCompany();await settle();const pending=view.state.selectCompany(2);await settle();
     assert.equal(view.state.companyReady,false);assert.equal(view.state.page,'home');
     if(cancellation==='logout')await view.state.logout();else if(cancellation==='unmount')unmount();else await view.state.selectCompany(3);
     assert.equal(pendingSignal.aborted,true);response.resolve(bootstrapBody());await pending;await settle();
