@@ -226,7 +226,7 @@ class ReportArchiveTests(unittest.TestCase):
         deleted = self.remove(record).json()
         for client in (peer, investor):
             self.assertEqual(self.listing(client=client, include_deleted=True).json()['items'], [])
-            self.assertEqual(self.download(rid, client=client).status_code, 404)
+            self.assertEqual(self.download(rid, client=client).status_code, 403 if client is peer else 404)
         self.assertEqual(self.restore(deleted, expected_version=record['version']+1).status_code, 409)
         self.assertEqual(self.restore(deleted, company=self.companies['ZUMA']).status_code, 404)
 
@@ -321,7 +321,7 @@ class ReportArchiveTests(unittest.TestCase):
         self.assertEqual(self.listing(client=finance).json()['items'], [])
         self.assertEqual(self.listing(bot=True, telegram_id=10002, include_drafts=True).json()['items'], [])
         self.assertEqual(self.upload(rid, 'xlsx', client=finance, headers=headers).status_code, 403)
-        self.assertEqual(self.download(rid, client=finance).status_code, 404)
+        self.assertEqual(self.download(rid, client=finance).status_code, 403)
         self.assertEqual(len(self.listing(bot=True, include_drafts=True).json()['items']), 1)
         _, investor, headers = self.user('report_investor', role='investor', telegram_id=10003)
         self.assertFalse(self.listing(client=investor).json()['can_upload'])

@@ -253,7 +253,7 @@ class SiteTests(unittest.TestCase):
             docs=book[0].get(path,headers=book[1])
             self.assertEqual(docs.status_code,200,docs.text)
             doc=docs.json()[0]
-            self.assertEqual(book[0].get(doc['url'],headers=book[1]).status_code,200)
+            self.assertEqual(book[0].get(doc['url'],headers=book[1]).status_code,403)
             self.assertEqual(cashier[0].get(path,headers=cashier[1]).status_code,403)
             self.assertEqual(cashier[0].get(doc['url'],headers=cashier[1]).status_code,403)
             cash=self.cash_account()
@@ -517,7 +517,8 @@ class SiteTests(unittest.TestCase):
         r=self.client.post(f'/api/ledger/{id}/document',content=raw,headers={**self.h,'X-Filename':'receipt.pdf','Content-Type':'application/octet-stream'})
         self.assertEqual(r.status_code,200,r.text);url=r.json()['url']
         c=TestClient(app);self.assertEqual(c.get(url).status_code,401);c.close()
-        cl,h=self.make_user('accountant','docsreader');self.assertEqual(cl.get(url).content,raw)
+        self.assertEqual(self.client.get(url).content,raw)
+        cl,h=self.make_user('accountant','docsreader');self.assertEqual(cl.get(url).status_code,403)
         self.assertEqual(cl.post(f'/api/ledger/{id}/document',content=raw,headers={**h,'X-Filename':'receipt.pdf'}).status_code,403);cl.close()
         r=self.client.post(f'/api/ledger/{id}/document',content=b'<script>bad</script>',headers={**self.h,'X-Filename':'bad.html'})
         self.assertEqual(r.status_code,422)
@@ -2015,7 +2016,7 @@ class SiteTests(unittest.TestCase):
                 hh={**h,'X-Company-ID':str(ids[code])}
                 me=cl.get('/api/bootstrap',headers=hh).json()['user']
                 self.assertEqual((me['holding_role'],me['company_role']),('founder',None))
-                self.assertEqual(me['permissions'],['audit','export','ledger','view'])
+                self.assertEqual(me['permissions'],['audit','download','export','ledger','view'])
                 for path in ('/api/dashboard','/api/accounts','/api/ledger','/api/requests','/api/budgets',f'/api/report?year={self.date[:4]}','/api/audit'):
                     self.assertEqual(cl.get(path,headers=hh).status_code,200,(code,path))
             # Учредитель видит заявку, но сервер не предлагает ему ни одного действия.
@@ -2601,7 +2602,7 @@ class SiteTests(unittest.TestCase):
         foreign={**h,'X-Company-ID':str(self.company)}
         try:
             for path in (f'/api/requests/{rid}',f'/api/request-documents/{doc}'):
-                self.assertEqual(cl.get(path,headers=h).status_code,404,path);self.assertEqual(cl.get(path,headers=foreign).status_code,403,path)
+                self.assertEqual(cl.get(path,headers=h).status_code,403 if path.startswith('/api/request-documents/') else 404,path);self.assertEqual(cl.get(path,headers=foreign).status_code,403,path)
             self.assertEqual(self.upload(rid,'other',cl,h,version=1).status_code,404)
             self.assertEqual(cl.put(f'/api/categories/{self.cat}/director-policy',json={'policy':'always','reason':'Чужая статья компании'},headers=h).status_code,403)
             self.assertEqual(self.client.put(f'/api/categories/{self.cat}/director-policy',json={'policy':'always','reason':'Чужая статья компании'},headers={**self.h,'X-Company-ID':str(zuma)}).status_code,404)
@@ -2876,7 +2877,7 @@ class SiteTests(unittest.TestCase):
             # Проверяющий бухгалтер читает документы заявки на проверке; другой заявитель и закупки — нет.
             checker=self.stage_user('check')
             self.assertEqual(checker[0].get(f'/api/requests/{rid}/documents',headers=checker[1]).status_code,200)
-            self.assertTrue(checker[0].get(f'/api/request-documents/{internal}',headers=checker[1]).content.startswith(PDF))
+            self.assertEqual(checker[0].get(f'/api/request-documents/{internal}',headers=checker[1]).status_code,403)
             for who in (stranger,buyer):
                 self.assertEqual(who[0].get(f'/api/requests/{rid}/documents',headers=who[1]).status_code,403)
                 self.assertEqual(who[0].get(f'/api/request-documents/{internal}',headers=who[1]).status_code,403)
@@ -2953,9 +2954,9 @@ class SiteTests(unittest.TestCase):
                 listed=client.get(f"/api/documents?ledger_id={r.json()['id']}",headers=headers)
                 self.assertEqual(listed.status_code,200,listed.text)
                 self.assertEqual([d['id'] for d in listed.json()],[document.json()['id']])
-                self.assertEqual(client.get(document.json()['url'],headers=headers).status_code,200)
-        self.assertEqual(cashier[0].get(bank_document.json()['url'],headers=cashier[1]).status_code,404)
-        self.assertEqual(book[0].get(bank_document.json()['url'],headers=book[1]).status_code,200)
+                self.assertEqual(client.get(document.json()['url'],headers=headers).status_code,403)
+        self.assertEqual(cashier[0].get(bank_document.json()['url'],headers=cashier[1]).status_code,403)
+        self.assertEqual(book[0].get(bank_document.json()['url'],headers=book[1]).status_code,403)
         seen=lambda who:sorted(x['reference'] for x in who[0].get('/api/ledger',headers=who[1]).json())
         # The cashier sees every movement of the till, including the top-up stored on the bank account, and nothing bank-only.
         self.assertEqual(seen(cashier),['HAND-IN','TOP-UP'])

@@ -127,7 +127,7 @@ def _optional_draw(values, cell):
 
 
 def build_teo_pdf(values, profile, source_manifest, parameters=None, start_metadata=None):
-    """Build a five-page A4 report from required fresh native output addresses.
+    """Build an A4 report from required fresh native output addresses.
 
     Optional metadata labels the report only. It never overrides financial
     results. Unrelated errors elsewhere in the workbook stay source issues;
@@ -148,8 +148,14 @@ def build_teo_pdf(values, profile, source_manifest, parameters=None, start_metad
         annual.append({field: sum((row[field] for row in months[year * 12:(year + 1) * 12]), Decimal(0)) for field in fields})
     investment = {key: _number(values, 'Стоим_проекта', cell) for key, cell in {
         'total': 'F34', 'own': 'B34', 'new_loan': 'D34', 'old_debt': 'E34',
-        'assets': 'B27', 'own_working': 'B28', 'new_working': 'D28',
+        'assets': 'B27', 'new_working': 'D28',
         'insurance': 'B30', 'commission': 'B31', 'other': 'B33'}.items()}
+    # ZUMA has no B28 entry. Preserve that source absence in the report;
+    # the workbook's arithmetic treatment of blank is not a declared input 0.
+    zuma_blank_working = (profile.get('profile_id') == 'zuma-36m-usd' and
+                          values.get('Стоим_проекта', {}).get('B28') is None)
+    investment['own_working'] = ('Нет записи в исходной модели' if zuma_blank_working
+                                 else _number(values, 'Стоим_проекта', 'B28'))
     npv = _number(values, 'ВНД', 'D6')
     irr = _number(values, 'ВНД', 'E6')
     discount = _number(values, 'ВНД', 'C3')
@@ -203,13 +209,15 @@ def build_teo_pdf(values, profile, source_manifest, parameters=None, start_metad
     body(title, 'heading')
     body('Горизонт: месяцы 1-36, годы 1-3. Валюта расчётов: доллары США (USD). '
          'Суммы приведены в долларах, без деления на тысячи или миллионы.')
-    if isinstance(start_metadata, dict) and start_metadata.get('confirmed') and start_metadata.get('label'):
+    if isinstance(start_metadata, dict) and start_metadata.get('kind') == 'archive_period' and start_metadata.get('label'):
+        body(_text(start_metadata['label'], 160), 'small')
+        body('Дата архива не меняет календарные даты исходной модели. Финансовые таблицы сохраняют относительные месяцы 1-36.', 'small')
+    elif isinstance(start_metadata, dict) and start_metadata.get('confirmed') and start_metadata.get('label'):
         body('Подтверждённый календарный период: ' + _text(start_metadata['label'], 160), 'small')
     else:
         body('Календарное начало не подтверждено: даты графика прежних кредитов и подпись начального остатка расходятся. '
              'Использованы относительные месяцы исходной модели.', 'small')
-    body('Расчёты выполнены заново по формулам загруженной книги. Сохранённые результаты Excel '
-         'и условные параметры тестового генератора не использованы для заполнения этого ТЭО.')
+    body('ТЭО подготовлено по заново рассчитанным значениям исходной финансовой книги.')
     heading('1. Инвестиции и источники финансирования')
     table(['Показатель', 'Сумма, USD', 'Источник'], [
         ['Стоимость проекта', investment['total'], 'Стоим_проекта!F34'],
@@ -226,8 +234,8 @@ def build_teo_pdf(values, profile, source_manifest, parameters=None, start_metad
         ['IRR годовая · ВНД!E6', _percent(irr)],
         ['Годовая ставка дисконтирования · ВНД!C3', _percent(discount)],
     ], [width * .64, width * .36])
-    body('NPV и IRR воспроизводят исходную методику: первоначальная стоимость проекта в момент 0 '
-         'и три годовых денежных потока после погашения кредитов. Показатели лет 4-8 из книги '
+    body('NPV и IRR воспроизводят исходную методику по значениям ВНД!B3:B6: первоначальная стоимость проекта в момент 0 '
+         'и три годовых потока, заданных формулами этой книги. Показатели лет 4-8 из книги '
          'не используются в отчёте за 36 месяцев.', 'small')
     parts.append(PageBreak())
 
@@ -243,6 +251,9 @@ def build_teo_pdf(values, profile, source_manifest, parameters=None, start_metad
     ], [width * .48, width * .26, width * .26])
     body('Остаток прежних кредитов входит в исходную стоимость проекта. Стоимость основных средств '
          'в расчёте проекта и база амортизации различаются в оригинале; они не сложены повторно.', 'small')
+    if zuma_blank_working:
+        body('Собственный оборотный капитал в Стоим_проекта!B28 не заполнен в оригинале ZUMA. '
+             'Отсутствующая запись сохранена; её значение не объявлено подтверждённым нулём.', 'small')
     heading('4. Годовая выручка, затраты и прибыль')
     labels = [('gross_sales', 'Реализация с НДС'), ('revenue', 'Выручка без НДС'), ('cogs', 'Производственная себестоимость'),
               ('period_costs', 'Расходы периода'), ('interest', 'Проценты по всем кредитам'), ('property_tax', 'Налог на имущество по модели'),
@@ -277,6 +288,9 @@ def build_teo_pdf(values, profile, source_manifest, parameters=None, start_metad
 
     heading('7. Замечания к исходной методике')
     notes = quality_notes(values)
+    for note in profile.get('quality_notes', []):
+        if isinstance(note, str) and note not in notes:
+            notes.append(note)
     if notes:
         for index, note in enumerate(notes, 1): body(f'{index}. {note}')
     else:
@@ -298,6 +312,32 @@ def build_teo_pdf(values, profile, source_manifest, parameters=None, start_metad
         control_rows.append([_text(control.get('label'), 160), formatted + (' ' + unit if unit != 'доля' else ''), f'{sheet}!{cell}'])
     if control_rows:
         table(['Параметр', 'Значение', 'Ячейка'], control_rows, [width * .49, width * .23, width * .28], compact=True)
+    review = profile.get('input_review', {})
+    updates = profile.get('data_updates', {})
+    decisions = profile.get('review_decisions', {})
+    if isinstance(review, dict) and isinstance(updates, dict) and updates:
+        bindings = {item.get('key'): item for item in review.get('items', []) if isinstance(item, dict)}
+        changed_rows = []
+        for key, updated in updates.items():
+            item = bindings.get(key)
+            if not item:
+                raise NativeTeoError('Новое значение не связано с разрешённым полем шаблона.')
+            decision = decisions.get(key, {})
+            proposal = next((p for p in item.get('proposals', [])
+                             if p.get('id') == decision.get('proposal_id')), None)
+            source = ('Введено пользователем' if not proposal else
+                      f"{proposal.get('source', '')} · {proposal.get('sheet', '')}!{proposal.get('cell', '')}")
+            unit = _text(item.get('unit'), 40)
+            changed_rows.append([_text(item.get('label'), 200),
+                                 _amount(Decimal(str(updated))) + (' ' + unit if unit else ''),
+                                 source])
+        if changed_rows:
+            heading('Согласованные новые данные шаблона')
+            body('Ниже перечислены входные значения, выбранные для этой версии. '
+                 'Остальные исходные данные и методика сохранены из шаблона. '
+                 'Цены в сумах указаны до пересчёта валюты и коэффициентов книги.', 'small')
+            table(['Поле', 'Новое значение', 'Источник'], changed_rows,
+                  [width * .43, width * .23, width * .34], compact=True)
     heading('9. Источники и границы отчёта')
     manifest = source_manifest if isinstance(source_manifest, list) else [source_manifest] if isinstance(source_manifest, dict) else []
     for source in manifest[:12]:

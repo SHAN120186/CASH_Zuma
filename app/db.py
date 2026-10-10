@@ -298,6 +298,25 @@ class BusinessSourceFile(Base):
     uploaded_at = Column(DateTime, nullable=False, default=now)
     __table_args__ = (UniqueConstraint('project_id', 'relative_path'),)
 
+class BusinessTemplate(Base):
+    """Private immutable Excel/Word pair, reusable by its author in one company."""
+    __tablename__ = 'business_templates'
+    id = Column(Integer, primary_key=True)
+    company_id = Column(Integer, ForeignKey('companies.id'), nullable=False)
+    created_by = Column(Integer, ForeignKey('users.id'), nullable=False)
+    title = Column(String(160), nullable=False)
+    request_key = Column(String(36), nullable=False)
+    xlsx_name = Column(String(220), nullable=False)
+    xlsx_sha256 = Column(String(64), nullable=False)
+    xlsx_size = Column(Integer, nullable=False)
+    xlsx_content = deferred(Column(LargeBinary, nullable=False))
+    docx_name = Column(String(220), nullable=False)
+    docx_sha256 = Column(String(64), nullable=False)
+    docx_size = Column(Integer, nullable=False)
+    docx_content = deferred(Column(LargeBinary, nullable=False))
+    created_at = Column(DateTime, nullable=False, default=now)
+    __table_args__ = (UniqueConstraint('company_id', 'request_key'),)
+
 class BusinessGeneration(Base):
     """Immutable calculated inputs/results and two archive pairs for each revision."""
     __tablename__ = 'business_generations'

@@ -505,6 +505,8 @@ def roles_in(user, company, members, acting):
     компанию или убрать из этой, и сайт закрывает ему доступ раньше, чем истекает срок ВрИО."""
     own = company_role_of(user, company, members)
     roles = {own} if own else set()
+    if own == 'sales' and user.role not in ('admin', 'founder'):
+        return roles
     if can_open(user, company, members):
         roles |= acting.get((company.id, user.id), set())
     return roles

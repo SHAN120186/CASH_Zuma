@@ -1,22 +1,42 @@
 {
-  "version": "2.18.1",
+  "version": "2.20.1",
   "date": "2026-10-11",
   "changes": [
     "API Telegram-бота поддерживает дневные отчёты: остатки, поступления, расходы, отдельные внутренние переводы и текущие открытые заявки. Каждая группа получает данные только своей компании.",
     "Личный дневной отчёт доступен только действующему директору конкретной компании с привязанным Telegram. Исторические остатки показываются на конец выбранного дня, а открытые заявки явно относятся к текущей очереди.",
-    "Два языка интерфейса: русский и узбекский (латиница). Переключатель RU / UZ на странице входа и в верхней панели; выбор запоминается в браузере. Суммы (ming, mln, mlrd), даты и сообщения сервера показываются на выбранном языке; данные пользователей не переводятся.",
-    "В меню появился раздел «Отчёты» с вкладками: Cash Flow, Бизнес-планы и Архив отчётов. Вкладки также видны вверху каждой страницы отчётов.",
-    "Готовый бизнес-план теперь виден сразу: в списке проектов есть кнопки «Бизнес-план · PDF», «Бизнес-план · Excel» и «ТЭО · PDF». Готовый проект открывается на шаге «Отчёт»; если файла ещё нет, указано, что сделать для расчёта.",
-    "Под пустыми полями бизнес-плана и архива отчётов написано, что нужно внести, а в самом поле показан пример. Пример не сохраняется; ноль по-прежнему указывается явно.",
-    "Сохранены функции версий 2.17.1 и 2.17.2: ход выполнения операций, перечень незаполненных обязательных полей, открытие готового проекта сразу на шаге «Отчёт» только при актуальном комплекте PDF и Excel, оформление и защита групп Telegram."
+    "Просмотр отчётов отделён от скачивания. Финансовый директор, расчётный бухгалтер, кассир, заявитель, аудитор, материальный бухгалтер и отдел закупок не могут скачивать отчёты, исходники и вложения; сервер проверяет также прямые ссылки и Telegram.",
+    "Добавлена роль «Отдел продаж»: только обзор прогноза, календарь и ввод ожидаемых поступлений своей компании. Подтверждение факта, другие финансовые разделы и скачивание файлов недоступны.",
+    "Временное замещение не возвращает запрещённое скачивание; сотрудник отдела продаж сохраняет ограничения своей роли.",
+    "На экране выбора компании оставлена только карточка фирмы. Кнопки «Бизнес-планы» и «Архив отчётов» под карточкой убраны; разделы доступны в меню выбранной компании.",
+    "Оглавление PDF бизнес-плана обновляется по фактическим страницам серверного документа. Структура и оформление исходного Word сохраняются.",
+    "В ТЭО уточнено пояснение NPV и IRR: используются годовые потоки ВНД!B3:B6 согласно исходным формулам. Расчётные значения не изменены.",
+    "Уменьшен расход памяти при пересчёте больших оригинальных моделей: общие диапазоны формул проверяются без многократного хранения одинаковых связей. Финансовые формулы и проверка ошибок сохраняются.",
+    "Добавлена отдельная поддержка оригинальных Excel и Word ZUMA-PHARMA: своя карта продукции, персонала и финансовых абзацев. Формулы поиска и связанные рецептуры сохраняются и пересчитываются; новая пара проверяется по компании.",
+    "Финансовый текст Word сверяется с пересчитанным Excel. В шаблоне ZUMA исправлены проверенные остаточные ссылки на другую отрасль и площадку; отсутствующая площадь не угадывается.",
+    "Оригинальные Excel и Word можно сохранить как приватный шаблон. Новый проект получает собственные копии этой пары; шаблон доступен его автору в выбранной компании.",
+    "Создание отчёта упрощено: выбор шаблона, загрузка новых документов, проверка изменений. По умолчанию видны расхождения; остальные поля можно найти по группе и названию.",
+    "Объёмы производства, базовые цены и чистый оборотный капитал распознаются из проверенных форматов Excel как предложения. Для отличающихся значений и дубликатов нужно выбрать источник, исходное значение или ручной ввод.",
+    "Новые значения записываются в разрешённые входы оригинальной финансовой модели с сохранением расчётных формул и оформления. PDF и Excel формируются после проверки; ТЭО содержит согласованные изменения и их источники.",
+    "Численность, зарплаты, тарифы и другие доступные входы можно изменить по документам. Себестоимость по рецептурам и неподдерживаемые кредитные графики требуют обновления исходного Excel; описательные разделы Word сохраняются из шаблона.",
+    "Длинные названия файлов и кнопки выбора шаблона переносятся на узком экране. В ТЭО дата архива отдельно обозначена и не подменяет начало финансового прогноза."
   ],
   "changes_uz": [
     "Telegram bot API kunlik hisobotlarni qoʻllab-quvvatlaydi: qoldiqlar, tushumlar, xarajatlar, alohida ichki oʻtkazmalar va hozirgi ochiq arizalar. Har bir guruh faqat oʻz kompaniyasi maʼlumotlarini oladi.",
     "Shaxsiy kunlik hisobot faqat Telegrami bogʻlangan, tegishli kompaniyaning amaldagi direktoriga ochiq. Oldingi sana qoldigʻi oʻsha kun oxiriga tegishli, ochiq arizalar esa hozirgi navbat ekanligi aniq koʻrsatiladi.",
-    "Interfeys ikki tilda: rus va oʻzbek (lotin). RU / UZ tugmasi kirish sahifasida va yuqori panelda; tanlov brauzerda saqlanadi. Summalar (ming, mln, mlrd), sanalar va server xabarlari tanlangan tilda koʻrsatiladi; foydalanuvchi maʼlumotlari tarjima qilinmaydi.",
-    "Menyuda «Hisobotlar» boʻlimi paydo boʻldi: Cash Flow, Biznes-rejalar va Hisobotlar arxivi. Ushbu yorliqlar har bir hisobot sahifasining yuqorisida ham koʻrinadi.",
-    "Tayyor biznes-reja endi darhol koʻrinadi: loyihalar roʻyxatida «Biznes-reja · PDF», «Biznes-reja · Excel» va «TIA · PDF» tugmalari bor. Tayyor loyiha «Hisobot» bosqichida ochiladi; fayl hali boʻlmasa, hisoblash uchun nima qilish kerakligi yozilgan.",
-    "Biznes-reja va hisobotlar arxivining boʻsh maydonlari ostida nima yozish kerakligi koʻrsatiladi, maydonning oʻzida esa namuna beriladi. Namuna saqlanmaydi; nol avvalgidek aniq kiritiladi.",
-    "2.17.1 va 2.17.2 versiyalari imkoniyatlari saqlangan: amallar bajarilishi jarayoni, toʻldirilmagan majburiy maydonlar roʻyxati, tayyor loyihani faqat PDF va Excel toʻplami dolzarb boʻlsa «Hisobot» bosqichida ochish, dizayn va Telegram guruhlarini himoya qilish."
+    "Hisobotni koʻrish va faylni yuklab olish huquqlari ajratildi. Moliya direktori, hisob-kitob buxgalteri, kassir, arizachi, auditor, moddiy hisob buxgalteri va xaridlar boʻlimi hisobotlar, manba fayllari hamda ilovalarni yuklab ololmaydi; server bevosita havolalar va Telegramni ham tekshiradi.",
+    "«Sotuv boʻlimi» roli qoʻshildi: faqat prognoz sharhi, taqvim va oʻz kompaniyasining kutilayotgan tushumlarini kiritish. Haqiqiy tushumni tasdiqlash, boshqa moliyaviy boʻlimlar va fayllarni yuklab olish mumkin emas.",
+    "Vaqtinchalik vazifani bajarish taqiqlangan yuklab olish huquqini qaytarmaydi; sotuv boʻlimi xodimi oʻz roli cheklovlarini saqlaydi.",
+    "Kompaniyani tanlash ekranida faqat kompaniya kartasi qoldirildi. Karta ostidagi «Biznes-rejalar» va «Hisobotlar arxivi» tugmalari olib tashlandi; bo‘limlar tanlangan kompaniya menyusida mavjud.",
+    "Biznes-reja PDF mundarijasi serverda yaratilgan hujjatning haqiqiy sahifalari bo‘yicha yangilanadi. Asl Word tuzilishi va dizayni saqlanadi.",
+    "TIAda NPV va IRR izohi aniqlashtirildi: yillik oqimlar ВНД!B3:B6 kataklaridagi asl formulalar bo‘yicha olinadi. Hisoblangan qiymatlar oʻzgartirilmadi.",
+    "Katta asl modellarni qayta hisoblashda xotira sarfi kamaytirildi: formulalarning umumiy diapazonlari bir xil bogʻliqliklarni takror saqlamasdan tekshiriladi. Moliyaviy formulalar va xatolar nazorati saqlanadi.",
+    "ZUMA-PHARMA asl Excel va Word shablonlari uchun alohida mahsulot, xodimlar va moliyaviy matn xaritasi qoʻshildi. Qidiruv formulalari va retseptura bogʻliqliklari saqlanadi va qayta hisoblanadi; fayllar juftligi kompaniya boʻyicha tekshiriladi.",
+    "Word moliyaviy matni qayta hisoblangan Excel bilan solishtiriladi. ZUMA shablonidagi boshqa tarmoq va korxona maydoniga tegishli eski jumlalar tuzatildi; tasdiqlanmagan maydon taxmin qilinmaydi.",
+    "Asl Excel va Word fayllarini shaxsiy shablon sifatida saqlash mumkin. Yangi loyiha shu juftlikning oʻz nusxalarini oladi; shablon tanlangan kompaniyada uning muallifiga ochiq.",
+    "Hisobot yaratish soddalashtirildi: shablonni tanlash, yangi hujjatlarni yuklash, oʻzgarishlarni tekshirish. Avval farqlar koʻrinadi; boshqa maydonlarni guruh va nom boʻyicha topish mumkin.",
+    "Ishlab chiqarish hajmlari, bazaviy narxlar va sof aylanma kapital tekshirilgan Excel formatlaridan taklif sifatida olinadi. Farqli qiymatlar va takrorlar uchun manba, asl qiymat yoki qoʻlda kiritish tanlanadi.",
+    "Yangi qiymatlar asl moliyaviy modelning ruxsat etilgan kirish maydonlariga yoziladi, hisoblash formulalari va dizayn saqlanadi. PDF va Excel tekshiruvdan soʻng yaratiladi; TIA kelishilgan oʻzgarishlar va manbalarini koʻrsatadi.",
+    "Xodimlar soni, ish haqi, tariflar va boshqa mavjud kirishlarni hujjatlar asosida oʻzgartirish mumkin. Retseptura tannarxi va qoʻllab-quvvatlanmaydigan kredit jadvallari uchun asl Excel yangilanadi; Word tavsif boʻlimlari shablondan saqlanadi.",
+    "Tor ekranda uzun fayl nomlari va shablon tanlash tugmalari keyingi qatorga oʻtadi. TIAda arxiv sanasi alohida koʻrsatiladi va moliyaviy prognoz boshlanishini almashtirmaydi."
   ]
 }

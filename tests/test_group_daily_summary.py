@@ -323,7 +323,8 @@ class GroupDailySummaryTests(unittest.TestCase):
 
     def test_finance_export_admin_global_role_and_delegation_do_not_grant_private_reports(self):
         denied = []
-        for role in ('finance', 'accountant', 'employee', 'investor', 'auditor'):
+        for role in ('finance', 'accountant', 'cashier', 'employee', 'investor', 'auditor',
+                     'operator', 'material_accountant', 'procurement', 'sales'):
             denied.append(self.linked_report_user(role))
         denied.append(self.linked_report_user('admin', [(self.companies['UZGERMED'], 'finance')]))
         denied.append(self.linked_report_user('founder', [(self.companies['UZGERMED'], 'director')]))
