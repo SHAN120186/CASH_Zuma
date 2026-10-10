@@ -1,7 +1,12 @@
 {
-  "version": "2.20.0",
+  "version": "2.21.0",
   "date": "2026-10-11",
   "changes": [
+    "В «Отчёты» добавлены P&L и баланс: исходная книга, месяц, план, факт и отклонение. Каждое значение связано с ячейкой и состоянием исходника.",
+    "Загрузка XLSX сохраняет приватную неизменяемую версию в выбранной компании. Повторный файл не создаёт дубликат; данные компаний разделены.",
+    "Пустые, ошибочные и будущие фактические значения показываются отдельно от нуля. Даты берутся из отчётных заголовков; единицы требуют подтверждения, если отсутствуют.",
+    "Показаны расхождения формул и мэппинга, ориентиры автора с исходными ячейками и список документов для регулярного P&L и баланса на русском и узбекском.",
+    "Новый раздел проверяет сохранённые значения исходника. Автоматический расчёт исправленной отчётности по МСФО, загрузка проводок и скачивание окончательных P&L/баланса пока не реализованы. Пороги автора не выдаются за нормативы МСФО.",
     "Просмотр отчётов отделён от скачивания. Финансовый директор, расчётный бухгалтер, кассир, заявитель, аудитор, материальный бухгалтер и отдел закупок не могут скачивать отчёты, исходники и вложения; сервер проверяет также прямые ссылки и Telegram.",
     "Добавлена роль «Отдел продаж»: только обзор прогноза, календарь и ввод ожидаемых поступлений своей компании. Подтверждение факта, другие финансовые разделы и скачивание файлов недоступны.",
     "Временное замещение не возвращает запрещённое скачивание; сотрудник отдела продаж сохраняет ограничения своей роли.",
@@ -19,6 +24,11 @@
     "Длинные названия файлов и кнопки выбора шаблона переносятся на узком экране. В ТЭО дата архива отдельно обозначена и не подменяет начало финансового прогноза."
   ],
   "changes_uz": [
+    "«Hisobotlar»ga P&L va balans qoʻshildi: manba kitobi, oy, reja, fakt va farq. Har bir qiymat manba katagi va holati bilan bogʻlangan.",
+    "XLSX yuklanganda tanlangan kompaniyada shaxsiy, oʻzgartirib boʻlmaydigan nusxa saqlanadi. Bir xil fayl takrorlanmaydi; kompaniyalar maʼlumotlari ajratilgan.",
+    "Boʻsh, xatoli va kelajakdagi fakt qiymatlari noldan alohida koʻrsatiladi. Sanalar hisobot sarlavhalaridan olinadi; birliklar yoʻq boʻlsa, tasdiqlash kerak.",
+    "Formula va hisoblar mosligi farqlari, muallif mezonlari va ularning manba kataklari, muntazam P&L hamda balans uchun hujjatlar roʻyxati rus va oʻzbek tillarida koʻrsatiladi.",
+    "Yangi boʻlim manbada saqlangan qiymatlarni tekshiradi. Tuzatilgan MHXS hisobotini avtomatik hisoblash, buxgalteriya yozuvlarini yuklash va yakuniy P&L/balansni yuklab olish hali amalga oshirilmagan. Muallif chegaralari MHXS meʼyorlari sifatida koʻrsatilmaydi.",
     "Hisobotni koʻrish va faylni yuklab olish huquqlari ajratildi. Moliya direktori, hisob-kitob buxgalteri, kassir, arizachi, auditor, moddiy hisob buxgalteri va xaridlar boʻlimi hisobotlar, manba fayllari hamda ilovalarni yuklab ololmaydi; server bevosita havolalar va Telegramni ham tekshiradi.",
     "«Sotuv boʻlimi» roli qoʻshildi: faqat prognoz sharhi, taqvim va oʻz kompaniyasining kutilayotgan tushumlarini kiritish. Haqiqiy tushumni tasdiqlash, boshqa moliyaviy boʻlimlar va fayllarni yuklab olish mumkin emas.",
     "Vaqtinchalik vazifani bajarish taqiqlangan yuklab olish huquqini qaytarmaydi; sotuv boʻlimi xodimi oʻz roli cheklovlarini saqlaydi.",

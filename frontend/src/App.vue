@@ -2,6 +2,7 @@
 import {ref,shallowRef,computed,onMounted,onUnmounted,nextTick,watch} from 'vue';
 import CashFlowReport from './CashFlowReport.vue';
 import ReportArchive from './ReportArchive.vue';
+import FinancialStatements from './FinancialStatements.vue';
 import BusinessProjects from './BusinessProjects.vue';
 import AuditHistory from './AuditHistory.vue';
 import PeriodFilter from './PeriodFilter.vue';
@@ -60,7 +61,7 @@ function updateInvalidFields(event){if(feedbackForm===event.target?.form)updateF
 // Field names and messages are read from the rendered form, so they are rebuilt after a language switch.
 watch(lang,()=>{if(feedbackForm)nextTick(()=>{if(feedbackForm)updateFieldFeedback(feedbackForm)})});
 function cancelPending(){companyEpoch++;for(const call of pendingCalls)call.abort();pendingCalls.clear();requestProgress.reset();clearFieldFeedback()}
-const localProgressUrl=url=>/^\/api\/(?:business-projects|report-archives)(?:\/|\?|$)/.test(url);
+const localProgressUrl=url=>/^\/api\/(?:business-projects|report-archives|financial-statements)(?:\/|\?|$)/.test(url);
 function requestLabel(url,method='GET'){
  if(url==='/api/login')return N_('Входим в систему…');
  if(/\/import|\/plan-import/.test(url))return /\/commit/.test(url)?N_('Сохраняем импорт…'):N_('Читаем и проверяем файл…');
@@ -95,7 +96,7 @@ const importMode=ref('operations'),planMonthFrom=ref(1),planMonthTo=ref(12),plan
 const defaultPlanReason=()=>tx('Загрузка планов расходов из проверенной книги Cash Flow');
 let planReasonDefault=defaultPlanReason();planReason.value=planReasonDefault;
 watch(lang,()=>{const next=defaultPlanReason();if(planReason.value===planReasonDefault)planReason.value=next;planReasonDefault=next});
-const allNav=[['home','◈',N_('Обзор'),'view'],['report','▥','Cash Flow','export'],['business','▤',N_('Бизнес-планы'),'export'],['reports','▤',N_('Архив отчётов'),'export'],['accounts','▣',N_('Банк и касса'),'view'],['ledger','⇄',N_('Операции'),'ledger'],['requests','✓',N_('Заявки'),'requests-view'],['calendar','▦',N_('Календарь'),'view'],['budgets','◷',N_('Бюджеты'),'view'],['import','↥',N_('Импорт'),'import'],['categories','≡',N_('Справочники'),'catalog'],['approval','✓',N_('Согласование'),'approval_policy'],['users','♙',N_('Пользователи'),'users'],['audit','⊞',N_('Журнал'),'audit'],['profile','⚙',N_('Профиль'),'']];
+const allNav=[['home','◈',N_('Обзор'),'view'],['report','▥','Cash Flow','export'],['pnl','▥',N_('P&L'),'export'],['balance','▤',N_('Баланс'),'export'],['business','▤',N_('Бизнес-планы'),'export'],['reports','▤',N_('Архив отчётов'),'export'],['accounts','▣',N_('Банк и касса'),'view'],['ledger','⇄',N_('Операции'),'ledger'],['requests','✓',N_('Заявки'),'requests-view'],['calendar','▦',N_('Календарь'),'view'],['budgets','◷',N_('Бюджеты'),'view'],['import','↥',N_('Импорт'),'import'],['categories','≡',N_('Справочники'),'catalog'],['approval','✓',N_('Согласование'),'approval_policy'],['users','♙',N_('Пользователи'),'users'],['audit','⊞',N_('Журнал'),'audit'],['profile','⚙',N_('Профиль'),'']];
 const has=p=>isSales.value&&!['overview','receipts'].includes(p)?false:p==='requests-view'?['request','view','pay_bank','pay_cash','request_check'].some(x=>user.value?.permissions.includes(x)):user.value?.permissions.includes(p);
 const isSales=computed(()=>!user.value?.holding_role&&(user.value?.company_role||user.value?.role)==='sales');
 const nav=computed(()=>allNav.filter(n=>(!isSales.value||['home','calendar','profile'].includes(n[0]))&&(!n[3]||has(n[3])||['home','calendar'].includes(n[0])&&has('overview'))));
@@ -108,12 +109,12 @@ const money=v=>{if(v==null)return '—';let s=String(v);if(currency.value==='UZS
 // Headline balances: "5,32 млрд"; the exact figure goes into the tooltip (moneyTitle).
 const moneyShort=(v,cur=currency.value)=>formatAmount(toCents(v),cur), moneyTitle=(v,cur=currency.value)=>amountTitle(toCents(v),cur);
 const costGroups={fixed:N_('Постоянные затраты'),variable:N_('Переменные затраты'),other:N_('Прочие затраты')};
-const auditRefresh=ref(0),homeRefresh=ref(0),reportArchiveRefresh=ref(0),businessRefresh=ref(0);
+const auditRefresh=ref(0),homeRefresh=ref(0),reportArchiveRefresh=ref(0),businessRefresh=ref(0),statementRefresh=ref(0);
 const menuOpen=ref(false),helpOpen=ref(false);
 const initials=n=>String(n||'').split(/\s+/).filter(Boolean).map(x=>x[0]).join('').slice(0,2).toUpperCase();
-const showCurrency=computed(()=>!['approval','users','audit','categories','import','profile','reports','business'].includes(page.value));
+const showCurrency=computed(()=>!['approval','users','audit','categories','import','profile','reports','business','pnl','balance'].includes(page.value));
 // «Отчёты» is a root menu item; Cash Flow, business plans and the archive are its tabs.
-const reportPages=['report','business','reports'];
+const reportPages=['report','pnl','balance','business','reports'];
 const navGroups=[[N_('Работа'),['home','accounts','ledger','requests','calendar']],[N_('Отчёты'),reportPages,'tree'],[N_('Планирование'),['budgets','import','approval']],[N_('Администрирование'),['categories','users','audit']]];
 const navSections=computed(()=>navGroups.map(([label,ids,kind])=>({label,tree:kind==='tree',items:nav.value.filter(n=>ids.includes(n[0]))})).filter(g=>g.items.length));
 const reportTabs=computed(()=>nav.value.filter(n=>reportPages.includes(n[0])));
@@ -178,6 +179,8 @@ async function switchCurrency(value){currency.value=value;search.value='';listPa
 const subtitles={home:N_('Факт, план и прогноз денежных средств в одном месте.'),report:N_('Управленческая форма по прямому методу · структура IAS 7.'),accounts:N_('Счета и касса по валютам. Суммы разных валют не складываются.'),ledger:N_('Фактические поступления, расходы и переводы.'),requests:N_('Заявки на оплату и этапы согласования.'),calendar:N_('Поступления, выплаты и прогноз остатка по дням.'),budgets:N_('Лимиты расходов по статьям и контроль превышения.'),import:N_('Загрузка операций из CSV или Excel.'),categories:N_('Статьи движения денег и виды деятельности.'),approval:N_('Политика директора по статьям и календарь рабочих дней.'),users:N_('Учётные записи холдинга, назначения в компаниях, ВрИО, архив и журнал доступа.'),audit:N_('Кто, когда и что делал в системе.'),profile:N_('Ваши данные, пароль и Telegram.')};
 subtitles.business=N_('Проект → Данные → Отчёт. Готовые бизнес-план PDF и расчётный Excel скачиваются прямо из списка проектов.');
 subtitles.reports=N_('Все готовые отчёты компании: рассчитанные бизнес-планы и загруженные PDF и Excel с периодами.');
+subtitles.pnl=N_('План и факт исходной книги, расхождения и документы для проверки.');
+subtitles.balance=N_('Остатки, показатели и сверки исходной книги по выбранному месяцу.');
 const priorities={normal:N_('Обычный'),high:N_('Высокий'),urgent:N_('Срочный')};
 const scenario=ref('approved');
 const forecastRows=computed(()=>(dash.value?.forecast||[]).map(d=>scenario.value==='all'?{...d,opening:d.requested_opening,outgoing:d.requested_outgoing,balance:d.requested_balance,risk:d.requested_risk,account_shortfalls:d.requested_account_shortfalls,events:[...d.events,...d.pending_events]}:d));
@@ -252,6 +255,7 @@ async function load(){if(!companyReady.value)return;const epoch=companyEpoch;bus
  if(page.value==='home')homeRefresh.value++;
  if(page.value==='reports')reportArchiveRefresh.value++;
  if(page.value==='business')businessRefresh.value++;
+ if(['pnl','balance'].includes(page.value))statementRefresh.value++;
  if(page.value==='calendar')dash.value=await api(`/api/dashboard?currency=${currency.value}&days=${days.value}`);
  if(page.value==='accounts')rows.value=await api('/api/accounts?archived='+showArchive.value);
  if(['ledger','requests'].includes(page.value)){const requestId=++listRequestId;const requestedPage=page.value;const params=new URLSearchParams({paginated:'true',page:String(listPage.value),currency:currency.value,q:search.value});if(dateFrom.value)params.set('date_from',dateFrom.value);if(dateTo.value)params.set('date_to',dateTo.value);if(page.value==='requests'&&requestStatus.value)params.set('state',requestStatus.value);const data=await api(`/api/${page.value}?${params}`);if(requestId===listRequestId&&page.value===requestedPage){rows.value=data.items;listTotal.value=data.total;}}
@@ -421,6 +425,7 @@ onMounted(async()=>{try{const r=await api('/api/me');user.value=r.user;csrf.valu
     <nav v-if="isReportPage&&reportTabs.length>1" class="report-tabs" :aria-label="tx('Отчёты')"><button v-for="n in reportTabs" :key="n[0]" type="button" :class="{on:page===n[0]}" :aria-current="page===n[0]?'page':undefined" @click="go(n[0])"><AppIcon :name="n[0]"/> {{tx(n[2])}}</button></nav>
     <BusinessProjects :can-download="has('download')" v-if="page==='business'&&has('export')" :key="companyId" :api="api" :company="company" :refresh="businessRefresh" @editing="reportEditing=$event" @generated="reportArchiveRefresh++"/>
     <ReportArchive :can-download="has('download')" v-if="page==='reports'&&has('export')" :key="companyId" :api="api" :company="company" :refresh="reportArchiveRefresh" @editing="reportEditing=$event"/>
+    <FinancialStatements v-if="['pnl','balance'].includes(page)&&has('export')" :key="companyId" :type="page" :api="api" :company="company" :can-import="has('import')" :can-download="has('download')" :refresh="statementRefresh" @editing="reportEditing=$event"/>
 
     <!-- Банк и касса -->
     <template v-if="page==='accounts'">

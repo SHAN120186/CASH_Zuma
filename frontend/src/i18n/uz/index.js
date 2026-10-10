@@ -11,8 +11,9 @@ import overview, {patterns as overviewPatterns} from './overview.js';
 import requests, {patterns as requestsPatterns} from './requests.js';
 import admin, {patterns as adminPatterns} from './admin.js';
 import server, {patterns as serverPatterns} from './server.js';
+import financialStatements from './financial_statements.js';
 
-export const sources = {common, app, reports, business_ui: businessUi, business_data: businessData, overview, requests, admin, server};
-export const entries = Object.assign({}, server, admin, requests, overview, businessData, businessUi, reports, app, common);
+export const sources = {common, app, reports, business_ui: businessUi, business_data: businessData, overview, requests, admin, server, financial_statements: financialStatements};
+export const entries = Object.assign({}, financialStatements, server, admin, requests, overview, businessData, businessUi, reports, app, common);
 export const patterns = [...commonPatterns, ...appPatterns, ...reportsPatterns, ...businessUiPatterns, ...businessDataPatterns,
   ...overviewPatterns, ...requestsPatterns, ...adminPatterns, ...serverPatterns];
