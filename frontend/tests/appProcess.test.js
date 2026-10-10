@@ -8,7 +8,8 @@ const appComponent=await compileComponent(new URL('../src/App.vue',import.meta.u
 const companyCard=await compileComponent(new URL('../src/CompanyCard.vue',import.meta.url));
 const businessProjects=await compileComponent(new URL('../src/BusinessProjects.vue',import.meta.url));
 const reportArchive=await compileComponent(new URL('../src/ReportArchive.vue',import.meta.url));
-const reportEntryApp=await compileComponent(new URL('../src/App.vue',import.meta.url),{'./CompanyCard.vue':companyCard,'./BusinessProjects.vue':businessProjects,'./ReportArchive.vue':reportArchive,'./OperationProgress.vue':progressComponent});
+const financialStatements=await compileComponent(new URL('../src/FinancialStatements.vue',import.meta.url),{'./OperationProgress.vue':progressComponent});
+const reportEntryApp=await compileComponent(new URL('../src/App.vue',import.meta.url),{'./CompanyCard.vue':companyCard,'./BusinessProjects.vue':businessProjects,'./ReportArchive.vue':reportArchive,'./FinancialStatements.vue':financialStatements,'./OperationProgress.vue':progressComponent});
 const idle={active:false,label:'',completed:0,total:0,error:''};
 const user={id:1,username:'synthetic',name:'Synthetic',role:'director',permissions:['view','export','download']};
 const company={id:2,code:'ZUMA',name:'Synthetic company'};
@@ -53,13 +54,13 @@ async function fixture(t,handle,component=appComponent) {
   return {view,files,listeners,unmount,cleanup};
 }
 
-for(const [page,label,endpoint] of [['business','Бизнес-планы','/api/business-projects?'],['reports','Архив отчётов','/api/report-archives?']]){
+for(const [page,label,endpoint] of [['business','Бизнес-планы','/api/business-projects?'],['reports','Архив отчётов','/api/report-archives?'],['pnl','P&L','/api/financial-statements?'],['balance','Баланс','/api/financial-statements?']]){
   test(`ZUMA opens ${page} from its internal menu after ordinary scoped company selection`,async t=>{
     const calls=[];const {view}=await fixture(t,async(url,options)=>{
       calls.push({url,companyId:options.headers['X-Company-ID']});
       if(url==='/api/bootstrap'){assert.equal(view.state.companyId,2);assert.equal(view.state.companyReady,false);return {ok:true,status:200,json:async()=>bootstrapBody()};}
       assert.ok(url.startsWith(endpoint),url);assert.match(url,/company_id=2(?:&|$)/);assert.equal(view.state.companyId,2);assert.equal(view.state.companyReady,true);assert.equal(view.state.page,page);assert.equal(options.headers['X-Company-ID'],'2');
-      return {ok:true,status:200,json:async()=>({items:[],can_upload:false})};
+      return {ok:true,status:200,json:async()=>({items:[],sources:[],source:null,can_upload:false})};
     },reportEntryApp);
     view.state.chooseCompany();await settle();
     assert.equal(find(view.container,node=>node.props?.class==='company-report-actions'),undefined);
@@ -234,7 +235,7 @@ test('treasury viewing preserves report tabs but CSV templates, ledger exports a
   for(const canDownload of [false,true]){
     view.state.user={...user,role:canDownload?'director':'finance',permissions:['view','ledger','import','export',...(canDownload?['download']:[])]};
     view.state.page='ledger';await settle();
-    assert.deepEqual(view.state.reportTabs.map(item=>item[0]),['report','business','reports']);
+    assert.deepEqual(view.state.reportTabs.map(item=>item[0]),['report','pnl','balance','business','reports']);
     assert.equal(all(view.container,node=>node.tag==='a'&&node.props.href?.includes('/api/export/ledger.csv')).length,canDownload?1:0);
     view.state.page='import';await settle();
     assert.equal(all(view.container,node=>node.tag==='a'&&node.props.href?.includes('/api/import/template.csv')).length,canDownload?1:0);

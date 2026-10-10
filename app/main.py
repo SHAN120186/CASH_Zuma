@@ -47,7 +47,7 @@ async def safety(request,call_next):
         except ValueError:length=-1
         archive_file=bool(re.fullmatch(r'/api/(?:bot/v1/)?report-archives/[0-9]+/files/(?:pdf|xlsx)',request.url.path)) or bool(re.fullmatch(r'/api/business-projects/[0-9]+/sources',request.url.path))
         business_params=bool(re.fullmatch(r'/api/business-projects/[0-9]+/(?:generate|analyse|inputs|native/(?:preview|generate))',request.url.path))
-        limit=MAX_SIZE if request.url.path=='/api/model/upload' or archive_file else 1024*1024 if business_params else 5*1024*1024 if request.url.path in ('/api/import/preview','/api/plan-import/preview') or request.url.path.endswith('/document') or '/documents' in request.url.path else 65536
+        limit=MAX_SIZE if request.url.path in ('/api/model/upload','/api/financial-statements/upload') or archive_file else 1024*1024 if business_params else 5*1024*1024 if request.url.path in ('/api/import/preview','/api/plan-import/preview') or request.url.path.endswith('/document') or '/documents' in request.url.path else 65536
         if length<0 or length>limit:return JSONResponse({'detail':'Неверный размер запроса.'},status_code=413)
         origin=request.headers.get('origin')
         expected=PUBLIC_ORIGIN or str(request.base_url).rstrip('/')
@@ -904,5 +904,7 @@ from .business_projects import router as business_projects_router
 app.include_router(business_projects_router)
 from .native_projects import router as native_projects_router
 app.include_router(native_projects_router)
+from .financial_statements import router as financial_statements_router
+app.include_router(financial_statements_router)
 from .business_templates import router as business_templates_router
 app.include_router(business_templates_router)

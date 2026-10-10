@@ -13,12 +13,12 @@ from .db import (Company, CompanyUser, User, Account, Category, Counterparty,
                  CashPlan, PlanNote, PaymentRequest, Receipt, Ledger, Budget,
                  Document, ImportBatch, PlanImportBatch, Audit, ModelVersion,
                  ReportSchedule, Setting, RequestDocument, Delegation, ReportArchive, ReportArchiveFile,
-                 BusinessProject, BusinessSourceFile, BusinessGeneration)
+                 BusinessProject, BusinessSourceFile, BusinessGeneration, FinancialStatementSource)
 
 # Вложения заявок принадлежат компании через свою заявку (criteria ниже), а не собственным полем.
 DIRECT = (Account, Category, Counterparty, CashPlan, PlanNote, PlanImportBatch,
           ImportBatch, Audit, ModelVersion, ReportSchedule, Delegation, ReportArchive, ReportArchiveFile,
-          BusinessProject, BusinessSourceFile, BusinessGeneration)
+          BusinessProject, BusinessSourceFile, BusinessGeneration, FinancialStatementSource)
 
 
 def active_delegations(s, user_id, company_id=None):
@@ -154,6 +154,8 @@ def check_object(s, obj):
 
 @event.listens_for(Session, 'before_flush')
 def restrict_writes(s, *_):
+    if any(isinstance(o, FinancialStatementSource) for o in list(s.dirty) + list(s.deleted)):
+        raise HTTPException(409, 'Исходники финансовых отчётов не изменяются. Загрузите новую версию.')
     # Журнал аудита только дополняется: записи не изменяются и не удаляются.
     if not s.info.get('audit_maintenance') and any(isinstance(o, Audit) for o in list(s.dirty) + list(s.deleted)):
         raise HTTPException(409, 'Журнал аудита не изменяется и не удаляется.')
