@@ -1,7 +1,9 @@
 {
-  "version": "2.18.0",
-  "date": "2026-10-08",
+  "version": "2.18.1",
+  "date": "2026-10-11",
   "changes": [
+    "API Telegram-бота поддерживает дневные отчёты: остатки, поступления, расходы, отдельные внутренние переводы и текущие открытые заявки. Каждая группа получает данные только своей компании.",
+    "Личный дневной отчёт доступен только действующему директору конкретной компании с привязанным Telegram. Исторические остатки показываются на конец выбранного дня, а открытые заявки явно относятся к текущей очереди.",
     "Два языка интерфейса: русский и узбекский (латиница). Переключатель RU / UZ на странице входа и в верхней панели; выбор запоминается в браузере. Суммы (ming, mln, mlrd), даты и сообщения сервера показываются на выбранном языке; данные пользователей не переводятся.",
     "В меню появился раздел «Отчёты» с вкладками: Cash Flow, Бизнес-планы и Архив отчётов. Вкладки также видны вверху каждой страницы отчётов.",
     "Готовый бизнес-план теперь виден сразу: в списке проектов есть кнопки «Бизнес-план · PDF», «Бизнес-план · Excel» и «ТЭО · PDF». Готовый проект открывается на шаге «Отчёт»; если файла ещё нет, указано, что сделать для расчёта.",
@@ -9,6 +11,8 @@
     "Сохранены функции версий 2.17.1 и 2.17.2: ход выполнения операций, перечень незаполненных обязательных полей, открытие готового проекта сразу на шаге «Отчёт» только при актуальном комплекте PDF и Excel, оформление и защита групп Telegram."
   ],
   "changes_uz": [
+    "Telegram bot API kunlik hisobotlarni qoʻllab-quvvatlaydi: qoldiqlar, tushumlar, xarajatlar, alohida ichki oʻtkazmalar va hozirgi ochiq arizalar. Har bir guruh faqat oʻz kompaniyasi maʼlumotlarini oladi.",
+    "Shaxsiy kunlik hisobot faqat Telegrami bogʻlangan, tegishli kompaniyaning amaldagi direktoriga ochiq. Oldingi sana qoldigʻi oʻsha kun oxiriga tegishli, ochiq arizalar esa hozirgi navbat ekanligi aniq koʻrsatiladi.",
     "Interfeys ikki tilda: rus va oʻzbek (lotin). RU / UZ tugmasi kirish sahifasida va yuqori panelda; tanlov brauzerda saqlanadi. Summalar (ming, mln, mlrd), sanalar va server xabarlari tanlangan tilda koʻrsatiladi; foydalanuvchi maʼlumotlari tarjima qilinmaydi.",
     "Menyuda «Hisobotlar» boʻlimi paydo boʻldi: Cash Flow, Biznes-rejalar va Hisobotlar arxivi. Ushbu yorliqlar har bir hisobot sahifasining yuqorisida ham koʻrinadi.",
     "Tayyor biznes-reja endi darhol koʻrinadi: loyihalar roʻyxatida «Biznes-reja · PDF», «Biznes-reja · Excel» va «TIA · PDF» tugmalari bor. Tayyor loyiha «Hisobot» bosqichida ochiladi; fayl hali boʻlmasa, hisoblash uchun nima qilish kerakligi yozilgan.",
