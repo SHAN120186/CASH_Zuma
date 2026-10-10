@@ -7,6 +7,7 @@ import {RETRY_REASON} from './saveFlow.js';
 import {tx, N_, formatDate} from '../i18n/index.js';
 
 const props = defineProps({
+  canDownload: Boolean,
   api: {type: Function, required: true},
   id: {type: Number, required: true},
   companyUrl: {type: Function, required: true},
@@ -168,7 +169,7 @@ onUnmounted(() => document.removeEventListener('keydown', onKey));
             <div class="rq-doc-h"><b>{{ tx(label) }}</b><span class="pill" :class="REQUIRED_DOCS.includes(kind) ? (byKind[kind].current.length ? 'good' : 'warn') : 'gray'">{{ REQUIRED_DOCS.includes(kind) ? tx('Обязательно') : tx('Необязательно') }}</span></div>
             <ul v-if="byKind[kind].current.length" class="rq-files">
               <li v-for="d in byKind[kind].current" :key="d.id">
-                <a :href="companyUrl(d.url)">{{ d.filename }}</a><small>{{ tx('версия {n}', {n: d.version}) }} · {{ d.created_by }} · {{ when(d.created_at) }}</small>
+                <a v-if="canDownload" :href="companyUrl(d.url)">{{ d.filename }}</a><span v-else>{{ d.filename }}</span><small>{{ tx('версия {n}', {n: d.version}) }} · {{ d.created_by }} · {{ when(d.created_at) }}</small>
                 <span v-if="canRemove(kind)" class="actions">
                   <button type="button" class="ghost tiny" :disabled="busy" @click="draftLike ? remove(d) : (removing = d.id)">{{ tx('Убрать') }}</button>
                 </span>
@@ -180,7 +181,7 @@ onUnmounted(() => document.removeEventListener('keydown', onKey));
             <label v-if="can('documents')" class="button secondary tiny file-btn">{{ SINGLE_DOCS.includes(kind) && byKind[kind].current.length ? tx('Заменить файл') : tx('Приложить файл') }}<input type="file" :accept="DOC_ACCEPT" :disabled="busy" @change="upload(kind, $event)"></label>
             <button v-if="byKind[kind].history.length" type="button" class="ghost tiny" :aria-expanded="!!showHistory[kind]" @click="showHistory[kind] = !showHistory[kind]">{{ showHistory[kind] ? tx('Скрыть прежние версии') : tx('Прежние версии: {n}', {n: byKind[kind].history.length}) }}</button>
             <ul v-if="showHistory[kind]" class="rq-files old">
-              <li v-for="d in byKind[kind].history" :key="d.id"><a :href="companyUrl(d.url)">{{ d.filename }}</a><small>{{ tx('версия {n}', {n: d.version}) }} · {{ SINGLE_DOCS.includes(kind) ? tx('заменена или убрана') : tx('убран') }} · {{ d.created_by }} · {{ when(d.created_at) }}</small></li>
+              <li v-for="d in byKind[kind].history" :key="d.id"><a v-if="canDownload" :href="companyUrl(d.url)">{{ d.filename }}</a><span v-else>{{ d.filename }}</span><small>{{ tx('версия {n}', {n: d.version}) }} · {{ SINGLE_DOCS.includes(kind) ? tx('заменена или убрана') : tx('убран') }} · {{ d.created_by }} · {{ when(d.created_at) }}</small></li>
             </ul>
           </section>
         </div>

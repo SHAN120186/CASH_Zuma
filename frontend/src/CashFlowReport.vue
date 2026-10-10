@@ -4,7 +4,7 @@ import AppIcon from './AppIcon.vue';
 import {editorMonth,planCompleteness,reportDateForYear,validReportDate} from './cashflow/planView.js';
 import {toCents,formatAmount,amountTitle} from './overview/format.js';
 import {tx,N_} from './i18n/index.js';
-const props=defineProps({report:Object,currency:String,year:[String,Number],api:Function,canPlan:Boolean,companies:Array,companyId:Number,scenario:String,asOf:String,today:String});
+const props=defineProps({report:Object,currency:String,year:[String,Number],api:Function,canPlan:Boolean,canDownload:Boolean,companies:Array,companyId:Number,scenario:String,asOf:String,today:String});
 const emit=defineEmits(['refresh','year','company','scenario','as-of','editing']);
 const months=[N_('Янв'),N_('Фев'),N_('Мар'),N_('Апр'),N_('Май'),N_('Июн'),N_('Июл'),N_('Авг'),N_('Сен'),N_('Окт'),N_('Ноя'),N_('Дек')];
 const monthNames=[N_('Январь'),N_('Февраль'),N_('Март'),N_('Апрель'),N_('Май'),N_('Июнь'),N_('Июль'),N_('Август'),N_('Сентябрь'),N_('Октябрь'),N_('Ноябрь'),N_('Декабрь')];
@@ -123,7 +123,7 @@ watch(()=>[props.asOf,props.year,props.currency,props.scenario,mode.value,unit.v
    <label class="fld">{{tx('Факт по дату')}} <input type="date" :value="asOf" :min="`${year}-01-01`" :max="latestDate" @change="changeAsOf"></label>
    <div class="seg" role="group" :aria-label="tx('Вид отчёта')"><button :aria-pressed="mode==='actual'" :class="{on:mode==='actual'}" @click="mode='actual'">{{tx('Факт')}}</button><button :aria-pressed="mode==='plan'" :class="{on:mode==='plan'}" @click="mode='plan'">{{tx('План-факт')}}</button></div>
    <div class="seg" role="group" :aria-label="tx('Единицы измерения')"><button v-for="(u,k) in units" :key="k" :aria-pressed="unit===k" :class="{on:unit===k}" @click="unit=k">{{tx(u.label)}}</button></div>
-   <div class="grow"><a class="button secondary tiny" :href="exportUrl('xlsx')"><AppIcon name="download"/> Excel</a><a class="button secondary tiny" :href="exportUrl('pdf')"><AppIcon name="file"/> PDF</a><button class="secondary tiny" @click="compare">{{tx('Сравнить А / Б / В')}}</button><button class="secondary tiny" @click="makeGroup">{{tx('Для группы')}}</button><button v-if="canPlan" class="tiny" @click="edit">{{tx('Задать план')}}</button></div>
+   <div class="grow"><a v-if="canDownload" class="button secondary tiny" :href="exportUrl('xlsx')"><AppIcon name="download"/> Excel</a><a v-if="canDownload" class="button secondary tiny" :href="exportUrl('pdf')"><AppIcon name="file"/> PDF</a><button class="secondary tiny" @click="compare">{{tx('Сравнить А / Б / В')}}</button><button class="secondary tiny" @click="makeGroup">{{tx('Для группы')}}</button><button v-if="canPlan" class="tiny" @click="edit">{{tx('Задать план')}}</button></div>
   </div>
   <div class="tl-row">
    <div class="chips" role="group" :aria-label="tx('Период')"><button v-for="p in [['year',tx('Год')],['q1',tx('I кв.')],['q2',tx('II кв.')],['q3',tx('III кв.')],['q4',tx('IV кв.')],['custom',tx('Свой период')]]" :key="p[0]" class="chip" :class="{on:per===p[0]}" :aria-pressed="per===p[0]" @click="setPer(p[0])">{{p[1]}}</button></div>

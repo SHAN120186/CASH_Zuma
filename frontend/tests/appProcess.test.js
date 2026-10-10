@@ -1,15 +1,16 @@
 import {test} from 'node:test';
 import assert from 'node:assert/strict';
-import {compileComponent,mount,settle,find,text} from './helpers/mountVue.js';
+import {compileComponent,mount,settle,find,text,all} from './helpers/mountVue.js';
 
 const progressComponent=await compileComponent(new URL('../src/OperationProgress.vue',import.meta.url));
-const appComponent=await compileComponent(new URL('../src/App.vue',import.meta.url),{'./OperationProgress.vue':progressComponent});
+const periodComponent=await compileComponent(new URL('../src/PeriodFilter.vue',import.meta.url));
+const appComponent=await compileComponent(new URL('../src/App.vue',import.meta.url),{'./OperationProgress.vue':progressComponent,'./PeriodFilter.vue':periodComponent});
 const companyCard=await compileComponent(new URL('../src/CompanyCard.vue',import.meta.url));
 const businessProjects=await compileComponent(new URL('../src/BusinessProjects.vue',import.meta.url));
 const reportArchive=await compileComponent(new URL('../src/ReportArchive.vue',import.meta.url));
 const reportEntryApp=await compileComponent(new URL('../src/App.vue',import.meta.url),{'./CompanyCard.vue':companyCard,'./BusinessProjects.vue':businessProjects,'./ReportArchive.vue':reportArchive,'./OperationProgress.vue':progressComponent});
 const idle={active:false,label:'',completed:0,total:0,error:''};
-const user={id:1,username:'synthetic',name:'Synthetic',role:'finance',permissions:['view','export']};
+const user={id:1,username:'synthetic',name:'Synthetic',role:'director',permissions:['view','export','download']};
 const company={id:2,code:'ZUMA',name:'Synthetic company'};
 const deferred=()=>{let resolve;const promise=new Promise(done=>{resolve=done;});return {promise,resolve};};
 const otherCompany={id:3,code:'UZGERMED',name:'Other synthetic company'};
@@ -170,4 +171,76 @@ test('mounted App progresses from zero to full only after the actual API respons
   await settle();
   assert.equal(view.state.globalProgress.active,false);assert.equal(view.state.globalProgress.error,'');
   assert.equal(view.state.globalProgress.completed,1);assert.equal(bar().props['aria-valuenow'],100);
+});
+
+test('sales has only overview and calendar, saves expected income and cannot confirm actual income',async t=>{
+  const sales={...user,role:'sales',company_role:'sales',role_label:'Отдел продаж',permissions:['overview','receipts']};
+  const income={id:8,type:'income',name:'Synthetic income'},account={id:7,kind:'bank',name:'Synthetic bank',currency:'UZS'};
+  const planned={id:9,account_id:7,category_id:8,counterparty:'Synthetic buyer',amount:'1200',currency:'UZS',date:'2026-10-11',status:'expected'};
+  const calls=[];
+  const {view}=await fixture(t,async(url,options)=>{
+    calls.push({url,options});
+    if(url==='/api/receipts')return {ok:true,status:200,json:async()=>options.method==='POST'?{ok:true,id:9}:[planned]};
+    if(url==='/api/bootstrap')return {ok:true,status:200,json:async()=>({...bootstrapBody(sales),accounts:[account],categories:[income]})};
+    assert.match(url,/^\/api\/dashboard\?/);return {ok:true,status:200,json:async()=>({forecast:[],reserve:'0'})};
+  });
+  Object.assign(view.state,{user:sales,boot:{...bootstrapBody(sales),accounts:[account],categories:[income]}});await settle();
+  assert.deepEqual(view.state.nav.map(item=>item[0]),['home','calendar','profile']);
+  assert.deepEqual(view.state.navSections.flatMap(group=>group.items.map(item=>item[0])),['home','calendar']);
+  const businessNav=all(view.container,node=>node.tag==='button'&&/^nav-i(?: |$)/.test(node.props?.class||'')).map(text);
+  assert.ok(businessNav.some(label=>label.includes('Обзор')));assert.ok(businessNav.some(label=>label.includes('Календарь')));
+  for(const forbidden of ['accounts','report','business','reports','requests','ledger','budgets','users']){await view.state.go(forbidden);await view.state.goWith(forbidden);assert.equal(view.state.page,'home');}
+  assert.equal(calls.length,0);
+  const calendar=find(view.container,node=>node.tag==='button'&&text(node).trim()==='Календарь');calendar.props.onClick();await settle();
+  assert.equal(view.state.page,'calendar');
+  await view.state.showReceipts();await settle();
+  assert.equal(find(view.container,node=>node.tag==='button'&&text(node)==='Подтвердить приход'),undefined);
+  view.state.transaction(planned,true);assert.equal(view.state.modal,null);
+  find(view.container,node=>node.tag==='button'&&text(node).trim()==='План поступления').props.onClick();await settle();
+  assert.equal(view.state.modal.title,'Ожидаемое поступление');
+  Object.assign(view.state.form,{account_id:7,category_id:8,amount:'1200',date:'2026-10-11',counterparty:'Synthetic buyer'});
+  await view.state.save();await settle();
+  const writes=calls.filter(call=>call.options.method==='POST');assert.equal(writes.length,1);assert.equal(writes[0].url,'/api/receipts');
+  assert.deepEqual(JSON.parse(writes[0].options.body),{account_id:7,category_id:8,amount:'1200',date:'2026-10-11',counterparty:'Synthetic buyer'});
+  assert.equal(view.state.modal,null);assert.equal(view.state.page,'calendar');
+  assert.equal(all(view.container,node=>node.tag==='a'&&/^\/api\//.test(node.props.href||'')).length,0);
+});
+
+test('sales assignment stays restricted even with stale acting director rights',async t=>{
+  const calls=[];const {view}=await fixture(t,async(...args)=>{calls.push(args);return {ok:true,status:200,json:async()=>({})};});
+  view.state.user={...user,role:'director',company_role:'sales',permissions:['view','overview','receipts','export','download','write','users','schedule']};await settle();
+  assert.deepEqual(view.state.nav.map(item=>item[0]),['home','calendar','profile']);
+  assert.equal(view.state.has('download'),false);assert.equal(view.state.has('write'),false);assert.equal(view.state.has('export'),false);
+  await view.state.goWith('business');view.state.openRequest({id:99});assert.equal(view.state.page,'home');assert.equal(view.state.cardId,null);
+  assert.equal(calls.length,0);
+  view.state.user={...view.state.user,holding_role:'admin'};await settle();
+  assert.ok(view.state.nav.some(item=>item[0]==='users'),'holding management remains available');
+});
+
+test('file guard blocks ordinary and modified stale private links without starting a network download',async t=>{
+  const calls=[];const {view,files}=await fixture(t,async(...args)=>{calls.push(args);throw Error('No file request expected');});
+  view.state.user={...user,role:'finance',permissions:['view','export']};await settle();
+  for(const modified of [{},{ctrlKey:true},{metaKey:true},{shiftKey:true}]){
+    let prevented=false;const link={href:'https://isolated.test/api/report-archives/1/files/pdf?company_id=2',hasAttribute(){return false;}};
+    await view.state.downloadFile({button:0,...modified,target:{closest(){return link;}},preventDefault(){prevented=true;}});
+    assert.equal(prevented,true);
+  }
+  assert.equal(calls.length,0);assert.deepEqual(files,{blobs:0,anchors:0,clicks:0});
+  assert.match(view.state.notice,/Скачивание файлов недоступно/);
+});
+
+test('treasury viewing preserves report tabs but CSV templates, ledger exports and attachments require download permission',async t=>{
+  const {view}=await fixture(t,async()=>{throw Error('No file request expected');});
+  for(const canDownload of [false,true]){
+    view.state.user={...user,role:canDownload?'director':'finance',permissions:['view','ledger','import','export',...(canDownload?['download']:[])]};
+    view.state.page='ledger';await settle();
+    assert.deepEqual(view.state.reportTabs.map(item=>item[0]),['report','business','reports']);
+    assert.equal(all(view.container,node=>node.tag==='a'&&node.props.href?.includes('/api/export/ledger.csv')).length,canDownload?1:0);
+    view.state.page='import';await settle();
+    assert.equal(all(view.container,node=>node.tag==='a'&&node.props.href?.includes('/api/import/template.csv')).length,canDownload?1:0);
+    view.state.documents={ledger:{id:1,reference:'Synthetic document'},rows:[{filename:'Synthetic ledger.pdf',url:'/api/documents/7'}]};await settle();
+    assert.match(text(view.container),/Synthetic ledger.pdf/);
+    assert.equal(all(view.container,node=>node.tag==='a'&&node.props.href?.includes('/api/documents/7')).length,canDownload?1:0);
+    view.state.documents=null;
+  }
 });

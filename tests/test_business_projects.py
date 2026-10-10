@@ -1352,7 +1352,7 @@ class BusinessProjectTests(unittest.TestCase):
         wrong_project_url = f"/api/business-projects/{second['id']}/sources/{source['id']}/download?company_id={self.cid}"
         self.assertEqual(self.client.get(wrong_project_url).status_code, 404)
         peer, _ = self.actor('wrong_project_peer', 'finance')
-        self.assertEqual(peer.get(wrong_project_url).status_code, 404)
+        self.assertEqual(peer.get(wrong_project_url).status_code, 403)
         wrong_company_url = f"/api/business-projects/{first['id']}/sources/{source['id']}/download?company_id={self.other}"
         self.assertEqual(self.client.get(wrong_company_url, headers={'X-Company-ID': str(self.other)}).status_code, 404)
         missing_url = f"/api/business-projects/{first['id']}/sources/{source['id']+9999}/download?company_id={self.cid}"

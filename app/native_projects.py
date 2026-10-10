@@ -15,6 +15,7 @@ from .business_projects import (snapshot, sources, expanded_sources, own, revisi
 from .db import (BusinessProject, BusinessGeneration, ReportArchive, ReportArchiveFile, now, unit)
 from .main import get, log
 from .report_archives import authorize, MIMES
+from .security import require_permission
 from sqlalchemy import select, func
 from uuid import NAMESPACE_URL, uuid5
 
@@ -290,6 +291,10 @@ def preview_native(data: NativeIn, request: Request, id: int = Path(gt=0), compa
 @router.get('/api/business-projects/{id}/native.xlsx')
 def download_native(request: Request, id: int = Path(gt=0), company_id: int = Query(gt=0),
                     revision: int = Query(ge=0)):
+    # Refuse file access before native preparation or any expensive calculation.
+    with unit() as s:
+        user, _ = authorize(s, request, 'import', company_id=company_id)
+        require_permission(user, 'download')
     files, _, extraction, _, updated_at = snapshot(request, id, company_id, revision)
     candidate = native_candidate(files)
     saved = extraction.get('native', {})
@@ -305,6 +310,7 @@ def download_native(request: Request, id: int = Path(gt=0), company_id: int = Qu
         raise HTTPException(413, 'Пересчитанный файл больше 20 МБ.')
     with unit() as s:
         user, _ = authorize(s, request, 'import', company_id=company_id)
+        require_permission(user, 'download')
         project = get(s, BusinessProject, id)
         own(project, user)
         revision_ok(project, revision, updated_at)

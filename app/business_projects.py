@@ -28,7 +28,7 @@ from .db import (BusinessGeneration, BusinessProject, BusinessSourceFile, Report
 from .main import get, log
 from .report_archives import (authorize, delete_archive_record, restore_archive_record,
                              MIMES, valid_file)
-from .security import perms_of
+from .security import perms_of, require_permission
 from .business_model import calculate_model, validate_model, validate_narratives, ModelValidationError
 
 router = APIRouter()
@@ -225,7 +225,7 @@ def detail(s, project, user):
     records = sources(s, project.id)
     result['files'] = [{**m, 'id': f.id, 'uploaded_at': timestamp(f.uploaded_at),
                         **({'download_url': f'/api/business-projects/{project.id}/sources/{f.id}/download?company_id={project.company_id}'}
-                           if editable and f.company_id == project.company_id else {})}
+                           if editable and 'download' in perms_of(user) and f.company_id == project.company_id else {})}
                        for f, m in zip(records, manifest(records))]
     result['inputs'] = json.loads(project.inputs_json) if editable else {}
     result['extraction'] = json.loads(project.extraction_json) if editable else {}
@@ -355,7 +355,8 @@ def create_project(data: ProjectIn, request: Request):
 @router.get('/api/business-projects/template.xlsx')
 def input_template(request: Request, company_id: int = Query(gt=0)):
     with unit() as s:
-        authorize(s, request, 'import', company_id=company_id)
+        user, _ = authorize(s, request, 'import', company_id=company_id)
+        require_permission(user, 'download')
     from .business_exports import build_input_template
     return Response(build_input_template(), media_type=MIMES['xlsx'], headers={
         'Content-Disposition': 'attachment; filename="business-plan-inputs.xlsx"', 'Cache-Control': 'no-store'})
@@ -373,6 +374,7 @@ def download_source(request: Request, id: int = Path(gt=0), source_id: int = Pat
                     company_id: int = Query(gt=0)):
     with unit() as s:
         user, company = authorize(s, request, 'import', company_id=company_id)
+        require_permission(user, 'download')
         project = s.get(BusinessProject, id)
         if project is None or project.company_id != company.id:
             raise HTTPException(404, 'Исходный файл не найден в выбранной компании и проекте.')

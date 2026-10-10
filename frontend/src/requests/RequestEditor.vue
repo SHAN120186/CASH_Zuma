@@ -8,6 +8,7 @@ import {createSaveState, requestBody, saveRequest, removeSavedDocument, missingR
 import {tx, N_} from '../i18n/index.js';
 
 const props = defineProps({
+  canDownload: Boolean,
   api: {type: Function, required: true},
   boot: {type: Object, required: true},
   company: {type: Object, default: null},
@@ -208,7 +209,7 @@ onUnmounted(() => { document.removeEventListener('keydown', onKey); clearTimeout
           <div v-for="(label, kind) in DOC_KINDS" :key="kind" class="request-document-slot">
             <b>{{ tx(label) }} <span v-if="REQUIRED_DOCS.includes(kind)" class="required-mark" :aria-label="tx('обязательно')">*</span></b>
             <span v-for="doc in savedOf(kind)" :key="doc.id" class="saved-file">
-              <a :href="companyUrl(doc.url)">{{ doc.filename }}</a><small>{{ tx('версия {n}', {n: doc.version}) }}{{ replacing(kind) ? ' · ' + tx('будет заменён') : '' }}</small>
+              <a v-if="canDownload" :href="companyUrl(doc.url)">{{ doc.filename }}</a><span v-else>{{ doc.filename }}</span><small>{{ tx('версия {n}', {n: doc.version}) }}{{ replacing(kind) ? ' · ' + tx('будет заменён') : '' }}</small>
               <button v-if="canRemoveSaved" type="button" class="ghost tiny" :disabled="saving" @click="removeSaved(doc)">{{ tx('Убрать') }}</button>
             </span>
             <span v-for="f in pendingOf(kind)" :key="f.key" class="pending-file">{{ f.name }}<small>{{ tx('{size} · не загружен', {size: fileSize(f.size)}) }}</small>

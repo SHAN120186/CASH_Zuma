@@ -22,7 +22,7 @@ const completeInputs = () => ({title: 'Synthetic project', start: '2027-01-01', 
 
 test('folder trash deletes the selected company revision and exposes reversible recovery',async t=>{
   let project={id:1,company_id:2,revision:3,title:'Synthetic folder',status:'draft',can_delete:true,can_edit:true};const calls=[];
-  const view=mount(component,{company,api:async(url,options={})=>{calls.push({url,...options});if(options.method){project={...project,status:options.method==='DELETE'?'deleted':'draft',can_restore:options.method==='DELETE',can_delete:options.method!=='DELETE'};return project;}return{items:[project],can_upload:true};}});t.after(view.unmount);
+  const view=mount(component,{canDownload:true,company,api:async(url,options={})=>{calls.push({url,...options});if(options.method){project={...project,status:options.method==='DELETE'?'deleted':'draft',can_restore:options.method==='DELETE',can_delete:options.method!=='DELETE'};return project;}return{items:[project],can_upload:true};}});t.after(view.unmount);
   await settle();assert.ok(button(view.container,'Удалить папку'));await view.state.changeProjectState(project);await settle();
   assert.equal(calls.find(call=>call.method==='DELETE').url,'/api/business-projects/1?company_id=2&expected_revision=3');
   assert.equal(button(view.container,'Восстановить'),undefined);view.state.showDeleted=true;await settle();assert.ok(button(view.container,'Восстановить'));
@@ -30,7 +30,7 @@ test('folder trash deletes the selected company revision and exposes reversible 
 });
 test('native model hides the generic calculation form and misleading generic generation metrics',async t=>{
   const project={id:1,company_id:2,revision:1,can_edit:true,title:'Native folder',status:'needs_data',files:[],inputs:{},extraction:{},validation:[],native_model:{supported:true,parameters:[],metrics:[]},generations:[{id:1,metrics:{npv:'999'}}]};
-  const view=mount(component,{company,api:async url=>url.includes('/1?')?project:{items:[project],can_upload:true}});t.after(view.unmount);await settle();await view.state.openProject(project);await settle();
+  const view=mount(component,{canDownload:true,company,api:async url=>url.includes('/1?')?project:{items:[project],can_upload:true}});t.after(view.unmount);await settle();await view.state.openProject(project);await settle();
   assert.equal(find(view.container,n=>n.tag==='form'),undefined);assert.doesNotMatch(text(view.container),/NPV проекта|осталось заполнить/);
 });
 
@@ -48,7 +48,7 @@ test('original report downloads retain the supplied document and reject another 
 test('mounted original template is available before missing financial inputs are completed', async t => {
   const project = {id: 1, company_id: 2, revision: 1, can_edit: true, title: 'Original folder', status: 'needs_data', generations: [], inputs: {}, extraction: {}, validation: [],
     files: [{id: 3, filename: 'Бизнес-план.xlsx', relative_path: 'Folder/Бизнес-план.xlsx', size: 100, download_url: '/api/business-projects/1/sources/3/download?company_id=2'}]};
-  const view = mount(component, {company, api: async url => url.includes('/1?') ? project : {items: [project], can_upload: true}});
+  const view = mount(component, {canDownload:true, company, api: async url => url.includes('/1?') ? project : {items: [project], can_upload: true}});
   t.after(view.unmount);
   await settle(); await view.state.openProject(project); await settle();
   assert.match(text(view.container), /Готовый бизнес-план из вашей папки/);
@@ -109,7 +109,7 @@ test('manual project starts without files, saves missing values as a draft and e
     project={...project,revision:project.revision+1,status:'needs_data',inputs:body.inputs,validation:[{field:'opening_cash',message:'Заполните остаток.'}]};
     return structuredClone(project);
   };
-  const view=mount(component,{api,company});t.after(view.unmount);await settle();
+  const view=mount(component,{canDownload:true,api,company});t.after(view.unmount);await settle();
   await button(view.container,'Новый проект').props.onClick();await settle();
   assert.equal(view.state.projectMode,'template');await button(view.container,'Создать проект вручную').props.onClick();await settle();
   assert.equal(view.state.projectMode,'manual');assert.equal(view.state.selected.length,0);
@@ -139,7 +139,7 @@ test('manual generation saves canonical data first then submits the returned rev
   const older={id:1,revision:1,business_archive:archive(10),teo_archive:archive(11),metrics:{npv:'10'}};
   let project={id:5,company_id:2,revision:1,mode:'manual',title:'Synthetic',can_edit:true,status:'ready',inputs:completeInputs(),files:[],generations:[older],current_generation_id:1,validation:[],extraction:{}};
   const calls=[];
-  const view=mount(component,{company,api:async(url,options)=>{
+  const view=mount(component,{canDownload:true,company,api:async(url,options)=>{
     if(!options)return url.includes('/5?')?structuredClone(project):{items:[project],can_upload:true};
     calls.push({url,...options});const body=JSON.parse(options.body);
     if(options.method==='PUT'){assert.equal(body.revision,1);project={...project,revision:2,status:'needs_data',inputs:body.inputs,current_generation_id:null};return structuredClone(project);}
@@ -274,7 +274,7 @@ test('mounted optional original import keeps the 36-month choice and exposes bus
     const response = await service.api(url, options);
     return url.includes('/analyse') ? {...response, current_generation_id:1, inputs: completeInputs(), validation: [], extraction: {}, generations: [{id: 1, revision: response.revision, business_archive: archive(10), teo_archive: archive(11), metrics: {npv: '12.3'}}]} : response;
   };
-  const view = mount(component, {api, company, onGenerated: () => generated++}); t.after(view.unmount);
+  const view = mount(component, {canDownload:true, api, company, onGenerated: () => generated++}); t.after(view.unmount);
   await settle(); await button(view.container, 'Новый проект').props.onClick(); await settle();
   await button(view.container,'Создать проект вручную').props.onClick();await settle();
   assert.equal(view.state.projectMode, 'manual');
@@ -299,7 +299,7 @@ test('mounted missing-data response keeps submitted financial values; source amb
   let posts = 0;
   const project = {id: 1, company_id: 2, revision: 3, can_edit: true, title: header.title, status: 'needs_data', files: [], generations: [], inputs: completeInputs(),
     extraction: {issues: [{field: 'opening_cash', message: 'Проверьте исходный остаток.', requires_confirmation: true}]}, validation: []};
-  const view = mount(component, {company, api: async (url, options) => {
+  const view = mount(component, {canDownload:true, company, api: async (url, options) => {
     if (!options) return url.includes('/1?') ? structuredClone(project) : {items: [project], can_upload: true};
     posts++; const body = JSON.parse(options.body);
     return {...project, inputs: body.inputs, validation: [{field: 'tax_rate', message: 'Заполните налог.'}]};
@@ -317,7 +317,7 @@ test('mounted missing-data response keeps submitted financial values; source amb
 test('mounted source revision conflict preserves local edits; readonly projects provide no financial editor', async t => {
   const project = {id: 1, company_id: 2, revision: 3, can_edit: true, title: header.title, status: 'needs_data', files: [], generations: [], inputs: completeInputs(), extraction: {}, validation: []};
   let latest = structuredClone(project);
-  const view = mount(component, {company, api: async (url, options) => {
+  const view = mount(component, {canDownload:true, company, api: async (url, options) => {
     if (options) {latest.revision = 4; latest.inputs.opening_cash = '999'; throw Object.assign(Error('Changed'), {status: 409});}
     return url.includes('/1?') ? structuredClone(latest) : {items: [project], can_upload: true};
   }}); t.after(view.unmount);
@@ -331,7 +331,7 @@ test('mounted source revision conflict preserves local edits; readonly projects 
   view.state.makeMonthly(view.state.scheduleEntries.find(entry => entry.key === 'q0'));
   assert.deepEqual([...view.state.form.products[0].quantities], ['1', '2', '3', '', '']);
   const readonly = {...project, can_edit: false, inputs: {}};
-  const viewer = mount(component, {company, api: async url => url.includes('/1?') ? readonly : {items: [readonly], can_upload: false}}); t.after(viewer.unmount);
+  const viewer = mount(component, {canDownload:true, company, api: async url => url.includes('/1?') ? readonly : {items: [readonly], can_upload: false}}); t.after(viewer.unmount);
   await settle(); await viewer.state.openProject(readonly); await settle();
   assert.equal(button(viewer.container, 'Рассчитать бизнес-план'), undefined);
   assert.equal(all(viewer.container, node => node.tag === 'input' && node.props.type === 'file').length, 0);
@@ -346,7 +346,7 @@ test('mounted reports follow the current calculation after restoring older param
     title: header.title, status: 'ready', files: [], inputs: completeInputs(), validation: [],
     extraction: {issues: [{code: 'missing_or_invalid', requires_confirmation: true}]},
     generations: [generation(2, '200'), generation(1, '100')]};
-  const view = mount(component, {company, api: async url => url.includes('/1?') ? project : {items: [project], can_upload: true}});
+  const view = mount(component, {canDownload:true, company, api: async url => url.includes('/1?') ? project : {items: [project], can_upload: true}});
   t.after(view.unmount);
   await settle(); await view.state.openProject(project); await settle();
   assert.equal(view.state.latest.id, 1);
@@ -361,7 +361,7 @@ test('folder title is suggested only from a common selected folder and preflight
   assert.equal(folderProjectTitle([{relativePath: 'One/a.xlsx'}, {relativePath: 'Two/b.pdf'}]), '');
   const service = backend();
   const api = async (url, options) => options ? service.api(url, options) : {items: [], can_upload: true};
-  const view = mount(component, {company, api}); t.after(view.unmount);
+  const view = mount(component, {canDownload:true, company, api}); t.after(view.unmount);
   await settle(); view.state.newProject('files');
   view.state.chooseSources({target: {files: [file('a.xlsx', 12, 'Sample Folder/a.xlsx')], value: 'selected'}});
   assert.equal(view.state.header.title, 'Sample Folder');
@@ -400,7 +400,7 @@ test('a forty-product source response keeps nine missing fields first, deduplica
   assert.equal(grouped.checks.length, 3);
   assert.equal(grouped.references.length, 2);
   assert.equal(grouped.references[0].sources.length, 12);
-  const view = mount(component, {company, api: async url => url.includes('/1?') ? structuredClone(project) : {items: [project], can_upload: true}});
+  const view = mount(component, {canDownload:true, company, api: async url => url.includes('/1?') ? structuredClone(project) : {items: [project], can_upload: true}});
   t.after(view.unmount);
   await settle(); await view.state.openProject(project); await settle();
   assert.equal(view.state.validation.length, 9);
@@ -451,7 +451,7 @@ test('fatal or blocking source errors stay in required checks even without the c
   const reference = {field: 'documents', code: 'narrative_reference', message: 'Справочный текст сохранён.', requires_confirmation: false};
   const project = {id: 1, company_id: 2, revision: 1, can_edit: true, title: 'Sample project', status: 'needs_data', files: [], generations: [], inputs: completeInputs(),
     extraction: {issues: [fatal, reference]}, validation: [{field: fatal.field, message: fatal.message, code: 'source_issues', source_code: fatal.code}]};
-  const view = mount(component, {company, api: async url => url.includes('/1?') ? structuredClone(project) : {items: [project], can_upload: true}});
+  const view = mount(component, {canDownload:true, company, api: async url => url.includes('/1?') ? structuredClone(project) : {items: [project], can_upload: true}});
   t.after(view.unmount);
   await settle(); await view.state.openProject(project); await settle();
   assert.equal(view.state.validation.length, 0);
@@ -550,7 +550,7 @@ test('project headers name missing fields and create/save progress advances only
 test('missing summaries identify each row and month; attempts expose accessible red helpers while drafts stay saveable',async t=>{
   const inputs=completeInputs();inputs.products=[{name:'A',unit:'pack',price:'',unit_cost:'0',quantities:['','0','1']},{name:'B',unit:'pack',price:'',unit_cost:'0',quantities:'0'}];
   let project={id:11,company_id:2,revision:0,title:inputs.title,mode:'manual',can_edit:true,inputs,extraction:{},validation:[],generations:[],files:[]};const calls=[];
-  const view=mount(component,{company,api:async(url,options)=>{calls.push({url,options});if(options){project={...project,revision:project.revision+1,inputs:JSON.parse(options.body).inputs};return project;}return url.includes('/11?')?project:{items:[project],can_upload:true};}});t.after(view.unmount);
+  const view=mount(component,{canDownload:true,company,api:async(url,options)=>{calls.push({url,options});if(options){project={...project,revision:project.revision+1,inputs:JSON.parse(options.body).inputs};return project;}return url.includes('/11?')?project:{items:[project],can_upload:true};}});t.after(view.unmount);
   await settle();await view.state.openProject(project);view.state.flowStage='report';await settle();
   const summary=find(view.container,n=>n.props?.['aria-labelledby']==='bp-missing-title');assert.equal(summary.props.hidden,undefined);assert.match(text(summary),/Продукция №1/);assert.match(text(summary),/Продукция №2/);assert.match(text(summary),/месяц 1/);
   const price=()=>find(view.container,n=>n.tag==='label'&&n.props?.['data-bp-field']==='products[0].price');
@@ -563,7 +563,7 @@ test('missing summaries identify each row and month; attempts expose accessible 
 
 test('field navigation opens its data group and focuses the actual input',async t=>{
   const project={id:12,company_id:2,revision:0,title:'A',mode:'manual',can_edit:true,inputs:completeInputs(),extraction:{},validation:[],generations:[],files:[]};
-  const view=mount(component,{company,api:async url=>url.includes('/12?')?project:{items:[project],can_upload:true}});t.after(view.unmount);await settle();await view.state.openProject(project);await settle();
+  const view=mount(component,{canDownload:true,company,api:async url=>url.includes('/12?')?project:{items:[project],can_upload:true}});t.after(view.unmount);await settle();await view.state.openProject(project);await settle();
   const group={tagName:'DETAILS',open:false,parentElement:null};let focused=false,scrolled=false;
   const control={focus:()=>{focused=true;}};const target={tagName:'LABEL',parentElement:group,querySelector:tag=>tag==='input'?control:null,scrollIntoView:()=>{scrolled=true;}};
   view.state.modelForm={querySelector:()=>target};await view.state.goToField('products[0].price');assert.equal(group.open,true);assert.equal(focused,true);assert.equal(scrolled,true);
@@ -607,7 +607,7 @@ const visibleReportLinks=root=>all(root,node=>node.tag==='a'&&node.props.href?.i
 
 test('opening a current ready generic or native project immediately exposes its PDF and Excel despite no source files',async t=>{
   for(const native of [false,true]){
-    const project=availableProject(native);const view=mount(reportsComponent,{company,api:async url=>url.includes('/41?')?project:{items:[project],can_upload:true}});t.after(view.unmount);
+    const project=availableProject(native);const view=mount(reportsComponent,{canDownload:true,company,api:async url=>url.includes('/41?')?project:{items:[project],can_upload:true}});t.after(view.unmount);
     await settle();await view.state.openProject(project);await settle();assert.equal(view.state.flowStage,'report');assert.equal(view.state.current.files.length,0);
     assert.deepEqual(visibleReportLinks(view.container).map(node=>node.props.href),['/api/report-archives/401/files/pdf?company_id=2','/api/report-archives/401/files/xlsx?company_id=2']);
     assert.doesNotMatch(view.state.notice,/нет доступного/);assert.equal(button(view.container,native?'3. Проверка и отчёт':'3. Отчёт').props['aria-current'],'step');
@@ -625,7 +625,7 @@ test('opening draft, stale or unavailable reports stays in data and never announ
     if(scenario==='deleted_archive')selected.business_archive.status='deleted';
     if(scenario==='pending_archive')selected.business_archive.status='pending';
     if(scenario==='foreign_archive')selected.business_archive.company_id=9;
-    const view=mount(reportsComponent,{company,api:async url=>url.includes('/41?')?project:{items:[project],can_upload:true}});t.after(view.unmount);await settle();await view.state.openProject(project);await settle();
+    const view=mount(reportsComponent,{canDownload:true,company,api:async url=>url.includes('/41?')?project:{items:[project],can_upload:true}});t.after(view.unmount);await settle();await view.state.openProject(project);await settle();
     assert.equal(view.state.flowStage,'data',`${native}/${scenario}`);assert.deepEqual(visibleReportLinks(view.container),[],`${native}/${scenario}`);assert.equal(view.state.reportsStale,true);
     const message=scenario==='deleted_archive'?/Отчёт удалён из архива.*Показать удалённые.*Восстановить/:/Для текущей версии нет доступного комплекта PDF и Excel/;
     if(project.status==='ready')assert.match(view.state.notice,message);else assert.doesNotMatch(view.state.notice,/Бизнес-план готов/);
@@ -637,7 +637,7 @@ test('opening draft, stale or unavailable reports stays in data and never announ
 test('source analysis lands on its actual current report and does not call older or missing archives generated',async t=>{
   for(const native of [false,true])for(const ready of [false,true]){
     let project=availableProject(native);project.status='draft';project.current_generation_id=null;project.generations=[];let generated=0;
-    const view=mount(reportsComponent,{company,onGenerated:()=>generated++,api:async(url,options)=>{
+    const view=mount(reportsComponent,{canDownload:true,company,onGenerated:()=>generated++,api:async(url,options)=>{
       if(!options)return url.includes('/41?')?project:{items:[project],can_upload:true};
       if(options.method==='PUT'){project={...project,revision:7};return project;}
       assert.match(url,/\/analyse\?/);project=availableProject(native);project.revision=7;project.generations[1].revision=ready?7:6;return project;
@@ -665,12 +665,12 @@ test('cached generation with a deleted archive or stale revision never reports c
 
 test('a viewer opens straight on the report step; the owner of a deleted folder stays on its data',async t=>{
   const viewer=availableProject();viewer.can_edit=false;viewer.status='needs_data';viewer.current_generation_id=null;
-  let view=mount(reportsComponent,{company,api:async url=>url.includes('/41?')?viewer:{items:[viewer],can_upload:false}});t.after(view.unmount);
+  let view=mount(reportsComponent,{canDownload:true,company,api:async url=>url.includes('/41?')?viewer:{items:[viewer],can_upload:false}});t.after(view.unmount);
   await settle();await view.state.openProject(viewer);await settle();
   assert.equal(view.state.flowStage,'report');
   assert.doesNotMatch(text(view.container),/Незаполненные поля перечислены выше/);
   const removed=availableProject();removed.can_edit=false;removed.can_restore=true;removed.status='deleted';
-  view=mount(reportsComponent,{company,api:async url=>url.includes('/41?')?removed:{items:[removed],can_upload:true}});t.after(view.unmount);
+  view=mount(reportsComponent,{canDownload:true,company,api:async url=>url.includes('/41?')?removed:{items:[removed],can_upload:true}});t.after(view.unmount);
   await settle();await view.state.openProject(removed);await settle();
   assert.equal(view.state.flowStage,'data');
 });
@@ -681,7 +681,7 @@ test('the project list offers the latest finished files and explains a missing f
   const draft={id:42,company_id:2,revision:1,title:'Draft',status:'draft',can_edit:true,latest_report:null};
   const viewed={id:43,company_id:2,revision:1,title:'Viewed',status:'needs_data',can_edit:false,latest_report:null};
   const foreign={...ready,id:44,latest_report:{...ready.latest_report,business_archive:{id:403,company_id:9,status:'ready'}}};
-  const view=mount(reportsComponent,{company,api:async()=>({items:[ready,draft,viewed,foreign],can_upload:true})});t.after(view.unmount);await settle();
+  const view=mount(reportsComponent,{canDownload:true,company,api:async()=>({items:[ready,draft,viewed,foreign],can_upload:true})});t.after(view.unmount);await settle();
   const links=all(view.container,node=>node.tag==='a'&&node.props.href?.includes('/files/')).map(node=>node.props.href);
   assert.deepEqual(links,['/api/report-archives/401/files/pdf?company_id=2','/api/report-archives/401/files/xlsx?company_id=2','/api/report-archives/402/files/pdf?company_id=2']);
   const page=text(view.container);

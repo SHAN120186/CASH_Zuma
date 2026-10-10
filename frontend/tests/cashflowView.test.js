@@ -24,6 +24,16 @@ function mountReport(extra = {}) {
 }
 const button = (root, label) => find(root, node => node.tag === 'button' && text(node) === label);
 
+test('Cash Flow remains readable without download rights and directors keep PDF and Excel',async t=>{
+  for(const canDownload of [false,true]){
+    const view=mountReport({canDownload,canPlan:false});t.after(view.unmount);await settle();
+    assert.match(text(view.container),/Упаковка и материалы/);
+    const files=all(view.container,node=>node.tag==='a'&&String(node.props.href).startsWith('/api/export/report.'));
+    assert.equal(files.length,canDownload?2:0);
+    if(canDownload)assert.deepEqual(files.map(node=>text(node).trim()),['Excel','PDF']);
+  }
+});
+
 test('mounted Cash Flow reveals the cut-off month and keeps the right-edge cue for hidden months', async t => {
   const view = mountReport(); t.after(view.unmount);
   const wrap = find(view.container, node => node.props?.['aria-label'] === 'Cash Flow по месяцам');

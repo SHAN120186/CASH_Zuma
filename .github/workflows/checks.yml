@@ -25,6 +25,7 @@ jobs:
       - run: python -m unittest tests.test_business_templates -q
       - run: python tests/test_site.py
       - run: python tests/test_access.py
+      - run: python -m unittest tests.test_role_downloads -q
       - run: python -m unittest tests.test_future_reservations -q
       - run: python -m unittest tests.test_group_registration -q
       - run: python tests/test_bot_api.py
@@ -60,6 +61,7 @@ jobs:
       # Separate processes avoid the suites' temporary DATA_DIR cleanup affecting each other.
       - run: python tests/test_site.py
       - run: python tests/test_access.py
+      - run: python -m unittest tests.test_role_downloads -q
       - run: python tests/test_bot_api.py
       - run: python -m unittest tests.test_report_archives -q
       - run: python -m unittest tests.test_group_registration -q
