@@ -74,7 +74,7 @@ def test_zuma_unfilled_own_working_capital_is_displayed_as_absence_not_zero():
     meta = {**profile(), 'profile_id': 'zuma-36m-usd', 'title': 'ZUMA — синтетический пример'}
     reader = PdfReader(BytesIO(build_teo_pdf(values, meta, [])))
     text = '\n'.join(page.extract_text() for page in reader.pages)
-    assert 'Нет записи в исходной модели' in text
+    assert 'Нет записи в исходной модели' in ' '.join(text.split())
     assert 'не объявлено подтверждённым нулём' in ' '.join(text.split())
     with pytest.raises(NativeTeoError, match='B28'):
         build_teo_pdf(values, profile(), [])
