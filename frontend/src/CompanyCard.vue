@@ -1,5 +1,6 @@
 <script setup>
 import AppIcon from './AppIcon.vue';
+import {tx} from './i18n/index.js';
 
 const props=defineProps({company:{type:Object,required:true},disabled:Boolean});
 defineEmits(['select']);
@@ -26,7 +27,7 @@ function followPointer(event){
 
 <template>
  <div class="company-card-shell">
-  <button class="company-card" :aria-label="'Открыть компанию '+company.name" :disabled="disabled"
+  <button class="company-card" :aria-label="tx('Открыть компанию {name}',{name:company.name})" :disabled="disabled"
    @pointermove="followPointer" @pointerleave="reset" @pointercancel="reset" @blur="reset" @click="$emit('select',company.id)">
    <span class="company-symbol" aria-hidden="true">{{company.code.charAt(0)}}</span>
    <b>{{company.code==='ZUMA'?'ZUMA':company.name}}</b>

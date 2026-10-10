@@ -13,7 +13,11 @@ with psycopg.connect(host=url.host,port=url.port,user=url.username,password=url.
     admin.execute(sql.SQL('CREATE DATABASE {}').format(sql.Identifier(name)))
     try:
         env={**os.environ,'TEST_DATABASE_URL':url.set(database=name).render_as_string(hide_password=False)}
-        result=subprocess.run([sys.executable,str(ROOT/'tests'/'test_site.py')],env=env,cwd=ROOT)
+        # Separate processes keep each suite's temporary filesystem isolated.
+        for suite in ('test_site.py', 'test_report_archives.py', 'test_business_projects.py'):
+            result=subprocess.run([sys.executable,str(ROOT/'tests'/suite)],env=env,cwd=ROOT)
+            if result.returncode:
+                break
     finally:
         admin.execute(sql.SQL('DROP DATABASE {} WITH (FORCE)').format(sql.Identifier(name)))
 sys.exit(result.returncode)

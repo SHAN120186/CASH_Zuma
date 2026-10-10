@@ -12,11 +12,13 @@ from sqlalchemy.schema import CreateTable
 from .db import (Company, CompanyUser, User, Account, Category, Counterparty,
                  CashPlan, PlanNote, PaymentRequest, Receipt, Ledger, Budget,
                  Document, ImportBatch, PlanImportBatch, Audit, ModelVersion,
-                 ReportSchedule, Setting, RequestDocument, Delegation)
+                 ReportSchedule, Setting, RequestDocument, Delegation, ReportArchive, ReportArchiveFile,
+                 BusinessProject, BusinessSourceFile, BusinessGeneration)
 
 # Вложения заявок принадлежат компании через свою заявку (criteria ниже), а не собственным полем.
 DIRECT = (Account, Category, Counterparty, CashPlan, PlanNote, PlanImportBatch,
-          ImportBatch, Audit, ModelVersion, ReportSchedule, Delegation)
+          ImportBatch, Audit, ModelVersion, ReportSchedule, Delegation, ReportArchive, ReportArchiveFile,
+          BusinessProject, BusinessSourceFile, BusinessGeneration)
 
 
 def active_delegations(s, user_id, company_id=None):
@@ -137,6 +139,12 @@ def check_object(s, obj):
         refs.append((Ledger, obj.ledger_id))
     if isinstance(obj, RequestDocument):
         refs.append((PaymentRequest, obj.request_id))
+    if isinstance(obj, ReportArchiveFile):
+        refs.append((ReportArchive, obj.archive_id))
+    if isinstance(obj, (BusinessSourceFile, BusinessGeneration)):
+        refs.append((BusinessProject, obj.project_id))
+    if isinstance(obj, BusinessGeneration):
+        refs.extend([(ReportArchive, obj.business_archive_id), (ReportArchive, obj.teo_archive_id)])
     for cls, id in refs:
         value = s.get(cls, id)
         if value is None:

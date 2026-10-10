@@ -1,7 +1,8 @@
 <script setup>
 import {computed, nextTick, onBeforeUnmount, onMounted, ref, useId, watch} from 'vue';
-import {formatCents, formatPercent, formatShortDate, formatLongDate} from './format.js';
-import {scalePoints, smoothPath, tickIndexes} from './chart.js';
+import {formatCents, formatAmount, amountTitle, formatAxisLabels, formatPercent, formatShortDate, formatLongDate} from './format.js';
+import {makeScale, smoothPath, tickIndexes} from './chart.js';
+import {tx} from '../i18n/index.js';
 
 const props = defineProps({
   state: {type: String, default: 'loading'}, // loading | ready | empty | error
@@ -21,7 +22,8 @@ const props = defineProps({
 });
 const emit = defineEmits(['open-report', 'open-day', 'retry', 'add-account']);
 
-const amountText = computed(() => formatCents(props.available, props.currency));
+// The headline is compact ("5,32 млрд"); every digit is in the tooltip.
+const amountText = computed(() => formatAmount(props.available, props.currency));
 const direction = computed(() => {
   const r = props.change?.ratio;
   return r == null || !Number.isFinite(r) ? 'flat' : r > 0 ? 'up' : r < 0 ? 'down' : 'flat';
@@ -41,10 +43,31 @@ onMounted(() => {
   watch(plot, el => { observer?.disconnect(); if (el) { observer?.observe(el); measure(); } }, {immediate: true});
 });
 onBeforeUnmount(() => observer?.disconnect());
-const box = computed(() => ({...size.value, top: 18, bottom: 10, left: 6, right: 14}));
-const points = computed(() => (props.history || []).length
-  ? scalePoints(props.history.map(d => d.balance), box.value) : []);
+// Left gutter for the value scale, as on the forecast chart.
+const box = computed(() => ({...size.value, top: 18, bottom: 10, left: 58, right: 14}));
+const balances = computed(() => (props.history || []).map(d => d.balance));
+const scale = computed(() => (balances.value.length ? makeScale(balances.value, box.value) : null));
+const points = computed(() => (scale.value ? balances.value.map((v, i) => [scale.value.x(i), scale.value.y(v)]) : []));
 const line = computed(() => smoothPath(points.value));
+// The scale is fitted to the period's lowest and highest balance, so those levels
+// (and the middle one) are labelled: the slope is read in money, not in pixels.
+const levels = computed(() => {
+  if (!scale.value) return [];
+  const lo = Math.min(...balances.value), hi = Math.max(...balances.value);
+  const values = lo === hi ? [lo] : [lo, Math.round((lo + hi) / 2), hi];
+  const labels = formatAxisLabels(values);
+  return values.map((v, i) => ({v, y: scale.value.y(v), label: labels[i]}));
+});
+// Today's balance is written at the end of the line (a phone has no hover), on the
+// side away from where the line comes in so the curve never crosses the text.
+const endLabel = computed(() => {
+  const p = points.value, last = props.history?.at(-1);
+  if (p.length < 2 || !last) return null;
+  const [x, y] = p.at(-1);
+  // 36px: the gap to the dot plus the label; below the plot are the date labels.
+  const below = p.at(-2)[1] < y && y + 36 <= box.value.height;
+  return {text: formatAmount(last.balance, props.currency), below, style: {left: `${x}px`, top: `${y}px`}};
+});
 const area = computed(() => {
   const p = points.value;
   if (p.length < 2) return '';
@@ -74,7 +97,8 @@ const summary = computed(() => {
   const h = props.history || [];
   if (h.length < 2) return '';
   const min = h.reduce((a, d) => (d.balance < a.balance ? d : a), h[0]);
-  return `Остаток за ${h.length} дней: с ${formatCents(h[0].balance, props.currency)} до ${formatCents(h.at(-1).balance, props.currency)} ${props.currency}, минимум ${formatCents(min.balance, props.currency)} ${formatShortDate(min.date)}.`;
+  return tx('Остаток за {n} дней: с {from} до {to} {currency}, минимум {min} {date}.', {n: h.length, from: formatCents(h[0].balance, props.currency),
+    to: formatCents(h.at(-1).balance, props.currency), currency: props.currency, min: formatCents(min.balance, props.currency), date: formatShortDate(min.date)});
 });
 // The plot is a slider over the days: screen readers read this text for the
 // selected day (today until another one is chosen).
@@ -82,7 +106,8 @@ const current = computed(() => active.value ?? Math.max(0, (props.history || [])
 const valueText = computed(() => {
   const d = props.history?.[current.value];
   if (!d) return '';
-  return `${formatLongDate(d.date)}: остаток ${formatCents(d.balance, props.currency)}, приход ${formatCents(d.income, props.currency)}, расход ${formatCents(d.expense, props.currency)} ${props.currency}`;
+  return tx('{date}: остаток {balance}, приход {income}, расход {expense} {currency}', {date: formatLongDate(d.date), balance: formatCents(d.balance, props.currency),
+    income: formatCents(d.income, props.currency), expense: formatCents(d.expense, props.currency), currency: props.currency});
 });
 
 function nearest(event) {
@@ -125,50 +150,51 @@ function key(event) {
  <article class="bal" :class="'is-' + state" aria-labelledby="bal-title">
   <header class="bal-head">
    <div class="bal-titles">
-    <h2 id="bal-title">Доступный остаток</h2>
-    <p class="bal-sub"><span class="bal-company">{{company}}</span><span v-if="asOf" class="bal-asof">на {{formatLongDate(asOf)}}</span></p>
+    <h2 id="bal-title">{{tx('Доступный остаток')}}</h2>
+    <p class="bal-sub"><span class="bal-company">{{company}}</span><span v-if="asOf" class="bal-asof">{{tx('на {date}', {date: formatLongDate(asOf)})}}</span></p>
    </div>
-   <button v-if="canOpenReport" type="button" class="bal-icon" aria-label="Открыть отчёт Cash Flow" title="Отчёт Cash Flow" @click="emit('open-report')">
+   <button v-if="canOpenReport" type="button" class="bal-icon" :aria-label="tx('Открыть отчёт Cash Flow')" :title="tx('Отчёт Cash Flow')" @click="emit('open-report')">
     <svg viewBox="0 0 24 24" width="20" height="20" aria-hidden="true"><path d="M6 19v-5M12 19V9M18 19V5" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round"/></svg>
    </button>
   </header>
 
-  <div v-if="state === 'loading'" class="bal-skel" role="status" aria-label="Загружаем доступный остаток">
+  <div v-if="state === 'loading'" class="bal-skel" role="status" :aria-label="tx('Загружаем доступный остаток')">
    <span class="sk sk-amount"></span><span class="sk sk-pill"></span><span class="sk sk-chart"></span>
   </div>
 
   <div v-else-if="state === 'error'" class="bal-state" role="alert">
-   <p class="bal-state-title">Не удалось получить остаток</p>
-   <p class="bal-state-text">{{error || 'Сервер не ответил. Данные на экране не изменены.'}}</p>
-   <p v-if="onAccounts != null" class="bal-state-text">На счетах сейчас: <b>{{formatCents(onAccounts, currency)}}</b> {{currency}}</p>
-   <button type="button" class="secondary tiny" @click="emit('retry')">Повторить</button>
+   <p class="bal-state-title">{{tx('Не удалось получить остаток')}}</p>
+   <p class="bal-state-text">{{error ? tx(error) : tx('Сервер не ответил. Данные на экране не изменены.')}}</p>
+   <p v-if="onAccounts != null" class="bal-state-text">{{tx('На счетах сейчас:')}} <b :title="amountTitle(onAccounts, currency)">{{formatAmount(onAccounts, currency)}}</b> {{currency}}</p>
+   <button type="button" class="secondary tiny" @click="emit('retry')">{{tx('Повторить')}}</button>
   </div>
 
   <div v-else-if="state === 'empty'" class="bal-state">
-   <p class="bal-state-title">Нет счетов в {{currency}}</p>
-   <p class="bal-state-text">Остаток появится, когда в компании будет счёт или касса в этой валюте.</p>
-   <button v-if="canAddAccount" type="button" class="tiny" @click="emit('add-account')">Добавить счёт</button>
+   <p class="bal-state-title">{{tx('Нет счетов в {currency}', {currency})}}</p>
+   <p class="bal-state-text">{{tx('Остаток появится, когда в компании будет счёт или касса в этой валюте.')}}</p>
+   <button v-if="canAddAccount" type="button" class="tiny" @click="emit('add-account')">{{tx('Добавить счёт')}}</button>
   </div>
 
   <template v-else>
-   <p class="bal-amount" :style="{'--chars': amountText.length}">
+   <p class="bal-amount" :style="{'--chars': amountText.length}" :title="amountTitle(available, currency)">
     <span class="bal-num">{{amountText}}</span><span class="bal-cur">{{currency}}</span>
    </p>
    <div class="bal-meta">
-    <span v-if="change && change.ratio != null" class="bal-delta" :class="direction" :title="'По сравнению с ' + formatLongDate(change.since)">
+    <span v-if="change && change.ratio != null" class="bal-delta" :class="direction" :title="tx('По сравнению с {date}', {date: formatLongDate(change.since)})">
      <svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true"><path v-if="direction === 'up'" d="M4 12 12 4M6 4h6v6"/><path v-else-if="direction === 'down'" d="M4 4l8 8M12 6v6H6"/><path v-else d="M3 8h10"/></svg>
-     <span>{{formatPercent(change.ratio)}} за месяц</span>
+     <span>{{tx('{percent} за месяц', {percent: formatPercent(change.ratio)})}}</span>
     </span>
-    <span v-else class="bal-delta flat">Нет данных для сравнения с прошлым месяцем</span>
+    <span v-else class="bal-delta flat">{{tx('Нет данных для сравнения с прошлым месяцем')}}</span>
    </div>
    <p class="bal-split">
-    На счетах <b>{{formatCents(onAccounts, currency)}}</b> · в резерве утверждённых заявок <b>{{formatCents(reserved, currency)}}</b> {{currency}}
+    {{tx('На счетах')}} <b :title="amountTitle(onAccounts, currency)">{{formatAmount(onAccounts, currency)}}</b> · {{tx('в резерве утверждённых заявок')}} <b :title="amountTitle(reserved, currency)">{{formatAmount(reserved, currency)}}</b> {{currency}}
    </p>
 
    <figure v-if="points.length > 1" class="bal-chart">
     <figcaption class="sr">{{summary}}</figcaption>
-    <div ref="plot" class="bal-plot" tabindex="0" role="slider" aria-roledescription="график"
-         :aria-label="'График остатка на счетах. ' + summary + ' Стрелки выбирают день' + (canOpenDay ? ', Enter открывает операции дня' : '') + ', Escape скрывает подсказку.'"
+    <div ref="plot" class="bal-plot" tabindex="0" role="slider" :aria-roledescription="tx('график')"
+         :aria-label="tx('График остатка на счетах.') + ' ' + summary + ' '
+           + (canOpenDay ? tx('Стрелки выбирают день, Enter открывает операции дня, Escape скрывает подсказку.') : tx('Стрелки выбирают день, Escape скрывает подсказку.'))"
          :aria-valuemin="0" :aria-valuemax="points.length - 1" :aria-valuenow="current" :aria-valuetext="valueText"
          :class="{clickable: canOpenDay}" @pointermove="move" @pointerleave="active = null" @click="click" @keydown="key" @blur="active = null">
      <svg :viewBox="`0 0 ${box.width} ${box.height}`" :width="box.width" :height="box.height" aria-hidden="true">
@@ -183,8 +209,12 @@ function key(event) {
         <stop offset="1" stop-color="var(--primary)"/>
        </linearGradient>
       </defs>
+      <g v-for="l in levels" :key="'y' + l.v">
+       <line :x1="box.left" :x2="box.width" :y1="l.y" :y2="l.y" class="level"/>
+       <text :x="box.left - 8" :y="l.y + 4" text-anchor="end" class="level-l">{{l.label}}</text>
+      </g>
       <line v-for="t in ticks" :key="'g' + t.i" :x1="t.x" :x2="t.x" :y1="box.top - 6" :y2="box.height - 1" class="grid"/>
-      <line :x1="0" :x2="box.width" :y1="box.height - 1" :y2="box.height - 1" class="base"/>
+      <line :x1="box.left" :x2="box.width" :y1="box.height - 1" :y2="box.height - 1" class="base"/>
       <g :key="drawKey" class="draw">
        <path :d="area" class="area" :fill="`url(#${uid}-fill)`"/>
        <path :d="line" class="line" :stroke="`url(#${uid}-stroke)`" pathLength="1"/>
@@ -192,18 +222,19 @@ function key(event) {
       <line v-if="activeDay" :x1="points[active][0]" :x2="points[active][0]" :y1="box.top - 6" :y2="box.height - 1" class="cursor"/>
      </svg>
      <span class="bal-dot end" :style="{left: points.at(-1)[0] + 'px', top: points.at(-1)[1] + 'px'}" aria-hidden="true"></span>
+     <span v-if="endLabel" class="bal-end" :class="{below: endLabel.below}" :style="endLabel.style" aria-hidden="true">{{endLabel.text}}</span>
      <span v-if="activeDay" class="bal-dot" :style="{left: points[active][0] + 'px', top: points[active][1] + 'px'}" aria-hidden="true"></span>
      <div v-if="activeDay" ref="tip" class="bal-tip" :style="tipStyle" aria-hidden="true">
       <b>{{formatLongDate(activeDay.date)}}</b>
-      <span>Остаток <em>{{formatCents(activeDay.balance, currency)}} {{currency}}</em></span>
-      <span>Приход <em :class="{in: activeDay.income}">{{formatCents(activeDay.income, currency, {sign: true})}}</em></span>
-      <span>Расход <em :class="{out: activeDay.expense}">{{activeDay.expense ? '−' + formatCents(activeDay.expense, currency) : formatCents(0, currency)}}</em></span>
-      <small v-if="canOpenDay">{{viaKeys ? 'Enter — операции этого дня' : 'Нажмите, чтобы открыть операции дня'}}</small>
+      <span>{{tx('Остаток')}} <em>{{formatCents(activeDay.balance, currency)}} {{currency}}</em></span>
+      <span>{{tx('Приход')}} <em :class="{in: activeDay.income}">{{formatCents(activeDay.income, currency, {sign: true})}}</em></span>
+      <span>{{tx('Расход')}} <em :class="{out: activeDay.expense}">{{activeDay.expense ? '−' + formatCents(activeDay.expense, currency) : formatCents(0, currency)}}</em></span>
+      <small v-if="canOpenDay">{{viaKeys ? tx('Enter — операции этого дня') : tx('Нажмите, чтобы открыть операции дня')}}</small>
      </div>
     </div>
     <div class="bal-axis" aria-hidden="true"><span v-for="t in ticks" :key="'l' + t.i">{{formatShortDate(history[t.i].date)}}</span></div>
    </figure>
-   <p v-else class="bal-note">История остатка появится после первых операций.</p>
+   <p v-else class="bal-note">{{tx('История остатка появится после первых операций.')}}</p>
    <p v-if="historyNote" class="bal-note">{{historyNote}}</p>
   </template>
  </article>
@@ -213,15 +244,15 @@ function key(event) {
 .bal{
  container-type:inline-size;position:relative;display:flex;flex-direction:column;gap:14px;min-width:0;
  padding:26px 28px 20px;border-radius:var(--radius-hero);
- background:linear-gradient(155deg,rgba(255,255,255,.97) 0%,rgba(251,251,248,.92) 48%,rgba(244,245,241,.9) 100%);
+ background:linear-gradient(155deg,var(--surface) 0%,var(--row-hover) 100%);
  -webkit-backdrop-filter:saturate(150%) blur(16px);backdrop-filter:saturate(150%) blur(16px);
- border:1px solid rgba(23,43,42,.08);
- box-shadow:inset 0 1px 0 #fff,inset 0 -1px 0 rgba(23,43,42,.04),0 2px 0 rgba(16,45,43,.035),0 1px 2px rgba(16,45,43,.06),0 22px 46px -22px rgba(16,45,43,.30);
+ border:1px solid var(--line2);
+ box-shadow:inset 0 1px 0 var(--surface),inset 0 -1px 0 rgba(11,16,36,.04),0 2px 0 rgba(11,16,36,.035),0 1px 2px rgba(11,16,36,.06),0 22px 46px -22px rgba(11,16,36,.30);
  transition:transform var(--dur-2) var(--ease),box-shadow var(--dur-2) var(--ease),border-color var(--dur-2) var(--ease);
 }
 @media (hover:hover) and (pointer:fine){
- .bal.is-ready:hover{transform:translateY(-3px);border-color:rgba(15,118,110,.28);
-  box-shadow:inset 0 1px 0 #fff,inset 0 -1px 0 rgba(23,43,42,.04),0 2px 0 rgba(16,45,43,.035),0 2px 4px rgba(16,45,43,.07),0 30px 56px -24px rgba(16,45,43,.36)}
+ .bal.is-ready:hover{transform:translateY(-3px);border-color:rgba(91,77,242,.28);
+  box-shadow:inset 0 1px 0 var(--surface),inset 0 -1px 0 rgba(11,16,36,.04),0 2px 0 rgba(11,16,36,.035),0 2px 4px rgba(11,16,36,.07),0 30px 56px -24px rgba(11,16,36,.36)}
 }
 .bal-head{display:flex;justify-content:space-between;align-items:flex-start;gap:12px}
 .bal-titles{min-width:0}
@@ -229,7 +260,7 @@ h2{font-size:21px;font-weight:600;letter-spacing:-.012em;color:var(--text)}
 .bal-sub{display:flex;flex-wrap:wrap;gap:4px 12px;margin-top:8px;font-size:12.5px;color:var(--muted);font-weight:600}
 .bal-company{letter-spacing:.1em;text-transform:uppercase;font-weight:700;font-size:13px}
 .bal-icon{flex:none;width:44px;height:44px;min-height:44px;padding:0;border-radius:50%;background:var(--primary-soft);border:0;color:var(--primary)}
-.bal-icon:hover:not(:disabled){background:#D3EAE5;color:var(--primary-hover)}
+.bal-icon:hover:not(:disabled){background:rgba(91,77,242,.18);color:var(--primary-hover)}
 .bal-amount{display:flex;flex-wrap:wrap;align-items:baseline;gap:4px 14px;margin:4px 0 0;line-height:1.02;min-width:0}
 .bal-num{font-size:clamp(18px,calc(112cqi / var(--chars)),60px);font-weight:800;letter-spacing:-.025em;color:var(--text);font-variant-numeric:tabular-nums;white-space:nowrap}
 .bal-cur{font-size:clamp(15px,4.4cqi,30px);font-weight:600;color:var(--muted);letter-spacing:.01em}
@@ -245,30 +276,36 @@ h2{font-size:21px;font-weight:600;letter-spacing:-.012em;color:var(--text)}
 .bal-plot{position:relative;height:150px;border-radius:12px;outline-offset:4px;touch-action:pan-y}
 .bal-plot.clickable{cursor:pointer}
 .bal-plot svg{position:absolute;inset:0;display:block;overflow:visible}
-.grid{stroke:rgba(23,43,42,.13);stroke-dasharray:3 5;stroke-width:1}
-.base{stroke:rgba(23,43,42,.10);stroke-width:1}
+.level{stroke:var(--line2);stroke-width:1}
+.level-l{font-size:11px;font-weight:700;fill:var(--muted);font-variant-numeric:tabular-nums}
+.grid{stroke:var(--line);stroke-dasharray:3 5;stroke-width:1}
+.base{stroke:var(--line);stroke-width:1}
 .cursor{stroke:var(--text);stroke-opacity:.28;stroke-width:1}
 .line{fill:none;stroke-width:2.6;stroke-linecap:round;stroke-linejoin:round;stroke-dasharray:1;stroke-dashoffset:0}
 .draw .line{animation:draw 520ms var(--ease) both}
 .draw .area{animation:fade 520ms var(--ease) both}
 @keyframes draw{from{stroke-dashoffset:1}to{stroke-dashoffset:0}}
 @keyframes fade{from{opacity:0}to{opacity:1}}
-.bal-dot{position:absolute;width:11px;height:11px;margin:-5.5px 0 0 -5.5px;border-radius:50%;background:var(--primary);border:2px solid #fff;pointer-events:none}
-.bal-dot.end{box-shadow:0 0 0 8px rgba(46,156,128,.16)}
+.bal-dot{position:absolute;width:11px;height:11px;margin:-5.5px 0 0 -5.5px;border-radius:50%;background:var(--primary);border:2px solid var(--surface);pointer-events:none}
+.bal-dot.end{box-shadow:0 0 0 8px rgba(91,77,242,.16)}
+/* Right edge just past the dot, above it (or below when the line comes in from above). */
+.bal-end{position:absolute;transform:translate(calc(-100% + 8px),calc(-100% - 16px));padding:1px 7px;border-radius:7px;background:var(--surface);box-shadow:0 0 0 1px var(--line2);
+ font-size:12.5px;font-weight:800;line-height:1.4;color:var(--text);white-space:nowrap;font-variant-numeric:tabular-nums;pointer-events:none;z-index:1}
+.bal-end.below{transform:translate(calc(-100% + 8px),16px)}
 .bal-tip{position:absolute;transform:translate(-50%,calc(-100% - 14px));display:flex;flex-direction:column;gap:3px;min-width:min(190px,100%);width:max-content;max-width:min(300px,100%);padding:10px 12px;border-radius:12px;
- background:#fff;border:1px solid var(--line);box-shadow:0 12px 28px -14px rgba(16,45,43,.35);font-size:12.5px;color:var(--muted);font-weight:600;pointer-events:none;z-index:2}
+ background:var(--surface);border:1px solid var(--line);box-shadow:0 12px 28px -14px rgba(11,16,36,.35);font-size:12.5px;color:var(--muted);font-weight:600;pointer-events:none;z-index:2}
 .bal-tip b{color:var(--text);font-size:13px}
 .bal-tip span{display:flex;justify-content:space-between;gap:14px}
 .bal-tip em{white-space:nowrap;font-style:normal;color:var(--text);font-variant-numeric:tabular-nums;font-weight:700}
 .bal-tip em.in{color:var(--income-ink)}.bal-tip em.out{color:var(--expense-ink)}
 .bal-tip small{margin-top:3px;font-size:11.5px;color:var(--muted);font-weight:600}
-.bal-axis{display:flex;justify-content:space-between;margin-top:8px;font-size:12px;font-weight:600;color:var(--muted);font-variant-numeric:tabular-nums}
+.bal-axis{display:flex;justify-content:space-between;margin-top:8px;padding-left:52px;font-size:12px;font-weight:600;color:var(--muted);font-variant-numeric:tabular-nums}
 .bal-note{font-size:13px;color:var(--muted);font-weight:600}
 .bal-state{display:flex;flex-direction:column;align-items:flex-start;gap:8px;padding:18px 0 8px}
 .bal-state-title{font-size:18px;font-weight:700;color:var(--text)}
 .bal-state-text{color:var(--muted);font-weight:600;max-width:52ch}
 .bal-skel{display:flex;flex-direction:column;gap:14px;padding-top:4px}
-.sk{display:block;border-radius:10px;background:linear-gradient(90deg,#EFEDE7 0%,#F7F6F2 50%,#EFEDE7 100%);background-size:200% 100%;animation:shimmer 1.3s linear infinite}
+.sk{display:block;border-radius:10px;background:linear-gradient(90deg,var(--surface-muted) 0%,var(--bg) 50%,var(--surface-muted) 100%);background-size:200% 100%;animation:shimmer 1.3s linear infinite}
 .sk-amount{height:52px;width:min(78%,520px)}.sk-pill{height:30px;width:160px;border-radius:999px}.sk-chart{height:150px}
 @keyframes shimmer{from{background-position:200% 0}to{background-position:-200% 0}}
 .sr{position:absolute;width:1px;height:1px;padding:0;margin:-1px;overflow:hidden;clip:rect(0 0 0 0);white-space:nowrap;border:0}
@@ -281,5 +318,4 @@ h2{font-size:21px;font-weight:600;letter-spacing:-.012em;color:var(--text)}
  .bal,.bal.is-ready:hover{transition:none;transform:none}
  .draw .line,.draw .area,.sk{animation:none}
 }
-@supports not ((backdrop-filter:blur(1px)) or (-webkit-backdrop-filter:blur(1px))){.bal{background:linear-gradient(155deg,#fff,#F6F7F3)}}
 </style>

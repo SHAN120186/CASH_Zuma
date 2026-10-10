@@ -1,5 +1,7 @@
 // Formatting for the overview: Russian digit grouping with non-breaking
-// separators, tabular figures are applied in CSS.
+// separators, tabular figures are applied in CSS. Unit names and dates follow
+// the interface language (Russian or Uzbek); digit grouping is the same in both.
+import {lang, formatDate} from '../i18n/index.js';
 
 const cache = new Map();
 function numberFormat(digits, sign) {
@@ -42,6 +44,49 @@ export function formatCents(cents, currency, { sign = false } = {}) {
   return prefix + grouping.format(whole) + tail;
 }
 
+// Unit names for compact amounts; uz is ready for the Uzbek interface.
+export const AMOUNT_UNITS = {
+  ru: {k: 'тыс.', m: 'млн', b: 'млрд', t: 'трлн'}, // i18n-ignore: units of the Russian interface
+  uz: {k: 'ming', m: 'mln', b: 'mlrd', t: 'trln'},
+};
+// [size of one unit in cents, unit key], smallest first. Thresholds are on the
+// whole-currency value: 1e4 → тыс., 1e6 → млн, 1e9 → млрд, 1e12 → трлн.
+const STEPS = [[1e5, 'k'], [1e8, 'm'], [1e11, 'b'], [1e14, 't']];
+const COMPACT_FROM = 1e6; // 10 000 in cents
+
+// Headline amounts: "5,32 млрд", "182 млн", "25,4 тыс.". Below 10 000 the
+// exact amount is shown. Two decimals under 10 units, one under 100, none
+// above; trailing zeros are dropped. The unit is kept on the same line.
+// Ledgers, tables and forms keep formatCents with every digit.
+export function formatAmount(cents, currency, { sign = false, lang: language = lang.value } = {}) {
+  if (cents === null || cents === undefined || !Number.isSafeInteger(cents)) return '—';
+  const abs = Math.abs(cents);
+  if (abs < COMPACT_FROM) return formatCents(cents, currency, { sign });
+  const units = AMOUNT_UNITS[language] || AMOUNT_UNITS.ru;
+  let i = STEPS.length - 1;
+  while (i > 0 && abs < STEPS[i][0]) i -= 1;
+  let digits, value;
+  for (;;) {
+    const size = STEPS[i][0], n = abs / size;
+    digits = n < 10 ? 2 : n < 100 ? 1 : 0;
+    // Rounded in whole steps of the last shown digit, so no float drift.
+    const step = size / 10 ** digits;
+    value = Math.round(abs / step) / 10 ** digits;
+    // 999 960 rounds to "1 000 тыс."; show it as "1 млн" instead.
+    if (value < 1000 || i === STEPS.length - 1) break;
+    i += 1;
+  }
+  const text = numberFormat(digits, false).format(value).replace(/(,\d*?)0+$/, '$1').replace(/,$/, '');
+  const prefix = cents < 0 ? '−' : sign && cents > 0 ? '+' : '';
+  return prefix + text + '\u00a0' + units[STEPS[i][1]];
+}
+
+// Tooltip for a compact amount: every digit and the currency.
+export function amountTitle(cents, currency, { sign = false } = {}) {
+  if (cents === null || cents === undefined || !Number.isSafeInteger(cents)) return '';
+  return formatCents(cents, currency, { sign }) + ' ' + currency;
+}
+
 export function formatPercent(ratio) {
   if (ratio === null || !Number.isFinite(ratio)) return '—';
   const value = Math.round(ratio * 1000) / 10;
@@ -50,21 +95,45 @@ export function formatPercent(ratio) {
 }
 
 // Axis labels only: a chart scale, never a stated amount (those keep every digit).
-export function formatCompact(cents) {
+export function formatCompact(cents, { lang: language = lang.value } = {}) {
   if (cents === null || cents === undefined || !Number.isFinite(cents)) return '—';
-  const value = cents / 100, abs = Math.abs(value);
-  const [div, unit] = abs >= 1e12 ? [1e12, 'трлн'] : abs >= 1e9 ? [1e9, 'млрд'] : abs >= 1e6 ? [1e6, 'млн'] : abs >= 1e3 ? [1e3, 'тыс.'] : [1, ''];
+  const value = cents / 100, abs = Math.abs(value), names = AMOUNT_UNITS[language] || AMOUNT_UNITS.ru;
+  const [div, unit] = abs >= 1e12 ? [1e12, names.t] : abs >= 1e9 ? [1e9, names.b] : abs >= 1e6 ? [1e6, names.m] : abs >= 1e3 ? [1e3, names.k] : [1, ''];
   const n = abs / div;
   const text = numberFormat(n >= 100 || div === 1 ? 0 : 1, false).format(n).replace(/,0$/, '');
   return (value < 0 ? '−' : '') + text + (unit ? ' ' + unit : '');
 }
 
-const shortDate = new Intl.DateTimeFormat('ru-RU', { day: 'numeric', month: 'short', timeZone: 'UTC' });
-const longDate = new Intl.DateTimeFormat('ru-RU', { day: 'numeric', month: 'long', year: 'numeric', timeZone: 'UTC' });
+// Labels for the levels of one chart scale: "52 млн", "52,7 млн", "53,3 млн".
+// One unit for every level, chosen by the largest as formatAmount would, with its
+// precision (two decimals under 10, one under 100); more decimals are added while
+// neighbouring levels would read alike, then whole amounts. Zero is a plain "0".
+export function formatAxisLabels(values, { lang: language = lang.value } = {}) {
+  const finite = values.filter(Number.isFinite);
+  if (!finite.length) return values.map(() => '—');
+  const top = Math.max(...finite.map(Math.abs));
+  const step = top >= COMPACT_FROM ? STEPS.slice().reverse().find(([size]) => top >= size) : null;
+  const scales = [[100, '']];
+  if (step) scales.unshift([step[0], ' ' + (AMOUNT_UNITS[language] || AMOUNT_UNITS.ru)[step[1]]]);
+  let labels = [];
+  for (const [size, unit] of scales) {
+    const n = top / size;
+    for (let digits = unit ? (n < 10 ? 2 : n < 100 ? 1 : 0) : 0; digits <= 2; digits += 1) {
+      labels = values.map(v => {
+        if (!Number.isFinite(v)) return '—';
+        const text = numberFormat(digits, false).format(Math.abs(v) / size).replace(/(,\d*?)0+$/, '$1').replace(/,$/, '');
+        return text === '0' ? '0' : (v < 0 ? '−' : '') + text + unit;
+      });
+      if (new Set(labels).size === labels.length) return labels;
+    }
+  }
+  return labels;
+}
+
 const parse = iso => new Date(iso + 'T00:00:00Z');
 
-export const formatShortDate = iso => shortDate.format(parse(iso));
-export const formatLongDate = iso => longDate.format(parse(iso));
+export const formatShortDate = iso => formatDate(parse(iso), { day: 'numeric', month: 'short', timeZone: 'UTC' });
+export const formatLongDate = iso => formatDate(parse(iso), { day: 'numeric', month: 'long', year: 'numeric', timeZone: 'UTC' });
 
 // Calendar arithmetic on ISO dates without local time zones.
 export function addDays(iso, n) {

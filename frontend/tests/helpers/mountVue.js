@@ -36,9 +36,31 @@ export async function compileComponent(url, overrides = {}) {
 
 function element(tag) {
   const node = {tag, tagName: tag.toUpperCase(), children: [], parent: null, props: {}, text: '',
+    scrollLeft: 0, scrollTop: 0, clientLeft: 0, clientTop: 0,
+    clientWidth: 0, clientHeight: 0, offsetWidth: 0, offsetHeight: 0, scrollWidth: 0,
     value: '', selectedIndex: -1, addEventListener() {}, removeEventListener() {}, scrollIntoView() {this.scrolled = true;},
+    querySelector(selector) {
+      // The renderer supports the tag, class and attribute selectors used by the
+      // real component; a test supplies layout boxes rather than a fake scroll function.
+      const match = selector.match(/^(?:([a-z][\w-]*)|\.([\w-]+))?(?:\[([\w-]+)(?:="([^"]*)")?\])?$/i);
+      if (!match || !match.slice(1).some(Boolean)) throw new Error(`Unsupported test selector: ${selector}`);
+      const [, wantedTag, wantedClass, attribute, value] = match;
+      const matches = child => child.tag && (!wantedTag || child.tag === wantedTag) &&
+        (!wantedClass || String(child.props.class || '').split(/\s+/).includes(wantedClass)) &&
+        (!attribute || attribute in child.props && (value === undefined || String(child.props[attribute]) === value));
+      return this.children.map(child => find(child, matches)).find(Boolean) ?? null;
+    },
+    getBoundingClientRect() {
+      const box = this.layout || {}, width = box.width ?? this.offsetWidth, height = box.height ?? this.offsetHeight;
+      let left = box.left ?? 0, top = box.top ?? 0;
+      for (let parent = this.parent; parent; parent = parent.parent) {
+        left -= parent.scrollLeft || 0; top -= parent.scrollTop || 0;
+      }
+      return {x:left, y:top, left, top, right:left + width, bottom:top + height, width, height};
+    },
     getAttribute(key) {return this.props[key];}, getRootNode() {return globalThis.document;}};
   Object.defineProperty(node, 'options', {get() {return node.children.filter(child => child.tag === 'option');}});
+  Object.defineProperty(node, 'firstElementChild', {get() {return node.children.find(child => child.tag) ?? null;}});
   return node;
 }
 

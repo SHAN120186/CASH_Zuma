@@ -1,13 +1,32 @@
 {
-  "version": "2.14.14",
-  "date": "2026-10-06",
+  "version": "2.19.8",
+  "date": "2026-10-10",
   "changes": [
-    "Cash Flow: редактор плана выбирает месяц даты среза. После сохранения открывается план-факт за сохранённый месяц; частичный план показывает заданные суммы и незаполненные строки.",
-    "При возвращении к текущему году отчёт использует сегодняшнюю дату сервера. Будущий или недопустимый срез не отправляется; факт не переносится на будущую дату.",
-    "Согласование, оплата, расход и перевод проверяют покрытие всех будущих утверждённых заявок на счёте. Уменьшение начального остатка и сторно поступления или перевода при нехватке покрытия откатываются с указанием вернуть заявки финансисту.",
-    "Кассир и расчётный бухгалтер могут читать документы внутренних переводов, доступных им по счёту отправителя или получателя. Изоляция компаний и права изменения документов сохранены.",
-    "Сводка и сравнение А/Б/В отличают частично заполненный план от полного. Покрытие рассчитывается только для полного плана; явно заданный ноль не считается отсутствием данных.",
-    "Сторно выбирает свободный номер на нужном счёте, включая старые документы REV-*. История, уникальность документов и транзакционная защита сохранены.",
-    "Обновлены PyJWT и source-map-js; добавлены регрессионные проверки и отдельная проверка PostgreSQL в CI."
+    "На экране выбора компании оставлена только карточка фирмы. Кнопки «Бизнес-планы» и «Архив отчётов» под карточкой убраны; разделы доступны в меню выбранной компании.",
+    "Оглавление PDF бизнес-плана обновляется по фактическим страницам серверного документа. Структура и оформление исходного Word сохраняются.",
+    "В ТЭО уточнено пояснение NPV и IRR: используются годовые потоки ВНД!B3:B6 согласно исходным формулам. Расчётные значения не изменены.",
+    "Уменьшен расход памяти при пересчёте больших оригинальных моделей: общие диапазоны формул проверяются без многократного хранения одинаковых связей. Финансовые формулы и проверка ошибок сохраняются.",
+    "Добавлена отдельная поддержка оригинальных Excel и Word ZUMA-PHARMA: своя карта продукции, персонала и финансовых абзацев. Формулы поиска и связанные рецептуры сохраняются и пересчитываются; новая пара проверяется по компании.",
+    "Финансовый текст Word сверяется с пересчитанным Excel. В шаблоне ZUMA исправлены проверенные остаточные ссылки на другую отрасль и площадку; отсутствующая площадь не угадывается.",
+    "Оригинальные Excel и Word можно сохранить как приватный шаблон. Новый проект получает собственные копии этой пары; шаблон доступен его автору в выбранной компании.",
+    "Создание отчёта упрощено: выбор шаблона, загрузка новых документов, проверка изменений. По умолчанию видны расхождения; остальные поля можно найти по группе и названию.",
+    "Объёмы производства, базовые цены и чистый оборотный капитал распознаются из проверенных форматов Excel как предложения. Для отличающихся значений и дубликатов нужно выбрать источник, исходное значение или ручной ввод.",
+    "Новые значения записываются в разрешённые входы оригинальной финансовой модели с сохранением расчётных формул и оформления. PDF и Excel формируются после проверки; ТЭО содержит согласованные изменения и их источники.",
+    "Численность, зарплаты, тарифы и другие доступные входы можно изменить по документам. Себестоимость по рецептурам и неподдерживаемые кредитные графики требуют обновления исходного Excel; описательные разделы Word сохраняются из шаблона.",
+    "Длинные названия файлов и кнопки выбора шаблона переносятся на узком экране. В ТЭО дата архива отдельно обозначена и не подменяет начало финансового прогноза."
+  ],
+  "changes_uz": [
+    "Kompaniyani tanlash ekranida faqat kompaniya kartasi qoldirildi. Karta ostidagi «Biznes-rejalar» va «Hisobotlar arxivi» tugmalari olib tashlandi; bo‘limlar tanlangan kompaniya menyusida mavjud.",
+    "Biznes-reja PDF mundarijasi serverda yaratilgan hujjatning haqiqiy sahifalari bo‘yicha yangilanadi. Asl Word tuzilishi va dizayni saqlanadi.",
+    "TIAda NPV va IRR izohi aniqlashtirildi: yillik oqimlar ВНД!B3:B6 kataklaridagi asl formulalar bo‘yicha olinadi. Hisoblangan qiymatlar oʻzgartirilmadi.",
+    "Katta asl modellarni qayta hisoblashda xotira sarfi kamaytirildi: formulalarning umumiy diapazonlari bir xil bogʻliqliklarni takror saqlamasdan tekshiriladi. Moliyaviy formulalar va xatolar nazorati saqlanadi.",
+    "ZUMA-PHARMA asl Excel va Word shablonlari uchun alohida mahsulot, xodimlar va moliyaviy matn xaritasi qoʻshildi. Qidiruv formulalari va retseptura bogʻliqliklari saqlanadi va qayta hisoblanadi; fayllar juftligi kompaniya boʻyicha tekshiriladi.",
+    "Word moliyaviy matni qayta hisoblangan Excel bilan solishtiriladi. ZUMA shablonidagi boshqa tarmoq va korxona maydoniga tegishli eski jumlalar tuzatildi; tasdiqlanmagan maydon taxmin qilinmaydi.",
+    "Asl Excel va Word fayllarini shaxsiy shablon sifatida saqlash mumkin. Yangi loyiha shu juftlikning oʻz nusxalarini oladi; shablon tanlangan kompaniyada uning muallifiga ochiq.",
+    "Hisobot yaratish soddalashtirildi: shablonni tanlash, yangi hujjatlarni yuklash, oʻzgarishlarni tekshirish. Avval farqlar koʻrinadi; boshqa maydonlarni guruh va nom boʻyicha topish mumkin.",
+    "Ishlab chiqarish hajmlari, bazaviy narxlar va sof aylanma kapital tekshirilgan Excel formatlaridan taklif sifatida olinadi. Farqli qiymatlar va takrorlar uchun manba, asl qiymat yoki qoʻlda kiritish tanlanadi.",
+    "Yangi qiymatlar asl moliyaviy modelning ruxsat etilgan kirish maydonlariga yoziladi, hisoblash formulalari va dizayn saqlanadi. PDF va Excel tekshiruvdan soʻng yaratiladi; TIA kelishilgan oʻzgarishlar va manbalarini koʻrsatadi.",
+    "Xodimlar soni, ish haqi, tariflar va boshqa mavjud kirishlarni hujjatlar asosida oʻzgartirish mumkin. Retseptura tannarxi va qoʻllab-quvvatlanmaydigan kredit jadvallari uchun asl Excel yangilanadi; Word tavsif boʻlimlari shablondan saqlanadi.",
+    "Tor ekranda uzun fayl nomlari va shablon tanlash tugmalari keyingi qatorga oʻtadi. TIAda arxiv sanasi alohida koʻrsatiladi va moliyaviy prognoz boshlanishini almashtirmaydi."
   ]
 }

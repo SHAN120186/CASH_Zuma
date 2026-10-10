@@ -5,6 +5,7 @@ import {ref, computed, watch, onMounted, onUnmounted, nextTick} from 'vue';
 import {PRIORITIES, LEAD_DAYS, CHANNELS, DOC_KINDS, REQUIRED_DOCS, SINGLE_DOCS, DOC_ACCEPT, accountsFor, minDue, budgetRows, budgetNote,
         periodLabel, fileProblem, fileSize} from './workflow.js';
 import {createSaveState, requestBody, saveRequest, removeSavedDocument, missingRequired} from './saveFlow.js';
+import {tx, N_} from '../i18n/index.js';
 
 const props = defineProps({
   api: {type: Function, required: true},
@@ -45,7 +46,7 @@ const accountOptions = computed(() => accountsFor(props.boot.accounts, form.valu
 const outcomeCategories = computed(() => props.boot.categories.filter(c => c.type === 'outcome'));
 const earliest = computed(() => minDue(dues.value, form.value.priority));
 const earliestLabel = computed(() => earliest.value ? earliest.value.split('-').reverse().join('.') : '');
-const title = computed(() => r ? 'Изменить ' + r.number : number.value ? 'Черновик ' + number.value : 'Новая заявка на оплату');
+const title = computed(() => r ? tx('Изменить {number}', {number: r.number}) : number.value ? tx('Черновик {number}', {number: number.value}) : tx('Новая заявка на оплату'));
 const needsReason = computed(() => !!r);
 const missing = computed(() => missingRequired(saved.value, files.value));
 // Убрать сохранённый файл можно до отправки; после — в карточке заявки с причиной.
@@ -53,8 +54,8 @@ const canRemoveSaved = computed(() => !sentMode && state.id != null && ['draft',
 const savedOf = kind => saved.value.filter(d => d.kind === kind);
 const pendingOf = kind => files.value.filter(f => f.kind === kind);
 const replacing = kind => SINGLE_DOCS.includes(kind) && pendingOf(kind).length > 0;
-const pickLabel = kind => kind === 'other' ? 'Добавить файлы' : (savedOf(kind).length || pendingOf(kind).length ? 'Заменить файл' : 'Выбрать файл');
-const STEPS = {save: 'Сохраняем заявку…', upload: 'Загружаем файлы…', submit: 'Отправляем на согласование…'};
+const pickLabel = kind => kind === 'other' ? tx('Добавить файлы') : (savedOf(kind).length || pendingOf(kind).length ? tx('Заменить файл') : tx('Выбрать файл'));
+const STEPS = {save: N_('Сохраняем заявку…'), upload: N_('Загружаем файлы…'), submit: N_('Отправляем на согласование…')};
 
 // Счёт подбирается под канал и валюту; дата не раньше срока для приоритета.
 watch(() => [form.value.channel, form.value.currency], () => {
@@ -107,7 +108,7 @@ async function removeSaved(doc) {
   try {
     await removeSavedDocument(props.api, state, doc);
     saved.value = saved.value.filter(d => d.id !== doc.id);
-    notice.value = `Файл «${doc.filename}» убран из черновика.`;
+    notice.value = tx('Файл «{name}» убран из черновика.', {name: doc.filename});
   } catch (e) { error.value = e.message; }
 }
 
@@ -140,7 +141,7 @@ async function save(event) {
     if (result.ok) { emit('saved', {id: result.id, number: result.number, submitted: result.submitted, resent: sentMode}); return; }
     error.value = result.message;
     if (['already_sent', 'closed', 'status_changed'].includes(result.code)) blocked.value = result.code;
-    else if (state.created && result.step !== 'create') notice.value = `Черновик ${state.number} сохранён. Уже загруженные файлы показаны в блоках ниже.`;
+    else if (state.created && result.step !== 'create') notice.value = tx('Черновик {number} сохранён. Уже загруженные файлы показаны в блоках ниже.', {number: state.number});
   } finally { saving.value = false; step.value = ''; }
 }
 
@@ -172,28 +173,28 @@ onUnmounted(() => { document.removeEventListener('keydown', onKey); clearTimeout
   <div class="modal-backdrop">
     <form ref="dialog" class="modal rq-editor" role="dialog" aria-modal="true" aria-labelledby="rq-editor-title" @submit.prevent="save">
       <div class="section-head"><h2 id="rq-editor-title">{{ title }}</h2>
-        <button type="button" class="ghost icon-btn" aria-label="Закрыть" :disabled="saving" @click="close">✕</button></div>
-      <p v-if="sentMode" class="form-note">Заявка на согласовании. После сохранения она останется на согласовании, а проверка и согласования начнутся заново. Новый файл заменит прежний (прежняя версия останется в истории); убрать файл можно в карточке заявки с причиной.</p>
-      <p v-else class="form-note">«Сохранить черновик» — без отправки, файлы можно приложить позже. «Отправить на согласование» — сохранить, загрузить файлы и отправить: нужны внутренняя заявка (индент) и договор или счёт. Автор и последний редактор не согласуют свою заявку.</p>
+        <button type="button" class="ghost icon-btn" :aria-label="tx('Закрыть')" :disabled="saving" @click="close">✕</button></div>
+      <p v-if="sentMode" class="form-note">{{ tx('Заявка на согласовании. После сохранения она останется на согласовании, а проверка и согласования начнутся заново. Новый файл заменит прежний (прежняя версия останется в истории); убрать файл можно в карточке заявки с причиной.') }}</p>
+      <p v-else class="form-note">{{ tx('«Сохранить черновик» — без отправки, файлы можно приложить позже. «Отправить на согласование» — сохранить, загрузить файлы и отправить: нужны внутренняя заявка (индент) и договор или счёт. Автор и последний редактор не согласуют свою заявку.') }}</p>
       <div class="form-grid">
-        <label>Компания<input :value="company?.name" disabled></label>
-        <label>Канал оплаты<select v-model="form.channel" required><option v-for="(label, k) in CHANNELS" :key="k" :value="k">{{ label }}</option></select></label>
-        <label>Валюта<select v-model="form.currency" required><option v-for="c in ['UZS','USD','EUR']" :key="c" :value="c">{{ c }}</option></select></label>
-        <label>Счёт списания<select v-model="form.account_id" required><option v-for="a in accountOptions" :key="a.id" :value="a.id">{{ a.name }}</option></select>
-          <small v-if="!accountOptions.length" class="field-error">Нет счёта для выбранного канала и валюты.</small></label>
-        <label>Статья расходов<select v-model="form.category_id" required><option v-for="c in outcomeCategories" :key="c.id" :value="c.id">{{ c.name }}</option></select></label>
-        <label>Сумма<input v-model="form.amount" type="text" inputmode="decimal" pattern="[0-9]+([.][0-9]{1,2})?" required autocomplete="off"></label>
-        <label>Контрагент<input v-model="form.counterparty" minlength="2" maxlength="160" required></label>
-        <label>Приоритет<select v-model="form.priority" required><option v-for="(label, k) in PRIORITIES" :key="k" :value="k">{{ label }} · от {{ LEAD_DAYS[k] }} раб. дн.</option></select></label>
-        <label>Плановая дата оплаты<input v-model="form.date" type="date" :min="earliest" required aria-describedby="rq-date-hint">
-          <small id="rq-date-hint" class="sub">Не раньше {{ earliestLabel }}: сегодняшняя дата не допускается.</small></label>
-        <label class="wide">Назначение платежа<textarea v-model="form.purpose" minlength="5" maxlength="3000" required></textarea></label>
-        <label v-if="needsReason" class="wide">Причина изменения<textarea v-model="form.reason" minlength="10" maxlength="1000" required></textarea></label>
+        <label>{{ tx('Компания') }}<input :value="company?.name" disabled></label>
+        <label>{{ tx('Канал оплаты') }}<select v-model="form.channel" required><option v-for="(label, k) in CHANNELS" :key="k" :value="k">{{ tx(label) }}</option></select></label>
+        <label>{{ tx('Валюта') }}<select v-model="form.currency" required><option v-for="c in ['UZS','USD','EUR']" :key="c" :value="c">{{ c }}</option></select></label>
+        <label>{{ tx('Счёт списания') }}<select v-model="form.account_id" required><option v-for="a in accountOptions" :key="a.id" :value="a.id">{{ a.name }}</option></select>
+          <small v-if="!accountOptions.length" class="field-error">{{ tx('Нет счёта для выбранного канала и валюты.') }}</small></label>
+        <label>{{ tx('Статья расходов') }}<select v-model="form.category_id" required><option v-for="c in outcomeCategories" :key="c.id" :value="c.id">{{ c.name }}</option></select></label>
+        <label>{{ tx('Сумма') }}<input v-model="form.amount" type="text" inputmode="decimal" pattern="[0-9]+([.][0-9]{1,2})?" required autocomplete="off"></label>
+        <label>{{ tx('Контрагент') }}<input v-model="form.counterparty" minlength="2" maxlength="160" required></label>
+        <label>{{ tx('Приоритет') }}<select v-model="form.priority" required><option v-for="(label, k) in PRIORITIES" :key="k" :value="k">{{ tx('{label} · от {n} раб. дн.', {label: tx(label), n: LEAD_DAYS[k]}) }}</option></select></label>
+        <label>{{ tx('Плановая дата оплаты') }}<input v-model="form.date" type="date" :min="earliest" required aria-describedby="rq-date-hint">
+          <small id="rq-date-hint" class="sub">{{ tx('Не раньше {date}: сегодняшняя дата не допускается.', {date: earliestLabel}) }}</small></label>
+        <label class="wide">{{ tx('Назначение платежа') }}<textarea v-model="form.purpose" minlength="5" maxlength="3000" required></textarea></label>
+        <label v-if="needsReason" class="wide">{{ tx('Причина изменения') }}<textarea v-model="form.reason" minlength="10" maxlength="1000" required></textarea></label>
       </div>
 
       <section v-if="card" class="budget-check" :class="card.status" aria-live="polite">
-        <strong>Бюджет статьи · {{ periodLabel(card.period) }}</strong>
-        <p v-if="card.error">{{ card.error }}</p>
+        <strong>{{ tx('Бюджет статьи · {period}', {period: periodLabel(card.period)}) }}</strong>
+        <p v-if="card.error">{{ tx(card.error) }}</p>
         <dl v-else-if="card.budget_set" class="budget-grid">
           <template v-for="[label, value] in budgetRows(card)" :key="label"><dt>{{ label }}</dt><dd><b>{{ money(value) }}</b> {{ card.currency }}</dd></template>
         </dl>
@@ -201,37 +202,37 @@ onUnmounted(() => { document.removeEventListener('keydown', onKey); clearTimeout
       </section>
 
       <section class="request-documents-placeholder" aria-labelledby="rq-docs-title">
-        <strong id="rq-docs-title">Документы к заявке</strong>
-        <p>{{ sentMode ? 'Первые два раздела обязательны.' : 'Черновик можно сохранить без файлов. Для отправки обязательны первые два раздела.' }} PDF, PNG, JPEG, DOCX или XLSX, до 5 МБ на файл.</p>
+        <strong id="rq-docs-title">{{ tx('Документы к заявке') }}</strong>
+        <p>{{ sentMode ? tx('Первые два раздела обязательны.') : tx('Черновик можно сохранить без файлов. Для отправки обязательны первые два раздела.') }} {{ tx('PDF, PNG, JPEG, DOCX или XLSX, до 5 МБ на файл.') }}</p>
         <div class="request-document-grid">
           <div v-for="(label, kind) in DOC_KINDS" :key="kind" class="request-document-slot">
-            <b>{{ label }} <span v-if="REQUIRED_DOCS.includes(kind)" class="required-mark" aria-label="обязательно">*</span></b>
+            <b>{{ tx(label) }} <span v-if="REQUIRED_DOCS.includes(kind)" class="required-mark" :aria-label="tx('обязательно')">*</span></b>
             <span v-for="doc in savedOf(kind)" :key="doc.id" class="saved-file">
-              <a :href="companyUrl(doc.url)">{{ doc.filename }}</a><small>версия {{ doc.version }}{{ replacing(kind) ? ' · будет заменён' : '' }}</small>
-              <button v-if="canRemoveSaved" type="button" class="ghost tiny" :disabled="saving" @click="removeSaved(doc)">Убрать</button>
+              <a :href="companyUrl(doc.url)">{{ doc.filename }}</a><small>{{ tx('версия {n}', {n: doc.version}) }}{{ replacing(kind) ? ' · ' + tx('будет заменён') : '' }}</small>
+              <button v-if="canRemoveSaved" type="button" class="ghost tiny" :disabled="saving" @click="removeSaved(doc)">{{ tx('Убрать') }}</button>
             </span>
-            <span v-for="f in pendingOf(kind)" :key="f.key" class="pending-file">{{ f.name }}<small>{{ fileSize(f.size) }} · не загружен</small>
-              <button type="button" class="ghost tiny" :disabled="saving" @click="removePending(f)">Убрать</button></span>
+            <span v-for="f in pendingOf(kind)" :key="f.key" class="pending-file">{{ f.name }}<small>{{ tx('{size} · не загружен', {size: fileSize(f.size)}) }}</small>
+              <button type="button" class="ghost tiny" :disabled="saving" @click="removePending(f)">{{ tx('Убрать') }}</button></span>
             <label class="button secondary tiny file-btn">{{ pickLabel(kind) }}<input type="file" :accept="DOC_ACCEPT" :multiple="kind === 'other'" :disabled="saving || !!blocked" @change="choose(kind, $event)"></label>
           </div>
         </div>
       </section>
 
-      <p v-if="notice" class="notice" role="status">{{ notice }}</p>
-      <p v-if="error" class="error" role="alert">{{ error }}</p>
-      <p v-if="saving && step" class="sub" role="status">{{ STEPS[step] }}</p>
+      <p v-if="notice" class="notice" role="status">{{ tx(notice) }}</p>
+      <p v-if="error" class="error" role="alert">{{ tx(error) }}</p>
+      <p v-if="saving && step" class="sub" role="status">{{ tx(STEPS[step]) }}</p>
       <div class="form-actions">
-        <button type="button" class="secondary" :disabled="saving" @click="close">{{ blocked ? 'Закрыть' : 'Отмена' }}</button>
-        <button v-if="blocked" type="button" @click="emit('open-card', state.id)">Открыть карточку заявки</button>
+        <button type="button" class="secondary" :disabled="saving" @click="close">{{ blocked ? tx('Закрыть') : tx('Отмена') }}</button>
+        <button v-if="blocked" type="button" @click="emit('open-card', state.id)">{{ tx('Открыть карточку заявки') }}</button>
         <template v-else-if="sentMode">
-          <button type="submit" data-send="1" :disabled="saving || !accountOptions.length" @click="sendIntent = true">{{ saving ? 'Сохраняем…' : 'Сохранить изменения' }}</button>
+          <button type="submit" data-send="1" :disabled="saving || !accountOptions.length" @click="sendIntent = true">{{ saving ? tx('Сохраняем…') : tx('Сохранить изменения') }}</button>
         </template>
         <template v-else>
-          <button type="submit" class="secondary" data-send="0" :disabled="saving || !accountOptions.length" @click="sendIntent = false">Сохранить черновик</button>
-          <button type="submit" data-send="1" :disabled="saving || !accountOptions.length" @click="sendIntent = true" :aria-describedby="missing.length ? 'rq-missing' : undefined">{{ saving ? 'Сохраняем…' : 'Отправить на согласование' }}</button>
+          <button type="submit" class="secondary" data-send="0" :disabled="saving || !accountOptions.length" @click="sendIntent = false">{{ tx('Сохранить черновик') }}</button>
+          <button type="submit" data-send="1" :disabled="saving || !accountOptions.length" @click="sendIntent = true" :aria-describedby="missing.length ? 'rq-missing' : undefined">{{ saving ? tx('Сохраняем…') : tx('Отправить на согласование') }}</button>
         </template>
       </div>
-      <p v-if="!blocked && missing.length" id="rq-missing" class="sub rq-missing">Для отправки не хватает: {{ missing.map(k => DOC_KINDS[k]).join(', ') }}.</p>
+      <p v-if="!blocked && missing.length" id="rq-missing" class="sub rq-missing">{{ tx('Для отправки не хватает: {list}.', {list: missing.map(k => tx(DOC_KINDS[k])).join(', ')}) }}</p>
     </form>
   </div>
 </template>

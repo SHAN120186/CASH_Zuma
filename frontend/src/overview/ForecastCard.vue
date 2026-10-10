@@ -2,6 +2,7 @@
 import {computed, nextTick, onBeforeUnmount, onMounted, ref, watch} from 'vue';
 import {toCents, formatCents, formatCompact, formatShortDate, formatLongDate} from './format.js';
 import {makeScale, smoothPath, tickIndexes} from './chart.js';
+import {tx} from '../i18n/index.js';
 
 // Balance forecast from /api/dashboard, day by day, against the minimum
 // reserve. Day 0 is today's planned end-of-day balance, as the server
@@ -23,11 +24,12 @@ const emit = defineEmits(['horizon', 'retry']);
 const points0 = computed(() => props.forecast.map(d => ({...d, cents: toCents(d.balance)})).filter(d => d.cents != null));
 const summary = computed(() => {
   const bad = points0.value.find(d => d.risk);
-  if (bad) return `Проверьте ликвидность: ${formatLongDate(bad.date)}`;
-  if (!props.hasEvents) return 'Будущие события пока не зарегистрированы';
+  if (bad) return tx('Проверьте ликвидность: {date}', {date: formatLongDate(bad.date)});
+  if (!props.hasEvents) return tx('Будущие события пока не зарегистрированы');
   if (!points0.value.length) return '';
   const min = Math.min(...points0.value.map(d => d.cents));
-  return `Минимум ${formatCents(min, props.currency)} ${props.currency}` + (props.reserve ? ' — выше резерва' : '');
+  const params = {amount: formatCents(min, props.currency), currency: props.currency};
+  return props.reserve ? tx('Минимум {amount} {currency} — выше резерва', params) : tx('Минимум {amount} {currency}', params);
 });
 
 const plot = ref(null);
@@ -81,12 +83,13 @@ function key(event) {
   // The first key press shows today; later presses move day by day.
   active.value = home ?? (active.value == null ? 0 : Math.min(n - 1, Math.max(0, active.value + step)));
 }
-const dayLabel = i => (i === 0 ? 'Сегодня, на конец дня' : 'План (прогноз)');
+const dayLabel = i => (i === 0 ? tx('Сегодня, на конец дня') : tx('План (прогноз)'));
 const valueText = computed(() => {
   const d = points0.value[current.value];
   if (!d) return '';
-  return `${formatLongDate(d.date)}, ${dayLabel(current.value).toLowerCase()}: остаток ${formatCents(d.cents, props.currency)} ${props.currency}`
-    + (d.reserve_risk ? ', ниже минимального резерва' : d.risk ? ', есть счёт в минусе' : '');
+  return tx('{date}, {label}: остаток {amount} {currency}', {date: formatLongDate(d.date), label: dayLabel(current.value).toLowerCase(),
+    amount: formatCents(d.cents, props.currency), currency: props.currency})
+    + (d.reserve_risk ? ', ' + tx('ниже минимального резерва') : d.risk ? ', ' + tx('есть счёт в минусе') : '');
 });
 
 const tip = ref(null), tipSize = ref({w: 200, h: 90});
@@ -105,19 +108,19 @@ const tipStyle = computed(() => {
  <section class="fc" aria-labelledby="fc-h">
   <header class="fc-head">
    <div class="fc-titles">
-    <h2 id="fc-h">Прогноз остатка</h2>
+    <h2 id="fc-h">{{tx('Прогноз остатка')}}</h2>
     <p v-if="state === 'ready' && summary" class="fc-sub">{{summary}}</p>
    </div>
-   <div class="seg" role="group" aria-label="Горизонт прогноза">
-    <button v-for="d in [7, 30, 90]" :key="d" type="button" :class="{on: horizon === d}" :aria-pressed="horizon === d" @click="emit('horizon', d)">{{d}} дн.</button>
+   <div class="seg" role="group" :aria-label="tx('Горизонт прогноза')">
+    <button v-for="d in [7, 30, 90]" :key="d" type="button" :class="{on: horizon === d}" :aria-pressed="horizon === d" @click="emit('horizon', d)">{{tx('{n} дн.', {n: d})}}</button>
    </div>
   </header>
 
   <div v-if="state === 'loading'" class="fc-sk" aria-hidden="true"></div>
-  <div v-else-if="state === 'error'" class="fc-err"><p>Прогноз на {{horizon}} дней не загрузился: {{error}}</p><button type="button" class="secondary tiny" @click="emit('retry')">Повторить</button></div>
+  <div v-else-if="state === 'error'" class="fc-err"><p>{{tx('Прогноз на {n} дней не загрузился: {error}', {n: horizon, error: tx(error)})}}</p><button type="button" class="secondary tiny" @click="emit('retry')">{{tx('Повторить')}}</button></div>
   <template v-else-if="points.length">
-   <div ref="plot" class="fc-plot" tabindex="0" role="slider" aria-roledescription="график"
-        :aria-label="`Прогноз остатка на ${days} дней. ${summary}. Стрелки выбирают день, Escape скрывает подсказку.`"
+   <div ref="plot" class="fc-plot" tabindex="0" role="slider" :aria-roledescription="tx('график')"
+        :aria-label="tx('Прогноз остатка на {n} дней.', {n: days}) + ' ' + summary + '. ' + tx('Стрелки выбирают день, Escape скрывает подсказку.')"
         :aria-valuemin="0" :aria-valuemax="points.length - 1" :aria-valuenow="current" :aria-valuetext="valueText"
         @pointermove="move" @pointerleave="active = null" @keydown="key" @blur="active = null">
     <svg :viewBox="`0 0 ${box.width} ${box.height}`" :width="box.width" :height="box.height" aria-hidden="true">
@@ -136,24 +139,24 @@ const tipStyle = computed(() => {
     <div v-if="activeDay" ref="tip" class="fc-tip" :style="tipStyle" aria-hidden="true">
      <b>{{formatLongDate(activeDay.date)}}</b>
      <small>{{dayLabel(active)}}</small>
-     <span>Остаток <em>{{formatCents(activeDay.cents, currency)}} {{currency}}</em></span>
-     <span v-if="toCents(activeDay.incoming)">Поступления <em class="in">+{{formatCents(toCents(activeDay.incoming), currency)}}</em></span>
-     <span v-if="toCents(activeDay.outgoing)">Выплаты <em class="out">−{{formatCents(toCents(activeDay.outgoing), currency)}}</em></span>
-     <small v-if="activeDay.reserve_risk" class="warn">Ниже минимального резерва</small>
-     <small v-else-if="activeDay.risk" class="warn">Есть счёт в минусе</small>
+     <span>{{tx('Остаток')}} <em>{{formatCents(activeDay.cents, currency)}} {{currency}}</em></span>
+     <span v-if="toCents(activeDay.incoming)">{{tx('Поступления')}} <em class="in">+{{formatCents(toCents(activeDay.incoming), currency)}}</em></span>
+     <span v-if="toCents(activeDay.outgoing)">{{tx('Выплаты')}} <em class="out">−{{formatCents(toCents(activeDay.outgoing), currency)}}</em></span>
+     <small v-if="activeDay.reserve_risk" class="warn">{{tx('Ниже минимального резерва')}}</small>
+     <small v-else-if="activeDay.risk" class="warn">{{tx('Есть счёт в минусе')}}</small>
     </div>
    </div>
    <div class="fc-axis" aria-hidden="true"><span v-for="t in ticks" :key="'l' + t.i">{{formatShortDate(points0[t.i].date)}}</span></div>
    <ul class="fc-legend" aria-hidden="true">
-    <li><i class="k-today"></i>Сегодня, на конец дня</li>
-    <li><i class="k-plan"></i>План / прогноз</li>
-    <li v-if="reserveY != null"><i class="k-res"></i>Минимальный резерв {{formatCents(reserve, currency)}} {{currency}}</li>
+    <li><i class="k-today"></i>{{tx('Сегодня, на конец дня')}}</li>
+    <li><i class="k-plan"></i>{{tx('План / прогноз')}}</li>
+    <li v-if="reserveY != null"><i class="k-res"></i>{{tx('Минимальный резерв {amount} {currency}', {amount: formatCents(reserve, currency), currency})}}</li>
    </ul>
   </template>
-  <p v-else class="fc-note">Прогноз появится после первых операций и заявок.</p>
+  <p v-else class="fc-note">{{tx('Прогноз появится после первых операций и заявок.')}}</p>
 
   <p v-if="state === 'ready'" class="fc-week">
-   Ближайшие 7 дней · план: поступления <b :class="{in: incoming7}">{{formatCents(incoming7, currency, {sign: true})}}</b> · выплаты <b :class="{out: outgoing7}">{{outgoing7 == null ? '—' : formatCents(-outgoing7, currency)}}</b> {{currency}}
+   {{tx('Ближайшие 7 дней · план: поступления')}} <b :class="{in: incoming7}">{{formatCents(incoming7, currency, {sign: true})}}</b> · {{tx('выплаты')}} <b :class="{out: outgoing7}">{{outgoing7 == null ? '—' : formatCents(-outgoing7, currency)}}</b> {{currency}}
   </p>
  </section>
 </template>
@@ -164,22 +167,22 @@ const tipStyle = computed(() => {
 .fc-titles{min-width:0}
 h2{font-size:15px;font-weight:800;color:var(--text)}
 .fc-sub{margin-top:3px;font-size:12.5px;font-weight:600;color:var(--muted)}
-.fc-sk{height:200px;border-radius:12px;background:linear-gradient(90deg,#EFEDE7 0%,#F7F6F2 50%,#EFEDE7 100%);background-size:200% 100%;animation:shimmer 1.3s linear infinite}
+.fc-sk{height:200px;border-radius:12px;background:linear-gradient(90deg,var(--surface-muted) 0%,var(--bg) 50%,var(--surface-muted) 100%);background-size:200% 100%;animation:shimmer 1.3s linear infinite}
 @keyframes shimmer{from{background-position:200% 0}to{background-position:-200% 0}}
 .fc-err{display:flex;flex-wrap:wrap;align-items:center;gap:8px 12px;color:var(--expense-ink);font-weight:600;background:var(--expense-soft);padding:10px 12px;border-radius:10px}
 .fc-plot{position:relative;height:180px;border-radius:12px;outline-offset:4px;touch-action:pan-y}
 .fc-plot svg{position:absolute;inset:0;display:block;overflow:visible}
-.level{stroke:rgba(23,43,42,.08);stroke-width:1}
+.level{stroke:var(--line2);stroke-width:1}
 .level-l{font-size:11px;font-weight:700;fill:var(--muted);font-variant-numeric:tabular-nums}
-.grid{stroke:rgba(23,43,42,.13);stroke-dasharray:3 5;stroke-width:1}
-.base{stroke:rgba(23,43,42,.10);stroke-width:1}
+.grid{stroke:var(--line);stroke-dasharray:3 5;stroke-width:1}
+.base{stroke:var(--line);stroke-width:1}
 .reserve{stroke:var(--expense);stroke-width:1.6;stroke-dasharray:2 5;stroke-linecap:round}
 .plan{fill:none;stroke:var(--plan);stroke-width:2.4;stroke-dasharray:7 6;stroke-linecap:round;stroke-linejoin:round}
 .cursor{stroke:var(--text);stroke-opacity:.28;stroke-width:1}
-.fc-dot{position:absolute;width:11px;height:11px;margin:-5.5px 0 0 -5.5px;border-radius:50%;background:var(--plan);border:2px solid #fff;pointer-events:none}
-.fc-dot.today{background:var(--primary);box-shadow:0 0 0 6px rgba(15,118,110,.14)}
+.fc-dot{position:absolute;width:11px;height:11px;margin:-5.5px 0 0 -5.5px;border-radius:50%;background:var(--plan);border:2px solid var(--surface);pointer-events:none}
+.fc-dot.today{background:var(--primary);box-shadow:0 0 0 6px rgba(91,77,242,.14)}
 .fc-tip{position:absolute;transform:translate(-50%,calc(-100% - 14px));display:flex;flex-direction:column;gap:3px;min-width:min(190px,100%);width:max-content;max-width:min(300px,100%);padding:10px 12px;border-radius:12px;
- background:#fff;border:1px solid var(--line);box-shadow:0 12px 28px -14px rgba(16,45,43,.35);font-size:12.5px;color:var(--muted);font-weight:600;pointer-events:none;z-index:2}
+ background:var(--surface);border:1px solid var(--line);box-shadow:0 12px 28px -14px rgba(11,16,36,.35);font-size:12.5px;color:var(--muted);font-weight:600;pointer-events:none;z-index:2}
 .fc-tip b{color:var(--text);font-size:13px}
 .fc-tip span{display:flex;justify-content:space-between;gap:14px}
 .fc-tip em{white-space:nowrap;font-style:normal;color:var(--text);font-variant-numeric:tabular-nums;font-weight:700}
@@ -191,7 +194,7 @@ h2{font-size:15px;font-weight:800;color:var(--text)}
 .k-today{width:9px;height:9px;border-radius:50%;background:var(--primary)}
 .k-plan{width:20px;border-top:2.4px dashed var(--plan)}
 .k-res{width:20px;border-top:2px dotted var(--expense)}
-.fc-week{margin-top:auto;padding-top:10px;border-top:1px solid #EEF2F0;font-size:13px;font-weight:600;color:var(--muted);font-variant-numeric:tabular-nums}
+.fc-week{margin-top:auto;padding-top:10px;border-top:1px solid var(--line2);font-size:13px;font-weight:600;color:var(--muted);font-variant-numeric:tabular-nums}
 .fc-week b{font-weight:800}.fc-week .in{color:var(--income-ink)}.fc-week .out{color:var(--expense-ink)}
 .fc-note{color:var(--muted);font-weight:600}
 @media (max-width:600px){.fc-plot{height:150px}}
