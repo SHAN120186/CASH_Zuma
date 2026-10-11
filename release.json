@@ -1,7 +1,11 @@
 {
-  "version": "2.23.0",
+  "version": "2.24.0",
   "date": "2026-10-11",
   "changes": [
+    "P&L и баланс упрощены для всех компаний: источник, загрузка новой версии, методика и замечания перенесены в закрытую справку. В отчёте остаются период, карточки, таблицы и понятные причины неподтверждённых значений.",
+    "Год, период, масштаб и режим сохраняются при переходе между P&L, балансом и Cash Flow. При смене компании выбор сбрасывается; источники и данные фирм остаются раздельными.",
+    "Подтверждённые обороты P&L и финансовый результат 9900 рассчитываются из Mapping с проверкой движения счёта. Оригинальные показатели и план сохранены для сверки; состав выручки, налог и распределение амортизации не угадываются.",
+    "Добавлена сверка прибыли с изменением капитала и денежных остатков Mapping за полный закрытый период. Прочее изменение капитала и разрывы между месяцами показаны отдельно. Сопоставление с денежными операциями сайта требует подтверждённых масштаба и состава счетов.",
     "Фактический баланс поддерживаемой модели рассчитывается по Mapping: запасы и НЗП, денежные средства, кредиты, обязательства и независимый капитал. Исправлены смещения месяцев; разрыв ОСВ показан отдельно и не скрывается подбором капитала.",
     "ROA, ROE и оборачиваемость рассчитываются за выбранный период по прибыли и потокам периода, средним остаткам и календарным дням. Неполные периоды и нулевые базы имеют понятную причину вместо ложного нуля.",
     "Пустые строки счетов без движения допустимы. Проверка охватывает зависимости P&L и баланса; посторонние листы Cash Flow исключены. Найденные данные, исправленные формулы и оставшиеся уточнения разделены.",
@@ -34,6 +38,10 @@
     "Длинные названия файлов и кнопки выбора шаблона переносятся на узком экране. В ТЭО дата архива отдельно обозначена и не подменяет начало финансового прогноза."
   ],
   "changes_uz": [
+    "P&L va balans barcha kompaniyalar uchun soddalashtirildi: manba, yangi versiya yuklash, usul va izohlar yopiq yordam boʻlimiga koʻchirildi. Hisobotda davr, kartalar, jadvallar va tasdiqlanmagan qiymatlar sabablari qoldi.",
+    "P&L, balans va Cash Flow orasida yil, davr, masshtab va rejim saqlanadi. Kompaniya almashtirilganda tanlov tiklanadi; kompaniyalar manbalari va maʼlumotlari ajratilgan.",
+    "Tasdiqlangan P&L aylanmalari va 9900 moliyaviy natijasi hisob harakati tekshiruvi bilan Mappingdan hisoblanadi. Asl koʻrsatkichlar va reja solishtirish uchun saqlanadi; tushum, soliq va amortizatsiya taqsimoti taxmin qilinmaydi.",
+    "Toʻliq yopilgan davr uchun foyda va kapital oʻzgarishi, Mapping pul qoldiqlari solishtirishi qoʻshildi. Kapitalning boshqa oʻzgarishi va oylar orasidagi farqlar alohida koʻrsatiladi. Saytdagi pul operatsiyalari bilan solishtirish uchun masshtab va hisoblar tarkibini tasdiqlash kerak.",
     "Qoʻllab-quvvatlanadigan modelning fakt balansi Mapping asosida hisoblanadi: zaxiralar va tugallanmagan ishlab chiqarish, pul, kreditlar, majburiyatlar va mustaqil kapital. Oylar siljishi tuzatildi; OSV farqi kapitalni moslash bilan yashirilmaydi.",
     "ROA, ROE va aylanish koeffitsiyentlari tanlangan davr foydasi va oqimlari, oʻrtacha qoldiqlar va kalendar kunlari asosida hisoblanadi. Toʻliq boʻlmagan davr va nol baza uchun sabab koʻrsatiladi.",
     "Harakatsiz hisoblarning boʻsh satrlari qabul qilinadi. Tekshiruv P&L va balans bogʻliqliklarini qamrab oladi; boshqa Cash Flow varaqlari chiqarib tashlangan. Topilgan maʼlumotlar, tuzatilgan formulalar va qolgan aniqlashtirishlar ajratilgan.",

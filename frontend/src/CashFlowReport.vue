@@ -4,8 +4,9 @@ import AppIcon from './AppIcon.vue';
 import {editorMonth,planCompleteness,reportDateForYear,validReportDate} from './cashflow/planView.js';
 import {toCents,formatAmount,amountTitle} from './overview/format.js';
 import {tx,N_} from './i18n/index.js';
-const props=defineProps({report:Object,currency:String,year:[String,Number],api:Function,canPlan:Boolean,canDownload:Boolean,companies:Array,companyId:Number,scenario:String,asOf:String,today:String});
-const emit=defineEmits(['refresh','year','company','scenario','as-of','editing']);
+import {normalizeReportSelection} from './reportContext.js';
+const props=defineProps({report:Object,currency:String,year:[String,Number],api:Function,canPlan:Boolean,canDownload:Boolean,companies:Array,companyId:Number,scenario:String,asOf:String,today:String,selection:{type:Object,default:null}});
+const emit=defineEmits(['refresh','year','company','scenario','as-of','editing','selection-change']);
 const months=[N_('Янв'),N_('Фев'),N_('Мар'),N_('Апр'),N_('Май'),N_('Июн'),N_('Июл'),N_('Авг'),N_('Сен'),N_('Окт'),N_('Ноя'),N_('Дек')];
 const monthNames=[N_('Январь'),N_('Февраль'),N_('Март'),N_('Апрель'),N_('Май'),N_('Июнь'),N_('Июль'),N_('Август'),N_('Сентябрь'),N_('Октябрь'),N_('Ноябрь'),N_('Декабрь')];
 // Scenario letters are Cyrillic in Russian (А, Б, В) and Latin in Uzbek (A, B, V).
@@ -13,6 +14,28 @@ const scenarioLetters={A:N_('А'),B:N_('Б'),V:N_('В')};
 const scenarioLetter=s=>tx(scenarioLetters[s]);
 const mode=ref('actual'),start=ref(1),end=ref(12),per=ref('year'),unit=ref(props.currency==='UZS'?'m':'k'),collapsed=ref([]),editor=ref(false),editMonth=ref(1),draft=ref([]),opening=ref(''),reason=ref(''),error=ref(''),saving=ref(false),saved=ref(false);
 const savedMonth=ref(null),dateError=ref('');
+const selectionNote=ref('');
+function currentSelection(){return normalizeReportSelection({year:Number(props.year),period:per.value,start:start.value,end:end.value,unit:unit.value,mode:mode.value==='actual'?'actual':'compare',sourceId:props.selection?.sourceId});}
+function restoreSelection(value){
+ if(!value)return false;
+ const selection=normalizeReportSelection(value);
+ if(selection.year!==Number(props.year)||selection.start>selection.end){
+  selectionNote.value=selection.year!==Number(props.year)?N_('Cash Flow показывает доступный год факта; год исходной модели недоступен.'):N_('Исправьте порядок месяцев. Cash Flow сохраняет последний допустимый период.');
+  return false;
+ }
+ per.value=selection.period==='month'?'custom':selection.period;
+ start.value=selection.start;end.value=selection.end;unit.value=selection.unit;
+ mode.value=selection.mode==='actual'?'actual':'plan';
+ return true;
+}
+const initialRestored=restoreSelection(props.selection);
+watch(()=>props.selection,value=>{if(!restoreSelection(value)&&value)emit('selection-change',currentSelection());},{deep:true});
+watch(()=>[props.year,per.value,start.value,end.value,unit.value,mode.value],()=>{
+ const next=currentSelection();
+ const prior=props.selection&&normalizeReportSelection({...props.selection,period:props.selection.period==='month'?'custom':props.selection.period,mode:props.selection.mode==='actual'?'actual':'compare'});
+ if(!prior||JSON.stringify(next)!==JSON.stringify(prior))emit('selection-change',next);
+});
+onMounted(()=>{if(!initialRestored)emit('selection-change',currentSelection());});
 watch(editor,value=>emit('editing',value));
 const note=ref(''),noteMonth=ref(1),groupOpen=ref(false),groupMonth=ref(String(props.asOf).slice(0,7)),groupDay=ref(props.asOf),groupText=ref('');
 const comparison=ref([]);
@@ -132,6 +155,7 @@ watch(()=>[props.asOf,props.year,props.currency,props.scenario,mode.value,unit.v
   </div>
  </div>
  <p v-if="dateError" class="error" role="alert">{{tx(dateError)}}</p>
+ <p v-if="selectionNote" class="notice" role="status">{{tx(selectionNote)}}</p>
  <p v-if="saved" class="notice" role="status">{{tx('План сохранён')}}<template v-if="savedMonth"> · {{tx(monthNames[savedMonth-1])}} {{year}} · {{currency}} · {{tx('сценарий {letter}',{letter:scenarioLetter(scenario)})}}</template></p>
  <section v-if="comparison.length" class="card plan-editor"><div class="section-head"><div><h2>{{tx('Сравнение сценариев на {date}',{date:asOf})}}</h2><p class="sub">{{tx('Выбор ручной. Фактические банковские поступления одинаковы для А, Б и В и не меняются при переключении.')}}</p></div><button class="ghost" @click="comparison=[]">{{tx('Закрыть')}}</button></div><div class="sumrow"><button v-for="r in comparison" :key="r.scenario" class="card tile" :class="{selected:r.scenario===scenario}" @click="emit('scenario',r.scenario)"><div class="k">{{tx('Сценарий {letter}',{letter:scenarioLetter(r.scenario)})}}</div><div class="v num">{{r.expense_plan_complete||r.expense_plan_defined_rows>0?display(r.expense_plan):tx('Не задан')}}<small v-if="r.expense_plan_complete||r.expense_plan_defined_rows>0">{{unitCaption}}</small></div><div class="d" role="status">{{r.expense_plan_complete?tx('Полный план выплат'):r.expense_plan_defined_rows>0?tx('Частичный план выплат'):tx('План выплат не задан')}}<template v-if="r.expense_plan_complete===false"> · {{tx('незаполненных строк: {count}',{count:r.expense_plan_missing_rows})}}</template></div><div class="d">{{tx('Поступления с начала месяца {income} {unit} · доступно {available} {unit}',{income:display(r.bank_income_mtd),available:display(r.available),unit:unitCaption})}}</div></button></div></section>
  <section v-if="groupOpen" class="card plan-editor"><div class="section-head"><h2>{{tx('Сообщение для группы')}}</h2><button class="ghost" @click="groupOpen=false">{{tx('Закрыть')}}</button></div><div class="filter-bar"><label>{{tx('Месяц')}}<input type="month" v-model="groupMonth"></label><label>{{tx('День')}}<input type="date" v-model="groupDay"></label><button type="button" class="secondary" @click="makeGroup">{{tx('Обновить')}}</button></div><textarea readonly rows="5" :value="groupText"></textarea><button type="button" @click="copyGroup">{{tx('Копировать')}}</button><p class="sub">{{tx('Текст только копируется. Программа ничего не отправляет автоматически.')}}</p></section>

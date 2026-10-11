@@ -3,6 +3,8 @@ import {ref,shallowRef,computed,onMounted,onUnmounted,nextTick,watch} from 'vue'
 import CashFlowReport from './CashFlowReport.vue';
 import ReportArchive from './ReportArchive.vue';
 import FinancialStatements from './FinancialStatements.vue';
+import ReportLinks from './ReportLinks.vue';
+import {normalizeReportSelection} from './reportContext.js';
 import BusinessProjects from './BusinessProjects.vue';
 import AuditHistory from './AuditHistory.vue';
 import PeriodFilter from './PeriodFilter.vue';
@@ -42,6 +44,15 @@ const user=ref(null),csrf=ref(''),login=ref({username:'',password:''}),recentLog
 const loginSuggestions=computed(()=>matchingLogins(recentLogins.value,login.value.username));
 const page=ref(location.hash.slice(1)||'home'),currency=ref('UZS'),days=ref(30),year=ref(new Date().getFullYear()),month=ref(new Date().toLocaleDateString('en-CA',{timeZone:'Asia/Tashkent'}).slice(0,7));
 const companyId=ref(null),companyReady=ref(false),reportEditing=ref(false),reportScenario=ref('A');
+const reportSelection=ref(null);
+function changeReportSelection(value){
+ const next=normalizeReportSelection(value,reportSelection.value||{year:year.value});
+ reportSelection.value=next;
+ // Source years may include future budgets; Cash Flow still enforces its own
+ // no-future-fact cutoff when opened.
+ const cutoff=reportDateForYear(next.year,boot.value.today);
+ if(cutoff&&year.value!==next.year){year.value=next.year;reportAsOf.value=cutoff;}
+}
 const company=computed(()=>boot.value.companies.find(c=>c.id===companyId.value));
 let companyEpoch=0;const pendingCalls=new Set();
 const globalProgress=ref({active:false,label:'',completed:0,total:0,error:''});
@@ -179,8 +190,8 @@ async function switchCurrency(value){currency.value=value;search.value='';listPa
 const subtitles={home:N_('Факт, план и прогноз денежных средств в одном месте.'),report:N_('Управленческая форма по прямому методу · структура IAS 7.'),accounts:N_('Счета и касса по валютам. Суммы разных валют не складываются.'),ledger:N_('Фактические поступления, расходы и переводы.'),requests:N_('Заявки на оплату и этапы согласования.'),calendar:N_('Поступления, выплаты и прогноз остатка по дням.'),budgets:N_('Лимиты расходов по статьям и контроль превышения.'),import:N_('Загрузка операций из CSV или Excel.'),categories:N_('Статьи движения денег и виды деятельности.'),approval:N_('Политика директора по статьям и календарь рабочих дней.'),users:N_('Учётные записи холдинга, назначения в компаниях, ВрИО, архив и журнал доступа.'),audit:N_('Кто, когда и что делал в системе.'),profile:N_('Ваши данные, пароль и Telegram.')};
 subtitles.business=N_('Проект → Данные → Отчёт. Готовые бизнес-план PDF и расчётный Excel скачиваются прямо из списка проектов.');
 subtitles.reports=N_('Все готовые отчёты компании: рассчитанные бизнес-планы и загруженные PDF и Excel с периодами.');
-subtitles.pnl=N_('План и факт исходной книги, расхождения и документы для проверки.');
-subtitles.balance=N_('Остатки, показатели и сверки исходной книги по выбранному месяцу.');
+subtitles.pnl=N_('Доходы, расходы и прибыль за выбранный период.');
+subtitles.balance=N_('Активы, обязательства и капитал на конец периода.');
 const priorities={normal:N_('Обычный'),high:N_('Высокий'),urgent:N_('Срочный')};
 const scenario=ref('approved');
 const forecastRows=computed(()=>(dash.value?.forecast||[]).map(d=>scenario.value==='all'?{...d,opening:d.requested_opening,outgoing:d.requested_outgoing,balance:d.requested_balance,risk:d.requested_risk,account_shortfalls:d.requested_account_shortfalls,events:[...d.events,...d.pending_events]}:d));
@@ -212,14 +223,14 @@ async function api(url,opts={}){
 const post=(url,data={})=>api(url,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(data)});
 function flash(text,params=null){notice.value=text;noticeParams.value=params;setTimeout(()=>notice.value='',5500)}
 async function bootstrap(){boot.value=await api('/api/bootstrap');user.value=boot.value.user;csrf.value=boot.value.csrf;month.value=month.value.match(/^\d{4}-\d{2}$/)?month.value:boot.value.today.slice(0,7);if(!validReportDate(reportAsOf.value,year.value,boot.value.today)){const cutOff=reportDateForYear(year.value,boot.value.today);if(!cutOff)year.value=Number(boot.value.today.slice(0,4));reportAsOf.value=cutOff||boot.value.today}}
-async function changeReportYear(value){const cutOff=reportDateForYear(value,boot.value.today);if(!cutOff){flash(N_('Будущий год недоступен: дата факта не может быть позже сегодня.'));return}year.value=Number(value);reportAsOf.value=cutOff;await load()}
+async function changeReportYear(value){const cutOff=reportDateForYear(value,boot.value.today);if(!cutOff){flash(N_('Будущий год недоступен: дата факта не может быть позже сегодня.'));return}year.value=Number(value);reportAsOf.value=cutOff;reportSelection.value=normalizeReportSelection({...reportSelection.value,year:year.value});await load()}
 async function changeReportDate(value){if(!validReportDate(value,year.value,boot.value.today)){flash(N_('Дата отчёта должна быть в выбранном году и не позже сегодня.'));return}reportAsOf.value=value;await load()}
 async function enter(){companyId.value=null;companyReady.value=false;if(user.value?.must_change_password)return;const data=await api('/api/companies');boot.value={accounts:[],categories:[],...data};user.value=data.user;csrf.value=data.csrf;}
 async function selectCompany(id){
  if(saving.value||modal.value||documents.value||editor.value||cardId.value){flash(N_('Закройте текущую форму перед сменой компании.'));return}
  cancelPending();clearTimeout(searchTimer);
  const selectionEpoch=companyEpoch;
- companyReady.value=false;companyId.value=Number(id);busy.value=true;error.value='';notice.value='';
+ companyReady.value=false;companyId.value=Number(id);reportSelection.value=null;busy.value=true;error.value='';notice.value='';
  rows.value=[];dash.value=null;report.value=null;preview.value=null;receipts.value=[];expandedRequest.value=null;
  search.value='';dateFrom.value='';dateTo.value='';requestStatus.value='';listPage.value=1;listTotal.value=0;showArchive.value=false;receiptsOpen.value=false;planMappings.value={};helpOpen.value=false;menuOpen.value=false;
  boot.value={...boot.value,accounts:[],categories:[],counterparties:[]};
@@ -425,7 +436,7 @@ onMounted(async()=>{try{const r=await api('/api/me');user.value=r.user;csrf.valu
     <nav v-if="isReportPage&&reportTabs.length>1" class="report-tabs" :aria-label="tx('Отчёты')"><button v-for="n in reportTabs" :key="n[0]" type="button" :class="{on:page===n[0]}" :aria-current="page===n[0]?'page':undefined" @click="go(n[0])"><AppIcon :name="n[0]"/> {{tx(n[2])}}</button></nav>
     <BusinessProjects :can-download="has('download')" v-if="page==='business'&&has('export')" :key="companyId" :api="api" :company="company" :refresh="businessRefresh" @editing="reportEditing=$event" @generated="reportArchiveRefresh++"/>
     <ReportArchive :can-download="has('download')" v-if="page==='reports'&&has('export')" :key="companyId" :api="api" :company="company" :refresh="reportArchiveRefresh" @editing="reportEditing=$event"/>
-    <FinancialStatements v-if="['pnl','balance'].includes(page)&&has('export')" :key="companyId" :type="page" :api="api" :company="company" :can-import="has('import')" :can-download="has('download')" :refresh="statementRefresh" @editing="reportEditing=$event"/>
+    <FinancialStatements v-if="['pnl','balance'].includes(page)&&has('export')" :key="companyId" :type="page" :api="api" :company="company" :can-import="has('import')" :can-download="has('download')" :refresh="statementRefresh" :selection="reportSelection" @selection-change="changeReportSelection" @editing="reportEditing=$event"/>
 
     <!-- Банк и касса -->
     <template v-if="page==='accounts'">
@@ -501,7 +512,8 @@ onMounted(async()=>{try{const r=await api('/api/me');user.value=r.user;csrf.valu
     </template>
 
     <!-- Cash Flow -->
-    <CashFlowReport :key="companyId" v-if="page==='report'&&report" :report="report" :currency="currency" :year="year" :api="api" :can-plan="has('plan')" :can-download="has('download')" @editing="reportEditing=$event" :companies="boot.companies.filter(c=>c.id===companyId)" :company-id="companyId" :scenario="reportScenario" :as-of="reportAsOf" :today="boot.today" @company="selectCompany" @scenario="v=>{reportScenario=v;load()}" @year="changeReportYear" @as-of="changeReportDate" @refresh="load" />
+    <CashFlowReport :key="companyId" v-if="page==='report'&&report" :report="report" :currency="currency" :year="year" :api="api" :can-plan="has('plan')" :can-download="has('download')" :selection="reportSelection" @selection-change="changeReportSelection" @editing="reportEditing=$event" :companies="boot.companies.filter(c=>c.id===companyId)" :company-id="companyId" :scenario="reportScenario" :as-of="reportAsOf" :today="boot.today" @company="selectCompany" @scenario="v=>{reportScenario=v;load()}" @year="changeReportYear" @as-of="changeReportDate" @refresh="load" />
+    <ReportLinks v-if="['report','pnl','balance'].includes(page)&&has('export')&&reportSelection" :key="companyId" :api="api" :company-id="companyId" :selection="reportSelection"/>
 
     <!-- Справочники -->
     <template v-if="page==='categories'">

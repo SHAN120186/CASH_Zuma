@@ -3,6 +3,41 @@ import {N_,tx} from './i18n/index.js';
 export const MAX_STATEMENT_BYTES = 20 * 1024 * 1024;
 const readableStatuses = new Set(['value', 'cached', 'aggregated', 'calculated']);
 
+// Friendly labels are safe only after the backend has recognised the account
+// profile and the position of every report row. Original labels stay in audit.
+export const statementDisplayLabels = {
+  pnl:{7:N_('Чистая выручка'),8:N_('Выручка'),9:N_('Возвраты'),10:N_('Скидки'),
+    11:N_('Себестоимость продаж'),12:N_('Валовая прибыль'),13:N_('Валовая маржа'),
+    14:N_('Прочие операционные доходы'),15:N_('Операционные расходы'),16:'EBITDA',
+    17:N_('Амортизация'),18:'EBIT',19:N_('Финансовые доходы'),20:N_('Процентные расходы'),
+    21:N_('Прибыль до налога'),22:N_('Налог на прибыль'),23:N_('Чистая прибыль'),24:N_('Чистая маржа')},
+  balance:{7:N_('Активы'),8:N_('Денежные средства'),9:N_('Дебиторская задолженность'),
+    10:N_('Прочая дебиторская задолженность'),11:N_('Авансы по налогам'),
+    12:N_('Авансы по социальным платежам'),13:N_('Запасы'),14:N_('Расходы будущих периодов'),
+    15:N_('Авансы поставщикам'),16:N_('Авансы сотрудникам'),17:N_('Депозиты и залоги'),
+    18:N_('Основные средства, нетто'),19:N_('Всего активов'),21:N_('Обязательства и капитал'),
+    22:N_('Кредиторская задолженность'),23:N_('Авансы покупателей'),24:N_('Отложенные доходы'),
+    25:N_('Налоги к уплате'),26:N_('Заёмные средства'),27:N_('Задолженность перед учредителями'),
+    28:N_('Зарплата к выплате'),29:N_('Прочие кредиторы'),30:N_('Краткосрочные кредиты'),
+    31:N_('Долгосрочные кредиты'),32:N_('Уставный капитал'),33:N_('Резервный капитал'),
+    34:N_('Нераспределённая прибыль'),35:N_('Всего обязательств'),36:N_('Капитал'),
+    37:N_('Обязательства и капитал, итого'),38:N_('Расхождение баланса'),
+    41:N_('Дополнительные обязательства'),42:N_('Социальные обязательства'),
+    43:N_('Задолженность перед учредителями'),44:N_('Зарплата к выплате'),45:N_('Прочие кредиторы'),
+    46:N_('Прочие обязательства, итого'),49:N_('Расшифровка капитала'),50:N_('Уставный капитал'),
+    51:N_('Резервный капитал'),52:N_('Нераспределённая прибыль на начало'),
+    53:N_('Финансовый результат года'),54:N_('Нераспределённая прибыль на конец'),
+    55:N_('Капитал по счетам'),56:N_('Корректировка капитала'),60:'KPI',
+    62:N_('Рентабельность продаж'),63:N_('Рентабельность активов (ROA)'),
+    64:N_('Рентабельность капитала (ROE)'),65:N_('Срок погашения дебиторской задолженности (DSO)'),
+    66:N_('Срок оборачиваемости запасов'),67:N_('Дебиторская задолженность / выручка'),
+    68:N_('Деньги / выручка'),69:N_('Накопленная амортизация / основные средства'),
+    70:N_('Оборачиваемость основных средств'),72:N_('Рабочий капитал'),73:N_('Текущая ликвидность'),
+    74:N_('Быстрая ликвидность'),75:N_('Доля собственного капитала'),76:N_('Обязательства / капитал'),
+    77:N_('Дебиторская задолженность'),78:N_('Денежные средства'),79:N_('Запасы'),
+    80:N_('Основные средства, нетто'),81:N_('Кредиторская задолженность')},
+};
+
 export function statementUrl(companyId, sourceId = null) {
   const query = new URLSearchParams({company_id:String(companyId)});
   if (sourceId != null && sourceId !== '') query.set('source_id',String(sourceId));
@@ -51,6 +86,11 @@ export function statementNumber(value, kind = 'amount', locale = 'ru-RU') {
 }
 
 export const statementReasonLabels = {
+  actual_revenue_classification_required:N_('Нужно подтвердить состав выручки, возвратов и скидок. До этого показатель не рассчитан.'),
+  actual_tax_classification_required:N_('Нужно подтвердить налог на прибыль отдельно от прочих налогов.'),
+  accounting_result_mismatch:N_('Результат по счетам не совпадает с движением финансового результата. Нужна сверка ОСВ.'),
+  absent_profit_account:N_('В ОСВ не найден счёт финансового результата.'),
+  profit_account_closing_required:N_('Обороты финансового результата не согласованы с сальдо. Нужна проверка закрытия счёта.'),
   invalid_period:N_('Даты выбранного периода не подтверждены.'),
   incomplete_period:N_('Не все месяцы выбранного периода подтверждены; полный итог не рассчитан.'),
   ratio_method_required:N_('Для этого коэффициента не задана методика расчёта за период.'),
@@ -180,7 +220,7 @@ function sumSide(row, months, side, options, context, role=null) {
   if (context.invalidMonths.length) return unavailable('invalid_period',provenance,context.invalidMonths,'invalid');
   const missingMonths=unconfirmedMonths(provenance,side,options,context);
   if (missingMonths.length) {
-    const blocked=provenance.find(item=>item.reason && ['requires_allocation','requires_assumptions'].includes(item.status));
+    const blocked=provenance.find(item=>item.reason && ['requires_allocation','requires_assumptions','unavailable','invalid'].includes(item.status));
     return unavailable(blocked?.reason || 'incomplete_period',provenance,missingMonths,blocked?.status || 'incomplete');
   }
   const values=provenance.map(item=>decimal(item.value));

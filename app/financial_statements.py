@@ -42,7 +42,7 @@ REPORTS = {'pnl': ('09_Statements', 'PNL · план / факт', 7, 24),
            'balance': ('09b_Balance', 'Баланс · план / факт', 7, 81)}
 PERCENT_ROWS = {'pnl': {13, 24}, 'balance': {62, 63, 64, 67, 68, 69, 75}}
 COEFFICIENT_ROWS = {70, 73, 74, 76}
-REVIEW_VERSION = 'mapping-2026-10-11-v2'
+REVIEW_VERSION = 'mapping-2026-10-11-v3'
 _review_cache = OrderedDict()
 _review_cache_lock = RLock()
 REQUIREMENTS = [
@@ -724,6 +724,12 @@ def build_review(raw, filename, as_of=None):
                       'inventory_duplicate': ('balance', [13]),
                       'returns_double_count': ('pnl', [7, 8]), 'ebit_classification': ('pnl', [18])}
     for item in issues:
+        if item['code'] == 'yearless_sumifs' and calculation.get('status') == 'derived_provisional':
+            # The immutable Excel formula is still defective, but the site no
+            # longer evaluates its month-only lookup for Mapping fact amounts.
+            item['stage'] = 'source_formula'
+            item['resolved_in_calculation'] = True
+            item['calculation_resolution'] = 'Mapping facts select exact year and month; unconfirmed classifications remain unavailable.'
         if item['code'] not in source_defects:
             continue
         key, row_numbers = source_defects[item['code']]
@@ -807,6 +813,28 @@ def financial_statements(request: Request, source_id: int | None = Query(default
                 'company_id': s.info['company_id'], 'can_upload': 'import' in perms_of(user),
                 'review_version': REVIEW_VERSION,
                 'requirements': result['requirements'] if result else REQUIREMENTS}
+
+
+@router.get('/api/financial-statements/reconciliation')
+def financial_reconciliation(request: Request, year: int = Query(ge=2000, le=2100),
+                             start_month: int = Query(default=1, ge=1, le=12),
+                             end_month: int = Query(default=12, ge=1, le=12),
+                             source_id: int | None = Query(default=None, ge=1),
+                             company_id: int | None = Query(default=None, ge=1)):
+    from .financial_reconciliation import build_reconciliation
+    if start_month > end_month:
+        raise HTTPException(400, 'Начало периода должно быть не позже конца.')
+    with unit() as s:
+        session_user(s, request, 'export')
+        source = s.get(FinancialStatementSource, source_id) if source_id is not None else s.scalar(
+            select(FinancialStatementSource).order_by(FinancialStatementSource.id.desc()).limit(1))
+        if source_id is not None and source is None:
+            raise HTTPException(404, 'Исходник не найден в выбранной компании.')
+        result = build_reconciliation(current_source_review(source) if source else None,
+                                      year, start_month, end_month)
+        if source is None:
+            result['status'] = 'missing'
+        return {**result, 'company_id': s.info['company_id'], 'source_id': source.id if source else None}
 
 
 @router.post('/api/financial-statements/upload')

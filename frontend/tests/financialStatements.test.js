@@ -61,6 +61,8 @@ function periodPayload(){
 
 const mainTable=view=>find(view.container,node=>node.tag==='table'&&!String(node.props.class||'').includes('statement-kpi-table'));
 const metricTable=view=>find(view.container,node=>node.tag==='table'&&String(node.props.class||'').includes('statement-kpi-table'));
+const visibleText=node=>node.props?.hidden?'':node.tag==='details'&&!node.props.open?(node.children||[]).filter(child=>child.tag==='summary').map(visibleText).join(''):(node.text||'')+(node.children||[]).map(visibleText).join('');
+const openHelp=async view=>{await view.state.openHelp();await settle();};
 const metricCard=(view,number)=>find(view.container,node=>String(node.props?.class||'').includes('statement-kpi-card')&&Number(node.props['data-source-row'])===number);
 
 test('source review distinguishes available zero from absent, future, errors and saved-only caches',()=>{
@@ -90,7 +92,7 @@ test('requests are company scoped and uploads reject empty, wrong extension, ove
 });
 
 test('PNL view preserves zero, hides missing/future caches, displays source provenance and no downloads',async t=>{
- const calls=[];const view=mount(component,{company,type:'pnl',canDownload:true,api:async url=>{calls.push(url);return sourcePayload();}});t.after(view.unmount);await settle();
+ const calls=[];const view=mount(component,{company,type:'pnl',canDownload:true,api:async url=>{calls.push(url);return sourcePayload();}});t.after(view.unmount);await settle();await openHelp(view);
  assert.deepEqual(calls,['/api/financial-statements?company_id=2']);
  const table=find(view.container,node=>node.tag==='table');
  assert.match(text(table),/Synthetic revenue100,00125,0025,0025,00%/);
@@ -104,7 +106,7 @@ test('PNL view preserves zero, hides missing/future caches, displays source prov
 });
 
 test('balance shows a single month, days and coefficients keep their units instead of percent scaling',async t=>{
- const view=mount(component,{company,type:'balance',api:async()=>sourcePayload()});t.after(view.unmount);await settle();
+ const view=mount(component,{company,type:'balance',api:async()=>sourcePayload()});t.after(view.unmount);await settle();await openHelp(view);
  const table=find(view.container,node=>node.tag==='table');
  assert.match(text(view.container),/Synthetic inventory days36,00 дн\.40,00 дн\.4,00—/);
  assert.match(text(view.container),/Synthetic liquidity coefficient1,201,500,30—/);
@@ -125,7 +127,7 @@ test('an unconfirmed source date never inherits a year or period from the page',
 test('the source review cutoff is shown from its immutable snapshot instead of the browser date',async t=>{
  const previous=lang.value;t.after(()=>setLang(previous));setLang('ru');
  const payload=sourcePayload();payload.source.reviewed_as_of='2026-10-11';
- const view=mount(component,{company,type:'pnl',api:async()=>payload});t.after(view.unmount);await settle();
+ const view=mount(component,{company,type:'pnl',api:async()=>payload});t.after(view.unmount);await settle();await openHelp(view);
  const metadata=find(view.container,node=>String(node.props?.class||'').includes('statement-source'));
  assert.match(text(metadata),/Дата проверки \/ среза: 11\.10\.2026/);
  assert.match(text(view.container),/Для новых операций и месяцев загрузите новую версию источника/);
@@ -135,7 +137,7 @@ test('the source review cutoff is shown from its immutable snapshot instead of t
 test('author thresholds preserve their source text and never claim an IFRS pass or compare invalid source values',async t=>{
  const payload=sourcePayload();const coefficient=payload.source.reports.balance.rows[2];coefficient.norm={value:'≥ 1.5 (author)',source:'09b_Balance!A74',status:'author_guideline'};
  payload.source.reports.balance.rows[1].norm={value:'#REF!',source:'09b_Balance!A65',status:'error'};
- const view=mount(component,{company,type:'balance',api:async()=>payload});t.after(view.unmount);await settle();
+ const view=mount(component,{company,type:'balance',api:async()=>payload});t.after(view.unmount);await settle();await openHelp(view);
  const table=find(view.container,node=>node.tag==='table'&&String(node.props.class||'').includes('statement-kpi-table'));
  assert.match(text(table),/Ориентир автора/);assert.match(text(table),/≥ 1\.5 \(author\)/);assert.match(text(table),/09b_Balance!A74/);
  assert.match(text(table),/09b_Balance!A65/);assert.match(text(table),/Ошибка формулы/);assert.doesNotMatch(text(table),/#REF!/);
@@ -144,7 +146,8 @@ test('author thresholds preserve their source text and never claim an IFRS pass 
 
 test('an empty source lists named requirements without fabricating amounts or upload rights',async t=>{
  const view=mount(component,{company,canImport:false,api:async()=>({sources:[],source:null,requirements:[{key:'data',title:'Synthetic source data',fields:['Synthetic account codes'],frequency:'Monthly',reason:'Synthetic check'}]})});t.after(view.unmount);await settle();
- assert.match(text(view.container),/пока не загружена/);assert.match(text(view.container),/Synthetic account codes/);
+ assert.match(visibleText(view.container),/Нет данных для этой компании/);assert.doesNotMatch(text(view.container),/Synthetic account codes/);
+ await openHelp(view);assert.match(text(view.container),/Synthetic account codes/);
  assert.equal(all(view.container,node=>node.tag==='input'&&node.props.type==='file').length,0);
  assert.equal(all(view.container,node=>node.tag==='table').length,0);
 });
@@ -187,7 +190,7 @@ test('upload requires import rights, sends raw Excel and counts only confirmed u
 
 test('RU/UZ changes static source-review instructions and units without altering raw source labels',async t=>{
  const previous=lang.value;t.after(()=>setLang(previous));setLang('uz');
- const view=mount(component,{company,type:'balance',api:async()=>sourcePayload()});t.after(view.unmount);await settle();
+ const view=mount(component,{company,type:'balance',api:async()=>sourcePayload()});t.after(view.unmount);await settle();await openHelp(view);
  assert.match(text(view.container),/Manba tekshirishni talab qiladi/);assert.match(text(view.container),/36,00 kun/);
  assert.match(text(view.container),/Synthetic inventory days/);assert.doesNotMatch(text(view.container),/Проверка исходных данных/);
 });
@@ -253,8 +256,8 @@ test('monthly view exposes source columns plus one selected-period total and can
 test('balance quarters take only the final month, preserve a missing ending snapshot and place all KPIs below',async t=>{
  const payload=periodPayload();
  const view=mount(component,{company,type:'balance',api:async()=>payload});t.after(view.unmount);await settle();view.state.setPer('q1');await settle();
- assert.match(text(metricCard(view,19)),/6\s?000,00/);assert.match(text(metricCard(view,36)),/Капитал как разница/);
- assert.match(text(metricCard(view,36)),/Synthetic equity balancing/);assert.match(text(metricCard(view,36)),/Требует проверки/);
+ assert.match(text(metricCard(view,19)),/6\s?000,00/);assert.match(text(metricCard(view,36)),/Капитал/);
+ assert.doesNotMatch(text(metricCard(view,36)),/Synthetic equity balancing/);assert.match(text(metricCard(view,36)),/Требует проверки/);
  assert.match(text(metricTable(view)),/Synthetic inventory days/);assert.doesNotMatch(text(mainTable(view)),/Synthetic inventory days/);
  assert.match(text(view.container),/Коэффициенты за период и остатки на его конец · 2026-03/);
  view.state.payload.source.reports.balance.rows.find(row=>row.row===19).cells[2].fact={value:null,status:'missing'};await settle();
@@ -263,7 +266,7 @@ test('balance quarters take only the final month, preserve a missing ending snap
 });
 
 test('money scales alone while percentage, days, coefficient and original author norms stay unchanged',async t=>{
- const view=mount(component,{company,type:'balance',api:async()=>periodPayload()});t.after(view.unmount);await settle();view.state.month=3;view.state.unit='k';await settle();
+ const view=mount(component,{company,type:'balance',api:async()=>periodPayload()});t.after(view.unmount);await settle();await openHelp(view);view.state.month=3;view.state.unit='k';await settle();
  assert.match(text(metricCard(view,19)),/6,00/);assert.match(text(metricCard(view,19)),/тыс\. исходных единиц/);
  assert.match(text(metricTable(view)),/Synthetic debt ratio30,00\s*%40,00\s*%/);
  assert.match(text(metricTable(view)),/Synthetic inventory days30,00 дн\.40,00 дн\./);
@@ -297,7 +300,7 @@ test('collapse preserves chapter headers, key totals and cards; source requireme
  assert.match(text(table),/Выручка и валовая прибыль/);
  view.state.toggleGroup('gross');await settle();assert.equal(all(table,node=>node.tag==='tr'&&Number(node.props['data-source-row'])===8).length,1);
  const disclosures=all(view.container,node=>node.tag==='details'&&String(node.props.class||'').includes('statement-disclosure'));
- assert.equal(disclosures.length,3);assert.ok(disclosures.every(node=>node.props.open===false));
+ assert.equal(disclosures.length,1);assert.ok(disclosures.every(node=>node.props.open===false));
 });
 
 test('corrected sources show independent capital, residual and named clarifications without repeating found fields',async t=>{
@@ -311,9 +314,9 @@ test('corrected sources show independent capital, residual and named clarificati
   {key:'sales',title:'Synthetic sales',status:'found',evidence:['Mapping 9010 / 9040 / 9050'],fields:['Synthetic duplicate sales field'],missing_fields:[]},
   {key:'plan',title:'Synthetic plan',status:'needs_clarification',evidence:['98_CashMacro_Import'],missing_fields:[{key:'vat',title:'Synthetic VAT basis',reason:'Synthetic gross versus net'}]},
  ];
- const view=mount(component,{company,type:'balance',api:async()=>payload});t.after(view.unmount);await settle();
- assert.match(text(metricCard(view,36)),/Капитал по счетам/);assert.doesNotMatch(text(metricCard(view,36)),/Капитал как разница|Требует проверки/);
- assert.match(text(view.container),/Контроль баланса: активы − обязательства − капитал/);
+ const view=mount(component,{company,type:'balance',api:async()=>payload});t.after(view.unmount);await settle();await openHelp(view);
+ assert.match(text(metricCard(view,36)),/Капитал/);assert.doesNotMatch(text(metricCard(view,36)),/Капитал как разница|Требует проверки/);
+ assert.match(text(view.container),/Расхождение баланса/);
  assert.match(text(view.container),/Найдено: 1.*Уточнить: 1.*Ожидают ОСВ: 2/);
  assert.match(text(view.container),/Mapping 9010 \/ 9040 \/ 9050/);
  assert.match(text(view.container),/Synthetic VAT basis.*Synthetic gross versus net/);
@@ -330,7 +333,7 @@ test('unconfirmed EBITDA stays blank, states its allocation reason and preserves
  const view=mount(component,{company,type:'pnl',api:async()=>payload});t.after(view.unmount);await settle();
  const card=metricCard(view,16);
  assert.match(text(find(card,node=>String(node.props?.class||'').includes('v num'))),/^—/);
- assert.match(text(card),/Нужно распределение амортизации/);
+ assert.match(text(card),/нужно распределение амортизации/);
  assert.match(text(card),/Повторно вычитать амортизацию нельзя/);
  assert.match(text(mainTable(view)),/Сохранённое значение до исправления: 42,00/);
  assert.match(text(mainTable(view)),/Mapping!H55/);
@@ -356,9 +359,9 @@ test('RU/UZ translates found and missing-field summary, corrected capital and al
  const payload=periodPayload();payload.source.reports.balance.calculation={basis:'mapping'};
  for(const period of payload.source.reports.balance.rows.find(row=>row.row===36).cells)period.fact.status='calculated';
  payload.source.requirements=[{key:'unit',title:'Synthetic units',status:'needs_clarification',missing_fields:[{key:'unit',title:'Нужно подтвердить единицы'}]}];
- const view=mount(component,{company,type:'balance',api:async()=>payload});t.after(view.unmount);await settle();
+ const view=mount(component,{company,type:'balance',api:async()=>payload});t.after(view.unmount);await settle();await openHelp(view);
  assert.match(text(view.container),/Aniqlashtirish: 1/);
- assert.match(text(view.container),/Hisobvaraqlar bo‘yicha kapital/);
+ assert.match(text(metricCard(view,36)),/Kapital/);
  assert.match(text(view.container),/To‘ldirish yoki tasdiqlash kerak/);
  assert.match(text(view.container),/Birliklarni tasdiqlash kerak/);
 });
@@ -372,15 +375,15 @@ test('resolved source defects leave the current issue count and capital labels f
   {code:'equity_plug',severity:'error',title:'Synthetic corrected source defect',detail:'Synthetic corrected basis',resolved_in_calculation:true},
   {code:'unit_missing',severity:'warning',title:'Synthetic current clarification',detail:'Synthetic unit basis'},
  ];
- const view=mount(component,{company,type:'balance',api:async()=>payload});t.after(view.unmount);await settle();
+ const view=mount(component,{company,type:'balance',api:async()=>payload});t.after(view.unmount);await settle();await openHelp(view);
  assert.equal(view.state.issues.length,1);assert.equal(view.state.correctedIssues.length,1);
- assert.match(text(metricCard(view,36)),/Капитал по счетам/);
- assert.match(text(view.container),/Исправлено: 1/);assert.match(text(view.container),/Замечаний: 1/);
+ assert.match(text(metricCard(view,36)),/Капитал/);
+ assert.match(text(view.container),/Исправлено: 1/);assert.match(text(view.container),/Уточнить: 1/);
  view.state.month=2;await settle();
- assert.match(text(metricCard(view,36)),/Капитал как разница/);
- assert.doesNotMatch(text(metricCard(view,36)),/Капитал по счетам/);
+ assert.match(text(metricCard(view,36)),/Капитал/);
+ assert.match(text(metricCard(view,36)),/Требует проверки/);
  view.state.month=1;view.state.mode='plan';await settle();
- assert.match(text(metricCard(view,36)),/Капитал как разница/);
+ assert.match(text(metricCard(view,36)),/Капитал/);
  assert.doesNotMatch(text(mainTable(view)),/Капитал по счетам \(8300/);
 });
 
@@ -416,4 +419,146 @@ test('a recognized profile with a source-only month retains its ordinary report 
  const view=mount(component,{company,type:'balance',api:async()=>payload});t.after(view.unmount);await settle();
  assert.equal(view.state.profileUnrecognized,false);assert.equal(view.state.cards.length,4);
  assert.ok(view.state.kpiRows.length>0);assert.ok(view.state.groups.some(group=>group.key==='assets'));
+});
+
+
+test('working reports keep source checks and file controls in one closed accessible help panel',async t=>{
+ const payload=periodPayload();payload.source.reviewed_as_of='2026-10-11';
+ payload.source.calculation={profile:'uzbek_grouped_chart_finmodel_v1'};
+ const view=mount(component,{company,canImport:true,type:'pnl',api:async()=>payload});t.after(view.unmount);await settle();
+ const help=find(view.container,node=>node.tag==='details'&&String(node.props.class||'').includes('statement-help'));
+ const button=find(view.container,node=>node.tag==='button'&&text(node)==='Справка');
+ assert.equal(help.props.open,false);assert.equal(button.props['aria-expanded'],false);
+ assert.equal(button.props['aria-controls'],help.props.id);
+ assert.equal(all(view.container,node=>node.tag==='input'&&node.props.type==='file').length,0);
+ assert.doesNotMatch(visibleText(view.container),/Synthetic.xlsx|Замечаний:|Найдено:|Ожидают ОСВ|среза|МСФО|Macro|Mapping|09_Statements|Synthetic equity review|Маржи пересчитываются/);
+ assert.match(visibleText(view.container),/Валовая прибыль/);assert.match(visibleText(view.container),/Чистая выручка/);
+ button.props.onClick();await settle();
+ assert.equal(button.props['aria-expanded'],true);assert.equal(help.props.open,true);assert.equal(help.scrolled,true);
+ assert.equal(all(view.container,node=>node.tag==='input'&&node.props.type==='file').length,1);
+ assert.match(text(help),/Справка и проверка.*Как читать отчёт.*Данные и обновление.*Источники и полнота данных.*Проверка и исправления/);
+ assert.match(text(help),/Synthetic.xlsx/);assert.match(text(help),/соответствие МСФО не подтверждено/);
+ assert.match(text(help),/Повторно загружать файл нужно только после появления новых данных/);
+ assert.ok(find(help,node=>node.tag==='button'&&text(node).trim()==='Обновить данные'));
+ button.props.onClick();await settle();assert.equal(help.props.open,false);
+ assert.doesNotMatch(text(help),/Synthetic.xlsx/);assert.equal(all(view.container,node=>node.tag==='input'&&node.props.type==='file').length,0);
+});
+
+test('empty-company setup opens help without forcing a technical workbook template or granting import rights',async t=>{
+ const view=mount(component,{company,canImport:false,api:async()=>({company_id:2,source:null,sources:[],requirements:[]})});t.after(view.unmount);await settle();
+ assert.match(visibleText(view.container),/Нет данных для этой компании/);
+ assert.doesNotMatch(visibleText(view.container),/Excel|лист|шаблон|мэппинг/);
+ const setup=find(view.container,node=>node.tag==='button'&&text(node)==='Настроить данные');assert.ok(setup);
+ setup.props.onClick();await settle();assert.equal(view.state.helpOpen,true);
+ assert.equal(all(view.container,node=>node.tag==='input'&&node.props.type==='file').length,0);
+ assert.doesNotMatch(text(view.container),/Обновить данные|Загрузить данные/);
+ const calls=[];view.app._instance.props.api=async(...args)=>calls.push(args);await settle();
+ await view.state.upload({target:{files:[{name:'Synthetic.xlsx',size:10}],value:'file'}});assert.equal(calls.length,0);
+});
+
+test('help and ordinary recognized labels follow RU/UZ while missing reasons and balance residual remain visible',async t=>{
+ const previous=lang.value;t.after(()=>setLang(previous));setLang('ru');
+ const payload=periodPayload();payload.source.calculation={profile:'uzbek_grouped_chart_finmodel_v1'};
+ for(const pair of payload.source.reports.balance.rows.find(row=>row.row===36).cells)pair.fact.status='calculated';
+ payload.source.reports.balance.rows.find(row=>row.row===38).cells[0].fact=cell('12.34','Mapping residual','calculated');
+ const view=mount(component,{company,type:'balance',canImport:true,api:async()=>payload});t.after(view.unmount);await settle();
+ assert.match(visibleText(view.container),/Расхождение баланса · 12,34/);
+ assert.doesNotMatch(visibleText(view.container),/Synthetic source cash metric|09b_Balance|соответствие МСФО/);
+ setLang('uz');await settle();assert.match(visibleText(view.container),/Balans farqi · 12,34/);
+ assert.match(visibleText(view.container),/Yordam va tekshirish/);assert.match(visibleText(view.container),/Asosiy ko‘rsatkichlar/);
+ await openHelp(view);assert.match(visibleText(view.container),/Maʼlumotlarni yangilash/);
+ assert.match(visibleText(view.container),/Ma’lumotlar allaqachon saqlangan/);
+});
+
+test('Mapping-only profit uses an honest result label and leaves uncertain revenue blank; source-only comparison is in help',async t=>{
+ const payload=periodPayload();payload.source.calculation={profile:'uzbek_grouped_chart_finmodel_v1'};
+ const pnl=payload.source.reports.pnl;const revenue=pnl.rows.find(row=>row.row===7),profit=pnl.rows.find(row=>row.row===23);
+ const reported=structuredClone(revenue);reported.label='Original reported revenue 9000';reported.cells[0].fact=cell('999999.99');
+ pnl.source_actual={status:'reported_source',classification_pending:true,rows:[reported]};
+ revenue.cells[0].fact={value:null,status:'requires_assumptions',reason:'actual_revenue_classification_required',source_cache:'999999.99',source_status:'cached'};
+ profit.fact_label='Финансовый результат периода по 9900';for(const pair of profit.cells)pair.fact.status='calculated';
+ const view=mount(component,{company,type:'pnl',api:async()=>payload});t.after(view.unmount);await settle();
+ assert.match(text(metricCard(view,23)),/Финансовый результат/);assert.doesNotMatch(text(metricCard(view,23)),/Чистая прибыль|9900/);
+ assert.match(visibleText(view.container),/Нужно подтвердить состав выручки, возвратов и скидок/);
+ assert.doesNotMatch(visibleText(view.container),/999.?999,99|Original reported revenue/);
+ assert.match(text(metricCard(view,23)),/базы отличаются/);
+ await openHelp(view);assert.match(text(find(view.container,node=>node.tag==='details'&&String(node.props.class||'').includes('statement-help'))),/Original reported revenue 9000.*999.?999,99/);
+ view.state.setPer('q1');await settle();assert.match(text(metricCard(view,23)),/Финансовый результат/);
+ view.state.mode='plan';await settle();assert.match(text(metricCard(view,23)),/Чистая прибыль/);assert.doesNotMatch(text(metricCard(view,23)),/базы отличаются/);
+});
+
+test('incoming report selection applies only an available year and never echoes itself; user controls emit the shared context',async t=>{
+ const changes=[],calls=[];
+ const selection={year:2026,period:'q2',start:4,end:6,unit:'m',mode:'plan',sourceId:8};
+ const view=mount(component,{company,type:'pnl',selection,onSelectionChange:value=>changes.push(value),api:async url=>{calls.push(url);return periodPayloadWithId(8);}});t.after(view.unmount);await settle();
+ assert.equal(calls[0],'/api/financial-statements?company_id=2&source_id=8');
+ assert.equal(view.state.year,2026);assert.equal(view.state.per,'q2');assert.equal(view.state.start,4);assert.equal(view.state.end,6);assert.equal(view.state.unit,'m');assert.equal(view.state.mode,'plan');
+ assert.equal(changes.length,1);
+ view.state.setPer('q1');await settle();assert.equal(changes.length,2);
+ assert.deepEqual(changes[1],{year:2026,period:'q1',start:1,end:3,unit:'m',mode:'plan',sourceId:8});
+ view.app._instance.props.selection=structuredClone(changes[1]);await settle();assert.equal(changes.length,2);
+ view.app._instance.props.selection={...selection,year:2025,period:'year'};await settle();assert.equal(view.state.year,2026);assert.equal(view.state.per,'q1');assert.equal(changes.length,2);
+ view.app._instance.props.selection={...selection,period:'month',start:7,end:7,mode:'actual'};await settle();
+ assert.equal(view.state.month,7);assert.equal(view.state.per,'month');assert.equal(view.state.mode,'actual');assert.equal(changes.length,2);
+ view.state.unit='k';await settle();assert.deepEqual(changes.at(-1),{year:2026,period:'month',start:7,end:7,unit:'k',mode:'actual',sourceId:8});
+});
+function periodPayloadWithId(id){const payload=periodPayload();payload.selected=id;payload.source.id=id;payload.sources[0].id=id;return payload;}
+
+test('changing company resets open help and applies no year from the previous company',async t=>{
+ const source=periodPayload();const next=periodPayload();next.company_id=7;next.source.company_id=7;next.source.year=2027;
+ for(const report of Object.values(next.source.reports))for(const period of report.periods)period.period=period.period.replace('2026','2027');
+ const view=mount(component,{company,selection:{year:2026,period:'q1',start:1,end:3,unit:'k',mode:'actual'},api:async url=>url.includes('company_id=7')?next:source});t.after(view.unmount);await settle();await openHelp(view);
+ view.app._instance.props.company={id:7,name:'Different company'};await settle();
+ assert.equal(view.state.helpOpen,false);assert.equal(view.state.year,2027);assert.equal(view.state.per,'month');
+ assert.doesNotMatch(visibleText(view.container),/Synthetic.xlsx/);
+});
+
+
+test('additional balance reconciliations stay inside help while the amount residual remains on the report',async t=>{
+ const payload=periodPayload();payload.source.calculation={profile:'uzbek_grouped_chart_finmodel_v1'};
+ for(const pair of payload.source.reports.balance.rows.find(row=>row.row===36).cells)pair.fact.status='calculated';
+ const view=mount(component,{company,type:'balance',api:async()=>payload});t.after(view.unmount);await settle();
+ assert.equal(all(mainTable(view),node=>node.tag==='tr'&&Number(node.props['data-source-row'])===56).length,0);
+ assert.equal(all(mainTable(view),node=>node.tag==='tr'&&Number(node.props['data-source-row'])===38).length,1);
+ assert.match(visibleText(view.container),/Расхождение баланса/);assert.doesNotMatch(visibleText(view.container),/Сверки исходной модели/);
+ await openHelp(view);assert.match(text(find(view.container,node=>node.tag==='details'&&String(node.props.class||'').includes('statement-help'))),/Сверки исходной модели.*Synthetic equity reconciliation/);
+});
+
+test('a period awaiting all facts has a plain data message and leaves budget values and the import ACL intact',async t=>{
+ const payload=periodPayload();payload.source.coverage.slice(3,6).forEach(item=>item.status='missing');
+ const view=mount(component,{company,type:'pnl',api:async()=>payload});t.after(view.unmount);await settle();view.state.setPer('q2');await settle();
+ assert.match(visibleText(view.container),/Нет фактических данных за этот период/);
+ assert.match(text(metricCard(view,7)),/План: 300,00/);assert.match(text(find(metricCard(view,7),node=>String(node.props?.class||'').includes('v num'))),/^—/);
+ assert.equal(all(view.container,node=>node.tag==='input'&&node.props.type==='file').length,0);
+ view.state.mode='plan';await settle();assert.doesNotMatch(visibleText(view.container),/Нет фактических данных за этот период/);
+});
+
+
+test('initial and explicitly selected source loads publish their authoritative context once, while restoration never loops',async t=>{
+ const calls=[],changes=[];
+ const payload=id=>{const value=periodPayloadWithId(id);value.sources=[{id:1,filename:'A.xlsx'},{id:8,filename:'B.xlsx'}];return value;};
+ const view=mount(component,{company,type:'pnl',api:async url=>{calls.push(url);return payload(url.includes('source_id=8')?8:1);},onSelectionChange:value=>changes.push(value)});t.after(view.unmount);await settle();
+ assert.equal(changes.length,1);assert.equal(changes[0].sourceId,1);assert.equal(changes[0].period,'month');
+ view.app._instance.props.selection=structuredClone(changes.at(-1));await settle();assert.equal(calls.length,1);assert.equal(changes.length,1);
+ await view.state.load(8);await settle();assert.equal(changes.length,2);assert.equal(changes.at(-1).sourceId,8);assert.equal(view.state.selected,'8');
+ view.app._instance.props.selection=structuredClone(changes.at(-1));await settle();assert.equal(calls.length,2);assert.equal(changes.length,2);
+ view.app._instance.props.selection={...changes.at(-1),sourceId:1};await settle();assert.equal(view.state.selected,'1');assert.equal(calls.length,3);assert.equal(changes.length,3);assert.equal(changes.at(-1).sourceId,1);
+});
+
+
+test('derived PNL turnover rows do not advertise unconfirmed net revenue, allocated depreciation or interest-only expense',async t=>{
+ const payload=periodPayload();payload.source.calculation={profile:'uzbek_grouped_chart_finmodel_v1'};
+ const pnl=payload.source.reports.pnl;
+ for(const [number,label] of [[8,'Оборот счёта 9000'],[17,'Кредитовый оборот счёта 0200'],[20,'Дебетовый оборот счёта 9600']]){
+  let row=pnl.rows.find(item=>item.row===number);
+  if(!row){row=structuredClone(pnl.rows[0]);row.row=number;row.key='turnover-'+number;pnl.rows.push(row);}
+  row.label=number===8?'Выручка':number===17?'Амортизация':'Процентные расходы';row.fact_label=label;
+  for(const pair of row.cells)pair.fact.status='calculated';
+ }
+ const view=mount(component,{company,type:'pnl',api:async()=>payload});t.after(view.unmount);await settle();view.state.setPer('q1');await settle();
+ const body=visibleText(mainTable(view));assert.match(body,/Оборот выручки/);assert.match(body,/Оборот амортизационного счёта/);assert.match(body,/Финансовые расходы/);
+ assert.match(body,/Состав выручки уточняется/);assert.match(body,/Распределение амортизации уточняется/);assert.match(body,/Включены все финансовые расходы/);
+ assert.doesNotMatch(body,/счёта (?:9000|0200|9600)|Процентные расходы/);
+ assert.match(text(mainTable(view)),/Кредитовый оборот счёта 0200/);
+ view.state.mode='plan';await settle();assert.match(visibleText(mainTable(view)),/Процентные расходы/);assert.doesNotMatch(visibleText(mainTable(view)),/Оборот выручки|Распределение амортизации уточняется/);
 });

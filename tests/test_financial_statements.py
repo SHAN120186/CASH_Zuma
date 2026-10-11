@@ -441,6 +441,7 @@ class FinancialStatementApiTests(unittest.TestCase):
                 client, headers = self.make_user(role, 'source_' + role)
                 self.addCleanup(client.close)
                 self.assertEqual(client.get('/api/financial-statements').status_code, 403)
+                self.assertEqual(client.get('/api/financial-statements/reconciliation', params={'year':2026}).status_code, 403)
                 with patch('app.financial_statements.build_review') as parser:
                     self.assertEqual(self.upload_source(client=client, headers=headers).status_code, 403)
                     parser.assert_not_called()
@@ -481,9 +482,27 @@ class FinancialStatementApiTests(unittest.TestCase):
         foreign = self.upload_source(company=zuma).json()['id']
         response = self.client.get('/api/financial-statements', params={'company_id': self.company, 'source_id': foreign})
         self.assertEqual(response.status_code, 404, response.text)
+        bridge = self.client.get('/api/financial-statements/reconciliation', params={
+            'company_id':self.company,'source_id':foreign,'year':2026,'start_month':1,'end_month':3})
+        self.assertEqual(bridge.status_code,404,bridge.text)
         mismatch = self.client.get('/api/financial-statements', params={'company_id': zuma},
                                    headers={'X-Company-ID': str(self.company)})
         self.assertEqual(mismatch.status_code, 409)
+
+    def test_reconciliation_validates_period_and_returns_only_selected_company(self):
+        query={'company_id':self.company,'year':2026,'start_month':1,'end_month':3}
+        empty=self.client.get('/api/financial-statements/reconciliation',params=query)
+        self.assertEqual(empty.status_code,200,empty.text)
+        self.assertEqual(empty.json()['company_id'],self.company)
+        self.assertEqual(empty.json()['status'],'missing')
+        for changes in ({'start_month':4,'end_month':3},{'start_month':0},{'end_month':13},{'year':1999}):
+            response=self.client.get('/api/financial-statements/reconciliation',params={**query,**changes})
+            self.assertIn(response.status_code,(400,422),response.text)
+        source_id=self.upload_source().json()['id']
+        current=self.client.get('/api/financial-statements/reconciliation',params={**query,'source_id':source_id})
+        self.assertEqual(current.status_code,200,current.text)
+        self.assertEqual(current.json()['source_id'],source_id)
+        self.assertEqual(current.json()['status'],'unavailable')
 
     def test_existing_immutable_source_is_rereviewed_without_upload_or_coverage_drift(self):
         import hashlib
