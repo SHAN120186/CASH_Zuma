@@ -286,3 +286,17 @@ test('unrecognized row layout cannot use fixed-position quarter KPI or PNL margi
  const unsafe=aggregateStatementRow(source,margin,select(1,3,{profileUnrecognized:true}));
  assert.equal(unsafe.fact.value,null);assert.equal(unsafe.fact.reason,'profile_unrecognized');
 });
+
+
+test('quarter PNL and sales-based KPI keep the unresolved Mapping classification reason instead of blaming missing months',()=>{
+ const sales=row(7,[100,200,300]),gross=row(12,[20,40,60]),net=row(23,[10,20,30]),margin=row(24,[.1,.1,.1],undefined,'percent');
+ for(const amount of [sales,gross])for(const pair of amount.cells)pair.fact={value:null,status:'unavailable',reason:'actual_revenue_classification_required',source_cache:'999'};
+ const pnl=report([sales,gross,net,margin]);
+ const total=aggregateStatementRow(pnl,sales,select(1,3)).fact;
+ assert.equal(total.value,null);assert.equal(total.reason,'actual_revenue_classification_required');assert.equal(total.status,'unavailable');
+ const netmargin=aggregateStatementRow(pnl,margin,select(1,3)).fact;
+ assert.equal(netmargin.value,null);assert.equal(netmargin.reason,'actual_revenue_classification_required');
+ const ar=row(9,[100,200,300]),dso=row(65,[90,60,30],undefined,'days');ar.cells[0].fact.opening_balance={value:'50',status:'calculated'};
+ const metric=aggregateStatementRow(report([ar,dso],'09b_Balance'),dso,select(1,3,{pnlReport:pnl})).fact;
+ assert.equal(metric.value,null);assert.equal(metric.reason,'actual_revenue_classification_required');
+});
