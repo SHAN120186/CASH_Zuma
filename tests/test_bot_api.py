@@ -195,19 +195,24 @@ class BotApiTests(unittest.TestCase):
         chat=-1005556000001
         self.assertEqual(self.connect(chat,['ZUMA'],556003).status_code,200)
         r=check(chat_id=chat,telegram_user_id=556001).json()
-        self.assertEqual(r['group'],{'chat_id':chat,'allowed':True,'companies':['ZUMA']})
-        self.assertEqual(r['user'],{'linked':True,'user_id':finance['id'],'is_admin':False,'companies':['UZGERMED']})
+        self.assertEqual(r['group'],{'chat_id':chat,'allowed':True,'companies':['ZUMA'],'scope_id':self.scope(chat).json()['scope_id']})
+        self.assertEqual(r['user'],{'linked':True,'user_id':finance['id'],'is_admin':False,'companies':['UZGERMED'],'director_companies':[]})
         self.assertTrue(r['checked_at'])
-        self.assertEqual(check(telegram_user_id=556002).json()['user'],{'linked':True,'user_id':founder['id'],'is_admin':False,'companies':['UZGERMED','ZUMA']})
+        self.assertEqual(check(telegram_user_id=556002).json()['user'],{'linked':True,'user_id':founder['id'],'is_admin':False,'companies':['UZGERMED','ZUMA'],'director_companies':[]})
         self.assertEqual(check(telegram_user_id=556003).json()['user']['is_admin'],True)
-        self.assertEqual(check(chat_id=GROUP).json()['group'],{'chat_id':GROUP,'allowed':True,'companies':['UZGERMED']})
-        self.assertEqual(check(telegram_user_id=556999).json()['user'],{'linked':False,'user_id':None,'is_admin':False,'companies':[]})
+        self.assertEqual(check(chat_id=GROUP).json()['group'],{'chat_id':GROUP,'allowed':True,'companies':['UZGERMED'],'scope_id':self.groups()[GROUP]['scope_id']})
+        self.assertEqual(check(telegram_user_id=556999).json()['user'],{'linked':False,'user_id':None,'is_admin':False,'companies':[],'director_companies':[]})
         # A change of rights is visible at once: the link is gone and the group of a disconnected chat is not allowed.
         self.assertEqual(self.post(f'/api/users/{finance["id"]}/password',{'password':PASSWORD+'x'}).status_code,200)
         self.assertEqual(check(telegram_user_id=556001).json()['user']['linked'],False)
         self.assertEqual(self.disconnect(chat,556003).status_code,200)
-        self.assertEqual(check(chat_id=chat).json()['group'],{'chat_id':chat,'allowed':False,'companies':[]})
+        self.assertEqual(check(chat_id=chat).json()['group'],{'chat_id':chat,'allowed':False,'companies':[],'scope_id':None})
         self.assertEqual([a.action for a in self.audit_rows('Бот: настройки группы')],[])
+        # A group whose only company is switched off stays registered but is not allowed, as in the summary.
+        self.assertEqual(self.connect(chat,['ZUMA'],556003).status_code,200)
+        with unit(True) as s:s.scalar(select(Company).where(Company.code=='ZUMA')).active=False
+        self.assertEqual(check(chat_id=chat).json()['group'],{'chat_id':chat,'allowed':False,'companies':[],'scope_id':None})
+        self.assertEqual(self.summary(chat=chat).status_code,403)
 
     def test_bot_api_is_off_until_configured_with_a_long_secret(self):
         saved=os.environ['BOT_CLIENT_SECRET']
@@ -245,9 +250,9 @@ class BotApiTests(unittest.TestCase):
         self.assertEqual(balances[('Касса офиса','UZS')],('cash','49990.00'))
         self.assertEqual(balances[('Счёт ••4821','USD')],('bank','1005.00'))
         self.assertNotIn('20208840900123454821',r.text)
-        self.assertEqual(data['income'],[{'company':'UZGERMED','kind':'bank','currency':'UZS','amount':'100.00'},
-                                         {'company':'UZGERMED','kind':'bank','currency':'USD','amount':'5.00'}])
-        self.assertEqual(data['expense'],[{'company':'UZGERMED','kind':'cash','currency':'UZS','amount':'30.00'}])
+        self.assertEqual(data['income'],[{'company':'UZGERMED','company_code':'UZGERMED','kind':'bank','currency':'UZS','amount':'100.00'},
+                                         {'company':'UZGERMED','company_code':'UZGERMED','kind':'bank','currency':'USD','amount':'5.00'}])
+        self.assertEqual(data['expense'],[{'company':'UZGERMED','company_code':'UZGERMED','kind':'cash','currency':'UZS','amount':'30.00'}])
         self.assertEqual([b['currency'] for b in data['balances']],['UZS','USD','UZS'])  # bank UZS, bank USD, then cash
         for mixed in ('105.00','1001085.00','1051075.00'):self.assertNotIn(mixed,r.text)
 
@@ -271,13 +276,30 @@ class BotApiTests(unittest.TestCase):
         self.assertEqual({b['name']:b['amount'] for b in self.summary().json()['balances']},{'Новый счёт':'500.00','Test bank':'1000000.00'})
 
     def test_group_receives_only_its_companies(self):
-        zh=self.zuma()
-        self.account('Zuma bank','bank','UZS','777.00',headers=zh)
-        own={b['company'] for b in self.summary().json()['balances']}
-        both={b['company'] for b in self.summary(chat=GROUP_BOTH).json()['balances']}
-        self.assertEqual(own,{'UZGERMED'})
-        self.assertEqual(both,{'UZGERMED','Zuma'})
-        self.assertNotIn('777.00',self.summary().text)
+        self.account('Zuma bank','bank','UZS','777.00',headers=self.zuma())
+        for chat, code, name, other_amount in ((GROUP,'UZGERMED','UZGERMED','777.00'),
+                                              (GROUP_ZUMA,'ZUMA','Zuma','1000000.00')):
+            response=self.summary(chat=chat);self.assertEqual(response.status_code,200,response.text)
+            data=response.json()
+            self.assertEqual(data['companies'],[code])
+            self.assertEqual({b['company'] for b in data['balances']},{name})
+            self.assertEqual({b['company_code'] for b in data['balances']},{code})
+            self.assertNotIn(other_amount,response.text)
+        # A combined server setting never returns data, even if one company is inactive.
+        self.assertEqual(self.summary(chat=GROUP_BOTH).status_code,403)
+        self.assertNotIn(GROUP_BOTH,self.groups())
+        self.assertEqual(self.group(GROUP_BOTH,555404).json()['companies'],[])
+        with unit(True) as s:s.get(Company,self.companies['ZUMA']).active=False
+        self.assertEqual(self.summary(chat=GROUP_BOTH).status_code,403)
+        self.assertFalse(self.scope(GROUP_BOTH).json()['allowed'])
+
+    def test_summary_company_codes_do_not_depend_on_renamed_companies(self):
+        self.account('Zuma bank','bank','UZS','777.00',headers=self.zuma())
+        with unit(True) as s:s.get(Company,self.companies['ZUMA']).name='Новое название компании'
+        data=self.summary(chat=GROUP_ZUMA).json()
+        self.assertEqual(data['companies'],['ZUMA'])
+        self.assertEqual({b['company_code'] for b in data['balances']},{'ZUMA'})
+        self.assertEqual({b['company'] for b in data['balances']},{'Новое название компании'})
 
     def test_payments_and_pending_approvals_without_personal_details(self):
         author=self.make_user('employee','author')
@@ -386,6 +408,7 @@ class BotApiTests(unittest.TestCase):
         self.assertEqual([(i['request_id'],i['stage'],i['assignee_user_id'],i['assignee_telegram_id']) for i in items],
                          [(rid,'check',accountant['id'],1003),(rid,'check',book['id'],1008)])
         item=items[0]
+        self.assertEqual((item['company'],item['company_code']),('UZGERMED','UZGERMED'))  # the code is what /access lists
         self.assertEqual((item['number'],item['status'],item['stage_label'],item['amount'],item['currency'],item['company'],item['url']),
                          (f'CF-{rid:05d}','pending','Проверка реквизитов расчётным бухгалтером','600.00','UZS','UZGERMED',''))
         self.assertTrue(item['purpose'].startswith(self.cat_name+': Оплата по договору ••6789'))
@@ -602,99 +625,82 @@ class BotApiTests(unittest.TestCase):
     # -- groups connected from Telegram
     def test_admin_connects_changes_and_removes_a_group(self):
         chat=-1004444444444;self.link(self.me(),555300)
-        admin_id=self.client.get('/api/me').json()['user']['id']
+        admin_id=self.admin_id()
         self.account('Zuma bank','bank','UZS','777.00',headers=self.zuma())
         self.assertEqual(self.summary(chat=chat).status_code,403)
         choices=[{'code':'UZGERMED','name':'UZGERMED'},{'code':'ZUMA','name':'Zuma'}]
-        self.assertEqual(self.group(chat,555300).json(),{'chat_id':chat,'connected':False,'source':None,'companies':[],'can_manage':True,'choices':choices})
-        r=self.connect(chat,['zuma','UZGERMED'],555300,title='  Финансы \n Zuma ');self.assertEqual(r.status_code,200,r.text)
-        self.assertEqual(r.json(),{'chat_id':chat,'connected':True,'source':'site','companies':['UZGERMED','ZUMA'],'can_manage':True,'choices':choices})
-        listed=self.groups()
-        self.assertEqual(listed[chat],{'chat_id':chat,'title':'Финансы Zuma','companies':['UZGERMED','ZUMA'],'source':'site','scope_id':listed[chat]['scope_id']})
-        self.assertEqual(listed[GROUP],{'chat_id':GROUP,'title':'','companies':['UZGERMED'],'source':'config','scope_id':listed[GROUP]['scope_id']})
-        self.assertEqual(listed[GROUP_BOTH]['companies'],['UZGERMED','ZUMA'])
-        # A group connected from Telegram gets exactly what a configured group gets (the scope fingerprint is per chat).
-        summary=self.summary(chat=chat);self.assertEqual(summary.status_code,200,summary.text)
-        own=lambda d:{k:v for k,v in d.items() if k not in ('chat_id','scope_id')}
-        self.assertEqual(own(summary.json()),own(self.summary(chat=GROUP_BOTH).json()))
-        connected=self.audit_rows('Telegram-группа подключена')
-        self.assertEqual(sorted(a.company_id for a in connected),sorted([self.companies['UZGERMED'],self.companies['ZUMA']]))
-        for a in connected:
-            self.assertEqual((a.user_id,a.entity,a.entity_id),(admin_id,'telegram_group',str(chat)))
-            self.assertEqual(a.detail,f'Группа «Финансы Zuma» ({chat}); компании: UZGERMED, ZUMA')
-        self.assertIn('Telegram-группа подключена',[a['action'] for a in self.client.get('/api/audit',headers=self.zuma()).json()])
-
-        r=self.connect(chat,['ZUMA'],555300,title='');self.assertEqual(r.status_code,200,r.text)
+        self.assertEqual(self.group(chat,555300).json(),{'chat_id':chat,'connected':False,'source':None,'companies':[],
+                                                       'can_manage':True,'choices':choices})
+        r=self.connect(chat,['zuma'],555300,title='  Финансы \n Zuma ');self.assertEqual(r.status_code,200,r.text)
         self.assertEqual(r.json()['companies'],['ZUMA'])
-        self.assertEqual(self.groups()[chat]['title'],'Финансы Zuma')  # an empty title keeps the known one
-        self.assertEqual({b['company'] for b in self.summary(chat=chat).json()['balances']},{'Zuma'})
-        changed=self.audit_rows('Telegram-группа изменена')
-        self.assertEqual(sorted(a.company_id for a in changed),sorted([self.companies['UZGERMED'],self.companies['ZUMA']]))
-        self.assertTrue(all(a.detail.endswith('компании: ZUMA; было: UZGERMED, ZUMA') for a in changed))
-
+        listed=self.groups()
+        self.assertEqual(listed[chat]['title'],'Финансы Zuma')
+        self.assertEqual(listed[chat]['companies'],['ZUMA'])
+        self.assertNotIn(GROUP_BOTH,listed)
+        own=lambda d:{k:v for k,v in d.items() if k not in ('chat_id','scope_id')}
+        self.assertEqual(own(self.summary(chat=chat).json()),own(self.summary(chat=GROUP_ZUMA).json()))
+        connected=self.audit_rows('Telegram-группа подключена')
+        self.assertEqual([a.company_id for a in connected],[self.companies['ZUMA']])
+        self.assertEqual(connected[0].user_id,admin_id)
+        # Existing settings cannot silently widen or switch the company.
+        for codes in (['UZGERMED','ZUMA'],['UZGERMED']):
+            self.assertEqual(self.connect(chat,codes,555300).status_code,422)
+            self.assertEqual(self.groups()[chat]['companies'],['ZUMA'])
+        r=self.connect(chat,['ZUMA'],555300,title='');self.assertEqual(r.status_code,200,r.text)
+        self.assertEqual(self.groups()[chat]['title'],'Финансы Zuma')
         self.assertEqual(self.disconnect(chat,555300).json(),{'removed':True})
         self.assertEqual(self.disconnect(chat,555300).json(),{'removed':False})
         self.assertEqual(self.summary(chat=chat).status_code,403)
         self.assertNotIn(chat,self.groups())
         self.assertEqual([a.company_id for a in self.audit_rows('Telegram-группа отключена')],[self.companies['ZUMA']])
+        # A deliberate disconnect allows a new one-company binding.
+        self.assertEqual(self.connect(chat,['UZGERMED'],555300).status_code,200)
+        self.assertEqual(self.groups()[chat]['companies'],['UZGERMED'])
         with unit() as s:
-            self.assertIsNone(s.get(TelegramGroup,chat))
             self.assertFalse(s.scalar(select(Audit.id).where(Audit.detail.contains('555300')|Audit.entity_id.contains('555300'))))
 
     def scope(self,chat,auth=BOT):
         return self.client.get(f'/api/bot/v1/report-groups/{chat}/scope',auth=auth)
 
     def test_scope_check_before_a_resend_follows_the_current_rights(self):
-        """Cash_Zuma_Bot stores scope_id with a summary snapshot and asks /scope before every part it
-        sends again. Whatever narrows the rights must change or drop the fingerprint."""
+        """A changed, disabled or ambiguous binding cannot reuse a stored financial summary."""
         chat=-1009999999999;self.link(self.me(),555950)
         self.account('Zuma bank','bank','UZS','777.00',headers=self.zuma())
-        self.assertEqual(self.scope(chat).json(),{'chat_id':chat,'allowed':False,'companies':[],'scope_id':None,'source':None})
-        self.assertEqual(self.connect(chat,['ZUMA','UZGERMED'],555950).status_code,200)
-        both=self.scope(chat).json()
-        self.assertEqual((both['allowed'],both['companies'],both['source']),(True,['UZGERMED','ZUMA'],'site'))
-        self.assertRegex(both['scope_id'],r'^[0-9a-f]{16}$')
-        summary=self.summary(chat=chat).json()
-        self.assertEqual((summary['companies'],summary['scope_id']),(both['companies'],both['scope_id']))
-        self.assertEqual(self.groups()[chat]['scope_id'],both['scope_id'])
-        self.assertEqual(self.scope(chat).json(),both)  # deterministic: the same rights give the same value
-        # The same companies in another group never share a fingerprint: parts cannot be mixed up between chats.
-        self.assertEqual(self.groups()[GROUP_BOTH]['companies'],both['companies'])
-        self.assertNotEqual(self.groups()[GROUP_BOTH]['scope_id'],both['scope_id'])
-
-        # The confirmed scenario: ZUMA + UZGERMED → UZGERMED between two parts of one summary.
-        self.assertEqual(self.connect(chat,['UZGERMED'],555950).status_code,200)
-        narrowed=self.scope(chat).json()
-        self.assertEqual((narrowed['allowed'],narrowed['companies']),(True,['UZGERMED']))
-        self.assertNotEqual(narrowed['scope_id'],both['scope_id'])
-        fresh=self.summary(chat=chat).json()
-        self.assertEqual(fresh['scope_id'],narrowed['scope_id'])
-        self.assertEqual({b['company'] for b in fresh['balances']},{'UZGERMED'})
-        # Widened back: the earlier value returns, so an unchanged scope always compares equal.
-        self.assertEqual(self.connect(chat,['UZGERMED','ZUMA'],555950).status_code,200)
-        self.assertEqual(self.scope(chat).json()['scope_id'],both['scope_id'])
-
-        # A company switched off narrows the scope although nobody touched the group.
-        with unit(True) as s:s.scalar(select(Company).where(Company.code=='ZUMA')).active=False
-        self.assertEqual(self.scope(chat).json()['scope_id'],narrowed['scope_id'])
-        self.assertEqual(self.scope(GROUP_ZUMA).json()['allowed'],False)  # configured group left without companies
-        with unit(True) as s:s.scalar(select(Company).where(Company.code=='ZUMA')).active=True
-        config=self.scope(GROUP).json()
-        self.assertEqual((config['allowed'],config['companies'],config['source']),(True,['UZGERMED'],'config'))
-
-        # Removed on the site: refused, and the refusal is in the journal.
+        denied={'chat_id':chat,'allowed':False,'companies':[],'scope_id':None,'source':None}
+        self.assertEqual(self.scope(chat).json(),denied)
+        self.assertEqual(self.connect(chat,['ZUMA'],555950).status_code,200)
+        first=self.scope(chat).json()
+        self.assertEqual((first['allowed'],first['companies'],first['source']),(True,['ZUMA'],'site'))
+        self.assertRegex(first['scope_id'],r'^[0-9a-f]{16}$')
+        self.assertEqual(self.summary(chat=chat).json()['scope_id'],first['scope_id'])
+        self.assertEqual(self.scope(chat).json(),first)
+        self.assertNotEqual(self.scope(GROUP_ZUMA).json()['scope_id'],first['scope_id'])
+        self.assertEqual(self.connect(chat,['UZGERMED'],555950).status_code,422)
+        self.assertEqual(self.connect(chat,['ZUMA','UZGERMED'],555950).status_code,422)
+        self.assertEqual(self.scope(chat).json(),first)
+        # Simulate a legacy row or external misconfiguration, not an accepted API update.
+        with unit(True) as s:s.get(TelegramGroup,chat).companies='UZGERMED,ZUMA'
+        self.assertEqual(self.scope(chat).json(),denied)
+        self.assertEqual(self.summary(chat=chat).status_code,403)
+        with unit(True) as s:s.get(Company,self.companies['ZUMA']).active=False
+        self.assertEqual(self.scope(chat).json(),denied)
+        self.assertFalse(self.scope(GROUP_ZUMA).json()['allowed'])
+        with unit(True) as s:
+            s.get(Company,self.companies['ZUMA']).active=True
+            s.get(TelegramGroup,chat).companies='UZGERMED'
+        current=self.scope(chat).json()
+        self.assertNotEqual(current['scope_id'],first['scope_id'])
+        self.assertEqual(current['companies'],['UZGERMED'])
+        self.assertEqual(self.summary(chat=chat).json()['scope_id'],current['scope_id'])
         self.assertEqual(self.site_remove(chat).json(),{'removed':True})
-        self.assertEqual(self.scope(chat).json(),{'chat_id':chat,'allowed':False,'companies':[],'scope_id':None,'source':None})
+        self.assertEqual(self.scope(chat).json(),denied)
         self.assertIn('Проверка области доступа перед отправкой сохранённой сводки',[a.detail for a in self.audit_rows('Бот: группа не разрешена')])
-
-        # The administrator who connected it loses the holding admin role: the group goes with them.
         admin2=self.make_user('admin','scope_admin');self.link(admin2,555951)
         self.assertEqual(self.connect(chat,['ZUMA'],555951).status_code,200)
         self.assertTrue(self.scope(chat).json()['allowed'])
-        r=self.post(f'/api/users/{admin2["id"]}',{'role':'finance','active':True,'password':''});self.assertEqual(r.status_code,200,r.text)
-        self.assertEqual(self.scope(chat).json()['allowed'],False)
+        self.assertEqual(self.post(f'/api/users/{admin2["id"]}',{'role':'finance','active':True,'password':''}).status_code,200)
+        self.assertFalse(self.scope(chat).json()['allowed'])
         self.assertEqual(self.summary(chat=chat).status_code,403)
-
         for bad in (555001,0):self.assertEqual(self.scope(bad).status_code,422)
         for auth in (None,('test-bot','wrong-secret-'+'y'*30)):self.assertEqual(self.scope(chat,auth=auth).status_code,401)
 
@@ -730,10 +736,14 @@ class BotApiTests(unittest.TestCase):
 
     def test_group_settings_are_validated(self):
         chat=-1006666666666;self.link(self.me(),555500)
-        cases=[([],'Выберите хотя бы одну компанию.'),(['UNASSIGNED'],'Служебное пространство «Не распределено» нельзя подключить к сводке.'),
-               (['NOPE'],'Компания «NOPE» не найдена.'),(['ZUMA','zuma'],'Компания «zuma» указана дважды.')]
+        cases=[(['UNASSIGNED'],'Служебное пространство «Не распределено» нельзя подключить к сводке.'),
+               (['NOPE'],'Компания «NOPE» не найдена.')]
         for companies,message in cases:
-            r=self.connect(chat,companies,555500);self.assertEqual((r.status_code,r.json()['detail']),(422,message),companies)
+            r=self.connect(chat,companies,555500);self.assertEqual((r.status_code,r.json()['detail']),(422,message))
+        for codes, kind in (([],'too_short'),(['ZUMA','zuma'],'too_long'),(['UZGERMED','ZUMA'],'too_long')):
+            response=self.connect(chat,codes,555500);self.assertEqual(response.status_code,422,response.text)
+            self.assertTrue(any(e['loc']==['body','companies'] and e['type']==kind for e in response.json()['detail']))
+            self.assertNotIn('input',response.text)
         for bad in (555001,0):
             self.assertEqual(self.connect(bad,['UZGERMED'],555500).status_code,422)
             self.assertEqual(self.disconnect(bad,555500).status_code,422)
@@ -744,22 +754,29 @@ class BotApiTests(unittest.TestCase):
         self.assertEqual(self.client.get(f'/api/bot/v1/report-groups/{chat}',auth=BOT).status_code,422)
         extra=self.client.post('/api/bot/v1/report-groups',json={'chat_id':chat,'companies':['UZGERMED'],'telegram_user_id':555500,'members':[1]},auth=BOT)
         self.assertEqual(extra.status_code,422)
-        with unit(True) as s:s.scalar(select(Company).where(Company.code=='ZUMA')).active=False
-        r=self.connect(chat,['UZGERMED','ZUMA'],555500);self.assertEqual((r.status_code,r.json()['detail']),(422,'Компания «ZUMA» отключена.'))
+        with unit(True) as s:s.get(Company,self.companies['ZUMA']).active=False
+        r=self.connect(chat,['ZUMA'],555500);self.assertEqual((r.status_code,r.json()['detail']),(422,'Компания «ZUMA» отключена.'))
         self.assertNotIn(chat,self.groups())
         self.assertEqual(self.connect(chat,['UZGERMED'],555500,title='x'*255).status_code,200)
 
+    def legacy_group(self,chat,codes,owner=None,title='Финансы Zuma'):
+        owner=owner or self.admin_id()
+        with unit(True) as s:
+            s.add(TelegramGroup(chat_id=chat,companies=','.join(codes),title=title,
+                                added_by=owner,added_at=now()))
+
     def test_inactive_company_is_dropped_from_the_group_list(self):
         both,zuma_only=-1007777777777,-1008888888888;self.link(self.me(),555600)
-        self.assertEqual(self.connect(both,['UZGERMED','ZUMA'],555600).status_code,200)
+        self.legacy_group(both,['UZGERMED','ZUMA'])
         self.assertEqual(self.connect(zuma_only,['ZUMA'],555600).status_code,200)
         with unit(True) as s:s.scalar(select(Company).where(Company.code=='ZUMA')).active=False
         listed=self.groups()
-        self.assertEqual(listed[both]['companies'],['UZGERMED'])
+        self.assertNotIn(both,listed)
+        self.assertEqual(self.summary(chat=both).status_code,403)
         self.assertNotIn(zuma_only,listed);self.assertNotIn(GROUP_ZUMA,listed)
         self.assertEqual(self.summary(chat=zuma_only).status_code,403)
         state=self.group(both,555600).json()
-        self.assertEqual((state['companies'],state['choices']),(['UZGERMED'],[{'code':'UZGERMED','name':'UZGERMED'}]))
+        self.assertEqual((state['companies'],state['choices']),([],[{'code':'UZGERMED','name':'UZGERMED'}]))
         # Still registered: the administrator sees it and can switch it off.
         self.assertEqual((self.group(zuma_only,555600).json()['connected'],self.group(zuma_only,555600).json()['companies']),(True,[]))
         self.assertEqual(self.disconnect(zuma_only,555600).json(),{'removed':True})
@@ -777,7 +794,7 @@ class BotApiTests(unittest.TestCase):
 
     def test_holding_administrator_sees_and_disconnects_groups_on_the_site(self):
         chat=-1004040404040;self.link(self.me(),555700);admin_id=self.admin_id()
-        self.assertEqual(self.connect(chat,['ZUMA','UZGERMED'],555700).status_code,200)
+        self.legacy_group(chat,['ZUMA','UZGERMED'])
         r=self.site_groups();self.assertEqual(r.status_code,200,r.text)
         items={g['chat_id']:g for g in r.json()['items']}
         self.assertEqual(set(items),{chat,GROUP,GROUP_BOTH,GROUP_ZUMA})
@@ -801,7 +818,7 @@ class BotApiTests(unittest.TestCase):
         self.assertEqual(self.site_remove(chat,headers={}).status_code,403)  # no CSRF token
         self.assertEqual(self.site_remove(GROUP).status_code,409)  # BOT_REPORT_GROUPS is changed on the server only
         for bad in (0,555001):self.assertEqual(self.site_remove(bad).status_code,422,bad)
-        self.assertIn(chat,self.groups())
+        self.assertNotIn(chat,self.groups())  # visible to administrators, disabled for delivery
 
         r=self.site_remove(chat);self.assertEqual((r.status_code,r.json()),(200,{'removed':True}),r.text)
         self.assertEqual(self.site_remove(chat).json(),{'removed':False})
@@ -822,7 +839,7 @@ class BotApiTests(unittest.TestCase):
         admin2=self.make_user('admin','admin2');self.link(admin2,555801)
         admin3=self.make_user('admin','admin3');self.link(admin3,555802)
         admin4=self.make_user('admin','admin4');self.link(admin4,555803)
-        self.assertEqual(self.connect(demoted_chat,['ZUMA','UZGERMED'],555801,title='Группа admin2').status_code,200)
+        self.legacy_group(demoted_chat,['ZUMA','UZGERMED'],admin2['id'],title='Группа admin2')
         self.assertEqual(self.connect(disabled_chat,['ZUMA'],555802,title='').status_code,200)
         self.assertEqual(self.connect(unchanged_chat,['ZUMA'],555803).status_code,200)
 
@@ -848,7 +865,7 @@ class BotApiTests(unittest.TestCase):
 
     def test_another_administrator_takes_a_group_over(self):
         chat=-1004545454545;self.link(self.me(),555900);admin_id=self.admin_id()
-        self.assertEqual(self.connect(chat,['UZGERMED','ZUMA'],555900).status_code,200)
+        self.assertEqual(self.connect(chat,['UZGERMED'],555900).status_code,200)
         admin2=self.make_user('admin','admin2');self.link(admin2,555901)
         with unit() as s:self.assertEqual(s.get(TelegramGroup,chat).added_by,admin_id)
         r=self.connect(chat,['UZGERMED'],555901,title='');self.assertEqual(r.status_code,200,r.text)
@@ -930,21 +947,21 @@ class BotApiTests(unittest.TestCase):
     def test_group_follows_a_supergroup_migration(self):
         basic,supergroup,second=-412345678,-1009990000001,-412345679
         self.link(self.me(),556000);admin_id=self.admin_id()
-        self.assertEqual(self.connect(basic,['ZUMA','UZGERMED'],556000,title='Финансы').status_code,200)
+        self.assertEqual(self.connect(basic,['ZUMA'],556000,title='Финансы').status_code,200)
         with unit() as s:before=s.get(TelegramGroup,basic);stamp=before.added_at
         r=self.migrate(basic,supergroup);self.assertEqual((r.status_code,r.json()),(200,{'migrated':True}),r.text)
         with unit() as s:
             self.assertIsNone(s.get(TelegramGroup,basic))
             moved=s.get(TelegramGroup,supergroup)
-            self.assertEqual((moved.title,moved.companies,moved.added_by,moved.added_at),('Финансы','ZUMA,UZGERMED',admin_id,stamp))
+            self.assertEqual((moved.title,moved.companies,moved.added_by,moved.added_at),('Финансы','ZUMA',admin_id,stamp))
         listed=self.groups()
-        self.assertNotIn(basic,listed);self.assertEqual(listed[supergroup]['companies'],['UZGERMED','ZUMA'])
+        self.assertNotIn(basic,listed);self.assertEqual(listed[supergroup]['companies'],['ZUMA'])
         self.assertEqual(self.summary(chat=supergroup).status_code,200);self.assertEqual(self.summary(chat=basic).status_code,403)
         moved_rows=self.audit_rows('Telegram-группа перенесена')
-        self.assertEqual(sorted(a.company_id for a in moved_rows),sorted([self.companies['UZGERMED'],self.companies['ZUMA']]))
+        self.assertEqual(sorted(a.company_id for a in moved_rows),[self.companies['ZUMA']])
         for a in moved_rows:
             self.assertEqual((a.user_id,a.entity,a.entity_id),(None,'telegram_group',str(supergroup)))
-            self.assertEqual(a.detail,f'Группа «Финансы» ({supergroup}); компании: UZGERMED, ZUMA; стала супергруппой, прежний ID {basic}')
+            self.assertEqual(a.detail,f'Группа «Финансы» ({supergroup}); компании: ZUMA; стала супергруппой, прежний ID {basic}')
 
         # Telegram reports a migration twice (old and new chat); nothing is left to move the second time.
         self.assertEqual(self.migrate(basic,supergroup).json(),{'migrated':False})
@@ -956,7 +973,7 @@ class BotApiTests(unittest.TestCase):
             self.assertEqual(self.migrate(old,new).status_code,409,(old,new))
         with unit() as s:self.assertIsNotNone(s.get(TelegramGroup,second))
         self.assertEqual(len(self.audit_rows('Бот: перенос группы отклонён')),3)
-        self.assertEqual(self.groups()[supergroup]['companies'],['UZGERMED','ZUMA'])
+        self.assertEqual(self.groups()[supergroup]['companies'],['ZUMA'])
 
         for old,new in ((second,second),(412345679,supergroup),(second,0),(second,1009990000004)):
             self.assertEqual(self.migrate(old,new).status_code,422,(old,new))
@@ -1031,6 +1048,53 @@ class BotApiTests(unittest.TestCase):
         self.assertIn(deputy['id'],[i['assignee_user_id'] for i in self.pending() if i['request_id']==second])
         self.assertEqual(self.post(f"/api/delegations/{d.json()['id']}/revoke",{'reason':'Директор вернулся из отпуска'}).status_code,200)
         self.assertEqual([i['assignee_user_id'] for i in self.pending() if i['request_id']==second],[director['id']])
+
+    def test_acting_role_counts_only_while_the_site_lets_the_deputy_in(self):
+        """A delegation outlives the deputy's access: a second assignment (conflict) or the loss of the
+        assignment closes the company on the site, so the bot API must stop the reminder as well."""
+        author=self.make_user('employee','author');finance=self.make_user('finance','fin')
+        director=self.make_user('director','boss');deputy=self.make_user('employee','deputy')
+        for user,tg in ((finance,1101),(director,1102),(deputy,1103)):self.link(user,tg)
+        d=self.post('/api/delegations',{'user_id':deputy['id'],'replaced_user_id':director['id'],'role':'director','starts_on':str(self.today),
+                                        'ends_on':str(self.today+timedelta(days=5)),'reason':'Отпуск директора по графику'})
+        self.assertEqual(d.status_code,200,d.text)
+        rid=self.new_request(author,'600');self.check(rid);self.decide(finance,rid)
+        waiting=lambda:sorted(i['assignee_user_id'] for i in self.pending() if i['request_id']==rid)
+        self.assertEqual(waiting(),sorted([director['id'],deputy['id']]))
+        # A second valid assignment: the site suspends the deputy (access_state 'conflict') and so does the bot.
+        uz,zu=self.companies['UZGERMED'],self.companies['ZUMA']
+        with unit(True) as s:s.add(CompanyUser(company_id=zu,user_id=deputy['id'],role='accountant'))
+        self.assertEqual(waiting(),[director['id']])
+        self.assertEqual(self.tg_user(1103).json()['items'],[])
+        self.assertEqual(self.client.get('/api/bot/v1/access',params={'telegram_user_id':1103},auth=BOT).json()['user']['companies'],[])
+        with unit(True) as s:s.delete(s.get(CompanyUser,(zu,deputy['id'])))
+        self.assertEqual(waiting(),sorted([director['id'],deputy['id']]))
+        # The assignment in the request's company is removed while the delegation still runs: no access, no reminder.
+        with unit(True) as s:s.get(CompanyUser,(uz,deputy['id'])).role=None
+        self.assertEqual(waiting(),[director['id']])
+        self.assertEqual([i['stage'] for i in self.tg_user(1103).json()['items']],[])
+
+    def test_stale_delegation_of_a_disabled_or_reassigned_replaced_user_gives_no_reminder(self):
+        """The replaced director is switched off or moved to another role directly in the database
+        (a restored copy, a manual edit): the delegation is not revoked, but the site refuses it and
+        so must the bot API — one criterion (access.delegation_in_force) on both sides."""
+        author=self.make_user('employee','author');finance=self.make_user('finance','fin')
+        director=self.make_user('director','boss');deputy=self.make_user('employee','deputy')
+        for user,tg in ((finance,1201),(director,1202),(deputy,1203)):self.link(user,tg)
+        d=self.post('/api/delegations',{'user_id':deputy['id'],'replaced_user_id':director['id'],'role':'director','starts_on':str(self.today),
+                                        'ends_on':str(self.today+timedelta(days=5)),'reason':'Отпуск директора по графику'})
+        self.assertEqual(d.status_code,200,d.text)
+        rid=self.new_request(author,'600');self.check(rid);self.decide(finance,rid)
+        waiting=lambda:sorted(i['assignee_user_id'] for i in self.pending() if i['request_id']==rid)
+        self.assertEqual(waiting(),sorted([director['id'],deputy['id']]))
+        with unit(True) as s:s.get(User,director['id']).active=False
+        self.assertEqual(waiting(),[])
+        with unit(True) as s:s.get(User,director['id']).active=True
+        self.assertEqual(waiting(),sorted([director['id'],deputy['id']]))
+        with unit(True) as s:s.get(CompanyUser,(self.companies['UZGERMED'],director['id'])).role='cashier'
+        self.assertEqual(waiting(),[])
+        self.assertEqual(self.tg_user(1203).json()['items'],[])
+        with unit() as s:self.assertIsNone(s.get(Delegation,d.json()['id']).revoked_at)  # nothing rewritten behind the administrator
 
     def test_payer_who_took_part_in_an_earlier_round_is_not_reminded(self):
         author=self.make_user('employee','author');finance=self.make_user('finance','fin');director=self.make_user('director','boss')

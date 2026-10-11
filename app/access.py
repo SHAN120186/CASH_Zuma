@@ -105,6 +105,23 @@ def revoke_links_and_sessions(s, user, actor=None):
     drop_groups_of(s, user, actor)
 
 
+def delegation_in_force(s, d, day=None):
+    """Единый критерий действующего ВрИО для сайта и API бота: не отозвано, сегодня в сроке,
+    заместитель может работать в компании замещения (requests_api.can_act_in), а заменяемый активен
+    и по-прежнему имеет в ней именно эту роль (requests_api.member_role). end_delegations отменяет
+    замещение при изменении доступа через сайт; здесь та же проверка выполняется при каждом чтении,
+    чтобы запись, изменённая мимо сайта или восстановленная из копии, не давала прав."""
+    from .requests_api import can_act_in, member_role
+    from .clock import today
+    day = day or today()
+    if d.revoked_at or d.company_id is None or not (d.starts_on <= day <= d.ends_on):
+        return False
+    acting = s.scalar(select(User).where(User.id == d.user_id).execution_options(company_unscoped=True))
+    replaced = s.scalar(select(User).where(User.id == d.replaced_user_id).execution_options(company_unscoped=True))
+    return (acting is not None and replaced is not None and can_act_in(s, d.company_id, acting)
+            and member_role(s, d.company_id, replaced) == d.role)
+
+
 def end_delegations(s, actor, user, reason):
     """Замещения (ВрИО), потерявшие основание после изменения доступа, отменяются: ВрИО работает
     только в своей компании, а заменяемый сотрудник должен по-прежнему иметь эту роль.

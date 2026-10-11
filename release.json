@@ -1,8 +1,12 @@
 {
-  "version": "2.14.7",
+  "version": "2.25.1",
   "date": "2026-10-11",
   "changes": [
-    "Cash Flow: цифры таблицы и подписи стали крупнее и темнее; серый текст заменён тёмным, цифры выровнены по разрядам, шрифт Manrope 500 подключён для тела таблицы.",
-    "Плитки итогов выровнены по верхнему краю, итог периода «На конец периода» выделен тёмной плиткой; панель настроек стала ровнее. Функции отчёта, переключатели и экспорт не менялись."
+    "Отчёты: цифры таблицы Cash Flow, P&L и баланса стали крупнее (14 px), подписи месяцев и значения итогов тоже (28 px у плиток). Цвета и структура не менялись.",
+    "Версия объединяет последний дизайн отчётов (2.25.0) и новый размер текста: ветка main-ukdjjf теперь включает всё из codex/business-plan-reports-20261007."
+  ],
+  "changes_uz": [
+    "Hisobotlar: Cash Flow, P&L va balans jadvalidagi raqamlar kattaroq (14 px), oy sarlavhalari va jami qiymatlari ham kattaroq (kartochkalarda 28 px). Ranglar va tuzilma o'zgarmadi.",
+    "Versiya so'nggi hisobotlar dizaynini (2.25.0) va yangi matn o'lchamini birlashtiradi: main-ukdjjf endi codex/business-plan-reports-20261007 dagi barcha o'zgarishlarni o'z ichiga oladi."
   ]
 }

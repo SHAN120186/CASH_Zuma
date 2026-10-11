@@ -7,6 +7,36 @@ from .services import effective_cashflows, money
 
 ACTIVITIES = {'operating':'Операционная деятельность', 'investing':'Инвестиционная деятельность', 'financing':'Финансовая деятельность'}
 
+def expense_plan_summary(s, month, currency, company_id, scenario='A', as_of=None):
+    """Known expense amounts and completeness of the same rows as Cash Flow.
+
+    Income categories can also have an expense direction in a recorded flow or
+    another month's plan. Those rows remain visible in the annual report, so
+    they also need an explicit monthly amount (including zero) for a full plan.
+    """
+    year=int(month[:4]);cutoff=as_of or date(year,12,31)
+    categories=list(s.scalars(select(Category).where(Category.company_id==company_id)))
+    category_ids={c.id for c in categories}
+    keys={f'{c.id}:out' for c in categories if c.type!='income'}
+    accounts=select(Account.id).where(Account.company_id==company_id,Account.currency==currency)
+    expense_categories=s.scalars(effective_cashflows(s).where(
+        Ledger.account_id.in_(accounts),Ledger.date<=cutoff,Ledger.kind=='out'
+    ).with_only_columns(Ledger.category_id).distinct())
+    keys.update(f'{cid}:out' for cid in expense_categories if cid in category_ids)
+    payload={}
+    for p in s.scalars(select(CashPlan).where(
+        CashPlan.company_id==company_id,CashPlan.scenario==scenario,CashPlan.currency==currency,
+        CashPlan.month>=f'{year}-01',CashPlan.month<=f'{year}-12'
+    )):
+        values=json.loads(p.payload)
+        keys.update(key for key in values if key.endswith(':out') and int(key.split(':')[0]) in category_ids)
+        if p.month==month:payload=values
+    defined=[payload[key] for key in keys if payload.get(key) is not None]
+    known=abs(sum(defined));missing=len(keys)-len(defined)
+    complete=bool(keys) and missing==0
+    return {'known':known,'total':known if complete else None,'complete':complete,
+            'defined_rows':len(defined),'missing_rows':missing}
+
 def report(s, year, currency, company_id, scenario='A', as_of=None):
     accounts = list(s.scalars(select(Account).where(Account.currency == currency, Account.company_id == company_id)))
     aids = {a.id for a in accounts}

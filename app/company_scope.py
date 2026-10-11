@@ -12,22 +12,27 @@ from sqlalchemy.schema import CreateTable
 from .db import (Company, CompanyUser, User, Account, Category, Counterparty,
                  CashPlan, PlanNote, PaymentRequest, Receipt, Ledger, Budget,
                  Document, ImportBatch, PlanImportBatch, Audit, ModelVersion,
-                 ReportSchedule, Setting, RequestDocument, Delegation)
+                 ReportSchedule, Setting, RequestDocument, Delegation, ReportArchive, ReportArchiveFile,
+                 BusinessProject, BusinessSourceFile, BusinessGeneration, FinancialStatementSource)
 
 # Вложения заявок принадлежат компании через свою заявку (criteria ниже), а не собственным полем.
 DIRECT = (Account, Category, Counterparty, CashPlan, PlanNote, PlanImportBatch,
-          ImportBatch, Audit, ModelVersion, ReportSchedule, Delegation)
+          ImportBatch, Audit, ModelVersion, ReportSchedule, Delegation, ReportArchive, ReportArchiveFile,
+          BusinessProject, BusinessSourceFile, BusinessGeneration, FinancialStatementSource)
 
 
 def active_delegations(s, user_id, company_id=None):
-    """Действующие замещения (ВрИО): не отозваны и сегодня в пределах срока."""
+    """Действующие замещения (ВрИО): не отозваны, сегодня в пределах срока и с сохранившимся
+    основанием (access.delegation_in_force: заместитель допущен в компанию, заменяемый активен и
+    держит эту роль). Тот же критерий применяет API бота."""
     from .clock import today
+    from .access import delegation_in_force
     day = today()
     q = select(Delegation).where(Delegation.user_id == user_id, Delegation.revoked_at.is_(None),
                                  Delegation.starts_on <= day, Delegation.ends_on >= day)
     if company_id is not None:
         q = q.where(Delegation.company_id == company_id)
-    return list(s.scalars(q.execution_options(company_unscoped=True)))
+    return [d for d in s.scalars(q.execution_options(company_unscoped=True)) if delegation_in_force(s, d, day)]
 
 
 SERVICE_CODE = 'UNASSIGNED'
@@ -134,6 +139,12 @@ def check_object(s, obj):
         refs.append((Ledger, obj.ledger_id))
     if isinstance(obj, RequestDocument):
         refs.append((PaymentRequest, obj.request_id))
+    if isinstance(obj, ReportArchiveFile):
+        refs.append((ReportArchive, obj.archive_id))
+    if isinstance(obj, (BusinessSourceFile, BusinessGeneration)):
+        refs.append((BusinessProject, obj.project_id))
+    if isinstance(obj, BusinessGeneration):
+        refs.extend([(ReportArchive, obj.business_archive_id), (ReportArchive, obj.teo_archive_id)])
     for cls, id in refs:
         value = s.get(cls, id)
         if value is None:
@@ -143,6 +154,8 @@ def check_object(s, obj):
 
 @event.listens_for(Session, 'before_flush')
 def restrict_writes(s, *_):
+    if any(isinstance(o, FinancialStatementSource) for o in list(s.dirty) + list(s.deleted)):
+        raise HTTPException(409, 'Исходники финансовых отчётов не изменяются. Загрузите новую версию.')
     # Журнал аудита только дополняется: записи не изменяются и не удаляются.
     if not s.info.get('audit_maintenance') and any(isinstance(o, Audit) for o in list(s.dirty) + list(s.deleted)):
         raise HTTPException(409, 'Журнал аудита не изменяется и не удаляется.')
