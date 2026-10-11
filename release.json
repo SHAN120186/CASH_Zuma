@@ -1,7 +1,8 @@
 {
-  "version": "2.22.0",
+  "version": "2.22.1",
   "date": "2026-10-11",
   "changes": [
+    "В карточках P&L и баланса исправлено наложение подписей. Загрузка исходного Excel и таблица KPI доступны с клавиатуры.",
     "P&L и баланс оформлены в стиле Cash Flow: подтверждённый год источника, месяц, кварталы и свой период, факт / план / план-факт, единицы / тысячи / миллионы, помесячные столбцы и сворачивание разделов.",
     "Добавлены карточки чистой выручки, Gross Profit, EBITDA, EBIT и чистой прибыли. В балансе выделены карточки основных сумм и отдельный нижний раздел KPI с планом, фактом и авторскими ориентирами.",
     "Денежные строки P&L суммируются только за полный подтверждённый период; маржи диапазона считаются из итоговых сумм. Баланс и KPI показываются на конечный месяц без сложения остатков. Масштаб меняет только денежные значения; неизвестные единицы источника обозначаются явно.",
@@ -29,6 +30,7 @@
     "Длинные названия файлов и кнопки выбора шаблона переносятся на узком экране. В ТЭО дата архива отдельно обозначена и не подменяет начало финансового прогноза."
   ],
   "changes_uz": [
+    "P&L va balans kartalaridagi matn ustma-ust tushmaydi. Excel yuklash tugmasi va KPI jadvali klaviatura orqali boshqariladi.",
     "P&L va balans Cash Flow uslubida: manbaning tasdiqlangan yili, oy, choraklar va tanlangan davr, fakt / reja / reja-fakt, birlik / ming / million, oylik ustunlar va boʻlimlarni yigʻish.",
     "Sof tushum, Gross Profit, EBITDA, EBIT va sof foyda kartalari qoʻshildi. Balansda asosiy summalar kartalari hamda reja, fakt va muallif mezonlari bilan alohida pastki KPI boʻlimi ajratildi.",
     "P&L pul satrlari faqat toʻliq tasdiqlangan davr uchun jamlanadi; davr marjalari jami summalardan hisoblanadi. Balans va KPI davrning oxirgi oyi uchun, qoldiqlarni jamlamasdan koʻrsatiladi. Masshtab faqat pul qiymatlariga taʼsir qiladi; manbaning nomaʼlum birliklari aniq belgilanadi.",
