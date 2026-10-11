@@ -562,3 +562,25 @@ test('derived PNL turnover rows do not advertise unconfirmed net revenue, alloca
  assert.match(text(mainTable(view)),/Кредитовый оборот счёта 0200/);
  view.state.mode='plan';await settle();assert.match(visibleText(mainTable(view)),/Процентные расходы/);assert.doesNotMatch(visibleText(mainTable(view)),/Оборот выручки|Распределение амортизации уточняется/);
 });
+
+
+test('missing required account reasons do not claim a missing profit account when the financial result is calculated, in RU and UZ',async t=>{
+ const previous=lang.value;t.after(()=>setLang(previous));setLang('ru');
+ const payload=periodPayload();payload.source.calculation={profile:'uzbek_grouped_chart_finmodel_v1'};
+ const pnl=payload.source.reports.pnl,other=pnl.rows.find(row=>row.row===14),profit=pnl.rows.find(row=>row.row===23);
+ other.label='Прочие операционные доходы';
+ const tax=structuredClone(other);tax.row=22;tax.key='missing-tax-account';tax.label='Налог на прибыль';pnl.rows.push(tax);
+ for(const pair of other.cells)pair.fact={value:null,status:'unavailable',reason:'absent_profit_account'};
+ for(const pair of tax.cells)pair.fact={value:null,status:'unavailable',reason:'missing_account'};
+ profit.fact_label='Финансовый результат периода по 9900';for(const pair of profit.cells)pair.fact.status='calculated';
+ const original=structuredClone(payload);
+ const view=mount(component,{company,type:'pnl',api:async()=>payload});t.after(view.unmount);await settle();
+ const affected=number=>find(mainTable(view),node=>node.tag==='tr'&&Number(node.props['data-source-row'])===number);
+ for(const number of [14,22])assert.match(visibleText(affected(number)),/В ОСВ не найден необходимый счёт\./);
+ assert.doesNotMatch(visibleText(mainTable(view)),/не найден счёт финансового результата/);
+ assert.match(text(metricCard(view,23)),/Финансовый результат.*10,00/);
+ setLang('uz');await settle();
+ for(const number of [14,22])assert.match(visibleText(affected(number)),/Aylanma-saldo qaydnomasida zarur hisobvaraq topilmadi\./);
+ assert.doesNotMatch(visibleText(mainTable(view)),/moliyaviy natija hisobvarag‘i topilmadi/);
+ assert.deepEqual(payload,original);
+});

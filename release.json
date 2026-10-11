@@ -1,7 +1,8 @@
 {
-  "version": "2.24.0",
+  "version": "2.24.1",
   "date": "2026-10-11",
   "changes": [
+    "Уточнено пояснение отсутствующего счёта в P&L на русском и узбекском: отсутствие счёта доходов или налога больше не обозначается как отсутствие финансового результата. Расчёты не изменены.",
     "P&L и баланс упрощены для всех компаний: источник, загрузка новой версии, методика и замечания перенесены в закрытую справку. В отчёте остаются период, карточки, таблицы и понятные причины неподтверждённых значений.",
     "Год, период, масштаб и режим сохраняются при переходе между P&L, балансом и Cash Flow. При смене компании выбор сбрасывается; источники и данные фирм остаются раздельными.",
     "Подтверждённые обороты P&L и финансовый результат 9900 рассчитываются из Mapping с проверкой движения счёта. Оригинальные показатели и план сохранены для сверки; состав выручки, налог и распределение амортизации не угадываются.",
@@ -38,6 +39,7 @@
     "Длинные названия файлов и кнопки выбора шаблона переносятся на узком экране. В ТЭО дата архива отдельно обозначена и не подменяет начало финансового прогноза."
   ],
   "changes_uz": [
+    "P&Ldagi yetishmayotgan hisobvaraq izohi ruscha va o‘zbekcha aniqlashtirildi: daromad yoki soliq hisobvarag‘i yo‘qligi endi moliyaviy natija yo‘qligi deb ko‘rsatilmaydi. Hisob-kitoblar o‘zgarmadi.",
     "P&L va balans barcha kompaniyalar uchun soddalashtirildi: manba, yangi versiya yuklash, usul va izohlar yopiq yordam boʻlimiga koʻchirildi. Hisobotda davr, kartalar, jadvallar va tasdiqlanmagan qiymatlar sabablari qoldi.",
     "P&L, balans va Cash Flow orasida yil, davr, masshtab va rejim saqlanadi. Kompaniya almashtirilganda tanlov tiklanadi; kompaniyalar manbalari va maʼlumotlari ajratilgan.",
     "Tasdiqlangan P&L aylanmalari va 9900 moliyaviy natijasi hisob harakati tekshiruvi bilan Mappingdan hisoblanadi. Asl koʻrsatkichlar va reja solishtirish uchun saqlanadi; tushum, soliq va amortizatsiya taqsimoti taxmin qilinmaydi.",

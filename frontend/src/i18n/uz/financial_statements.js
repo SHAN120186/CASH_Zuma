@@ -288,7 +288,7 @@ export default {
  "Данные уже сохранены. Повторно загружать файл нужно только после появления новых данных.":"Ma’lumotlar allaqachon saqlangan. Faylni faqat yangi ma’lumotlar paydo bo‘lganda qayta yuklash kerak.",
  "Источники и полнота данных":"Manbalar va ma’lumotlar to‘liqligi",
  "Обороты финансового результата не согласованы с сальдо. Нужна проверка закрытия счёта.":"Moliyaviy natija aylanmalari saldo bilan mos kelmaydi. Hisobvaraq yopilishini tekshirish kerak.",
- "В ОСВ не найден счёт финансового результата.":"Aylanma-saldo qaydnomasida moliyaviy natija hisobvarag‘i topilmadi.",
+ "В ОСВ не найден необходимый счёт.":"Aylanma-saldo qaydnomasida zarur hisobvaraq topilmadi.",
  "Результат по счетам не совпадает с движением финансового результата. Нужна сверка ОСВ.":"Hisobvaraqlar natijasi moliyaviy natija harakati bilan mos kelmaydi. Aylanma-saldo qaydnomasini solishtirish kerak.",
  "Нужно подтвердить налог на прибыль отдельно от прочих налогов.":"Foyda solig‘ini boshqa soliqlardan alohida tasdiqlash kerak.",
  "Нужно подтвердить состав выручки, возвратов и скидок. До этого показатель не рассчитан.":"Tushum, qaytarish va chegirmalar tarkibini tasdiqlash kerak. Ungacha ko‘rsatkich hisoblanmaydi.",
