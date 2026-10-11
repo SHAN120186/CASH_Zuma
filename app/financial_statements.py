@@ -19,6 +19,7 @@ from decimal import Decimal, InvalidOperation
 from pathlib import PurePosixPath
 from urllib.parse import unquote
 from zipfile import BadZipFile, ZipFile
+from typing import Literal
 
 from defusedxml import ElementTree as ET
 from defusedxml.common import DefusedXmlException
@@ -27,10 +28,12 @@ from openpyxl.formula.translate import Translator, TranslatorError
 from openpyxl.formula import Tokenizer
 from openpyxl.formula.tokenizer import TokenizerError
 from openpyxl.utils.cell import column_index_from_string
+from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy import select
 
 from .clock import today
-from .db import FinancialStatementSource, unit
+from .db import FinancialStatementSource, Setting, unit
+from .financial_statement_calculations import CONFIRMED_REVENUE_BASIS
 from .model_import import MAX_SIZE, col
 from .security import perms_of, require_permission, session_user
 from .services import log
@@ -42,7 +45,7 @@ REPORTS = {'pnl': ('09_Statements', 'PNL · план / факт', 7, 24),
            'balance': ('09b_Balance', 'Баланс · план / факт', 7, 81)}
 PERCENT_ROWS = {'pnl': {13, 24}, 'balance': {62, 63, 64, 67, 68, 69, 75}}
 COEFFICIENT_ROWS = {70, 73, 74, 76}
-REVIEW_VERSION = 'mapping-2026-10-11-v3'
+REVIEW_VERSION = 'mapping-2026-10-11-v4'
 _review_cache = OrderedDict()
 _review_cache_lock = RLock()
 REQUIREMENTS = [
@@ -386,7 +389,7 @@ def balance_check_row(sheets):
         re.search(pattern, str(cells.get('D' + str(row), {}).get('value') or '').casefold()) for row, pattern in labels))
 
 
-def build_review(raw, filename, as_of=None):
+def build_review(raw, filename, as_of=None, revenue_policy=None):
     sheets, epoch = read_workbook(raw)
     as_of = as_of or today()
     issues = []
@@ -639,7 +642,7 @@ def build_review(raw, filename, as_of=None):
         reports[key] = {'sheet': sheet, 'title': title, 'periods': periods_by_report[key], 'rows': rows}
 
     from .financial_statement_calculations import apply_mapping_reports
-    calculation = apply_mapping_reports(reports, records, year, coverage, sheets, issue)
+    calculation = apply_mapping_reports(reports, records, year, coverage, sheets, issue, revenue_policy)
 
     balance_sheet = REPORTS['balance'][0]
     pnl_sheet = REPORTS['pnl'][0]
@@ -760,7 +763,73 @@ def build_review(raw, filename, as_of=None):
             'reports': reports}
 
 
-def current_source_review(source):
+def _policy_key(source):
+    # Settings are otherwise global, so every lookup must bind both company and
+    # immutable source. The signed-in company is checked before source lookup.
+    return f'financial_revenue:{source.company_id}:{source.id}'
+
+
+def source_revenue_policy(s, source):
+    default = {'basis': 'unconfirmed', 'status': 'unconfirmed', 'revision': 0,
+               'source_sha256': source.sha256, 'confirmed_at': None, 'confirmed_by': None}
+    saved = s.get(Setting, _policy_key(source))
+    if saved is None:
+        return default
+    try:
+        value = json.loads(saved.value)
+        if (not isinstance(value, dict) or value.get('company_id') != source.company_id
+                or value.get('source_id') != source.id or value.get('source_sha256') != source.sha256
+                or type(value.get('revision')) is not int or value['revision'] < 1
+                or value.get('basis') not in ('unconfirmed', CONFIRMED_REVENUE_BASIS)):
+            return default
+        return {key: value.get(key) for key in default} | {
+            'status': 'confirmed' if value['basis'] == CONFIRMED_REVENUE_BASIS else 'unconfirmed'}
+    except (ValueError, TypeError):
+        return default
+
+
+class RevenuePolicyIn(BaseModel):
+    model_config = ConfigDict(extra='forbid')
+    basis: Literal['unconfirmed', 'gross_excluding_vat_before_returns_discounts']
+    expected_revision: int = Field(ge=0, strict=True)
+    source_sha256: str = Field(pattern=r'^[a-f0-9]{64}$')
+
+
+@router.post('/api/financial-statements/{source_id}/revenue-policy')
+def confirm_revenue_policy(source_id: int, payload: RevenuePolicyIn, request: Request,
+                           company_id: int | None = Query(default=None, ge=1)):
+    with unit(True) as s:
+        user, _ = session_user(s, request, 'export')
+        require_permission(user, 'import')
+        source = s.get(FinancialStatementSource, source_id)
+        if source is None:
+            raise HTTPException(404, 'Исходник не найден в выбранной компании.')
+        if payload.source_sha256 != source.sha256:
+            raise HTTPException(409, 'Выбран другой исходник. Обновите отчёт перед подтверждением.')
+        previous = source_revenue_policy(s, source)
+        if payload.expected_revision != previous['revision']:
+            raise HTTPException(409, 'Правило выручки уже изменено. Обновите отчёт перед подтверждением.')
+        if payload.basis == CONFIRMED_REVENUE_BASIS:
+            review = current_source_review(source, previous)
+            if review.get('calculation', {}).get('profile') is None:
+                raise HTTPException(422, 'Формат ОСВ не распознан: правило выручки нельзя применить к этому исходнику.')
+        if payload.basis == previous['basis']:
+            return {'company_id': source.company_id, 'source_id': source.id, 'changed': False, 'policy': previous}
+        policy = {'basis': payload.basis, 'status': 'confirmed' if payload.basis == CONFIRMED_REVENUE_BASIS else 'unconfirmed',
+                  'revision': previous['revision'] + 1, 'source_sha256': source.sha256,
+                  'confirmed_at': datetime.now(timezone.utc).isoformat(), 'confirmed_by': user.id}
+        stored = {**policy, 'company_id': source.company_id, 'source_id': source.id}
+        setting = s.get(Setting, _policy_key(source))
+        if setting is None:
+            s.add(Setting(key=_policy_key(source), value=json.dumps(stored, ensure_ascii=False)))
+        else:
+            setting.value = json.dumps(stored, ensure_ascii=False)
+        log(s, user, 'Изменено правило выручки PNL', 'financial_statement_source', source.id,
+            json.dumps({'previous': previous, 'current': policy, 'scope': 'immutable_source'}, ensure_ascii=False))
+        return {'company_id': source.company_id, 'source_id': source.id, 'changed': True, 'policy': policy}
+
+
+def current_source_review(source, revenue_policy=None):
     """Re-review immutable source bytes with current code and original cutoff.
 
     A bounded process cache stores JSON, never mutable report objects. Its key
@@ -774,14 +843,21 @@ def current_source_review(source):
     except (TypeError, ValueError):
         as_of = source.created_at.date()
         original_date = as_of.isoformat()
-    key = (source.company_id, source.id, source.sha256, REVIEW_VERSION, original_date)
+    revenue_policy = revenue_policy or {'basis': 'unconfirmed', 'status': 'unconfirmed', 'revision': 0,
+                                        'source_sha256': source.sha256, 'confirmed_at': None, 'confirmed_by': None}
+    policy_hash = hashlib.sha256(json.dumps(revenue_policy, sort_keys=True).encode()).hexdigest()
+    key = (source.company_id, source.id, source.sha256, REVIEW_VERSION, original_date, policy_hash)
     with _review_cache_lock:
         cached = _review_cache.get(key)
         if cached is not None:
             _review_cache.move_to_end(key)
     if cached is None:
-        result = original if original.get('review_version') == REVIEW_VERSION else build_review(source.content, source.filename, as_of)
+        # Original snapshots never contain a later confirmation. Rebuilding on
+        # a confirmed policy ensures stale immutable snapshots cannot bypass it.
+        result = (original if original.get('review_version') == REVIEW_VERSION and revenue_policy['revision'] == 0
+                  else build_review(source.content, source.filename, as_of, revenue_policy))
         result = {**result, 'review_version': REVIEW_VERSION,
+                  'revenue_policy': revenue_policy, 'source_sha256': source.sha256,
                   'original_reviewed_as_of': original_date,
                   'original_review_timestamp': source.created_at.replace(tzinfo=timezone.utc).isoformat()}
         cached = json.dumps(result, ensure_ascii=False)
@@ -804,13 +880,14 @@ def financial_statements(request: Request, source_id: int | None = Query(default
             raise HTTPException(404, 'Исходник не найден в выбранной компании.')
         result = None
         if source:
-            result = current_source_review(source)
+            result = current_source_review(source, source_revenue_policy(s, source))
             result['id'] = source.id
             result['company_id'] = source.company_id
         return {'sources': [{'id': row.id, 'filename': row.filename,
                              'created_at': row.created_at.replace(tzinfo=timezone.utc).isoformat()} for row in sources],
                 'selected': source.id if source else None, 'source': result,
                 'company_id': s.info['company_id'], 'can_upload': 'import' in perms_of(user),
+                'can_confirm_revenue_basis': 'import' in perms_of(user),
                 'review_version': REVIEW_VERSION,
                 'requirements': result['requirements'] if result else REQUIREMENTS}
 
@@ -830,7 +907,7 @@ def financial_reconciliation(request: Request, year: int = Query(ge=2000, le=210
             select(FinancialStatementSource).order_by(FinancialStatementSource.id.desc()).limit(1))
         if source_id is not None and source is None:
             raise HTTPException(404, 'Исходник не найден в выбранной компании.')
-        result = build_reconciliation(current_source_review(source) if source else None,
+        result = build_reconciliation(current_source_review(source, source_revenue_policy(s, source)) if source else None,
                                       year, start_month, end_month)
         if source is None:
             result['status'] = 'missing'

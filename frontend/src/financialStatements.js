@@ -88,6 +88,7 @@ export function statementNumber(value, kind = 'amount', locale = 'ru-RU') {
 export const statementReasonLabels = {
   actual_revenue_classification_required:N_('Нужно подтвердить состав выручки, возвратов и скидок. До этого показатель не рассчитан.'),
   actual_tax_classification_required:N_('Нужно подтвердить налог на прибыль отдельно от прочих налогов.'),
+  counterpart_classification_required:N_('Нужно классифицировать результат выбытия активов по счёту 9200.'),
   accounting_result_mismatch:N_('Результат по счетам не совпадает с движением финансового результата. Нужна сверка ОСВ.'),
   absent_profit_account:N_('В ОСВ не найден необходимый счёт.'),
   missing_account:N_('В ОСВ не найден необходимый счёт.'),

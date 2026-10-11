@@ -14,6 +14,7 @@ from collections import Counter
 from decimal import Decimal, DecimalException, localcontext
 
 PROFILE = 'uzbek_grouped_chart_finmodel_v1'
+CONFIRMED_REVENUE_BASIS = 'gross_excluding_vat_before_returns_discounts'
 ZERO = Decimal(0)
 MAX_DISPLAY = Decimal('1.7976931348623157e308')
 ASSET_GROUPS = {
@@ -279,11 +280,11 @@ def _guard(rows):
     return None
 
 
-def apply_mapping_reports(reports, records, year, coverage, sheets, issue):
+def apply_mapping_reports(reports, records, year, coverage, sheets, issue, revenue_policy=None):
     """Mutate only derived report cells; return a JSON-safe provenance summary."""
     metadata = {'status': 'source_only', 'profile': None, 'source_preserved': True,
                 'plan_basis': 'immutable_source_cache', 'plan_classification_status': 'pending_vat_marketing_confirmation',
-                'required_fields': REQUIRED_FIELDS, 'months': [], 'ratio_period_basis': 'monthly_unannualized',
+                'required_fields': [dict(field) for field in REQUIRED_FIELDS], 'months': [], 'ratio_period_basis': 'monthly_unannualized',
                 'actual_pnl_basis': 'mapping_named_account_turnovers',
                 'actual_pnl_classification_status': 'classification_pending'}
     profile = _profile(reports, sheets)
@@ -300,6 +301,15 @@ def apply_mapping_reports(reports, records, year, coverage, sheets, issue):
                  for r in reports['pnl'].get('rows', [])],
     })
     metadata['profile'] = PROFILE
+    revenue_confirmed = (isinstance(revenue_policy, dict)
+                         and revenue_policy.get('status') == 'confirmed'
+                         and revenue_policy.get('basis') == CONFIRMED_REVENUE_BASIS)
+    if revenue_confirmed:
+        metadata['required_fields'] = [field for field in metadata['required_fields']
+                                       if field['key'] != 'actual_revenue_basis']
+        metadata['actual_pnl_classification_status'] = 'partial_classification_confirmed'
+        metadata['actual_revenue_basis'] = CONFIRMED_REVENUE_BASIS
+        metadata['revenue_policy_revision'] = revenue_policy.get('revision')
     for covered in coverage:
         month = covered['month']
         if covered.get('status') != 'available' or covered.get('calculation_eligible') is not True:
@@ -315,7 +325,8 @@ def apply_mapping_reports(reports, records, year, coverage, sheets, issue):
         try:
             with localcontext() as ctx:
                 ctx.prec = 2048
-                month_meta = _calculate_month(balance_rows, pnl_rows, _OSV(source_rows, year, month), issue)
+                month_meta = _calculate_month(balance_rows, pnl_rows, _OSV(source_rows, year, month), issue,
+                                               revenue_policy if revenue_confirmed else None)
                 metadata['months'].append(month_meta)
         except DecimalException:
             metadata['months'].append({'month': month, 'status': 'source_only', 'reason': 'nonfinite_result'})
@@ -329,12 +340,13 @@ def apply_mapping_reports(reports, records, year, coverage, sheets, issue):
     return metadata
 
 
-def _pnl_from_mapping(pnl, osv, issue):
+def _pnl_from_mapping(pnl, osv, issue, revenue_policy=None):
     """Confirmed account-side flows; unresolved revenue is never a plug.
 
     Closed debit/credit turnover totals do not disclose transaction counterparts
-    or whether 9000 includes 9040/9050/VAT. They cannot determine net sales,
-    EBITDA allocation, asset-disposal profit or a missing income-tax account.
+    or whether 9000 includes 9040/9050/VAT. Only an explicit source policy can
+    establish that revenue basis; it does not establish EBITDA allocation,
+    asset-disposal profit or a missing income-tax account.
     9900 credit minus debit is a posted result, checked separately against its
     signed opening/closing movement; that result is not used to reverse-engineer
     revenue or to force agreement with the original workbook's rounded NI.
@@ -343,9 +355,10 @@ def _pnl_from_mapping(pnl, osv, issue):
     ni_source = (_cell(pnl[23], month) or {}).get('fact', {})
     source_ni = (_number(ni_source.get('source_cache', ni_source.get('value')))
                  if ni_source.get('source_status', ni_source.get('status')) in ('value', 'cached', 'calculated') else None)
+    revenue_confirmed = revenue_policy is not None
     flows = {}
     for row, account, credit, label in (
-        (8, '9000', False, 'Оборот 9000: состав выручки требует подтверждения'),
+        (8, '9000', revenue_confirmed, 'Выручка без НДС, до возвратов и скидок' if revenue_confirmed else 'Оборот 9000: состав выручки требует подтверждения'),
         (9, '9040', False, 'Оборот возвратов 9040'),
         (10, '9050', False, 'Оборот скидок 9050'),
         (11, '9100', False, 'Себестоимость: дебетовый оборот 9100'),
@@ -369,6 +382,36 @@ def _pnl_from_mapping(pnl, osv, issue):
         _set(pnl.get(row), month, year, None, revenue_provenance,
              'Net revenue basis9000/9040/9050/VAT is unconfirmed; no return, discount or tax policy is guessed',
              reason='actual_revenue_classification_required')
+    revenue = gross = None
+    if revenue_confirmed:
+        # The policy belongs to this immutable source and selected company.
+        # Closing entries on the opposite side are not netted; returns and
+        # discounts are deducted exactly once, and VAT is already excluded.
+        revenue_inputs = [flows[row][0] for row in (8, 9, 10)]
+        revenue_reason = 'absent_profit_account' if any(value is None for value in revenue_inputs) else 'nonfinite_result'
+        if all(value is not None for value in revenue_inputs):
+            revenue = _number(revenue_inputs[0] - revenue_inputs[1] - revenue_inputs[2])
+        _set(pnl.get(7), month, year, revenue, revenue_provenance,
+             'Confirmed source policy: credit9000 minus debit9040 minus debit9050 exactly once; VAT already excluded',
+             reason=revenue_reason if revenue is None else None)
+        if revenue is not None and flows[11][0] is not None:
+            gross = _number(revenue - flows[11][0])
+        gross_reason = revenue_reason if revenue is None else 'absent_profit_account' if flows[11][0] is None else 'nonfinite_result'
+        _set(pnl.get(12), month, year, gross, revenue_provenance + flows[11][1],
+             'Confirmed net revenue minus debit turnover9100; depreciation in COGS is not deducted again',
+             reason=gross_reason if gross is None else None)
+        with localcontext() as ratio_context:
+            ratio_context.prec = 34
+            margin = gross / revenue if gross is not None and revenue != ZERO else None
+        _set(pnl.get(13), month, year, margin, revenue_provenance + flows[11][1],
+             'Confirmed gross profit / confirmed net revenue',
+             reason=gross_reason if gross is None else 'zero_denominator' if revenue == ZERO else None)
+        # Raw closed9200 turnovers do not establish disposal result or its
+        # classification. Revenue confirmation alone cannot certify EBIT/PBT.
+        for row in (18, 21):
+            _set(pnl.get(row), month, year, None, revenue_provenance,
+                 'Revenue basis is confirmed; operating disposal classification remains unconfirmed',
+                 reason='counterpart_classification_required')
     _set(pnl[16], month, year, None, flows[17][1] + flows[11][1] + flows[15][1],
          'EBITDA requires confirmed revenue and depreciation allocation in COGS/OPEX;0200 is not subtracted twice',
          reason='depreciation_allocation_required')
@@ -388,6 +431,16 @@ def _pnl_from_mapping(pnl, osv, issue):
          reason=None if ni is not None else 'financial_result_rollforward_mismatch' if not reconciled else 'nonfinite_result')
     pnl[23].setdefault('source_label', pnl[23]['label'])
     pnl[23]['fact_label'] = 'Финансовый результат периода по 9900'
+    if revenue_confirmed:
+        with localcontext() as ratio_context:
+            ratio_context.prec = 34
+            result_margin = ni / revenue if ni is not None and revenue is not None and revenue != ZERO else None
+        _set(pnl.get(24), month, year, result_margin, ni_p + revenue_provenance,
+             'Posted financial result9900 / confirmed net revenue; not a certified IFRS net income margin',
+             reason=revenue_reason if revenue is None else 'financial_result_rollforward_mismatch' if ni is None else 'zero_denominator' if revenue == ZERO else None)
+        if pnl.get(24):
+            pnl[24].setdefault('source_label', pnl[24]['label'])
+            pnl[24]['fact_label'] = 'Рентабельность финансового результата'
     difference = source_ni - posted_result if source_ni is not None else None
     source_status = 'matches_rounding' if difference is not None and abs(difference) <= Decimal(1) else 'unavailable' if difference is None else 'mismatch'
     source_check = {'status': source_status, 'source_value': _text(source_ni),
@@ -402,22 +455,25 @@ def _pnl_from_mapping(pnl, osv, issue):
         issue('financial_result_rollforward_mismatch', 'warning', 'Результат 9900 не сходится с движением сальдо',
               f'Mapping · {year}-{month:02} · 9900',
               'Разница изменения сальдо и чистого оборота: ' + _text(movement_difference) + '; финансовый результат не выдан за подтвержденный.')
-    issue('actual_revenue_classification_pending', 'warning', 'Нужно подтвердить состав выручки 9000',
-          f'Mapping · {year}-{month:02} · 9000/9040/9050',
-          'Подтвердите состав 9000 и однократное включение возвратов/скидок/НДС. Исходные NetRevenue/Gross/EBIT/PBT сохранены как reported_source; сайт их не объявляет подтвержденным расчетом.')
+    if not revenue_confirmed:
+        issue('actual_revenue_classification_pending', 'warning', 'Нужно подтвердить состав выручки 9000',
+              f'Mapping · {year}-{month:02} · 9000/9040/9050',
+              'Подтвердите состав 9000 и однократное включение возвратов/скидок/НДС. Исходные NetRevenue/Gross/EBIT/PBT сохранены как reported_source; сайт их не объявляет подтвержденным расчетом.')
     disposal_debit, disposal_debit_p = osv.turnover('9200')
     disposal_credit, disposal_credit_p = osv.turnover('9200', True)
-    return {'ni': ni, 'ni_provenance': ni_p, 'revenue': None,
+    return {'ni': ni, 'ni_provenance': ni_p, 'revenue': revenue,
             'revenue_provenance': revenue_provenance,
             'cogs': flows[11][0], 'cogs_provenance': flows[11][1],
             'net_income_check': source_check,
-            'metadata': {'status': 'classification_pending', 'basis': 'mapping_named_account_turnovers',
+            'metadata': {'status': 'partial_classification_confirmed' if revenue_confirmed else 'classification_pending', 'basis': 'mapping_named_account_turnovers',
+                         'revenue_basis': CONFIRMED_REVENUE_BASIS if revenue_confirmed else 'unconfirmed',
+                         'net_revenue': _text(revenue), 'gross_profit': _text(gross),
                          'posted_financial_result': _text(ni), 'reported_source_net_income': _text(source_ni),
                          'result_account_movement': _text(movement),
                          'result_rollforward_difference': _text(movement_difference),
                          'result_rollforward_status': 'matches_rounding' if reconciled else 'mismatch',
                          'rounding_tolerance': '1 source unit',
-                         'net_revenue_status': 'actual_revenue_classification_required',
+                         'net_revenue_status': 'calculated' if revenue is not None else 'absent_profit_account' if revenue_confirmed else 'actual_revenue_classification_required',
                          'income_tax_status': 'registered_turnover' if flows[22][0] is not None else 'absent_profit_account',
                          'ebitda_status': 'depreciation_allocation_required',
                          'depreciation_status': 'credit_turnover_only_allocation_pending',
@@ -432,14 +488,14 @@ def _pnl_from_mapping(pnl, osv, issue):
                          'provenance': ni_p}}
 
 
-def _calculate_month(rows, pnl, osv, issue):
+def _calculate_month(rows, pnl, osv, issue, revenue_policy=None):
     year, month = osv.year, osv.month
     closing, debts, assets, liabilities, equity, ep = osv.totals()
     opening, opening_debts, opening_assets, _, opening_equity, oep = osv.totals(True)
     ap = _provenance([p for _, ps in closing.values() for p in ps])
     oap = _provenance([p for _, ps in opening.values() for p in ps])
     lp = _provenance([p for _, ps in debts.values() for p in ps])
-    pnl_result = _pnl_from_mapping(pnl, osv, issue)
+    pnl_result = _pnl_from_mapping(pnl, osv, issue, revenue_policy)
     ni, revenue, cogs = (pnl_result[k] for k in ('ni', 'revenue', 'cogs'))
     np, rp, cp = (pnl_result[k] for k in ('ni_provenance', 'revenue_provenance', 'cogs_provenance'))
     for row, (value, provenance) in closing.items():
@@ -481,20 +537,21 @@ def _calculate_month(rows, pnl, osv, issue):
         _set(rows[row], month, year, value, provenance, method, reason=reason)
     avg_assets, avg_equity = (opening_assets + assets) / 2, (opening_equity + equity) / 2
     days = Decimal(calendar.monthrange(year, month)[1])
-    ratio(62, ni, revenue, np + rp, 'Posted result9900 / confirmed net revenue; revenue classification pending', missing_reason='actual_revenue_classification_required')
+    revenue_reason = 'absent_profit_account' if revenue_policy is not None else 'actual_revenue_classification_required'
+    ratio(62, ni, revenue, np + rp, 'Posted result9900 / confirmed net revenue', missing_reason=revenue_reason)
     ratio(63, ni, avg_assets, np + ap + oap, 'Monthly NI / average opening and closing mapped assets; not annualised')
     ratio(64, ni, avg_equity, np + ep + oep, 'Monthly NI / average opening and closing independent equity; not annualised')
     ratio(65, (opening[9][0] + closing[9][0]) / 2 * days, revenue,
-          opening[9][1] + closing[9][1] + rp, 'Average opening/closing receivables / monthly net sales × actual calendar days', True, 'actual_revenue_classification_required')
+          opening[9][1] + closing[9][1] + rp, 'Average opening/closing receivables / monthly net sales × actual calendar days', True, revenue_reason)
     ratio(66, (opening[13][0] + closing[13][0]) / 2 * days, cogs,
           opening[13][1] + closing[13][1] + cp, 'Average opening/closing inventories / monthly COGS × actual calendar days', True)
-    ratio(67, closing[9][0], revenue, closing[9][1] + rp, 'Closing receivables / monthly net sales', missing_reason='actual_revenue_classification_required')
-    ratio(68, closing[8][0], revenue, closing[8][1] + rp, 'Closing monetary assets / monthly net sales; restrictions unconfirmed', missing_reason='actual_revenue_classification_required')
+    ratio(67, closing[9][0], revenue, closing[9][1] + rp, 'Closing receivables / monthly net sales', missing_reason=revenue_reason)
+    ratio(68, closing[8][0], revenue, closing[8][1] + rp, 'Closing monetary assets / monthly net sales; restrictions unconfirmed', missing_reason=revenue_reason)
     accum_da, dp = osv.amount(('0200',), credit=True)
     gross_ppe, pp = osv.amount(('0100',))
     ratio(69, accum_da, gross_ppe, dp + pp, 'Accumulated closing depreciation / gross closing PPE')
     ratio(70, revenue, (opening[18][0] + closing[18][0]) / 2,
-          rp + opening[18][1] + closing[18][1], 'Monthly net sales / average opening and closing net PPE', missing_reason='actual_revenue_classification_required')
+          rp + opening[18][1] + closing[18][1], 'Monthly net sales / average opening and closing net PPE', missing_reason=revenue_reason)
     current_assets = assets - closing[18][0]
     current_liabilities = liabilities - debts[31][0]
     _set(rows[72], month, year, current_assets - current_liabilities, ap + lp, 'Current assets minus current liabilities;7800 excluded,6800 included')

@@ -5,7 +5,7 @@ from decimal import Decimal
 
 from app.financial_statement_calculations import (
     ASSET_GROUPS, BS_ACCOUNTS, CHART_REGISTRATION, CORE_NAMES,
-    LABELS, apply_mapping_reports,
+    LABELS, CONFIRMED_REVENUE_BASIS, apply_mapping_reports,
 )
 
 BALANCE_LABELS = {
@@ -101,14 +101,103 @@ def cell(reports, n, month=1, report='balance', side='fact'):
     return next(c for c in row['cells'] if c['month'] == month)[side]
 
 
-def calculate(reports, records, coverage, sheets, year=2026):
+def calculate(reports, records, coverage, sheets, year=2026, revenue_policy=None):
     issues = []
     metadata = apply_mapping_reports(reports, records, year, coverage, sheets,
-                                     lambda *args: issues.append(args))
+                                     lambda *args: issues.append(args), revenue_policy)
     return metadata, issues
 
 
 class MappingCalculationTests(unittest.TestCase):
+    def test_confirmed_revenue_deducts_returns_once_uses_credit_and_preserves_source_and_plan(self):
+        reports, records, coverage, sheets = fixture()
+        set_turnover(records, 2026, 1, '9000', 999, 100)
+        set_turnover(records, 2026, 1, '9040', 2, 97)
+        set_turnover(records, 2026, 1, '9050', 3, 89)
+        original = copy.deepcopy(reports)
+        original_records = copy.deepcopy(records)
+        policy = {'basis': CONFIRMED_REVENUE_BASIS, 'status': 'confirmed', 'revision': 1}
+        metadata, issues = calculate(reports, records, coverage, sheets, revenue_policy=policy)
+        self.assertEqual(cell(reports, 8, report='pnl')['value'], '100')
+        self.assertEqual(cell(reports, 8, report='pnl')['provenance'][0]['measure'], 'turnover_credit')
+        self.assertEqual(cell(reports, 7, report='pnl')['value'], '95')
+        self.assertEqual(cell(reports, 12, report='pnl')['value'], '55')
+        self.assertAlmostEqual(float(cell(reports, 13, report='pnl')['value']), 55 / 95)
+        self.assertAlmostEqual(float(cell(reports, 24, report='pnl')['value']), 10 / 95)
+        self.assertEqual(cell(reports, 23, report='pnl')['value'], '10')
+        for row in (62, 65, 67, 68, 70):
+            self.assertEqual(cell(reports, row)['status'], 'calculated')
+        self.assertAlmostEqual(float(cell(reports, 65)['value']), 100 / 95 * 31)
+        self.assertIsNone(cell(reports, 16, report='pnl')['value'])
+        self.assertEqual(cell(reports, 16, report='pnl')['reason'], 'depreciation_allocation_required')
+        for row in (18, 21):
+            self.assertIsNone(cell(reports, row, report='pnl')['value'])
+            self.assertEqual(cell(reports, row, report='pnl')['reason'], 'counterpart_classification_required')
+        self.assertEqual(metadata['actual_pnl_classification_status'], 'partial_classification_confirmed')
+        self.assertEqual(metadata['revenue_policy_revision'], 1)
+        self.assertNotIn('actual_revenue_basis', {f['key'] for f in metadata['required_fields']})
+        self.assertNotIn('actual_revenue_classification_pending', {i[0] for i in issues})
+        for key in ('pnl', 'balance'):
+            for old, new in zip(original[key]['rows'], reports[key]['rows']):
+                self.assertEqual([c['plan'] for c in old['cells']], [c['plan'] for c in new['cells']])
+        self.assertEqual(reports['pnl']['source_actual']['rows'][0]['cells'][0]['fact'], cell(original, 7, report='pnl'))
+        self.assertEqual(records, original_records)
+
+    def test_confirmed_basis_preserves_missing_accounts_signed_corrections_and_zero_margin(self):
+        policy = {'basis': CONFIRMED_REVENUE_BASIS, 'status': 'confirmed'}
+        for absent in ('9000', '9040', '9050', '9100', '9800'):
+            with self.subTest(absent=absent):
+                reports, records, coverage, sheets = fixture()
+                records[(2026, 1)] = [r for r in records[(2026, 1)] if r['account'] != absent]
+                calculate(reports, records, coverage, sheets, revenue_policy=policy)
+                if absent in ('9000', '9040', '9050'):
+                    self.assertIsNone(cell(reports, 7, report='pnl')['value'])
+                    self.assertEqual(cell(reports, 7, report='pnl')['reason'], 'absent_profit_account')
+                    self.assertIsNone(cell(reports, 65)['value'])
+                elif absent == '9100':
+                    self.assertEqual(cell(reports, 7, report='pnl')['value'], '100')
+                    self.assertIsNone(cell(reports, 12, report='pnl')['value'])
+                else:
+                    self.assertEqual(cell(reports, 12, report='pnl')['value'], '60')
+                    self.assertIsNone(cell(reports, 22, report='pnl')['value'])
+        reports, records, coverage, sheets = fixture()
+        set_turnover(records, 2026, 1, '9040', '-2.5', '-2.5')
+        set_turnover(records, 2026, 1, '9050', '2.5', '2.5')
+        calculate(reports, records, coverage, sheets, revenue_policy=policy)
+        self.assertEqual(cell(reports, 7, report='pnl')['value'], '100.0')
+        reports, records, coverage, sheets = fixture()
+        set_turnover(records, 2026, 1, '9000', 100, 0)
+        calculate(reports, records, coverage, sheets, revenue_policy=policy)
+        self.assertEqual(cell(reports, 7, report='pnl')['value'], '0')
+        self.assertEqual(cell(reports, 12, report='pnl')['value'], '-40')
+        for row in (13, 24):
+            self.assertEqual(cell(reports, row, report='pnl')['reason'], 'zero_denominator')
+
+    def test_policy_needs_explicit_confirmation_and_cannot_unlock_an_unrecognised_profile(self):
+        for policy in ({'basis': CONFIRMED_REVENUE_BASIS}, {'basis': CONFIRMED_REVENUE_BASIS, 'status': 'unconfirmed'},
+                       {'basis': 'other', 'status': 'confirmed'}):
+            reports, records, coverage, sheets = fixture()
+            calculate(reports, records, coverage, sheets, revenue_policy=policy)
+            self.assertIsNone(cell(reports, 7, report='pnl')['value'])
+        reports, records, coverage, sheets = fixture()
+        next(r for r in reports['pnl']['rows'] if r['row'] == 7)['row'] = 27
+        metadata, _ = calculate(reports, records, coverage, sheets,
+                                 revenue_policy={'basis': CONFIRMED_REVENUE_BASIS, 'status': 'confirmed'})
+        self.assertEqual(metadata['status'], 'source_only')
+        self.assertIsNone(metadata['profile'])
+
+    def test_confirmed_revenue_cannot_overflow_into_finite_display_or_margin(self):
+        reports, records, coverage, sheets = fixture()
+        set_turnover(records, 2026, 1, '9000', '1e308', '1e308')
+        set_turnover(records, 2026, 1, '9040', '-1e308', '-1e308')
+        calculate(reports, records, coverage, sheets,
+                  revenue_policy={'basis': CONFIRMED_REVENUE_BASIS, 'status': 'confirmed'})
+        for row in (7, 12, 13, 24):
+            self.assertIsNone(cell(reports, row, report='pnl')['value'])
+            self.assertEqual(cell(reports, row, report='pnl')['reason'], 'nonfinite_result')
+        for row in (62, 65, 67, 68, 70):
+            self.assertIsNone(cell(reports, row)['value'])
+
     def test_corrected_balance_independent_capital_provenance_and_source_preserved(self):
         reports, records, coverage, sheets = fixture()
         before = copy.deepcopy(reports)

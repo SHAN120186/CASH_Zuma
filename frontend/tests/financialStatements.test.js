@@ -504,6 +504,117 @@ test('incoming report selection applies only an available year and never echoes 
 });
 function periodPayloadWithId(id){const payload=periodPayload();payload.selected=id;payload.source.id=id;payload.sources[0].id=id;return payload;}
 
+const revenuePolicyBasis='gross_excluding_vat_before_returns_discounts';
+function revenuePolicyPayload({confirmed=false,allowed=true,revision=0}={}){
+ const payload=periodPayload();
+ payload.can_confirm_revenue_basis=allowed;
+ payload.source.source_sha256='a'.repeat(64);
+ payload.source.calculation={profile:'uzbek_grouped_chart_finmodel_v1'};
+ payload.source.revenue_policy={basis:confirmed?revenuePolicyBasis:'unconfirmed',status:confirmed?'confirmed':'unconfirmed',revision,
+  source_sha256:payload.source.source_sha256,confirmed_at:confirmed?'2026-10-11T12:00:00Z':null};
+ const pnl=payload.source.reports.pnl;
+ pnl.rows.find(row=>row.row===23).fact_label='Финансовый результат по счетам (9900)';
+ for(const number of [7,8,12,13,23,24])for(const pair of pnl.rows.find(row=>row.row===number).cells){
+  pair.fact.status='calculated';
+  if(!confirmed&&[7,12,13,24].includes(number))pair.fact={value:null,status:'requires_assumptions',reason:'actual_revenue_classification_required'};
+ }
+ return payload;
+}
+
+test('revenue basis starts unconfirmed and can only be explicitly changed inside closed help',async t=>{
+ const calls=[],payload=revenuePolicyPayload();
+ const view=mount(component,{company,canImport:true,type:'pnl',api:async(...args)=>{calls.push(args);return payload;}});t.after(view.unmount);await settle();
+ assert.equal(view.state.revenueBasis,'unconfirmed');assert.equal(view.state.confirmedRevenuePolicy,false);
+ assert.doesNotMatch(visibleText(view.container),/Правило выручки|Сохранить правило выручки/);
+ await openHelp(view);
+ const form=find(view.container,node=>node.tag==='form'&&String(node.props.class||'').includes('statement-revenue-form'));
+ assert.ok(form);assert.equal(find(form,node=>node.tag==='button').props.disabled,true);
+ assert.match(text(view.container),/Состав выручки не подтверждён/);
+ assert.doesNotMatch(text(view.container),/Чистая выручка = выручка 9000/);
+ await view.state.saveRevenuePolicy();assert.equal(calls.length,1);
+});
+
+test('explicit revenue confirmation uses current company, source hash and revision, reloads reports without reupload and preserves period controls',async t=>{
+ const calls=[],editing=[],initial=revenuePolicyPayload({revision:3}),updated=revenuePolicyPayload({confirmed:true,revision:4});
+ let reads=0;
+ const view=mount(component,{company,canImport:true,type:'pnl',onEditing:value=>editing.push(value),api:async(url,options)=>{
+  calls.push({url,options});
+  if(options?.method==='POST')return{company_id:2,source_id:1,changed:true,policy:updated.source.revenue_policy};
+  return reads++===0?initial:updated;
+ }});t.after(view.unmount);await settle();view.state.setPer('q1');view.state.unit='m';view.state.mode='actual';await openHelp(view);
+ view.state.revenueBasis=revenuePolicyBasis;await settle();
+ await view.state.saveRevenuePolicy();await settle();
+ assert.deepEqual(calls.map(item=>item.url),['/api/financial-statements?company_id=2','/api/financial-statements/1/revenue-policy?company_id=2','/api/financial-statements?company_id=2&source_id=1']);
+ assert.deepEqual(JSON.parse(calls[1].options.body),{basis:revenuePolicyBasis,expected_revision:3,source_sha256:'a'.repeat(64)});
+ assert.deepEqual(calls[1].options.headers,{'Content-Type':'application/json'});
+ assert.equal(view.state.confirmedRevenuePolicy,true);assert.equal(view.state.helpOpen,true);assert.equal(view.state.revenuePolicyChanged,false);
+ assert.equal(view.state.per,'q1');assert.equal(view.state.unit,'m');assert.equal(view.state.mode,'actual');
+ assert.match(text(view.container),/Правило выручки сохранено\. Отчёт пересчитан из Mapping/);
+ assert.match(text(mainTable(view)),/Выручка без НДС/);assert.match(text(mainTable(view)),/Рентабельность финансового результата/);
+ assert.doesNotMatch(text(mainTable(view)),/Состав выручки уточняется|Чистая маржа/);
+ assert.deepEqual(editing,[true,false]);assert.equal(view.state.progress.completed,2);assert.equal(view.state.progress.total,2);
+});
+
+test('revenue policy editing requires both returned permission and import rights; another company is never confirmed automatically',async t=>{
+ for(const [canImport,allowed] of [[false,true],[true,false],[false,false]]){
+  const calls=[],payload=revenuePolicyPayload({allowed});
+  const view=mount(component,{company,canImport,type:'pnl',api:async(...args)=>{calls.push(args);return payload;}});t.after(view.unmount);await settle();await openHelp(view);
+  assert.equal(view.state.canConfirmRevenueBasis,false);assert.equal(all(view.container,node=>node.tag==='form').length,0);
+  view.state.revenueBasis=revenuePolicyBasis;await view.state.saveRevenuePolicy();assert.equal(calls.length,1);assert.equal(view.state.confirmedRevenuePolicy,false);
+ }
+});
+
+test('a stale revenue revision error leaves the old source and calculations untouched',async t=>{
+ const payload=revenuePolicyPayload({revision:7}),calls=[];
+ const view=mount(component,{company,canImport:true,type:'pnl',api:async(url,options)=>{calls.push(url);if(options?.method==='POST')throw Error('Synthetic conflict: reload required');return payload;}});t.after(view.unmount);await settle();await openHelp(view);
+ view.state.revenueBasis=revenuePolicyBasis;await view.state.saveRevenuePolicy();await settle();
+ assert.equal(calls.length,2);assert.equal(view.state.revenuePolicy.revision,7);assert.equal(view.state.confirmedRevenuePolicy,false);
+ assert.equal(view.state.source.reports.pnl.rows.find(row=>row.row===7).cells[0].fact.value,null);
+ const policySection=find(view.container,node=>String(node.props?.class||'').includes('statement-revenue-policy'));
+ assert.match(text(find(policySection,node=>node.props?.role==='alert')),/Synthetic conflict/);assert.equal(view.state.savingRevenueBasis,false);
+});
+
+test('a company switch during revenue saving discards late success without loading or showing the previous company',async t=>{
+ const payload=revenuePolicyPayload(),other=revenuePolicyPayload();other.company_id=7;other.source.company_id=7;other.can_confirm_revenue_basis=false;
+ let complete;const calls=[];
+ const view=mount(component,{company,canImport:true,type:'pnl',api:async(url,options)=>{
+  calls.push(url);if(options?.method==='POST')return new Promise(resolve=>complete=resolve);
+  return url.includes('company_id=7')?other:payload;
+ }});t.after(view.unmount);await settle();await openHelp(view);view.state.revenueBasis=revenuePolicyBasis;
+ const saving=view.state.saveRevenuePolicy();await settle();assert.equal(view.state.savingRevenueBasis,true);
+ view.app._instance.props.company={id:7,name:'Other synthetic company'};await settle();
+ complete({company_id:2,source_id:1,changed:true,policy:{basis:revenuePolicyBasis}});await saving;await settle();
+ assert.equal(view.state.source.company_id,7);assert.equal(view.state.confirmedRevenuePolicy,false);assert.equal(view.state.revenueBasis,'unconfirmed');
+ assert.equal(view.state.revenuePolicyMessage,'');assert.equal(view.state.revenuePolicyError,'');assert.equal(view.state.helpOpen,false);
+ assert.deepEqual(calls,['/api/financial-statements?company_id=2','/api/financial-statements/1/revenue-policy?company_id=2','/api/financial-statements?company_id=7']);
+});
+
+test('saved revenue policy cannot apply a reloaded different source and the UI explains that refresh failed',async t=>{
+ const payload=revenuePolicyPayload(),other=revenuePolicyPayload({confirmed:true,revision:1});other.source.source_sha256='b'.repeat(64);
+ let reads=0;
+ const view=mount(component,{company,canImport:true,type:'pnl',api:async(url,options)=>options?.method==='POST'?{company_id:2,source_id:1,changed:true}:reads++===0?payload:other});t.after(view.unmount);await settle();await openHelp(view);
+ view.state.revenueBasis=revenuePolicyBasis;await view.state.saveRevenuePolicy();await settle();
+ assert.equal(view.state.source.source_sha256,'a'.repeat(64));assert.equal(view.state.confirmedRevenuePolicy,false);
+ const policySection=find(view.container,node=>String(node.props?.class||'').includes('statement-revenue-policy'));
+ assert.match(text(find(policySection,node=>node.props?.role==='alert')),/Правило сохранено, но отчёт не обновлён/);
+});
+
+test('RU/UZ translates confirmed revenue basis and financial-result margin without changing the plan or masking unresolved disposal classification',async t=>{
+ const previous=lang.value;t.after(()=>setLang(previous));setLang('ru');
+ const payload=revenuePolicyPayload({confirmed:true,revision:1}),pnl=payload.source.reports.pnl;
+ pnl.rows.find(row=>row.row===18).cells[0].fact={value:null,status:'requires_assumptions',reason:'counterpart_classification_required'};
+ const planSnapshot=JSON.stringify(pnl.rows.map(row=>row.cells.map(pair=>pair.plan)));
+ const view=mount(component,{company,canImport:true,type:'pnl',api:async()=>payload});t.after(view.unmount);await settle();await openHelp(view);
+ assert.match(text(mainTable(view)),/Рентабельность финансового результата/);assert.match(text(mainTable(view)),/Нужно классифицировать результат выбытия активов по счёту 9200/);
+ assert.match(text(view.container),/Подтверждено.*Выручка 9000 без НДС, до возвратов и скидок/);
+ setLang('uz');await settle();
+ assert.match(text(mainTable(view)),/QQSsiz tushum/);assert.match(text(mainTable(view)),/Moliyaviy natija rentabelligi/);
+ assert.match(text(mainTable(view)),/9200 hisobvarag‘i/);assert.doesNotMatch(text(mainTable(view)),/counterpart_classification_required|Состав выручки уточняется/);
+ assert.match(text(view.container),/Tushum qoidasi/);assert.match(text(view.container),/QQS qayta chegirilmaydi/);
+ view.state.mode='plan';await settle();assert.match(text(mainTable(view)),/Чистая маржа|Sof marja/);
+ assert.equal(JSON.stringify(pnl.rows.map(row=>row.cells.map(pair=>pair.plan))),planSnapshot);
+});
+
 test('changing company resets open help and applies no year from the previous company',async t=>{
  const source=periodPayload();const next=periodPayload();next.company_id=7;next.source.company_id=7;next.source.year=2027;
  for(const report of Object.values(next.source.reports))for(const period of report.periods)period.period=period.period.replace('2026','2027');

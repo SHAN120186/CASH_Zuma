@@ -1,7 +1,9 @@
 {
-  "version": "2.24.1",
+  "version": "2.25.0",
   "date": "2026-10-11",
   "changes": [
+    "В справке P&L можно сохранить подтверждённое правило фактической выручки отдельно для выбранной компании и исходника. Сохранение проверяет права, версию и файл, фиксируется в журнале; исходный Excel и снимок плана сохраняются.",
+    "После подтверждения выручки без НДС до возвратов и скидок чистая выручка рассчитывается из Mapping с однократным вычетом 9040 и 9050. Пересчитываются валовая прибыль, маржи и связанные показатели баланса; отсутствующие счета и распределение амортизации не угадываются.",
     "Уточнено пояснение отсутствующего счёта в P&L на русском и узбекском: отсутствие счёта доходов или налога больше не обозначается как отсутствие финансового результата. Расчёты не изменены.",
     "P&L и баланс упрощены для всех компаний: источник, загрузка новой версии, методика и замечания перенесены в закрытую справку. В отчёте остаются период, карточки, таблицы и понятные причины неподтверждённых значений.",
     "Год, период, масштаб и режим сохраняются при переходе между P&L, балансом и Cash Flow. При смене компании выбор сбрасывается; источники и данные фирм остаются раздельными.",
@@ -39,6 +41,8 @@
     "Длинные названия файлов и кнопки выбора шаблона переносятся на узком экране. В ТЭО дата архива отдельно обозначена и не подменяет начало финансового прогноза."
   ],
   "changes_uz": [
+    "P&L yordam bo‘limida tanlangan kompaniya va manba uchun haqiqiy tushumning tasdiqlangan qoidasini saqlash mumkin. Saqlashda huquqlar, versiya va fayl tekshiriladi, jurnalga yoziladi; asl Excel va reja nusxasi saqlanadi.",
+    "Qaytarishlar va chegirmalardan oldingi QQSsiz tushum tasdiqlangach, sof tushum Mappingdan 9040 va 9050 bir marta ayirilgan holda hisoblanadi. Yalpi foyda, marjalar va balansning bog‘liq ko‘rsatkichlari qayta hisoblanadi; yetishmayotgan hisoblar va amortizatsiya taqsimoti taxmin qilinmaydi.",
     "P&Ldagi yetishmayotgan hisobvaraq izohi ruscha va o‘zbekcha aniqlashtirildi: daromad yoki soliq hisobvarag‘i yo‘qligi endi moliyaviy natija yo‘qligi deb ko‘rsatilmaydi. Hisob-kitoblar o‘zgarmadi.",
     "P&L va balans barcha kompaniyalar uchun soddalashtirildi: manba, yangi versiya yuklash, usul va izohlar yopiq yordam boʻlimiga koʻchirildi. Hisobotda davr, kartalar, jadvallar va tasdiqlanmagan qiymatlar sabablari qoldi.",
     "P&L, balans va Cash Flow orasida yil, davr, masshtab va rejim saqlanadi. Kompaniya almashtirilganda tanlov tiklanadi; kompaniyalar manbalari va maʼlumotlari ajratilgan.",

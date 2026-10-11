@@ -13,6 +13,8 @@ const emit=defineEmits(['editing','selection-change']);
 const payload=ref(null),selected=ref(''),month=ref(null),loading=ref(false),uploading=ref(false),error=ref('');
 const year=ref(null),per=ref('month'),start=ref(1),end=ref(1),mode=ref('compare'),unit=ref('x'),showMonths=ref(false),collapsed=ref([]);
 const helpOpen=ref(false),helpPanel=ref(null),uploadInput=ref(null);
+const revenueBasis=ref('unconfirmed'),savingRevenueBasis=ref(false),revenuePolicyError=ref(''),revenuePolicyMessage=ref('');
+const confirmedRevenueBasis='gross_excluding_vat_before_returns_discounts';
 const helpId=computed(()=>'statement-help-'+props.company.id+'-'+props.type);
 const monthNames=[N_('Январь'),N_('Февраль'),N_('Март'),N_('Апрель'),N_('Май'),N_('Июнь'),N_('Июль'),N_('Август'),N_('Сентябрь'),N_('Октябрь'),N_('Ноябрь'),N_('Декабрь')];
 const periodOptions=[['year',N_('Год')],['q1',N_('I кв.')],['q2',N_('II кв.')],['q3',N_('III кв.')],['q4',N_('IV кв.')],['custom',N_('Свой период')],['month',N_('Месяц')]];
@@ -21,6 +23,10 @@ const progress=ref({active:false,completed:0,total:0,label:'',error:''});
 const progressController=createOperationProgress(value=>progress.value=value);
 let active=true,requestId=0,lastSelection='';
 const source=computed(()=>payload.value?.source);
+const revenuePolicy=computed(()=>source.value?.revenue_policy || {basis:'unconfirmed',status:'unconfirmed',revision:0});
+const confirmedRevenuePolicy=computed(()=>revenuePolicy.value.status==='confirmed'&&revenuePolicy.value.basis===confirmedRevenueBasis&&source.value?.source_sha256&&revenuePolicy.value.source_sha256===source.value.source_sha256);
+const canConfirmRevenueBasis=computed(()=>props.canImport&&payload.value?.can_confirm_revenue_basis===true&&friendlyProfile.value&&Boolean(source.value?.source_sha256));
+const revenuePolicyChanged=computed(()=>revenueBasis.value!==revenuePolicy.value.basis);
 const report=computed(()=>source.value?.reports?.[props.type]);
 const profileUnrecognized=computed(()=>source.value?.calculation?.reason==='profile_unrecognized'||report.value?.calculation?.reason==='profile_unrecognized');
 const friendlyProfile=computed(()=>!profileUnrecognized.value&&(source.value?.calculation?.profile==='uzbek_grouped_chart_finmodel_v1'||report.value?.calculation?.profile==='uzbek_grouped_chart_finmodel_v1'));
@@ -70,10 +76,11 @@ const rowLabel=row=>!profileUnrecognized.value && row?.fact_label && mode.value!
 const displayRowLabel=row=>{
  if(!friendlyProfile.value)return rowLabel(row);
  if(props.type==='pnl'&&mode.value!=='plan'&&factIsCalculated(row)){
-  if(Number(row.row)===8)return N_('Оборот выручки');
+  if(Number(row.row)===8)return confirmedRevenuePolicy.value?N_('Выручка без НДС'):N_('Оборот выручки');
   if(Number(row.row)===17)return N_('Оборот амортизационного счёта');
   if(Number(row.row)===20)return N_('Финансовые расходы');
   if(Number(row.row)===23&&mappingProfit.value)return N_('Финансовый результат');
+  if(Number(row.row)===24&&mappingProfit.value)return N_('Рентабельность финансового результата');
  }
  if(props.type==='balance'&&rowCells(row).fact?.status==='calculated'&&mode.value!=='plan'){
   if(Number(row.row)===52)return N_('Нераспределённая прибыль прошлых лет');
@@ -86,7 +93,7 @@ const visibleReasons=row=>{
   const cell=rowCells(row)[side];return cellNumber(cell)===null?reasonLabel(cell):'';
  });
  if(friendlyProfile.value&&props.type==='pnl'&&mode.value!=='plan'&&factIsCalculated(row)){
-  if(Number(row.row)===8)reasons.push(tx('Состав выручки уточняется.'));
+  if(Number(row.row)===8)reasons.push(tx(confirmedRevenuePolicy.value?N_('До возвратов и скидок. НДС повторно не вычитается.'):N_('Состав выручки уточняется.')));
   if(Number(row.row)===17)reasons.push(tx('Распределение амортизации уточняется.'));
   if(Number(row.row)===20)reasons.push(tx('Включены все финансовые расходы.'));
  }
@@ -151,7 +158,7 @@ watch([year,per,start,end,month,unit,mode],()=>{
 let sourceScope='';
 function resetMonth() {
   const nextScope=props.company.id+':'+source.value?.id;
-  if(sourceScope!==nextScope){sourceScope=nextScope;year.value=years.value.includes(source.value?.year)?source.value.year:years.value[0]??null;per.value='month';collapsed.value=[];showMonths.value=false;helpOpen.value=false;}
+  if(sourceScope!==nextScope){sourceScope=nextScope;year.value=years.value.includes(source.value?.year)?source.value.year:years.value[0]??null;per.value='month';collapsed.value=[];showMonths.value=false;helpOpen.value=false;revenuePolicyError.value='';revenuePolicyMessage.value='';}
   if(!years.value.includes(Number(year.value)))year.value=years.value[0]??null;
   if(!periods.value.some(item=>Number(item.month)===Number(month.value)))month.value=periods.value[0]?.month??null;
   applySelection();
@@ -161,6 +168,7 @@ function assertScope(value,companyId) {
   if(!sourceScopeMatches(value,companyId)) throw Error(N_('Источник относится к другой компании. Обновите страницу.'));
 }
 async function load(sourceId=selected.value) {
+  if(savingRevenueBasis.value)return;
   const id=++requestId,companyId=props.company.id;
   loading.value=true;error.value='';payload.value=null;
   const ticket=progressController.begin(N_('Загружаем проверку исходных данных'),1);
@@ -174,7 +182,7 @@ async function load(sourceId=selected.value) {
 }
 async function upload(event) {
   const file=event.target.files?.[0];event.target.value='';
-  if(!file || uploading.value || !props.canImport)return;
+  if(!file || uploading.value || savingRevenueBasis.value || !props.canImport)return;
   const problem=statementFileProblem(file);if(problem){error.value=problem;return;}
   const id=++requestId,companyId=props.company.id;
   uploading.value=true;loading.value=false;error.value='';
@@ -194,10 +202,35 @@ async function upload(event) {
   }catch(e){if(active&&id===requestId&&props.company.id===companyId&&e.name!=='AbortError'){error.value=e.message;progressController.fail(ticket,e);}}
   finally{if(active&&id===requestId&&props.company.id===companyId)uploading.value=false;}
 }
-watch(uploading,value=>emit('editing',value));
-watch(()=>props.company.id,()=>{requestId++;selected.value='';month.value=null;payload.value=null;helpOpen.value=false;uploading.value=false;progressController.reset();load('');});
+async function saveRevenuePolicy() {
+  if(!canConfirmRevenueBasis.value||!revenuePolicyChanged.value||savingRevenueBasis.value||loading.value||uploading.value)return;
+  const id=++requestId,companyId=props.company.id,sourceId=source.value.id,sha256=source.value.source_sha256;
+  const basis=revenueBasis.value,revision=revenuePolicy.value.revision;
+  savingRevenueBasis.value=true;revenuePolicyError.value='';revenuePolicyMessage.value='';
+  const ticket=progressController.begin(N_('Сохраняем правило выручки'),2);
+  let saved=false;
+  try{
+    const result=await props.api('/api/financial-statements/'+encodeURIComponent(sourceId)+'/revenue-policy?company_id='+encodeURIComponent(companyId),{
+      method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({basis,expected_revision:revision,source_sha256:sha256})});
+    if(!active||id!==requestId||props.company.id!==companyId)return;
+    assertScope(result,companyId);
+    if(String(result.source_id)!==String(sourceId))throw Error(N_('Источник относится к другой компании. Обновите страницу.'));
+    saved=true;progressController.advance(ticket,1,N_('Правило сохранено. Обновляем расчёт'));
+    const value=await props.api(statementUrl(companyId,sourceId));
+    if(!active||id!==requestId||props.company.id!==companyId)return;
+    assertScope(value,companyId);
+    if(String(value.source?.id)!==String(sourceId)||value.source?.source_sha256!==sha256)throw Error(N_('Источник изменился. Обновите страницу и проверьте выбранную книгу.'));
+    payload.value=value;selected.value=String(sourceId);resetMonth();publishSelection();
+    revenuePolicyMessage.value=N_('Правило выручки сохранено. Отчёт пересчитан из Mapping.');
+    progressController.complete(ticket,N_('Расчёт выручки обновлён'));
+  }catch(e){if(active&&id===requestId&&props.company.id===companyId&&e.name!=='AbortError'){revenuePolicyError.value=saved?N_('Правило сохранено, но отчёт не обновлён. Обновите страницу.'):e.message;progressController.fail(ticket,e);}}
+  finally{if(active&&id===requestId&&props.company.id===companyId)savingRevenueBasis.value=false;}
+}
+watch(()=>[source.value?.id,source.value?.source_sha256,revenuePolicy.value.basis,revenuePolicy.value.revision],()=>{revenueBasis.value=revenuePolicy.value.basis;});
+watch([uploading,savingRevenueBasis],()=>emit('editing',uploading.value||savingRevenueBasis.value));
+watch(()=>props.company.id,()=>{requestId++;selected.value='';month.value=null;payload.value=null;helpOpen.value=false;uploading.value=false;savingRevenueBasis.value=false;revenuePolicyError.value='';revenuePolicyMessage.value='';progressController.reset();load('');});
 watch(()=>props.type,resetMonth);
-watch(()=>props.refresh,()=>{if(!uploading.value)load();});
+watch(()=>props.refresh,()=>{if(!uploading.value&&!savingRevenueBasis.value)load();});
 onMounted(()=>load(props.selection?.sourceId??''));
 onUnmounted(()=>{active=false;requestId++;progressController.reset();emit('editing',false);});
 </script>
@@ -249,6 +282,21 @@ onUnmounted(()=>{active=false;requestId++;progressController.reset();emit('editi
           <p v-if="hasNorms" class="sub">{{tx('Ориентиры приведены из исходной книги. Их методика и пороги требуют согласования; это не оценка соответствия МСФО.')}}</p>
           <p v-if="type==='balance'&&!profileUnrecognized" class="sub">{{tx('ROA, ROE и оборачиваемость используют суммы за период и средние начальные и конечные остатки. Дни считаются по календарю. Если базы нет, показан прочерк с причиной.')}}</p>
         </section>
+        <section v-if="source?.revenue_policy&&friendlyProfile" class="statement-help-section statement-revenue-policy"><h4>{{tx('Правило выручки')}}</h4>
+          <p v-if="confirmedRevenuePolicy" class="sub"><span class="pill fact">{{tx('Подтверждено')}}</span> {{tx('Выручка 9000 без НДС, до возвратов и скидок.')}} <span v-if="revenuePolicy.confirmed_at">{{dateLabel(revenuePolicy.confirmed_at)}}</span></p>
+          <p v-else class="sub">{{tx('Состав выручки не подтверждён.')}}</p>
+          <p v-if="confirmedRevenuePolicy||revenueBasis===confirmedRevenueBasis" class="sub">{{tx('Чистая выручка = выручка 9000 − возвраты 9040 − скидки 9050. Каждое уменьшение учитывается один раз; НДС повторно не вычитается.')}}</p>
+          <p class="sub">{{tx('Правило действует только для выбранной компании и этой версии книги.')}}</p>
+          <form v-if="canConfirmRevenueBasis" class="statement-revenue-form" @submit.prevent="saveRevenuePolicy">
+            <label>{{tx('Состав выручки в Mapping')}}<select v-model="revenueBasis" :disabled="savingRevenueBasis||loading||uploading">
+              <option value="unconfirmed">{{tx('Не подтверждён')}}</option>
+              <option :value="confirmedRevenueBasis">{{tx('Без НДС, до возвратов и скидок')}}</option>
+            </select></label>
+            <button type="submit" :disabled="!revenuePolicyChanged||savingRevenueBasis||loading||uploading">{{tx('Сохранить правило выручки')}}</button>
+          </form>
+          <p v-if="revenuePolicyError" class="error" role="alert">{{tx(revenuePolicyError)}}</p>
+          <p v-if="revenuePolicyMessage" class="sub" role="status" aria-live="polite">{{tx(revenuePolicyMessage)}}</p>
+        </section>
         <section v-if="auditRows.length" class="statement-help-section"><h4>{{tx('Сверки исходной модели')}}</h4>
           <div class="table-scroll" tabindex="0" role="region" :aria-label="tx('Сверки исходной модели')"><table class="statement-table"><thead><tr><th>{{tx('Показатель')}}</th><th v-for="field in subcolumns" :key="field">{{tx(columnLabels[field])}}</th><th>{{tx('Источник и статус')}}</th></tr></thead><tbody><tr v-for="row in auditRows" :key="row.row"><th scope="row">{{tx(rowLabel(row))}}</th><td v-for="field in subcolumns" :key="field" class="statement-value">{{row.kind==='section'?'':field==='plan'||field==='fact'?formatCell(row,rowCells(row)[field]):field==='deviation'?displayDeviation(row):displayPercent(row)}}</td><td><div v-for="side in mode==='compare'?['plan','fact']:[primarySide]" :key="side" class="statement-provenance"><b>{{tx(columnLabels[side])}}</b>: {{stateLabel(rowCells(row)[side])}}<small>{{reasonLabel(rowCells(row)[side])}}</small><div v-for="(origin,index) in sourcesOf(rowCells(row)[side])" :key="index"><small>{{origin.source||report.sheet}}</small><code v-if="origin.formula">{{origin.formula}}</code><div v-if="hasOriginalCache(origin)" class="statement-original-cache"><small>{{tx('Сохранённое значение до исправления')}}: {{formatCell(row,originalCache(origin))}}</small><code v-if="origin.source_formula">{{origin.source_formula}}</code></div></div></div></td></tr></tbody></table></div>
         </section>
@@ -257,7 +305,7 @@ onUnmounted(()=>{active=false;requestId++;progressController.reset();emit('editi
           <div class="table-scroll" tabindex="0" role="region" :aria-label="tx('Факт исходной модели для сверки')"><table class="statement-table"><thead><tr><th>{{tx('Показатель')}}</th><th v-for="monthIndex in indices" :key="monthIndex">{{tx(monthNames[monthIndex-1])}}</th></tr></thead><tbody><tr v-for="row in report.source_actual.rows" :key="row.row"><th scope="row">{{tx(row.label)}}</th><td v-for="monthIndex in indices" :key="monthIndex" class="statement-value">{{formatCell(report.rows.find(item=>item.row===row.row)||{kind:'amount'},row.cells.find(item=>Number(item.month)===monthIndex)?.fact)}}</td></tr></tbody></table></div>
         </section>
         <section class="statement-help-section"><h4>{{tx('Данные и обновление')}}</h4>
-      <div class="statement-controls"><label v-if="sourceItems.length">{{tx('Исходная книга')}}<select v-model="selected" :disabled="loading||uploading" @change="load(selected)"><option v-for="item in sourceItems" :key="item.id" :value="String(item.id)">{{item.filename}} · {{dateLabel(item.created_at)}}</option></select></label><template v-if="canImport"><button type="button" class="secondary statement-upload" :disabled="uploading||loading" @click="uploadInput?.click()"><AppIcon name="import"/> {{source?tx('Обновить данные'):tx('Загрузить данные')}}</button><input ref="uploadInput" type="file" accept=".xlsx" hidden :disabled="uploading||loading" :aria-label="source?tx('Обновить данные'):tx('Загрузить данные')" @change="upload"></template></div>
+      <div class="statement-controls"><label v-if="sourceItems.length">{{tx('Исходная книга')}}<select v-model="selected" :disabled="loading||uploading||savingRevenueBasis" @change="load(selected)"><option v-for="item in sourceItems" :key="item.id" :value="String(item.id)">{{item.filename}} · {{dateLabel(item.created_at)}}</option></select></label><template v-if="canImport"><button type="button" class="secondary statement-upload" :disabled="uploading||loading||savingRevenueBasis" @click="uploadInput?.click()"><AppIcon name="import"/> {{source?tx('Обновить данные'):tx('Загрузить данные')}}</button><input ref="uploadInput" type="file" accept=".xlsx" hidden :disabled="uploading||loading||savingRevenueBasis" :aria-label="source?tx('Обновить данные'):tx('Загрузить данные')" @change="upload"></template></div>
       <p v-if="source" class="sub">{{tx('Данные уже сохранены. Повторно загружать файл нужно только после появления новых данных.')}}</p>
       <p v-if="!canImport" class="sub">{{tx('Пользователь с правом импорта должен добавить исходную книгу.')}}</p>
       <template v-if="source"><p class="sub statement-source">{{source.filename}} · {{tx('Год')}}: {{source.year??tx('Не указан')}} · {{tx('Валюта источника')}}: {{source.currency||tx('Не указана')}} · {{tx('Единицы источника')}}: {{tx(source.unit||'')}} <span v-if="source.unit_status==='unknown'">· {{tx('Нужно подтвердить единицы')}}</span><span v-if="source.reviewed_as_of"> · {{tx('Дата проверки / среза')}}: {{dateLabel(source.reviewed_as_of)}}</span></p><p v-if="source.reviewed_as_of" class="sub">{{tx('Проверка обновляется из сохранённой книги. Для новых операций и месяцев загрузите новую версию источника; бюджет сохранённого снимка не меняется.')}}</p>
@@ -282,4 +330,5 @@ onUnmounted(()=>{active=false;requestId++;progressController.reset();emit('editi
 .statement-table tbody th[scope=row]{white-space:normal}
 .statement-data-summary{padding:12px 16px}.statement-summary-status{display:flex;gap:8px;flex-wrap:wrap}.statement-data-summary p{margin:8px 0 0;line-height:1.6;overflow-wrap:anywhere}.statement-balance-check{padding:12px 16px;border:1px solid var(--line);border-radius:9px;line-height:1.6;font-size:12px;overflow-wrap:anywhere}.statement-card-reason{font-size:11px;line-height:1.5;margin:5px 0 0}.statement-original-cache{border-top:1px solid var(--line);margin-top:8px;padding-top:5px;color:var(--muted)}.statement-evidence{color:var(--muted)}
 .statement-help-body{display:grid;gap:22px}.statement-help-section h4,.statement-data-summary h4{font-size:15px;margin:0 0 12px}.statement-help-section p,.statement-data-summary p{line-height:1.65}.statement-help-section+.statement-help-section{border-top:1px solid var(--line);padding-top:20px}.statement-empty{padding:22px;display:flex;align-items:center;justify-content:space-between;gap:16px;flex-wrap:wrap}.statement-empty p{margin:0}.statement-row-reason{font-size:12px;line-height:1.5;max-width:320px;min-width:180px;white-space:normal;margin:0 0 8px;color:var(--muted)}.statement-kpi-card .k{font-size:14px}.statement-card-reason{font-size:12px}.statement-kpi-card .v small{font-size:12px}.statement-table :is(button,summary):focus-visible,.statement-help>summary:focus-visible{outline:2px solid var(--em);outline-offset:3px}.statement-help-section .statement-method{font-size:13px}.statement-controls .statement-upload{white-space:normal}.statement-help h4 .pill{margin-left:8px}@media(max-width:600px){.statement-table{font-size:13px}.statement-empty{padding:16px}}
+.statement-revenue-form{display:flex;align-items:end;flex-wrap:wrap;gap:12px}.statement-revenue-form label{display:grid;gap:7px;min-width:0;max-width:100%;font-size:13px}.statement-revenue-form select{max-width:100%;width:100%}.statement-revenue-form button{white-space:normal}@media(max-width:600px){.statement-revenue-form label,.statement-revenue-form button{width:100%}}
 </style>
