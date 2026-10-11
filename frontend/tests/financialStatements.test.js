@@ -521,6 +521,84 @@ function revenuePolicyPayload({confirmed=false,allowed=true,revision=0}={}){
  return payload;
 }
 
+function managementPayload(){
+ const payload=revenuePolicyPayload({confirmed:true,revision:1}),pnl=payload.source.reports.pnl;
+ const profile='finmodel_actual_operating_subtotal_v1';
+ pnl.calculation={profile:'uzbek_grouped_chart_finmodel_v1',management_template:{status:'recognized',profile,
+  calculation_basis:'management_template',assumptions:['template_ebitda_equals_ebit','depreciation_kept_separate']}};
+ const pretax=structuredClone(pnl.rows.find(row=>row.row===18));pretax.row=21;pretax.key='synthetic-management-pretax';pretax.label='Synthetic management pretax';pnl.rows.push(pretax);
+ for(const number of [16,18,21]){
+  const row=pnl.rows.find(row=>row.row===number);row.fact_label=(number===16?'EBITDA':number===18?'EBIT':'Прибыль до налога')+' по образцу Excel';
+  row.cells.forEach((pair,index)=>{pair.fact={...pair.fact,value:['42.125','12.225','22.375'][index]??'10',status:'calculated',
+   calculation_basis:'management_template',template_profile:profile,template_formula:'Synthetic exact Excel '+number+' month '+pair.month,
+   model_assumptions:index===2?['template_ebitda_equals_ebit','optional_sumifs_zero']:['template_ebitda_equals_ebit','depreciation_kept_separate']};});
+ }
+ return payload;
+}
+
+test('actual EBITDA and EBIT cards show calculated management amounts with short captions and closed methodology',async t=>{
+ const payload=managementPayload();
+ const view=mount(component,{company,type:'pnl',api:async()=>payload});t.after(view.unmount);await settle();view.state.mode='actual';await settle();
+ for(const number of [16,18]){
+  assert.match(text(metricCard(view,number)),/42,13.*По образцу Excel/);
+  assert.doesNotMatch(text(metricCard(view,number)),/распределение амортизации|МСФО|EBITDA =/);
+ }
+ assert.equal(view.state.managementMethodAvailable,true);assert.equal(view.state.helpOpen,false);
+ assert.doesNotMatch(visibleText(view.container),/управленческие показатели по образцу Excel|EBIT = EBITDA|результат выбытия активов/);
+ const button=find(metricCard(view,16),node=>node.tag==='button'&&text(node)==='По образцу Excel');
+ assert.equal(button.props['aria-controls'],view.state.helpId);await button.props.onClick();await settle();
+ const method=find(view.container,node=>String(node.props?.class||'').includes('statement-management-method'));
+ assert.ok(method.scrolled);assert.match(text(method),/управленческие показатели.*EBIT = EBITDA.*амортизация 0200 показана отдельно/);
+ assert.match(text(method),/9900 сохраняется отдельно.*9200 не входит/);
+ assert.equal(find(method,node=>node.tag==='details').props.open,undefined);
+ assert.match(text(mainTable(view)),/Synthetic exact Excel 16 month 1/);
+});
+
+test('full quarter management aggregation preserves basis, provenance and combined assumptions without changing posted result or budget',async t=>{
+ const payload=managementPayload(),snapshot=JSON.stringify(payload.source.reports.pnl.rows.map(row=>row.cells.map(pair=>pair.plan)));
+ const view=mount(component,{company,type:'pnl',api:async()=>payload});t.after(view.unmount);await settle();view.state.mode='actual';view.state.setPer('q1');await settle();
+ for(const number of [16,18]){
+  const row=view.state.report.rows.find(row=>row.row===number),fact=view.state.rowCells(row).fact;
+  assert.equal(fact.value,'76.725');assert.equal(fact.status,'aggregated');assert.equal(fact.calculation_basis,'management_template');
+  assert.equal(fact.template_profile,'finmodel_actual_operating_subtotal_v1');assert.equal(fact.provenance.length,3);
+  assert.deepEqual(fact.model_assumptions,['template_ebitda_equals_ebit','depreciation_kept_separate','optional_sumifs_zero']);
+  assert.match(text(metricCard(view,number)),/76,73.*По образцу Excel/);
+ }
+ assert.match(text(metricCard(view,23)),/Финансовый результат.*45,00/);assert.doesNotMatch(text(metricCard(view,23)),/По образцу Excel/);
+ view.state.mode='plan';await settle();
+ assert.match(text(metricCard(view,16)),/105,00/);assert.match(text(metricCard(view,18)),/96,00/);
+ assert.equal(all(view.container,node=>node.tag==='button'&&text(node)==='По образцу Excel').length,0);
+ assert.equal(JSON.stringify(payload.source.reports.pnl.rows.map(row=>row.cells.map(pair=>pair.plan))),snapshot);
+});
+
+test('incomplete months and mismatched management profiles cannot inherit the template caption or a complete quarterly value',async t=>{
+ const payload=managementPayload();payload.source.coverage[1].status='missing';
+ const view=mount(component,{company,type:'pnl',api:async()=>payload});t.after(view.unmount);await settle();view.state.mode='actual';view.state.setPer('q1');await settle();
+ assert.equal(view.state.rowCells(view.state.report.rows.find(row=>row.row===16)).fact.value,null);
+ assert.equal(all(metricCard(view,16),node=>node.tag==='button'&&text(node)==='По образцу Excel').length,0);
+ payload.source.coverage[1].status='available';
+ payload.source.reports.pnl.rows.find(row=>row.row===16).cells[1].fact.template_profile='unsupported-synthetic-profile';
+ await view.state.load();await settle();view.state.setPer('q1');await settle();
+ const aggregate=view.state.rowCells(view.state.report.rows.find(row=>row.row===16)).fact;
+ assert.equal(aggregate.value,'76.725');assert.equal(aggregate.calculation_basis,undefined);
+ assert.equal(all(metricCard(view,16),node=>node.tag==='button'&&text(node)==='По образцу Excel').length,0);
+});
+
+test('RU/UZ translates management captions and closed method while an unrecognized source never advertises supported methodology',async t=>{
+ const previous=lang.value;t.after(()=>setLang(previous));setLang('ru');
+ const payload=managementPayload();
+ const view=mount(component,{company,type:'pnl',api:async()=>payload});t.after(view.unmount);await settle();view.state.mode='actual';await openHelp(view);
+ setLang('uz');await settle();
+ assert.match(text(metricCard(view,16)),/Excel namunasiga ko‘ra/);
+ const method=find(view.container,node=>String(node.props?.class||'').includes('statement-management-method'));
+ assert.match(text(method),/Namunada EBIT = EBITDA/);assert.match(text(method),/MHXS bo‘yicha tasdiqlangan hisoblash emas/);
+ assert.match(text(method),/9900 hisobvarag‘ining moliyaviy natijasi alohida saqlanadi/);
+ payload.source.calculation={profile:null,reason:'profile_unrecognized'};
+ await view.state.load();await settle();
+ assert.equal(view.state.managementMethodAvailable,false);assert.equal(all(view.container,node=>String(node.props?.class||'').includes('statement-management-method')).length,0);
+ assert.equal(all(view.container,node=>node.tag==='button'&&text(node)==='Excel namunasiga ko‘ra').length,0);
+});
+
 test('revenue basis starts unconfirmed and can only be explicitly changed inside closed help',async t=>{
  const calls=[],payload=revenuePolicyPayload();
  const view=mount(component,{company,canImport:true,type:'pnl',api:async(...args)=>{calls.push(args);return payload;}});t.after(view.unmount);await settle();

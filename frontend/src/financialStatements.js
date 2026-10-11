@@ -228,7 +228,10 @@ function sumSide(row, months, side, options, context, role=null) {
   const values=provenance.map(item=>decimal(item.value));
   if (values.some(value=>value == null)) return unavailable('nonfinite_result',provenance,[],'invalid');
   const value=decimalText(sumDecimals(values));
-  return Number.isFinite(Number(value)) ? {value,status:'aggregated',provenance} :
+  const management=provenance.every(item=>item.calculation_basis==='management_template'&&item.template_profile==='finmodel_actual_operating_subtotal_v1')?
+    {calculation_basis:'management_template',template_profile:'finmodel_actual_operating_subtotal_v1',
+      model_assumptions:[...new Set(provenance.flatMap(item=>Array.isArray(item.model_assumptions)?item.model_assumptions:[]))]}:{};
+  return Number.isFinite(Number(value)) ? {value,status:'aggregated',provenance,...management} :
     unavailable('nonfinite_result',provenance,[],'invalid');
 }
 

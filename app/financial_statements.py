@@ -45,7 +45,7 @@ REPORTS = {'pnl': ('09_Statements', 'PNL · план / факт', 7, 24),
            'balance': ('09b_Balance', 'Баланс · план / факт', 7, 81)}
 PERCENT_ROWS = {'pnl': {13, 24}, 'balance': {62, 63, 64, 67, 68, 69, 75}}
 COEFFICIENT_ROWS = {70, 73, 74, 76}
-REVIEW_VERSION = 'mapping-2026-10-11-v4'
+REVIEW_VERSION = 'mapping-2026-10-11-v5'
 _review_cache = OrderedDict()
 _review_cache_lock = RLock()
 REQUIREMENTS = [
@@ -328,9 +328,10 @@ def source_requirements(records, coverage, currency, unit_status, plan_source, c
                 {'key': 'plan_cost_allocation', 'title': 'План: состав себестоимости, постоянных затрат и амортизации'},
             ])
         elif key == 'fixed_assets':
-            item['missing_fields'].append({'key': 'depreciation_allocation',
-                'title': 'Распределение амортизации в себестоимость и OPEX',
-                'reason': 'Для EBITDA; уже учтённые расходы повторно не вычитаются.'})
+            if calculation.get('management_template', {}).get('status') != 'recognized':
+                item['missing_fields'].append({'key': 'depreciation_allocation',
+                    'title': 'Распределение амортизации в себестоимость и OPEX',
+                    'reason': 'Для EBITDA; уже учтённые расходы повторно не вычитаются.'})
         elif key == 'payroll':
             item['title'] = 'Расчёты с персоналом и социальные обязательства'
         elif key == 'journal' and any(i['code'] in ('mapping_rollforward', 'mapping_balance_residual') for i in issues):
@@ -748,8 +749,11 @@ def build_review(raw, filename, as_of=None, revenue_policy=None):
             affected.append({'report': key, 'row': row['row'], 'month': month, 'mode': 'fact',
                              'source': value['source'], 'status': value['status']})
         item['stage'] = 'source_formula'
-        item['resolved_in_calculation'] = (len(affected) == len(row_numbers)
+        item['resolved_in_calculation'] = (item['code'] != 'ebit_classification'
+                                          and len(affected) == len(row_numbers)
                                           and all(c['status'] == 'calculated' for c in affected))
+        if item['code'] == 'ebit_classification' and calculation.get('management_template', {}).get('status') == 'recognized':
+            item['calculation_resolution'] = 'Management-template convention retained: EBIT equals the template EBITDA subtotal; depreciation is separate. Not an IFRS classification repair.'
         item['affected_cells'] = affected
     return {'filename': filename, 'year': year, 'currency': currency, 'unit': unit_label,
             'unit_status': unit_status, 'review_status': 'needs_review', 'reviewed_as_of': as_of.isoformat(),

@@ -1,7 +1,9 @@
 {
-  "version": "2.25.0",
+  "version": "2.25.1",
   "date": "2026-10-11",
   "changes": [
+    "Фактические EBITDA и EBIT рассчитываются по проверенным формулам образца Excel из Mapping. В этом образце оба показателя равны: чистая выручка минус себестоимость плюс прочие операционные доходы минус OPEX; амортизация показана отдельно. Карточки обозначены «По образцу Excel», методика и допущения доступны в закрытой справке.",
+    "Расчёт по образцу включается только для распознанных формул и полного профиля ОСВ. Необязательные отсутствующие возвраты и прочие доходы учитываются по нулевой конвенции образца с указанием основания; неполные и будущие месяцы не превращаются в нули. План, оригинальные формулы и результат 9900 сохраняются.",
     "В справке P&L можно сохранить подтверждённое правило фактической выручки отдельно для выбранной компании и исходника. Сохранение проверяет права, версию и файл, фиксируется в журнале; исходный Excel и снимок плана сохраняются.",
     "После подтверждения выручки без НДС до возвратов и скидок чистая выручка рассчитывается из Mapping с однократным вычетом 9040 и 9050. Пересчитываются валовая прибыль, маржи и связанные показатели баланса; отсутствующие счета и распределение амортизации не угадываются.",
     "Уточнено пояснение отсутствующего счёта в P&L на русском и узбекском: отсутствие счёта доходов или налога больше не обозначается как отсутствие финансового результата. Расчёты не изменены.",
@@ -41,6 +43,8 @@
     "Длинные названия файлов и кнопки выбора шаблона переносятся на узком экране. В ТЭО дата архива отдельно обозначена и не подменяет начало финансового прогноза."
   ],
   "changes_uz": [
+    "Haqiqiy EBITDA va EBIT Excel namunasining tekshirilgan formulalari bo‘yicha Mappingdan hisoblanadi. Bu namunada ikkala ko‘rsatkich teng: sof tushum minus tannarx plus boshqa operatsion daromadlar minus OPEX; amortizatsiya alohida ko‘rsatiladi. Kartalarda «Excel namunasi bo‘yicha» belgisi, yopiq yordamda usul va farazlar bor.",
+    "Namuna bo‘yicha hisob faqat tanilgan formulalar va to‘liq OSV profili uchun yoqiladi. Mavjud bo‘lmagan ixtiyoriy qaytarishlar va boshqa daromadlar namunaning nol qoidasi asosida, manbasi ko‘rsatilgan holda olinadi; to‘liq bo‘lmagan va kelajakdagi oylar nolga aylantirilmaydi. Reja, asl formulalar va 9900 natijasi saqlanadi.",
     "P&L yordam bo‘limida tanlangan kompaniya va manba uchun haqiqiy tushumning tasdiqlangan qoidasini saqlash mumkin. Saqlashda huquqlar, versiya va fayl tekshiriladi, jurnalga yoziladi; asl Excel va reja nusxasi saqlanadi.",
     "Qaytarishlar va chegirmalardan oldingi QQSsiz tushum tasdiqlangach, sof tushum Mappingdan 9040 va 9050 bir marta ayirilgan holda hisoblanadi. Yalpi foyda, marjalar va balansning bog‘liq ko‘rsatkichlari qayta hisoblanadi; yetishmayotgan hisoblar va amortizatsiya taqsimoti taxmin qilinmaydi.",
     "P&Ldagi yetishmayotgan hisobvaraq izohi ruscha va o‘zbekcha aniqlashtirildi: daromad yoki soliq hisobvarag‘i yo‘qligi endi moliyaviy natija yo‘qligi deb ko‘rsatilmaydi. Hisob-kitoblar o‘zgarmadi.",

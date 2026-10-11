@@ -15,7 +15,7 @@ from openpyxl import Workbook
 from sqlalchemy import func, select
 from app.db import Account, Audit, Company, FinancialStatementSource, Ledger, Receipt, Setting, unit
 from app.financial_statements import build_review, col, REVIEW_VERSION, _review_cache
-from app.financial_statement_calculations import CONFIRMED_REVENUE_BASIS
+from app.financial_statement_calculations import CONFIRMED_REVENUE_BASIS, MANAGEMENT_PROFILE
 
 NS = {'m': 'http://schemas.openxmlformats.org/spreadsheetml/2006/main'}
 M = '{' + NS['m'] + '}'
@@ -92,9 +92,9 @@ def first_cell(snapshot, key='pnl', month=1, mode='fact'):
     return snapshot['reports'][key]['rows'][0]['cells'][month - 1][mode]
 
 
-def recognized_workbook():
-    from tests.test_financial_statement_calculations import fixture, set_turnover
-    reports, records, _, sheets = fixture()
+def recognized_workbook(management=False, shared=None):
+    from tests.test_financial_statement_calculations import fixture, management_fixture, set_turnover
+    reports, records, _, sheets = (management_fixture if management else fixture)()
     set_turnover(records, 2026, 1, '9040', 2, 2)
     set_turnover(records, 2026, 1, '9050', 3, 3)
     def configure(wb):
@@ -109,12 +109,47 @@ def recognized_workbook():
                 for cell in row['cells']:
                     for side, column in (('plan', col(3 + 2 * cell['month'])), ('fact', col(4 + 2 * cell['month']))):
                         sheet[column + str(row['row'])] = float(cell[side]['value'])
-        for cell, value in sheets['20_Fact_Input | Fakt'].items():
-            wb['20_Fact_Input | Fakt'][cell] = value['value']
-    return workbook(configure=configure)
+        for sheet_name, cells in sheets.items():
+            for address, item in cells.items():
+                if item.get('formula'):
+                    wb[sheet_name][address] = '=' + item['formula']
+                elif 'value' in item:
+                    wb[sheet_name][address] = item['value']
+    return workbook(configure=configure, shared=shared)
 
 
 class FinancialStatementParserTests(unittest.TestCase):
+    def test_management_profile_expands_shared_formulas_and_preserves_source_convention(self):
+        shared = {}
+        for row, expression, si in ((16, 'F12+F14-F15', 31), (18, 'F16', 32)):
+            for month in range(1, 13):
+                address = col(4 + 2 * month) + str(row)
+                shared[address] = (si, expression if month == 1 else None,
+                                   f'F{row}:AB{row}' if month == 1 else None)
+        raw = recognized_workbook(management=True, shared={'xl/worksheets/sheet1.xml': shared})
+        review = build_review(raw, 'synthetic.xlsx', as_of=date(2026, 10, 11),
+                              revenue_policy={'basis': CONFIRMED_REVENUE_BASIS, 'status': 'confirmed'})
+        self.assertEqual(review['calculation']['management_template']['profile'], MANAGEMENT_PROFILE)
+        rows = {r['row']: r for r in review['reports']['pnl']['rows']}
+        for row, value in ((16, '25'), (18, '25'), (21, '5')):
+            actual = rows[row]['cells'][0]['fact']
+            self.assertEqual(actual['value'], value)
+            self.assertEqual(actual['calculation_basis'], 'management_template')
+            self.assertIsNone(actual['source_cache'])
+            self.assertTrue(actual['source_formula'])
+        self.assertEqual(rows[23]['cells'][0]['fact']['value'], '10')
+        self.assertEqual(rows[17]['cells'][0]['fact']['value'], '20')
+        self.assertIsNone(rows[16]['cells'][1]['fact']['value'])
+        self.assertEqual(rows[16]['cells'][1]['fact']['status'], 'missing_cache')
+        self.assertEqual(review['coverage'][1]['status'], 'missing')
+        self.assertNotIn('depreciation_allocation', {r['key'] for r in review['calculation']['required_fields']})
+        original_ebit = next(r for r in review['reports']['pnl']['source_actual']['rows'] if r['row'] == 18)
+        self.assertEqual(original_ebit['cells'][0]['fact']['formula'], '=F16')
+        convention = next(i for i in review['issues'] if i['code'] == 'ebit_classification')
+        self.assertFalse(convention.get('resolved_in_calculation', False))
+        self.assertIn('Not an IFRS classification repair', convention['calculation_resolution'])
+        self.assertEqual(review['calculation']['months'][0]['pnl']['management_template']['result_difference'], '-5')
+
     def test_explicit_zero_and_missing_actual_period_are_different(self):
         def configure(wb):
             wb['09_Statements']['H7'] = '=SUM(Mapping!H:H)'
@@ -458,6 +493,50 @@ class FinancialStatementApiTests(unittest.TestCase):
             params={'company_id': company or self.company},
             json={'basis': basis, 'expected_revision': revision, 'source_sha256': sha256},
             headers=self.h, **kwargs)
+
+    def test_existing_management_source_rebuilds_and_policy_cache_changes_without_source_mutation(self):
+        import hashlib
+        raw = recognized_workbook(management=True)
+        old = build_review(raw, 'synthetic.xlsx', as_of=date(2026, 9, 16))
+        old['review_version'] = 'mapping-2026-10-11-v4'
+        user_id = self.client.get('/api/me').json()['user']['id']
+        with unit(True) as s:
+            source = FinancialStatementSource(company_id=self.company, created_by=user_id,
+                filename='synthetic.xlsx', sha256=hashlib.sha256(raw).hexdigest(), size=len(raw),
+                snapshot=json.dumps(old), content=raw)
+            s.add(source); s.flush()
+            source_id, snapshot, created_at = source.id, source.snapshot, source.created_at
+        _review_cache.clear()
+        before = self.client.get('/api/financial-statements', params={'source_id': source_id}).json()['source']
+        self.assertEqual(before['review_version'], REVIEW_VERSION)
+        self.assertEqual(before['reviewed_as_of'], '2026-09-16')
+        self.assertEqual(before['calculation']['management_template']['status'], 'recognized')
+        rows = {r['row']: r for r in before['reports']['pnl']['rows']}
+        self.assertIsNone(rows[16]['cells'][0]['fact']['value'])
+        response = self.policy_request(source_id, before['source_sha256'])
+        self.assertEqual(response.status_code, 200, response.text)
+        _review_cache.clear()
+        after = self.client.get('/api/financial-statements', params={'source_id': source_id}).json()['source']
+        rows = {r['row']: r for r in after['reports']['pnl']['rows']}
+        for row, expected in ((16, '25'), (18, '25'), (21, '5')):
+            self.assertEqual(rows[row]['cells'][0]['fact']['value'], expected)
+            self.assertEqual(rows[row]['cells'][0]['fact']['template_profile'], MANAGEMENT_PROFILE)
+        self.assertEqual(rows[23]['cells'][0]['fact']['value'], '10')
+        self.assertEqual(after['reports']['pnl']['source_actual'], before['reports']['pnl']['source_actual'])
+        self.assertEqual(after['reviewed_as_of'], before['reviewed_as_of'])
+        for key in ('pnl', 'balance'):
+            self.assertEqual([[c['plan'] for c in r['cells']] for r in after['reports'][key]['rows']],
+                             [[c['plan'] for c in r['cells']] for r in before['reports'][key]['rows']])
+        revoked = self.policy_request(source_id, before['source_sha256'], 1, 'unconfirmed')
+        self.assertEqual(revoked.status_code, 200, revoked.text)
+        final = self.client.get('/api/financial-statements', params={'source_id': source_id}).json()['source']
+        final_rows = {r['row']: r for r in final['reports']['pnl']['rows']}
+        self.assertIsNone(final_rows[16]['cells'][0]['fact']['value'])
+        self.assertEqual(final_rows[23]['cells'][0]['fact']['value'], '10')
+        with unit() as s:
+            stored = s.get(FinancialStatementSource, source_id)
+            self.assertEqual((stored.snapshot, stored.content, stored.created_at), (snapshot, raw, created_at))
+            self.assertEqual(s.scalar(select(func.count(FinancialStatementSource.id))), 1)
 
     def test_revenue_policy_is_private_audited_and_derived_without_mutating_the_source_or_ledger(self):
         raw = recognized_workbook()

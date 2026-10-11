@@ -2,10 +2,11 @@
 import copy
 import unittest
 from decimal import Decimal
+from openpyxl.utils.cell import get_column_letter
 
 from app.financial_statement_calculations import (
     ASSET_GROUPS, BS_ACCOUNTS, CHART_REGISTRATION, CORE_NAMES,
-    LABELS, CONFIRMED_REVENUE_BASIS, apply_mapping_reports,
+    LABELS, CONFIRMED_REVENUE_BASIS, MANAGEMENT_PROFILE, apply_mapping_reports,
 )
 
 BALANCE_LABELS = {
@@ -84,6 +85,30 @@ def fixture(months=(1,), year=2026):
     return {'pnl': pnl, 'balance': balance}, records, coverage, sheets
 
 
+def management_fixture(months=(1,), year=2026):
+    reports, records, coverage, sheets = fixture(months, year)
+    statement, fact = {}, sheets['20_Fact_Input | Fakt']
+    selectors = {'Q9': '9040', 'Q10': '9050', 'Q11': '9100', 'Q14': '9400',
+                 'Q20': '9300', 'Q21': '9500', 'Q16': '9600', 'A25': '0200'}
+    for address, value in selectors.items():
+        fact[address] = {'value': value}
+    for month in range(1, 13):
+        column, source_column = get_column_letter(4 + 2 * month), get_column_letter(3 + month)
+        fact[source_column + '5'] = {'value': month}
+        formulas = {12: f'{column}7-{column}11', 16: f'{column}12+{column}14-{column}15',
+                    18: f'{column}16', 21: f'{column}18+{column}19-{column}20'}
+        for row, source_row in ((9, 9), (10, 10), (11, 11), (14, 20), (15, 14), (17, 15), (19, 21), (20, 16)):
+            formulas[row] = f"'20_Fact_Input | Fakt'!{source_column}{source_row}"
+        for row, formula in formulas.items():
+            statement[column + str(row)] = {'formula': formula, 'has_formula': True}
+        for row, account_reference, side in ((9, 'Q9', 'H'), (10, 'Q10', 'H'), (11, 'Q11', 'H'),
+                                               (14, 'Q14', 'H'), (20, 'Q20', 'H'), (21, 'Q21', 'H'),
+                                               (16, 'Q16', 'H'), (15, 'A25', 'I')):
+            fact[source_column + str(row)] = {'formula': f'SUMIFS(Mapping!${side}:${side},Mapping!$D:$D,${account_reference[0]}${account_reference[1:]},Mapping!$B:$B,{source_column}$5)', 'has_formula': True}
+    sheets['09_Statements'] = statement
+    return reports, records, coverage, sheets
+
+
 def set_balance(records, year, month, account, before, after, credit=False):
     row = next(r for r in records[(year, month)] if r['account'] == account)
     opening, closing = (1, 5) if credit else (0, 4)
@@ -109,6 +134,106 @@ def calculate(reports, records, coverage, sheets, year=2026, revenue_policy=None
 
 
 class MappingCalculationTests(unittest.TestCase):
+    def test_management_template_calculates_exact_subtotals_without_da_addback_or_9900_plug(self):
+        reports, records, coverage, sheets = management_fixture((1, 2, 3))
+        original = copy.deepcopy(reports)
+        for month in (1, 2, 3):
+            set_turnover(records, 2026, month, '9040', 2, 2)
+            set_turnover(records, 2026, month, '9050', 3, 3)
+            set_turnover(records, 2026, month, '9300', 5, 5)
+            set_turnover(records, 2026, month, '9200', 12, 12)
+            records[(2026, month)] = [r for r in records[(2026, month)] if r['account'] != '9800']
+        before = copy.deepcopy(records)
+        metadata, _ = calculate(reports, records, coverage, sheets,
+                                 revenue_policy={'basis': CONFIRMED_REVENUE_BASIS, 'status': 'confirmed'})
+        self.assertEqual(metadata['management_template']['status'], 'recognized')
+        self.assertNotIn('depreciation_allocation', {field['key'] for field in metadata['required_fields']})
+        for month in (1, 2, 3):
+            for row, expected in ((16, '30'), (18, '30'), (21, '10')):
+                actual = cell(reports, row, month, 'pnl')
+                self.assertEqual(actual['value'], expected)
+                self.assertEqual(actual['status'], 'calculated')
+                self.assertEqual(actual['calculation_basis'], 'management_template')
+                self.assertEqual(actual['template_profile'], MANAGEMENT_PROFILE)
+                self.assertIn('depreciation_kept_separate', actual['model_assumptions'])
+                self.assertTrue(any(p.get('role') == 'management_template_formula' for p in actual['provenance']))
+                self.assertEqual(actual['source_cache'], cell(original, row, month, 'pnl')['value'])
+            self.assertEqual(cell(reports, 17, month, 'pnl')['value'], '20')
+            self.assertEqual(cell(reports, 23, month, 'pnl')['value'], '10')
+            self.assertIsNone(cell(reports, 22, month, 'pnl')['value'])
+            month_meta = next(m for m in metadata['months'] if m['month'] == month)['pnl']
+            self.assertEqual(month_meta['management_template']['result_difference'], '0')
+            self.assertEqual(month_meta['income_tax_status'], 'absent_profit_account')
+            self.assertIsNone(month_meta['unclassified_account_turnovers']['9200']['result'])
+        self.assertEqual(sum(Decimal(cell(reports, 16, m, 'pnl')['value']) for m in (1, 2, 3)), Decimal(90))
+        self.assertEqual(records, before)
+        self.assertEqual(reports['pnl']['source_actual']['rows'][0]['cells'][0]['fact'], cell(original, 7, report='pnl'))
+        for key in ('pnl', 'balance'):
+            for old, new in zip(original[key]['rows'], reports[key]['rows']):
+                self.assertEqual([c['plan'] for c in old['cells']], [c['plan'] for c in new['cells']])
+
+    def test_management_template_optional_sumifs_zero_is_explicit_and_not_a_missing_month(self):
+        reports, records, coverage, sheets = management_fixture((4,))
+        records[(2026, 4)] = [r for r in records[(2026, 4)] if r['account'] not in ('9300', '9040')]
+        metadata, _ = calculate(reports, records, coverage, sheets,
+                                 revenue_policy={'basis': CONFIRMED_REVENUE_BASIS, 'status': 'confirmed'})
+        self.assertEqual(cell(reports, 7, 4, 'pnl')['value'], '100')
+        self.assertEqual(cell(reports, 16, 4, 'pnl')['value'], '30')
+        for row in (9, 14):
+            item = cell(reports, row, 4, 'pnl')
+            self.assertEqual(item['value'], '0')
+            origin = item['provenance'][0]
+            self.assertEqual(origin['assumption'], 'absent_zero_under_management_template_sumifs')
+            self.assertEqual(origin['template_profile'], MANAGEMENT_PROFILE)
+            self.assertIn('SUMIFS', origin['formula'])
+            self.assertTrue(origin['formula_source'].startswith('20_Fact_Input | Fakt!G'))
+        self.assertNotEqual(cell(reports, 16, 5, 'pnl').get('calculation_basis'), 'management_template')
+        self.assertEqual(next(m for m in metadata['months'] if m['month'] == 5)['status'], 'missing')
+
+    def test_management_template_core_absence_stays_unknown(self):
+        for absent in ('9000', '9050', '9100', '9400', '9500', '9600'):
+            with self.subTest(absent=absent):
+                reports, records, coverage, sheets = management_fixture()
+                records[(2026, 1)] = [r for r in records[(2026, 1)] if r['account'] != absent]
+                calculate(reports, records, coverage, sheets,
+                          revenue_policy={'basis': CONFIRMED_REVENUE_BASIS, 'status': 'confirmed'})
+                self.assertIsNone(cell(reports, 21, report='pnl')['value'])
+                self.assertEqual(cell(reports, 21, report='pnl')['reason'], 'absent_profit_account')
+                if absent not in ('9500', '9600'):
+                    self.assertIsNone(cell(reports, 16, report='pnl')['value'])
+                else:
+                    self.assertEqual(cell(reports, 16, report='pnl')['value'], '30')
+
+    def test_management_formula_guard_rejects_changed_missing_or_cross_month_operands(self):
+        mutations = [lambda r, s: s['09_Statements']['F16'].update(formula='F12+F14+F15'),
+                     lambda r, s: s['09_Statements']['AB18'].update(formula='Z16'),
+                     lambda r, s: s['09_Statements']['F12'].update(formula='F7+F11'),
+                     lambda r, s: s['20_Fact_Input | Fakt']['Q20'].update(value='9500'),
+                     lambda r, s: s['20_Fact_Input | Fakt']['D20'].update(formula='SUM(Mapping!H:H)'),
+                     lambda r, s: s['20_Fact_Input | Fakt']['O5'].update(value=11),
+                     lambda r, s: r['pnl']['rows'].remove(next(row for row in r['pnl']['rows'] if row['row'] == 14))]
+        for mutate in mutations:
+            reports, records, coverage, sheets = management_fixture()
+            records[(2026, 1)] = [r for r in records[(2026, 1)] if r['account'] != '9300']
+            mutate(reports, sheets)
+            metadata, _ = calculate(reports, records, coverage, sheets,
+                                     revenue_policy={'basis': CONFIRMED_REVENUE_BASIS, 'status': 'confirmed'})
+            self.assertEqual(metadata['management_template']['status'], 'unsupported')
+            self.assertIsNone(cell(reports, 16, report='pnl')['value'])
+            if any(row['row'] == 14 for row in reports['pnl']['rows']):
+                self.assertIsNone(cell(reports, 14, report='pnl')['value'])
+
+    def test_management_changed_chart_rejects_base_profile_and_preserves_source(self):
+        reports, records, coverage, sheets = management_fixture()
+        sheets['20_Fact_Input | Fakt']['A25'].update(value='0100')
+        original = copy.deepcopy(reports)
+        metadata, _ = calculate(reports, records, coverage, sheets,
+                                 revenue_policy={'basis': CONFIRMED_REVENUE_BASIS, 'status': 'confirmed'})
+        self.assertEqual(metadata['status'], 'source_only')
+        self.assertEqual(metadata['reason'], 'profile_unrecognized')
+        self.assertNotIn('management_template', metadata)
+        self.assertEqual(reports, original)
+
     def test_confirmed_revenue_deducts_returns_once_uses_credit_and_preserves_source_and_plan(self):
         reports, records, coverage, sheets = fixture()
         set_turnover(records, 2026, 1, '9000', 999, 100)

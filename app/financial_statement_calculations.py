@@ -12,9 +12,13 @@ import copy
 import re
 from collections import Counter
 from decimal import Decimal, DecimalException, localcontext
+from openpyxl.utils.cell import get_column_letter
 
 PROFILE = 'uzbek_grouped_chart_finmodel_v1'
 CONFIRMED_REVENUE_BASIS = 'gross_excluding_vat_before_returns_discounts'
+MANAGEMENT_PROFILE = 'finmodel_actual_operating_subtotal_v1'
+MANAGEMENT_ASSUMPTIONS = ['template_ebitda_equals_ebit', 'depreciation_kept_separate',
+                          'unclassified_disposal_excluded', 'optional_sumifs_zero']
 ZERO = Decimal(0)
 MAX_DISPLAY = Decimal('1.7976931348623157e308')
 ASSET_GROUPS = {
@@ -169,6 +173,55 @@ def _profile(reports, sheets):
     return rows, p
 
 
+def _management_template(sheets, pnl_rows):
+    """Recognise the exact expanded monthly formulas, never evaluate Excel.
+
+    read_workbook has already expanded shared formulas. A matching label or a
+    cached subtotal alone is insufficient to apply this template convention.
+    Missing/relocated operands, cross-month references or modified operators
+    fail closed; the original source remains available for comparison.
+    """
+    def normal(formula):
+        return re.sub(r'\s+|\$', '', str(formula or '')).lstrip('=').upper()
+    statement = sheets.get('09_Statements', {})
+    fact = sheets.get('20_Fact_Input | Fakt', {})
+    if any(pnl_rows.get(row) is None for row in (9, 10, 11, 12, 14, 15, 16, 17, 18, 19, 20, 21)):
+        return None
+    selectors = {'Q9': '9040', 'Q10': '9050', 'Q11': '9100', 'Q14': '9400',
+                 'Q20': '9300', 'Q21': '9500', 'Q16': '9600', 'A25': '0200'}
+    if any(item.get('has_formula') or item.get('type') in ('e', 'b')
+           or _number(item.get('value')) != Decimal(account)
+           for address, account in selectors.items() for item in [fact.get(address, {})]):
+        return None
+    formulas = {}
+    for month in range(1, 13):
+        column, source_column = get_column_letter(4 + 2 * month), get_column_letter(3 + month)
+        selector = fact.get(source_column + '5', {})
+        if selector.get('has_formula') or selector.get('type') in ('e', 'b') or _number(selector.get('value')) != Decimal(month):
+            return None
+        expected = {12: f'{column}7-{column}11', 16: f'{column}12+{column}14-{column}15',
+                    18: f'{column}16', 21: f'{column}18+{column}19-{column}20'}
+        for row, source_row in ((9, 9), (10, 10), (11, 11), (14, 20), (15, 14), (17, 15), (19, 21), (20, 16)):
+            expected[row] = f"'20_FACT_INPUT|FAKT'!{source_column}{source_row}"
+        if any(normal(statement.get(column + str(row), {}).get('formula')) != formula
+               for row, formula in expected.items()):
+            return None
+        for row, account_reference, side in ((9, 'Q9', 'H'), (10, 'Q10', 'H'), (11, 'Q11', 'H'),
+                                               (14, 'Q14', 'H'), (20, 'Q20', 'H'), (21, 'Q21', 'H'),
+                                               (16, 'Q16', 'H'), (15, 'A25', 'I')):
+            formula = f'SUMIFS(MAPPING!{side}:{side},MAPPING!D:D,{account_reference},MAPPING!B:B,{source_column}5)'
+            if normal(fact.get(source_column + str(row), {}).get('formula')) != formula:
+                return None
+        formulas[month] = {row: {'source': '09_Statements!' + column + str(row),
+                                'formula': statement[column + str(row)]['formula']}
+                           for row in (16, 18, 21)}
+        formulas[month]['optional_zero'] = {account: {
+            'source': f'20_Fact_Input | Fakt!{source_column}{row}',
+            'formula': fact[source_column + str(row)]['formula']}
+            for account, row in (('9040', 9), ('9300', 20))}
+    return {'profile': MANAGEMENT_PROFILE, 'formulas': formulas}
+
+
 class _OSV:
     def __init__(self, rows, year, month):
         self.year, self.month = year, month
@@ -201,10 +254,20 @@ class _OSV:
         equity, eq_provenance = self.amount(CAPITAL, opening, True)
         return groups, liabilities, assets, debt, equity, eq_provenance
 
-    def turnover(self, account, credit=False):
+    def turnover(self, account, credit=False, template=None):
         """A named registered account side, never absent-account zero or ABS."""
         row = self.rows.get(account)
         if row is None:
+            # Only these literal SUMIFS selections in the recognised template
+            # define absent optional rows as zero. A complete month/register is
+            # already required by _guard before this method is called.
+            convention = template.get('formulas', {}).get(self.month, {}).get('optional_zero', {}).get(account) if template else None
+            if convention and not credit:
+                return ZERO, [{'source': f'Mapping · {self.year}-{self.month:02}',
+                               'account': account, 'measure': 'turnover_debit', 'value': '0',
+                               'assumption': 'absent_zero_under_management_template_sumifs',
+                               'template_profile': MANAGEMENT_PROFILE,
+                               'formula_source': convention['source'], 'formula': convention['formula']}]
             return None, [{'source': f'Mapping · {self.year}-{self.month:02}',
                            'account': account, 'missing_account': True}]
         index = 3 if credit else 2
@@ -301,6 +364,14 @@ def apply_mapping_reports(reports, records, year, coverage, sheets, issue, reven
                  for r in reports['pnl'].get('rows', [])],
     })
     metadata['profile'] = PROFILE
+    template = _management_template(sheets, pnl_rows)
+    metadata['management_template'] = {'status': 'recognized' if template else 'unsupported',
+                                       'profile': MANAGEMENT_PROFILE if template else None,
+                                       'calculation_basis': 'management_template',
+                                       'assumptions': list(MANAGEMENT_ASSUMPTIONS) if template else []}
+    if template:
+        metadata['required_fields'] = [field for field in metadata['required_fields']
+                                       if field['key'] != 'depreciation_allocation']
     revenue_confirmed = (isinstance(revenue_policy, dict)
                          and revenue_policy.get('status') == 'confirmed'
                          and revenue_policy.get('basis') == CONFIRMED_REVENUE_BASIS)
@@ -310,6 +381,8 @@ def apply_mapping_reports(reports, records, year, coverage, sheets, issue, reven
         metadata['actual_pnl_classification_status'] = 'partial_classification_confirmed'
         metadata['actual_revenue_basis'] = CONFIRMED_REVENUE_BASIS
         metadata['revenue_policy_revision'] = revenue_policy.get('revision')
+        if template:
+            metadata['actual_pnl_classification_status'] = 'management_template_assumptions'
     for covered in coverage:
         month = covered['month']
         if covered.get('status') != 'available' or covered.get('calculation_eligible') is not True:
@@ -326,7 +399,7 @@ def apply_mapping_reports(reports, records, year, coverage, sheets, issue, reven
             with localcontext() as ctx:
                 ctx.prec = 2048
                 month_meta = _calculate_month(balance_rows, pnl_rows, _OSV(source_rows, year, month), issue,
-                                               revenue_policy if revenue_confirmed else None)
+                                               revenue_policy if revenue_confirmed else None, template)
                 metadata['months'].append(month_meta)
         except DecimalException:
             metadata['months'].append({'month': month, 'status': 'source_only', 'reason': 'nonfinite_result'})
@@ -340,7 +413,7 @@ def apply_mapping_reports(reports, records, year, coverage, sheets, issue, reven
     return metadata
 
 
-def _pnl_from_mapping(pnl, osv, issue, revenue_policy=None):
+def _pnl_from_mapping(pnl, osv, issue, revenue_policy=None, template=None):
     """Confirmed account-side flows; unresolved revenue is never a plug.
 
     Closed debit/credit turnover totals do not disclose transaction counterparts
@@ -369,7 +442,7 @@ def _pnl_from_mapping(pnl, osv, issue, revenue_policy=None):
         (20, '9600', False, 'Финансовые расходы: оборот 9600'),
         (22, '9800', False, 'Налог на прибыль: оборот 9800, если счет загружен'),
     ):
-        value, provenance = osv.turnover(account, credit)
+        value, provenance = osv.turnover(account, credit, template)
         flows[row] = (value, provenance)
         _set(pnl.get(row), month, year, value, provenance,
              f"Registered account {account}: {'credit' if credit else 'debit'} turnover; no ABS, allocation or VAT inference",
@@ -441,6 +514,32 @@ def _pnl_from_mapping(pnl, osv, issue, revenue_policy=None):
         if pnl.get(24):
             pnl[24].setdefault('source_label', pnl[24]['label'])
             pnl[24]['fact_label'] = 'Рентабельность финансового результата'
+    operating = pretax = None
+    if template:
+        operating_inputs = (gross, flows[14][0], flows[15][0])
+        operating_reason = ('actual_revenue_classification_required' if not revenue_confirmed
+                            else gross_reason if gross is None
+                            else 'absent_profit_account' if any(value is None for value in operating_inputs)
+                            else 'nonfinite_result')
+        if all(value is not None for value in operating_inputs):
+            operating = _number(gross + flows[14][0] - flows[15][0])
+        pretax_reason = operating_reason if operating is None else 'absent_profit_account' if any(flows[row][0] is None for row in (19, 20)) else 'nonfinite_result'
+        if operating is not None and all(flows[row][0] is not None for row in (19, 20)):
+            pretax = _number(operating + flows[19][0] - flows[20][0])
+        op_provenance = revenue_provenance + flows[11][1] + flows[14][1] + flows[15][1]
+        method = ('Recognised management template: row16=gross profit+other operating income−OPEX; row18=row16. '
+                  'Depreciation is kept separate, not added back or deducted again; unclassified9200 is outside this template subtotal. Not IFRS certification.')
+        for row, value, provenance, reason in ((16, operating, op_provenance, operating_reason),
+                                                (18, operating, op_provenance, operating_reason),
+                                                (21, pretax, op_provenance + flows[19][1] + flows[20][1], pretax_reason)):
+            origin = template['formulas'][month][row]
+            _set(pnl.get(row), month, year, value, provenance + [{**origin, 'role': 'management_template_formula'}],
+                 method if row != 21 else 'Management template PBT=row18+financial income9500−financial expenses9600; no inferred income tax or9900 balancing plug',
+                 reason=reason if value is None else None)
+            pair = _cell(pnl.get(row), month) if pnl.get(row) else None
+            if pair:
+                pair['fact'].update(calculation_basis='management_template', template_profile=MANAGEMENT_PROFILE,
+                                    template_formula=origin['formula'], model_assumptions=list(MANAGEMENT_ASSUMPTIONS))
     difference = source_ni - posted_result if source_ni is not None else None
     source_status = 'matches_rounding' if difference is not None and abs(difference) <= Decimal(1) else 'unavailable' if difference is None else 'mismatch'
     source_check = {'status': source_status, 'source_value': _text(source_ni),
@@ -465,9 +564,18 @@ def _pnl_from_mapping(pnl, osv, issue, revenue_policy=None):
             'revenue_provenance': revenue_provenance,
             'cogs': flows[11][0], 'cogs_provenance': flows[11][1],
             'net_income_check': source_check,
-            'metadata': {'status': 'partial_classification_confirmed' if revenue_confirmed else 'classification_pending', 'basis': 'mapping_named_account_turnovers',
+            'metadata': {'status': 'management_template_assumptions' if revenue_confirmed and template else 'partial_classification_confirmed' if revenue_confirmed else 'classification_pending', 'basis': 'mapping_named_account_turnovers',
                          'revenue_basis': CONFIRMED_REVENUE_BASIS if revenue_confirmed else 'unconfirmed',
                          'net_revenue': _text(revenue), 'gross_profit': _text(gross),
+                         'ebitda': _text(operating), 'ebit': _text(operating), 'pretax_profit': _text(pretax),
+                         'ebit_status': 'calculated' if operating is not None else operating_reason if template else 'counterpart_classification_required',
+                         'pretax_status': 'calculated' if pretax is not None else pretax_reason if template else 'counterpart_classification_required',
+                         'management_template': {'status': 'recognized' if template else 'unsupported',
+                             'profile': MANAGEMENT_PROFILE if template else None, 'calculation_basis': 'management_template',
+                             'assumptions': list(MANAGEMENT_ASSUMPTIONS) if template else [],
+                             'result_difference': _text(pretax - ni) if pretax is not None and ni is not None else None,
+                             'reconciliation_status': 'unclassified_difference' if pretax is not None and ni is not None else 'not_comparable',
+                             'comparison_basis': 'management_template_PBT_minus_posted_result_9900_without_inferred_tax'},
                          'posted_financial_result': _text(ni), 'reported_source_net_income': _text(source_ni),
                          'result_account_movement': _text(movement),
                          'result_rollforward_difference': _text(movement_difference),
@@ -475,7 +583,7 @@ def _pnl_from_mapping(pnl, osv, issue, revenue_policy=None):
                          'rounding_tolerance': '1 source unit',
                          'net_revenue_status': 'calculated' if revenue is not None else 'absent_profit_account' if revenue_confirmed else 'actual_revenue_classification_required',
                          'income_tax_status': 'registered_turnover' if flows[22][0] is not None else 'absent_profit_account',
-                         'ebitda_status': 'depreciation_allocation_required',
+                         'ebitda_status': 'calculated' if operating is not None else operating_reason if template else 'depreciation_allocation_required',
                          'depreciation_status': 'credit_turnover_only_allocation_pending',
                          'finance_expense_status': 'general_finance_expense_not_interest_only',
                          'payroll_expense_status': 'payroll_payable_balance_is_not_expense',
@@ -488,14 +596,14 @@ def _pnl_from_mapping(pnl, osv, issue, revenue_policy=None):
                          'provenance': ni_p}}
 
 
-def _calculate_month(rows, pnl, osv, issue, revenue_policy=None):
+def _calculate_month(rows, pnl, osv, issue, revenue_policy=None, template=None):
     year, month = osv.year, osv.month
     closing, debts, assets, liabilities, equity, ep = osv.totals()
     opening, opening_debts, opening_assets, _, opening_equity, oep = osv.totals(True)
     ap = _provenance([p for _, ps in closing.values() for p in ps])
     oap = _provenance([p for _, ps in opening.values() for p in ps])
     lp = _provenance([p for _, ps in debts.values() for p in ps])
-    pnl_result = _pnl_from_mapping(pnl, osv, issue, revenue_policy)
+    pnl_result = _pnl_from_mapping(pnl, osv, issue, revenue_policy, template)
     ni, revenue, cogs = (pnl_result[k] for k in ('ni', 'revenue', 'cogs'))
     np, rp, cp = (pnl_result[k] for k in ('ni_provenance', 'revenue_provenance', 'cogs_provenance'))
     for row, (value, provenance) in closing.items():
