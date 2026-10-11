@@ -14,7 +14,7 @@ import tests.test_site as base
 from openpyxl import Workbook
 from sqlalchemy import func, select
 from app.db import Account, Company, FinancialStatementSource, Ledger, Receipt, unit
-from app.financial_statements import build_review, col
+from app.financial_statements import build_review, col, REVIEW_VERSION, _review_cache
 
 NS = {'m': 'http://schemas.openxmlformats.org/spreadsheetml/2006/main'}
 M = '{' + NS['m'] + '}'
@@ -138,6 +138,23 @@ class FinancialStatementParserTests(unittest.TestCase):
         raw = workbook(configure=lambda w: setattr(w['Mapping']['C2'], 'value', 'January'))
         self.assertEqual(build_review(raw, 'test.xlsx', date(2026, 9, 16))['coverage'][0]['status'], 'invalid')
 
+    def test_prior_year_is_legitimate_but_yearless_source_formulas_remain_flagged(self):
+        def configure(wb):
+            wb['Mapping']['H2'] = 100; wb['Mapping']['J2'] = 100
+            wb['Mapping'].append([2025, 1, '2025-01', '0100', 'Prior year', 0, 0, 900, 0, 900, 0])
+            wb['20_Fact_Input | Fakt']['D10'] = '=SUMIFS(Mapping!H:H,Mapping!B:B,1)'
+            wb['09_Statements']['F7'] = "='20_Fact_Input | Fakt'!D10"
+        raw = workbook(configure=configure, caches={
+            'xl/worksheets/sheet1.xml': {'F7': 100}, 'xl/worksheets/sheet5.xml': {'D10': 100}})
+        result = build_review(raw, 'synthetic.xlsx', date(2026, 10, 11))
+        self.assertEqual(result['year'], 2026)
+        self.assertEqual(result['coverage'][0]['status'], 'available')
+        self.assertEqual(result['coverage'][0]['record_count'], 1)
+        self.assertNotIn('source_year_mismatch', {i['code'] for i in result['issues']})
+        risk = next(i for i in result['issues'] if i['code'] == 'yearless_sumifs')
+        self.assertEqual(risk['severity'], 'error')
+        self.assertIn('20_Fact_Input | Fakt!D10', risk['source'])
+
     def test_formula_missing_cache_and_excel_errors_do_not_become_zero(self):
         def configure(wb):
             wb['09_Statements']['F7'] = '=1+1'
@@ -206,7 +223,7 @@ class FinancialStatementParserTests(unittest.TestCase):
         review = build_review(raw, 'test.xlsx', date(2026, 9, 16))
         codes = {i['code'] for i in review['issues']}
         self.assertTrue({'equity_plug', 'loans_omitted', 'social_double_count', 'ebit_classification',
-                         'payroll_payable_as_expense', 'yearless_sumifs', 'roe_methodology',
+                         'roe_methodology',
                          'roa_methodology', 'returns_double_count'} <= codes, codes)
         row = next(r for r in review['reports']['balance']['rows'] if r['row'] == 36)
         self.assertEqual(row['cells'][0]['fact']['formula'], '=F19-F35')
@@ -219,15 +236,20 @@ class FinancialStatementParserTests(unittest.TestCase):
         self.assertEqual(first_cell(review)['status'], 'invalid')
         self.assertIn('mapping_duplicate', {i['code'] for i in review['issues']})
 
-    def test_blank_account_only_does_not_confirm_actual_but_explicit_zero_does(self):
+    def test_legitimate_blank_osv_accounts_are_loaded_but_absent_month_is_not(self):
         def blank_only(wb):
             for column in range(6, 12):
                 wb['Mapping'].cell(2, column, None).value = None
         review = build_review(workbook(configure=blank_only), 'test.xlsx', date(2026, 9, 16))
         self.assertEqual(review['coverage'][0]['record_count'], 1)
         self.assertEqual(review['coverage'][0]['numeric_record_count'], 0)
-        self.assertEqual(review['coverage'][0]['status'], 'missing')
-        self.assertIsNone(first_cell(review)['value'])
+        self.assertEqual(review['coverage'][0]['status'], 'available')
+        self.assertEqual(review['coverage'][0]['blank_record_count'], 1)
+        self.assertEqual(first_cell(review)['value'], '0')
+        self.assertEqual(review['coverage'][1]['status'], 'missing')
+        self.assertIsNone(first_cell(review, month=2)['value'])
+        self.assertNotIn('mapping_amount_invalid', {i['code'] for i in review['issues']})
+        self.assertNotIn('actual_periods_missing', {i['code'] for i in review['issues']})
         def blank_and_numeric(wb):
             blank_only(wb)
             wb['Mapping'].append([2026, 1, '2026-01', '0200', 'Explicit zero', 0, 0, 0, 0, 0, 0])
@@ -235,6 +257,131 @@ class FinancialStatementParserTests(unittest.TestCase):
         self.assertEqual(confirmed['coverage'][0]['status'], 'available')
         self.assertEqual(confirmed['coverage'][0]['numeric_record_count'], 1)
         self.assertEqual(first_cell(confirmed)['value'], '0')
+
+    def test_dependency_scope_excludes_cash_flow_and_unused_numeric_helpers(self):
+        def configure(wb):
+            cf = wb.create_sheet('09_CASH_Flow_TEST')
+            cf['A1'] = '=IFERROR(#REF!,0)'
+            cf['A2'] = '=IMPORTRANGE("unused","A1")'
+            wb['09_Statements']['E36'] = '=1+1'  # CF section in the combined source
+            helper = wb.create_sheet('90_Input_PnL')
+            helper['F125'] = '=1+1'
+            wb['20_Fact_Input | Fakt']['D12'] = '=SUMIFS(Mapping!K:K,Mapping!B:B,1)'
+            wb['09b_Balance']['D32'] = 'Share capital'
+            for row in (33, 34, 50, 51, 52):
+                wb['09b_Balance']['D' + str(row)] = 'Capital detail'
+        review = build_review(workbook(configure=configure), 'synthetic.xlsx', date(2026, 10, 11))
+        codes = {i['code'] for i in review['issues']}
+        self.assertFalse({'formula_cache_missing', 'broken_references', 'external_dependencies',
+                          'payroll_payable_as_expense', 'capital_classification'} & codes, codes)
+
+    def test_relevant_missing_cache_remains_and_category_masks_ignore_unused_payroll(self):
+        def configure(wb):
+            helper = wb.create_sheet('90_Input_PnL')
+            auto = wb.create_sheet('92_Auto_PnL')
+            helper['D6'] = 'Revenue'; helper['D8'] = 'Payroll'
+            helper['F6'] = 500; helper['E6'] = 1
+            helper['F8'] = "='20_Fact_Input | Fakt'!D12"; helper['E8'] = 1
+            wb['20_Fact_Input | Fakt']['D12'] = '=SUMIFS(Mapping!K:K,Mapping!B:B,1)'
+            auto['B6'] = '=SUMPRODUCT((\'90_Input_PnL\'!D6:D125="Revenue")*(\'90_Input_PnL\'!F6:F125)*(\'90_Input_PnL\'!E6:E125))'
+            wb['09_Statements']['F7'] = "='92_Auto_PnL'!B6"
+        raw = workbook(configure=configure, caches={
+            'xl/worksheets/sheet1.xml': {'F7': 500}, 'xl/worksheets/sheet7.xml': {'B6': 500}})
+        review = build_review(raw, 'synthetic.xlsx', date(2026, 10, 11))
+        codes = {i['code'] for i in review['issues']}
+        self.assertNotIn('payroll_payable_as_expense', codes)
+        self.assertNotIn('formula_cache_missing', codes)
+        missing = build_review(workbook(configure=configure), 'synthetic.xlsx', date(2026, 10, 11))
+        self.assertIn('formula_cache_missing', {i['code'] for i in missing['issues']})
+
+    def test_cached_plan_import_is_frozen_provenance_not_blanket_external_error(self):
+        def configure(wb):
+            macro = wb.create_sheet('98_CashMacro_Import')
+            macro['B7'] = '=IFERROR(IMPORTRANGE("provided-source","B7"),IFERROR([1]Macro!B7,0))'
+            wb['09_Statements']['E7'] = "='98_CashMacro_Import'!B7"
+        raw = workbook(configure=configure, caches={
+            'xl/worksheets/sheet1.xml': {'E7': 123}, 'xl/worksheets/sheet6.xml': {'B7': 123}})
+        result = build_review(raw, 'synthetic.xlsx', date(2026, 10, 11))
+        self.assertNotIn('external_dependencies', {i['code'] for i in result['issues']})
+        self.assertEqual(result['plan_source']['cached_cell_count'], 1)
+        self.assertEqual(result['plan_source']['as_of'], '2026-10-11')
+        self.assertFalse(result['plan_source']['live'])
+        requirement = next(r for r in result['requirements'] if r['key'] == 'plan')
+        self.assertTrue(requirement['evidence'])
+        self.assertIn('plan_vat_basis', {f['key'] for f in requirement['missing_fields']})
+        self.assertEqual(result['currency'], 'UZS')
+        self.assertEqual(result['unit_status'], 'unknown')
+        missing = build_review(workbook(configure=configure), 'synthetic.xlsx', date(2026, 10, 11))
+        self.assertIn('plan_import_cache_missing', {i['code'] for i in missing['issues']})
+
+    def test_real_mapping_residual_not_removed_by_normal_blank_handling(self):
+        def configure(wb):
+            wb['Mapping']['F2'] = 100
+            wb['Mapping']['J2'] = 99
+            wb['Mapping'].append([2026, 1, '2026-01', '9040', 'Unused account', None, None, None, None, None, None])
+        result = build_review(workbook(configure=configure), 'synthetic.xlsx', date(2026, 10, 11))
+        self.assertEqual(result['coverage'][0]['status'], 'available')
+        self.assertIn('mapping_rollforward', {i['code'] for i in result['issues']})
+        self.assertNotIn('mapping_amount_invalid', {i['code'] for i in result['issues']})
+        self.assertEqual(result['calculation']['source_preserved'], True)
+
+    def test_sparse_osv_does_not_prove_unrelated_requirement_categories(self):
+        result = build_review(workbook(), 'synthetic.xlsx', date(2026, 10, 11))
+        requirements = {item['key']: item for item in result['requirements']}
+        # A lone registered0100 is PPE evidence, not evidence for other categories.
+        self.assertTrue(requirements['fixed_assets']['evidence'])
+        self.assertNotIn('fixed_assets_mapping', {f['key'] for f in requirements['fixed_assets']['missing_fields']})
+        for key in ('sales', 'inventory', 'payroll', 'debt', 'taxes', 'capital'):
+            with self.subTest(key=key):
+                item = requirements[key]
+                self.assertEqual(item['status'], 'needs_clarification')
+                self.assertEqual(item['evidence'], [])
+                self.assertIn(key + '_mapping', {f['key'] for f in item['missing_fields']})
+
+    def test_registered_blank_and_zero_accounts_are_category_evidence_not_expenses(self):
+        def configure(wb):
+            for account in ('0200', '2500', '2900', '6500', '6700', '6800', '8300', '9040'):
+                wb['Mapping'].append([2026, 1, '2026-01', account, 'Registered blank account', None, None, None, None, None, None])
+        result = build_review(workbook(configure=configure), 'synthetic.xlsx', date(2026, 10, 11))
+        requirements = {item['key']: item for item in result['requirements']}
+        for key in ('sales', 'inventory', 'payroll', 'debt', 'taxes', 'capital', 'fixed_assets'):
+            with self.subTest(key=key):
+                item = requirements[key]
+                self.assertTrue(item['evidence'])
+                self.assertNotIn(key + '_mapping', {f['key'] for f in item['missing_fields']})
+        self.assertEqual(requirements['inventory']['status'], 'found')
+        self.assertTrue(any('2500' in e and '2900' in e for e in requirements['inventory']['evidence']))
+        self.assertEqual(requirements['payroll']['status'], 'found')
+        self.assertEqual(requirements['payroll']['title'], 'Расчёты с персоналом и социальные обязательства')
+        self.assertTrue(any('6500' in e and '6700' in e for e in requirements['payroll']['evidence']))
+
+    def test_future_category_accounts_do_not_confirm_available_period_requirements(self):
+        def configure(wb):
+            wb['Mapping'].append([2026, 11, '2026-11', '6800', 'Future loan', 0, 0, 0, 0, 0, 0])
+        result = build_review(workbook(configure=configure), 'synthetic.xlsx', date(2026, 10, 11))
+        debt = next(item for item in result['requirements'] if item['key'] == 'debt')
+        self.assertEqual(debt['status'], 'needs_clarification')
+        self.assertFalse(debt['evidence'])
+        self.assertIn('debt_mapping', {f['key'] for f in debt['missing_fields']})
+
+    def test_only_recognized_boolean_balance_check_row_is_exposed(self):
+        def helper(wb):
+            wb['09b_Balance']['F38'] = '=F19=F37'
+        result = build_review(workbook(configure=helper), 'synthetic.xlsx', date(2026, 10, 11))
+        self.assertNotIn(38, {r['row'] for r in result['reports']['balance']['rows']})
+        def recognized(wb):
+            helper(wb)
+            wb['09b_Balance']['D19'] = 'Total Assets'
+            wb['09b_Balance']['D35'] = 'Total Liabilities'
+            wb['09b_Balance']['D37'] = 'Total L+E'
+        result = build_review(workbook(configure=recognized,
+            caches={'xl/worksheets/sheet2.xml': {'F38': ('b', '0')}}), 'synthetic.xlsx', date(2026, 10, 11))
+        row = next(r for r in result['reports']['balance']['rows'] if r['row'] == 38)
+        self.assertEqual(row['label'], 'Проверка баланса')
+        self.assertEqual(row['cells'][0]['fact']['source_cache'], '0')
+        self.assertEqual(row['cells'][0]['fact']['source_type'], 'b')
+        self.assertEqual(row['cells'][0]['fact']['status'], 'invalid')
+        self.assertIsNone(row['cells'][0]['fact']['value'])
 
     def test_mapping_boolean_text_and_masked_ref_are_not_numeric_amounts(self):
         for invalid_amount in (True, '1', '=IFERROR(#REF!,0)'):
@@ -249,6 +396,13 @@ class FinancialStatementParserTests(unittest.TestCase):
                 self.assertEqual(review['coverage'][0]['status'], 'invalid')
                 self.assertIsNone(first_cell(review)['value'])
                 self.assertIn('mapping_amount_invalid', {i['code'] for i in review['issues']})
+
+    def test_numeric_looking_string_formula_cache_is_not_an_osv_number(self):
+        raw = workbook(configure=lambda w: setattr(w['Mapping']['H2'], 'value', '=TEXT(1,"0")'),
+            caches={'xl/worksheets/sheet3.xml': {'H2': ('str', '1')}})
+        review = build_review(raw, 'synthetic.xlsx', date(2026, 10, 11))
+        self.assertEqual(review['coverage'][0]['status'], 'invalid')
+        self.assertIn('mapping_amount_invalid', {i['code'] for i in review['issues']})
 
     def test_norms_are_original_author_guidelines_without_pass_fail(self):
         def configure(wb):
@@ -330,6 +484,44 @@ class FinancialStatementApiTests(unittest.TestCase):
         mismatch = self.client.get('/api/financial-statements', params={'company_id': zuma},
                                    headers={'X-Company-ID': str(self.company)})
         self.assertEqual(mismatch.status_code, 409)
+
+    def test_existing_immutable_source_is_rereviewed_without_upload_or_coverage_drift(self):
+        import hashlib
+        raw = workbook(months=(1, 11))
+        old = {'filename': 'old.xlsx', 'reviewed_as_of': '2026-09-16', 'review_version': 'old',
+               'requirements': [], 'issues': [{'code': 'old_global_false_alarm'}]}
+        user_id = self.client.get('/api/me').json()['user']['id']
+        with unit(True) as s:
+            source = FinancialStatementSource(company_id=self.company, created_by=user_id,
+                filename='old.xlsx', sha256=hashlib.sha256(raw).hexdigest(), size=len(raw),
+                snapshot=json.dumps(old), content=raw)
+            s.add(source); s.flush()
+            source_id = source.id
+            original = source.snapshot
+            created_at = source.created_at
+        _review_cache.clear()
+        with patch('app.financial_statements.today', return_value=date(2027, 1, 1)):
+            response = self.client.get('/api/financial-statements', params={'company_id': self.company, 'source_id': source_id})
+        self.assertEqual(response.status_code, 200, response.text)
+        current = response.json()['source']
+        self.assertEqual(current['review_version'], REVIEW_VERSION)
+        self.assertEqual(current['reviewed_as_of'], '2026-09-16')
+        self.assertEqual(current['original_reviewed_as_of'], '2026-09-16')
+        self.assertTrue(current['original_review_timestamp'])
+        self.assertEqual(current['coverage'][10]['status'], 'future')
+        self.assertNotIn('old_global_false_alarm', {i['code'] for i in current['issues']})
+        with patch('app.financial_statements.build_review') as parser:
+            again = self.client.get('/api/financial-statements', params={'company_id': self.company, 'source_id': source_id})
+            self.assertEqual(again.json()['source'], current)
+            parser.assert_not_called()
+        duplicate = self.upload_source(raw)
+        self.assertEqual(duplicate.json(), {'id': source_id, 'created': False, 'company_id': self.company})
+        with unit() as s:
+            saved = s.get(FinancialStatementSource, source_id)
+            self.assertEqual(saved.snapshot, original)
+            self.assertEqual(saved.content, raw)
+            self.assertEqual(saved.created_at, created_at)
+            self.assertEqual(s.scalar(select(func.count(FinancialStatementSource.id))), 1)
 
     def test_sources_are_immutable_and_have_no_download_route(self):
         source_id = self.upload_source().json()['id']

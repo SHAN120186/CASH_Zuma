@@ -207,3 +207,82 @@ test('deviation formatter keeps percentage points, days and coefficients indepen
   assert.equal(statementScaledDeviation(cell('36',1,'P'),cell('40',1,'F'),row(65,[],[],'days'),1000000,'en-US'),'4.00');
   assert.equal(statementScaledDeviation(cell('1.2',1,'P'),cell('1.5',1,'F'),row(73,[],[],'coefficient'),1000000,'en-US'),'0.30');
 });
+
+test('balance range KPI flows use the full period, average its opening and closing stocks and calendar days',()=>{
+  const balances=[row(9,[100,200,300]),row(13,[200,300,400]),row(18,[500,700,900]),
+    row(19,[1000,1500,2000]),row(36,[400,600,800]),row(8,[50,75,100])];
+  for (const stock of balances) {
+    for (const side of ['plan','fact']) stock.cells[0][side].opening_balance={
+      value:String(Number(stock.cells[0][side].value)/2),status:'calculated',source:'Synthetic opening',
+    };
+  }
+  const net=row(23,[10,20,30]),sales=row(7,[100,200,300]),cogs=row(11,[40,80,120]);
+  const pnlReport=report([net,sales,cogs]);
+  const balance=report(balances,'09b_Balance');
+  const options=select(1,3,{pnlReport});
+  const ratio=number=>aggregateStatementRow(balance,row(number,[],[],'percent'),options).fact;
+  assert.equal(ratio(62).value,'0.1');
+  assert.equal(Number(ratio(63).value),60/((500+2000)/2));
+  assert.equal(Number(ratio(64).value),60/((200+800)/2));
+  assert.equal(Number(ratio(65).value),((50+300)/2)/600*90);
+  assert.equal(Number(ratio(66).value),((100+400)/2)/240*90);
+  assert.equal(Number(ratio(67).value),300/600);
+  assert.equal(Number(ratio(68).value),100/600);
+  assert.equal(Number(ratio(70).value),600/((250+900)/2));
+  assert.equal(ratio(63).status,'calculated');
+  assert.deepEqual(ratio(63).provenance.filter(item=>item.role==='opening_balance').map(item=>item.source),['Synthetic opening']);
+  assert.equal(ratio(63).provenance.filter(item=>item.role==='flow').length,3);
+  assert.notEqual(ratio(63).value,'0.02');
+});
+
+test('range balance KPI ignores saved percentages when a flow month, opening balance or denominator is unconfirmed',()=>{
+  const assets=row(19,[1000,1500,2000]);
+  const net=row(23,[10,20,30]),sales=row(7,[100,200,300]),ratio=row(63,[.3,.4,.9],undefined,'percent');
+  const balance=report([assets,ratio],'09b_Balance'),pnlReport=report([net,sales]);
+  const opts=select(1,3,{pnlReport});
+  const missingOpening=aggregateStatementRow(balance,ratio,opts).fact;
+  assert.equal(missingOpening.value,null);assert.equal(missingOpening.reason,'opening_balance_missing');
+  assets.cells[0].fact.opening_balance={value:'500',status:'calculated'};
+  net.cells[1].fact.status='missing';
+  const partial=aggregateStatementRow(balance,ratio,opts).fact;
+  assert.equal(partial.value,null);assert.equal(partial.reason,'incomplete_period');assert.deepEqual(partial.missingMonths,[2]);
+  net.cells[1].fact.status='calculated';
+  assets.cells[0].fact.opening_balance.value='-2000';
+  const zero=aggregateStatementRow(balance,ratio,opts).fact;
+  assert.equal(zero.value,null);assert.equal(zero.reason,'zero_denominator');
+  assert.equal(aggregateStatementRow(balance,ratio,select(1,3)).fact.reason,'ratio_period_method_required');
+});
+
+test('calendar days account for a leap February and EBITDA keeps its allocation reason across ranges',()=>{
+  const ar=row(9,[10,20]),sales=row(7,[100,200]),ratio=row(65,[999,999],undefined,'days');
+  const balance=report([ar,ratio],'09b_Balance'),pnl=report([sales]);
+  for(const source of [balance,pnl])source.periods=source.periods.map(item=>({...item,period:item.period.replace('2026','2024')}));
+  ar.cells[0].fact.opening_balance={value:'0',status:'calculated'};
+  const total=aggregateStatementRow(balance,ratio,{...select(1,2,{pnlReport:pnl}),year:2024});
+  assert.equal(total.fact.value,'2'); // Average 10 / revenue 300 × 60 actual days.
+  const ebitda=row(16,[10,20]);
+  for(const period of ebitda.cells)period.fact={value:null,status:'requires_allocation',reason:'depreciation_allocation_required',source_cache:'999'};
+  const blocked=aggregateStatementRow(report([ebitda]),ebitda,select(1,2)).fact;
+  assert.equal(blocked.value,null);assert.equal(blocked.status,'requires_allocation');
+  assert.equal(blocked.reason,'depreciation_allocation_required');
+});
+
+test('period inventory turnover does not turn a negative COGS flow into a positive denominator',()=>{
+ const inventory=row(13,[100,100]),cogs=row(11,[30,-60]),ratio=row(66,[5,5],undefined,'days');
+ inventory.cells[0].fact.opening_balance={value:'100',status:'calculated'};
+ const value=aggregateStatementRow(report([inventory,ratio],'09b_Balance'),ratio,
+   select(1,2,{pnlReport:report([cogs])})).fact;
+ assert.equal(value.value,null);assert.equal(value.reason,'nonpositive_flow');
+});
+
+test('unrecognized row layout cannot use fixed-position quarter KPI or PNL margin formulas',()=>{
+ const assets=row(19,[1000,1500,2000]),roe=row(64,[.1,.2,.91],undefined,'percent');
+ assets.cells[0].fact.opening_balance={value:'500',status:'calculated'};
+ const balance=report([assets,roe],'09b_Balance');
+ const endpoint=aggregateStatementRow(balance,roe,select(1,3,{profileUnrecognized:true,pnlReport:report([row(23,[10,20,30])])}));
+ assert.equal(endpoint.mode,'end_month');assert.equal(endpoint.fact.value,'0.91');assert.equal(endpoint.fact.status,'cached');
+ const margin=row(13,[.1,.2,.3],undefined,'percent');
+ const source=report([row(7,[100,200,300]),row(12,[10,40,90]),margin]);
+ const unsafe=aggregateStatementRow(source,margin,select(1,3,{profileUnrecognized:true}));
+ assert.equal(unsafe.fact.value,null);assert.equal(unsafe.fact.reason,'profile_unrecognized');
+});

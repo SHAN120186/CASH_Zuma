@@ -128,7 +128,7 @@ test('the source review cutoff is shown from its immutable snapshot instead of t
  const view=mount(component,{company,type:'pnl',api:async()=>payload});t.after(view.unmount);await settle();
  const metadata=find(view.container,node=>String(node.props?.class||'').includes('statement-source'));
  assert.match(text(metadata),/Дата проверки \/ среза: 11\.10\.2026/);
- assert.match(text(view.container),/Для обновления среза загрузите обновлённый источник/);
+ assert.match(text(view.container),/Для новых операций и месяцев загрузите новую версию источника/);
  setLang('uz');await settle();assert.match(text(metadata),/Tekshirish \/ kesim sanasi: 11\.10\.2026/);
 });
 
@@ -256,14 +256,14 @@ test('balance quarters take only the final month, preserve a missing ending snap
  assert.match(text(metricCard(view,19)),/6\s?000,00/);assert.match(text(metricCard(view,36)),/Капитал как разница/);
  assert.match(text(metricCard(view,36)),/Synthetic equity balancing/);assert.match(text(metricCard(view,36)),/Требует проверки/);
  assert.match(text(metricTable(view)),/Synthetic inventory days/);assert.doesNotMatch(text(mainTable(view)),/Synthetic inventory days/);
- assert.match(text(view.container),/Показатели на конец диапазона · 2026-03/);
+ assert.match(text(view.container),/Коэффициенты за период и остатки на его конец · 2026-03/);
  view.state.payload.source.reports.balance.rows.find(row=>row.row===19).cells[2].fact={value:null,status:'missing'};await settle();
  assert.match(text(find(metricCard(view,19),node=>String(node.props?.class||'').includes('v num'))),/^—/);
  assert.doesNotMatch(text(metricCard(view,19)),/4\s?000,00/);
 });
 
 test('money scales alone while percentage, days, coefficient and original author norms stay unchanged',async t=>{
- const view=mount(component,{company,type:'balance',api:async()=>periodPayload()});t.after(view.unmount);await settle();view.state.setPer('q1');view.state.unit='k';await settle();
+ const view=mount(component,{company,type:'balance',api:async()=>periodPayload()});t.after(view.unmount);await settle();view.state.month=3;view.state.unit='k';await settle();
  assert.match(text(metricCard(view,19)),/6,00/);assert.match(text(metricCard(view,19)),/тыс\. исходных единиц/);
  assert.match(text(metricTable(view)),/Synthetic debt ratio30,00\s*%40,00\s*%/);
  assert.match(text(metricTable(view)),/Synthetic inventory days30,00 дн\.40,00 дн\./);
@@ -298,4 +298,122 @@ test('collapse preserves chapter headers, key totals and cards; source requireme
  view.state.toggleGroup('gross');await settle();assert.equal(all(table,node=>node.tag==='tr'&&Number(node.props['data-source-row'])===8).length,1);
  const disclosures=all(view.container,node=>node.tag==='details'&&String(node.props.class||'').includes('statement-disclosure'));
  assert.equal(disclosures.length,3);assert.ok(disclosures.every(node=>node.props.open===false));
+});
+
+test('corrected sources show independent capital, residual and named clarifications without repeating found fields',async t=>{
+ const payload=periodPayload();
+ payload.source.calculation={profile:'uzbek_grouped_chart_finmodel_v1'};
+ payload.source.reports.balance.calculation={basis:'mapping'};
+ for(const period of payload.source.reports.balance.rows.find(row=>row.row===36).cells)period.fact.status='calculated';
+ payload.source.plan_source={status:'cached_snapshot',as_of:'2026-10-11',live:false};
+ payload.source.coverage[7].status='missing';payload.source.coverage[8].status='future';
+ payload.source.requirements=[
+  {key:'sales',title:'Synthetic sales',status:'found',evidence:['Mapping 9010 / 9040 / 9050'],fields:['Synthetic duplicate sales field'],missing_fields:[]},
+  {key:'plan',title:'Synthetic plan',status:'needs_clarification',evidence:['98_CashMacro_Import'],missing_fields:[{key:'vat',title:'Synthetic VAT basis',reason:'Synthetic gross versus net'}]},
+ ];
+ const view=mount(component,{company,type:'balance',api:async()=>payload});t.after(view.unmount);await settle();
+ assert.match(text(metricCard(view,36)),/Капитал по счетам/);assert.doesNotMatch(text(metricCard(view,36)),/Капитал как разница|Требует проверки/);
+ assert.match(text(view.container),/Контроль баланса: активы − обязательства − капитал/);
+ assert.match(text(view.container),/Найдено: 1.*Уточнить: 1.*Ожидают ОСВ: 2/);
+ assert.match(text(view.container),/Mapping 9010 \/ 9040 \/ 9050/);
+ assert.match(text(view.container),/Synthetic VAT basis.*Synthetic gross versus net/);
+ assert.doesNotMatch(text(view.container),/Synthetic duplicate sales field/);
+ assert.match(text(view.container),/сохранённый снимок Macro.*Обновление проверки не заменяет бюджет/);
+ assert.match(text(view.container),/2026-08, 2026-09.*не считаются ошибками расчёта/);
+});
+
+test('unconfirmed EBITDA stays blank, states its allocation reason and preserves original cache only in source details',async t=>{
+ const payload=periodPayload(),ebitda=payload.source.reports.pnl.rows.find(row=>row.row===16);
+ ebitda.cells[0].fact={value:null,status:'requires_allocation',reason:'depreciation_allocation_required',
+  source:'09_Statements!F16',source_cache:'42',source_status:'cached',source_formula:'Synthetic original EBITDA',
+  provenance:[{source:'Mapping!H55',account:'0200',measure:'turnover_debit'}]};
+ const view=mount(component,{company,type:'pnl',api:async()=>payload});t.after(view.unmount);await settle();
+ const card=metricCard(view,16);
+ assert.match(text(find(card,node=>String(node.props?.class||'').includes('v num'))),/^—/);
+ assert.match(text(card),/Нужно распределение амортизации/);
+ assert.match(text(card),/Повторно вычитать амортизацию нельзя/);
+ assert.match(text(mainTable(view)),/Сохранённое значение до исправления: 42,00/);
+ assert.match(text(mainTable(view)),/Mapping!H55/);
+});
+
+test('balance range KPI sums quarter profits and uses opening and ending assets, while end liquidity remains unchanged',async t=>{
+ const payload=periodPayload(),balance=payload.source.reports.balance;
+ const assets=balance.rows.find(row=>row.row===19);
+ assets.cells[0].fact.opening_balance={value:'1000',status:'calculated',source:'Mapping synthetic opening assets'};
+ const roe={...structuredClone(balance.rows.find(row=>row.row===62)),row:63,label:'Synthetic ROA',key:'synthetic-roa'};
+ balance.rows.push(roe);
+ const view=mount(component,{company,type:'balance',api:async()=>payload});t.after(view.unmount);await settle();
+ view.state.setPer('q1');await settle();
+ const ratio=find(metricTable(view),node=>node.tag==='tr'&&Number(node.props['data-source-row'])===63);
+ assert.match(text(ratio),/Synthetic ROA—1,29\s*%/); // 45 / average(1000, 6000).
+ assert.match(text(ratio),/Mapping synthetic opening assets/);
+ assert.match(text(metricTable(view)),/Synthetic liquidity coefficient1,201,50/);
+ assert.match(text(metricTable(view)),/Нет подтверждённого остатка на начало выбранного периода/);
+});
+
+test('RU/UZ translates found and missing-field summary, corrected capital and allocation instructions',async t=>{
+ const previous=lang.value;t.after(()=>setLang(previous));setLang('uz');
+ const payload=periodPayload();payload.source.reports.balance.calculation={basis:'mapping'};
+ for(const period of payload.source.reports.balance.rows.find(row=>row.row===36).cells)period.fact.status='calculated';
+ payload.source.requirements=[{key:'unit',title:'Synthetic units',status:'needs_clarification',missing_fields:[{key:'unit',title:'Нужно подтвердить единицы'}]}];
+ const view=mount(component,{company,type:'balance',api:async()=>payload});t.after(view.unmount);await settle();
+ assert.match(text(view.container),/Aniqlashtirish: 1/);
+ assert.match(text(view.container),/Hisobvaraqlar bo‘yicha kapital/);
+ assert.match(text(view.container),/To‘ldirish yoki tasdiqlash kerak/);
+ assert.match(text(view.container),/Birliklarni tasdiqlash kerak/);
+});
+
+test('resolved source defects leave the current issue count and capital labels follow the selected calculated month and side',async t=>{
+ const payload=periodPayload(),capital=payload.source.reports.balance.rows.find(row=>row.row===36);
+ payload.source.reports.balance.calculation={profile:'uzbek_grouped_chart_finmodel_v1',status:'derived_provisional'};
+ capital.fact_label='Капитал по счетам (8300, 8500, 8700, 9900)';
+ capital.cells[0].fact.status='calculated';
+ payload.source.issues=[
+  {code:'equity_plug',severity:'error',title:'Synthetic corrected source defect',detail:'Synthetic corrected basis',resolved_in_calculation:true},
+  {code:'unit_missing',severity:'warning',title:'Synthetic current clarification',detail:'Synthetic unit basis'},
+ ];
+ const view=mount(component,{company,type:'balance',api:async()=>payload});t.after(view.unmount);await settle();
+ assert.equal(view.state.issues.length,1);assert.equal(view.state.correctedIssues.length,1);
+ assert.match(text(metricCard(view,36)),/Капитал по счетам/);
+ assert.match(text(view.container),/Исправлено: 1/);assert.match(text(view.container),/Замечаний: 1/);
+ view.state.month=2;await settle();
+ assert.match(text(metricCard(view,36)),/Капитал как разница/);
+ assert.doesNotMatch(text(metricCard(view,36)),/Капитал по счетам/);
+ view.state.month=1;view.state.mode='plan';await settle();
+ assert.match(text(metricCard(view,36)),/Капитал как разница/);
+ assert.doesNotMatch(text(mainTable(view)),/Капитал по счетам \(8300/);
+});
+
+test('an explicitly unrecognized relocated model shows original rows without standard cards or recalculated ROE',async t=>{
+ const payload=periodPayload(),balance=payload.source.reports.balance;
+ payload.source.calculation={status:'source_only',profile:null,reason:'profile_unrecognized'};
+ const cash=balance.rows.find(row=>row.row===8);
+ const tax=structuredClone(cash);tax.key='relocated-tax';tax.row=8;tax.label='Original tax advance at row8';
+ for(const pair of tax.cells){pair.plan=cell('123');pair.fact=cell('321');}
+ cash.row=11;cash.key='relocated-cash';cash.label='Original cash at row11';balance.rows.push(tax);
+ const roe=structuredClone(balance.rows.find(row=>row.row===62));roe.row=64;roe.key='original-roe';roe.label='Original source ROE';
+ for(const pair of roe.cells){pair.plan=cell('0.82');pair.fact=cell('0.91');}
+ balance.rows.push(roe);
+ const view=mount(component,{company,type:'balance',api:async()=>payload});t.after(view.unmount);await settle();
+ view.state.setPer('q1');await settle();
+ assert.equal(view.state.cards.length,0);assert.equal(view.state.kpiRows.length,0);
+ assert.equal(all(view.container,node=>String(node.props?.class||'').includes('statement-kpi-card')).length,0);
+ assert.equal(metricTable(view),undefined);assert.equal(view.state.independentCapital,false);
+ assert.deepEqual(view.state.groups.map(group=>group.key),['source']);
+ assert.match(text(mainTable(view)),/Строки исходного отчёта/);
+ assert.match(text(mainTable(view)),/Original tax advance at row8123,00321,00/);
+ assert.match(text(mainTable(view)),/Original cash at row113\s?000,006\s?000,00/);
+ assert.match(text(mainTable(view)),/Original source ROE82,00\s*%91,00\s*%/);
+ assert.equal(view.state.rowCells(roe).fact.status,'cached');assert.equal(view.state.rowCells(roe).fact.value,'0.91');
+ assert.match(text(view.container),/Формат модели не распознан: показаны строки исходника без расчётных карточек и KPI/);
+ const previous=lang.value;t.after(()=>setLang(previous));setLang('uz');await settle();
+ assert.match(text(view.container),/Model formati aniqlanmadi/);
+});
+
+test('a recognized profile with a source-only month retains its ordinary report controls and KPI section',async t=>{
+ const payload=periodPayload();
+ payload.source.calculation={status:'derived_provisional',profile:'uzbek_grouped_chart_finmodel_v1',months:[{month:1,status:'source_only',reason:'incomplete_account_register'}]};
+ const view=mount(component,{company,type:'balance',api:async()=>payload});t.after(view.unmount);await settle();
+ assert.equal(view.state.profileUnrecognized,false);assert.equal(view.state.cards.length,4);
+ assert.ok(view.state.kpiRows.length>0);assert.ok(view.state.groups.some(group=>group.key==='assets'));
 });

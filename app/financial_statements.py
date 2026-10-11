@@ -1,8 +1,8 @@
-"""Source review for PNL and balance. Saved Excel results are never posted or certified.
+"""Mapping-based review of PNL and balance; no posting or certification.
 
 The workbook remains an immutable company-private source. Formula caches, missing
-input periods and accounting classification issues remain distinguishable; this
-module neither evaluates spreadsheet formulas nor changes the cash ledger.
+input periods and accounting classification issues remain distinguishable. Derived
+amounts have provenance; this module never changes Excel or the cash ledger.
 """
 from __future__ import annotations
 
@@ -12,7 +12,8 @@ import json
 import posixpath
 import re
 import unicodedata
-from collections import Counter, defaultdict
+from collections import Counter, OrderedDict, defaultdict
+from threading import RLock
 from datetime import date, datetime, timedelta, timezone
 from decimal import Decimal, InvalidOperation
 from pathlib import PurePosixPath
@@ -23,6 +24,9 @@ from defusedxml import ElementTree as ET
 from defusedxml.common import DefusedXmlException
 from fastapi import APIRouter, HTTPException, Query, Request
 from openpyxl.formula.translate import Translator, TranslatorError
+from openpyxl.formula import Tokenizer
+from openpyxl.formula.tokenizer import TokenizerError
+from openpyxl.utils.cell import column_index_from_string
 from sqlalchemy import select
 
 from .clock import today
@@ -38,6 +42,9 @@ REPORTS = {'pnl': ('09_Statements', 'PNL · план / факт', 7, 24),
            'balance': ('09b_Balance', 'Баланс · план / факт', 7, 81)}
 PERCENT_ROWS = {'pnl': {13, 24}, 'balance': {62, 63, 64, 67, 68, 69, 75}}
 COEFFICIENT_ROWS = {70, 73, 74, 76}
+REVIEW_VERSION = 'mapping-2026-10-11-v2'
+_review_cache = OrderedDict()
+_review_cache_lock = RLock()
 REQUIREMENTS = [
     {'key': 'trial_balance', 'title': 'Полная ОСВ за каждый месяц',
      'fields': ['Компания, год, месяц, валюта и единица измерения', 'Счёт и субсчёт',
@@ -206,6 +213,179 @@ def _rows_referenced(formula, column):
     return refs
 
 
+def report_dependencies(sheets, coverage):
+    """Trace displayed PNL/balance inputs; never audit the cash-flow report.
+
+    SUMPRODUCT category masks restrict monetary dependencies to matching rows.
+    Empty lookup scaffolding and unrelated worksheets are not source defects.
+    No Excel expression or external link is executed here.
+    """
+    scope, pending, range_cache = set(), [], {}
+    for key, (sheet, _, first, last) in REPORTS.items():
+        cells = sheets.get(sheet, {})
+        for row in range(first, last + 1):
+            label = cells.get('D' + str(row), {}).get('value')
+            if key == 'balance' and row == 38 and not label and balance_check_row(sheets):
+                label = 'Проверка баланса'
+            if not label or number(label) is not None:
+                continue
+            for month in range(1, 13):
+                pending.append((sheet, col(3 + 2 * month) + str(row)))
+                if coverage[month - 1]['status'] == 'available':
+                    pending.append((sheet, col(4 + 2 * month) + str(row)))
+            if key == 'balance' and row >= 62:
+                pending.append((sheet, 'A' + str(row)))
+    def excluded(sheet, address):
+        return sheet.upper().startswith('09_CASH_FLOW') or (sheet == '09_Statements' and int(re.search(r'\d+', address).group()) >= 26)
+    while pending:
+        sheet, address = pending.pop()
+        if (sheet, address) in scope or excluded(sheet, address):
+            continue
+        scope.add((sheet, address))
+        formula = sheets.get(sheet, {}).get(address, {}).get('formula') or ''
+        if not formula:
+            continue
+        # Source category labels can safely narrow SUMPRODUCT ranges without
+        # interpreting or calculating arbitrary spreadsheet formulas.
+        selected = {}
+        if 'SUMPRODUCT' in formula.upper():
+            for target, column, first, last, label in re.findall(r"'([^']+)'!\$?([A-Z]+)\$?(\d+):\$?\2\$?(\d+)\s*=\s*\"([^\"]+)\"", formula, re.I):
+                selected[target] = {r for r in range(int(first), int(last) + 1)
+                                    if str(sheets.get(target, {}).get(column.upper() + str(r), {}).get('value') or '') == label}
+        try:
+            tokens = Tokenizer('=' + formula.lstrip('=')).items
+        except (TokenizerError, ValueError, IndexError):
+            continue
+        for token in tokens:
+            if token.type != 'OPERAND' or token.subtype != 'RANGE':
+                continue
+            reference = token.value.replace('$', '')
+            target = sheet
+            if '!' in reference:
+                target, reference = reference.rsplit('!', 1)
+                target = target.strip("'").replace("''", "'")
+            if target not in sheets:  # named ranges / external sources remain provenance only
+                continue
+            match = re.fullmatch(r'([A-Z]{1,3})(\d*)(?::([A-Z]{1,3})(\d*))?', reference, re.I)
+            if not match:
+                continue
+            c1, r1, c2, r2 = match.groups()
+            left, right = column_index_from_string(c1), column_index_from_string(c2 or c1)
+            top, bottom = int(r1 or 1), int(r2 or r1 or 1048576)
+            cache_key = (target, reference)
+            if cache_key not in range_cache:
+                if ':' not in reference and r1:
+                    range_cache[cache_key] = [(reference.upper(), int(r1))]
+                else:
+                    found = []
+                    for candidate in sheets[target]:
+                        col_name, row_text = re.fullmatch(r'([A-Z]+)(\d+)', candidate).groups()
+                        row_number = int(row_text)
+                        if left <= column_index_from_string(col_name) <= right and top <= row_number <= bottom:
+                            found.append((candidate, row_number))
+                    range_cache[cache_key] = found
+            for candidate, row_number in range_cache[cache_key]:
+                if target not in selected or row_number in selected[target]:
+                    pending.append((target, candidate))
+    return scope
+
+
+def source_requirements(records, coverage, currency, unit_status, plan_source, calculation, issues):
+    """Ask for unresolved policy/detail only, acknowledging amounts already loaded."""
+    loaded = [c['period'] for c in coverage if c['status'] == 'available']
+    missing = [c['period'] for c in coverage if c['status'] == 'missing']
+    loaded_periods = set(loaded)
+    accounts = {r['account'] for ym, rows in records.items() if f'{ym[0]}-{ym[1]:02}' in loaded_periods
+                for r in rows if not r['invalid_amounts']}
+    evidence = 'Mapping: ' + ', '.join(loaded) if loaded else None
+    result = []
+    for template in REQUIREMENTS:
+        item = {**template, 'fields': list(template['fields']), 'evidence': [], 'missing_fields': []}
+        key = item['key']
+        if evidence:
+            item['evidence'].append(evidence)
+        if key == 'trial_balance':
+            item['title'] = 'ОСВ: загруженные и ожидаемые месяцы'
+            if not loaded:
+                item['missing_fields'].append({'key': 'mapping_periods', 'title': 'ОСВ за закрытый месяц'})
+            elif missing:
+                item['missing_fields'].append({'key': 'pending_periods', 'title': 'Ещё не загружены: ' + ', '.join(missing)})
+            if currency is None:
+                item['missing_fields'].append({'key': 'currency', 'title': 'Валюта отчёта'})
+            if unit_status == 'unknown':
+                item['missing_fields'].append({'key': 'amount_unit', 'title': 'Масштаб сумм: единицы / тысячи / миллионы'})
+        elif key == 'plan':
+            item['evidence'] = ([f"{plan_source['sheet']}: {plan_source['cached_cell_count']} сохранённых числовых результатов; снимок {plan_source['as_of']}"]
+                                if plan_source else [])
+            if not plan_source:
+                item['missing_fields'].append({'key': 'plan_source', 'title': 'Источник утверждённого плана'})
+            item['missing_fields'].extend([
+                {'key': 'plan_vat_basis', 'title': 'План продаж: цены и выручка с НДС или без НДС'},
+                {'key': 'plan_marketing_classification', 'title': 'План: классификация процента маркетинга / продаж'},
+                {'key': 'plan_cost_allocation', 'title': 'План: состав себестоимости, постоянных затрат и амортизации'},
+            ])
+        elif key == 'fixed_assets':
+            item['missing_fields'].append({'key': 'depreciation_allocation',
+                'title': 'Распределение амортизации в себестоимость и OPEX',
+                'reason': 'Для EBITDA; уже учтённые расходы повторно не вычитаются.'})
+        elif key == 'payroll':
+            item['title'] = 'Расчёты с персоналом и социальные обязательства'
+        elif key == 'journal' and any(i['code'] in ('mapping_rollforward', 'mapping_balance_residual') for i in issues):
+            item['missing_fields'].append({'key': 'osv_residual_explanation', 'title': 'Проводки / округления для выявленных расхождений ОСВ'})
+        elif key == 'ifrs_adjustments':
+            item['evidence'] = []
+            item['missing_fields'] = [{'key': 'ifrs_policy_register', 'title': 'Учётная политика и сверка / корректировки МСФО для заявления о соответствии'}]
+        # Amounts in Mapping already cover these categories. Their separate
+        # registers are needed only for a specific disputed classification.
+        category = {'sales': ('90',), 'inventory': ('10', '20', '21', '25', '28', '29'),
+                    'payroll': ('65', '67'), 'fixed_assets': ('01', '02'),
+                    'debt': ('68', '78'), 'taxes': ('64', '65'), 'capital': ('83', '85', '87', '99')}.get(key)
+        if category:
+            # Another category's OSV cannot prove this one, nor can future or
+            # invalid periods. Registered blank/zero amounts still are evidence.
+            item['evidence'] = []
+            present = sorted(a for a in accounts if a.startswith(category))
+            if present:
+                if evidence:
+                    item['evidence'].append(evidence)
+                item['evidence'].append('Счета Mapping: ' + ', '.join(present))
+            else:
+                titles = {
+                    'sales': 'Счета продаж, возвратов и скидок в ОСВ (90xx)',
+                    'inventory': 'Счета запасов в ОСВ (10xx, 20xx, 21xx, 25xx, 28xx, 29xx)',
+                    'payroll': 'Счета расчётов с персоналом и социальных обязательств в ОСВ (6500, 6700)',
+                    'fixed_assets': 'Счета основных средств и накопленной амортизации в ОСВ (0100, 0200)',
+                    'debt': 'Счета кредитов в ОСВ (68xx, 78xx)',
+                    'taxes': 'Счета налоговых и социальных расчётов в ОСВ (64xx, 65xx)',
+                    'capital': 'Счета капитала и финансового результата в ОСВ (83xx, 85xx, 87xx, 99xx)',
+                }
+                item['missing_fields'].append({'key': key + '_mapping', 'title': titles[key]})
+        item['status'] = 'needs_clarification' if item['missing_fields'] else 'found'
+        result.append(item)
+    # Engine-specific unresolved classifications must be named, not guessed.
+    for field in calculation.get('required_fields', []):
+        if not isinstance(field, dict) or not field.get('key'):
+            continue
+        aliases = {'VAT_price_basis': 'plan_vat_basis', 'marketing_cost_classification': 'plan_marketing_classification'}
+        field = {**field, 'key': aliases.get(field['key'], field['key'])}
+        owner = 'plan' if field['key'].startswith('plan_') else 'fixed_assets' if field['key'] == 'depreciation_allocation' else 'debt' if field['key'] == 'debt_maturity' else 'journal'
+        target = next(r for r in result if r['key'] == owner)
+        if field['key'] not in {f['key'] for f in target['missing_fields']}:
+            target['missing_fields'].append(field)
+            target['status'] = 'needs_clarification'
+    return result
+
+
+def balance_check_row(sheets):
+    """Recognise the template's boolean control; never promote arbitrary helpers."""
+    cells = sheets.get('09b_Balance', {})
+    formula = (cells.get('F38', {}).get('formula') or '').replace('$', '').lstrip('=').upper()
+    labels = ((19, r'^total assets|всего актив'), (35, r'^total liabilities|всего обязательств'),
+              (37, r'^total l\+e|всего обязательств и капитала'))
+    return bool(re.fullmatch(r'F19\s*=\s*F37', formula) and all(
+        re.search(pattern, str(cells.get('D' + str(row), {}).get('value') or '').casefold()) for row, pattern in labels))
+
+
 def build_review(raw, filename, as_of=None):
     sheets, epoch = read_workbook(raw)
     as_of = as_of or today()
@@ -297,18 +477,20 @@ def build_review(raw, filename, as_of=None):
                 address = col(column) + str(row)
                 item = cell('Mapping', address)
                 entered = item.get('value') not in (None, '') or item.get('has_formula')
-                invalid = entered and (item.get('type') in ('e', 'b', 's', 'inlineStr')
+                invalid = entered and (item.get('type') in ('e', 'b', 's', 'inlineStr', 'str')
                                       or '#REF!' in (item.get('formula') or '').upper()
                                       or number(item.get('value')) is None)
                 measures.append(None if invalid else number(item.get('value')))
                 if invalid:
                     bad.append(address)
-            if bad or all(value is None for value in measures):
-                if bad:
-                    invalid_periods.add(ym)
-                issue('mapping_amount_invalid', 'error', 'Числа ОСВ отсутствуют или ошибочны', 'Mapping!' + ','.join(bad or ['F' + str(row) + ':K' + str(row)]),
-                      'Ошибка Excel или отсутствующий результат формулы не считается нулевым оборотом или остатком. Пустые стороны ОСВ требуют подтверждения.')
+            if bad:
+                invalid_periods.add(ym)
+                issue('mapping_amount_invalid', 'error', 'Числа ОСВ ошибочны', 'Mapping!' + ','.join(bad),
+                      'Ошибка Excel, текст, логическое значение или отсутствующий результат формулы не считается нулевым оборотом или остатком. Пустые стороны корректной строки ОСВ допустимы.')
             records[ym].append({'account': account, 'row': row, 'measures': measures,
+                                'account_name': str(val('Mapping', 'E' + str(row)) or '').strip(),
+                                'blank_amounts': not bad and all(value is None for value in measures),
+                                'invalid_amounts': bad,
                                 'has_numeric': not bad and any(value is not None for value in measures)})
         duplicates = [(ym, account) for ym, rows in records.items()
                       for account, count in Counter(r['account'] for r in rows).items() if count > 1]
@@ -319,6 +501,8 @@ def build_review(raw, filename, as_of=None):
         inconsistent = []
         for ym, rows in records.items():
             for record in rows:
+                if record['invalid_amounts']:
+                    continue
                 # Blank debit/credit sides are conventional in OSV; this diagnostic
                 # does not turn these zero assumptions into report values.
                 vals = [value if value is not None else Decimal(0) for value in record['measures']]
@@ -329,8 +513,8 @@ def build_review(raw, filename, as_of=None):
             issue('mapping_rollforward', 'warning', 'Начальные остатки и обороты не сходятся с конечными',
                   'Mapping · строки ' + ', '.join(str(r) for r in inconsistent[:12]),
                   f'Нужна сверка ОСВ и корректировок. Строк с расхождением: {len(inconsistent)}; баланс не выравнивается искусственно.')
-    if year is not None and any(y != year for y in mapping_years):
-        issue('source_year_mismatch', 'error', 'В ОСВ есть другой год', 'Mapping!A:C',
+    if year is not None and mapping_years and year not in mapping_years:
+        issue('source_year_mismatch', 'error', 'В ОСВ нет года выбранного отчёта', 'Mapping!A:C',
               'Факт фильтруется по году и месяцу отчёта; совпадение только номера месяца недостаточно.')
 
     coverage = []
@@ -339,31 +523,35 @@ def build_review(raw, filename, as_of=None):
         count = len(records.get(ym, [])) if year is not None else 0
         numeric_count = sum(row['has_numeric'] for row in records.get(ym, [])) if year is not None else 0
         future = year is not None and (year, month) > (as_of.year, as_of.month)
-        status = 'invalid' if ym in invalid_periods or year is None else 'future' if future else 'available' if numeric_count else 'missing'
+        status = 'invalid' if ym in invalid_periods or year is None else 'future' if future else 'available' if count else 'missing'
         coverage.append({'month': month, 'period': f'{year}-{month:02}' if year else None,
-                         'record_count': count, 'numeric_record_count': numeric_count, 'status': status})
-    missing = [c['month'] for c in coverage if c['status'] == 'missing']
-    if missing:
-        issue('actual_periods_missing', 'error', 'За часть месяцев нет исходной ОСВ', 'Mapping!A:K',
-              'Не загружены месяцы: ' + ', '.join(f'{m:02}' for m in missing) + '. Сохранённые нули формул за эти месяцы не показываются как факт.')
-    future_months = [c['month'] for c in coverage if c['status'] == 'future']
-    if future_months:
-        issue('actual_future_periods', 'info', 'Будущие месяцы не подтверждены как факт', 'Mapping!A:C',
-              'Будущие периоды показываются без фактических сумм, даже если в формулах сохранён ноль.')
+                         'record_count': count, 'numeric_record_count': numeric_count,
+                         'blank_record_count': sum(r['blank_amounts'] for r in records.get(ym, [])),
+                         'status': status,
+                         'calculation_eligible': status == 'available' and all(
+                             periods_by_report[k][month - 1]['period'] == f'{year}-{month:02}' for k in REPORTS)})
 
     reports = {}
+    scope = report_dependencies(sheets, coverage)
     error_cells, no_cache, bad_refs, external = [], [], [], []
-    for sheet, cells in sheets.items():
-        for address, item in cells.items():
-            source = sheet + '!' + address
-            formula = item.get('formula') or ''
-            if item.get('type') == 'e':
-                error_cells.append(source)
-            if item.get('has_formula') and item.get('value') is None:
-                no_cache.append(source)
-            if '#REF!' in formula.upper():
-                bad_refs.append(source)
-            if re.search(r'\[[0-9]+\]|IMPORTRANGE|DUMMYFUNCTION', formula, re.I):
+    plan_cached, plan_uncached = [], []
+    for sheet, address in sorted(scope):
+        item = cell(sheet, address)
+        source = sheet + '!' + address
+        formula = item.get('formula') or ''
+        if item.get('type') == 'e':
+            error_cells.append(source)
+        if item.get('has_formula') and item.get('value') is None and item.get('type') != 'str':
+            no_cache.append(source)
+        if '#REF!' in formula.upper():
+            bad_refs.append(source)
+        if re.search(r'\[[0-9]+\]|IMPORTRANGE|DUMMYFUNCTION', formula, re.I):
+            if sheet == '98_CashMacro_Import':
+                if number(item.get('value')) is not None and item.get('type') not in ('e', 'b', 's', 'inlineStr', 'str') and '#REF!' not in formula.upper():
+                    plan_cached.append(source)
+                else:
+                    plan_uncached.append(source)
+            else:
                 external.append(source)
     for code, title, cells in [('excel_errors', 'В книге есть ошибки Excel', error_cells),
                                ('formula_cache_missing', 'Есть формулы без сохранённого результата', no_cache),
@@ -372,25 +560,37 @@ def build_review(raw, filename, as_of=None):
         if cells:
             issue(code, 'error', title, '; '.join(cells[:8]),
                   f'Затронуто ячеек: {len(cells)}. Формулы не пересчитываются, ссылки не заменяются и ошибки не подменяются нулями.')
-    yearless = [sheet + '!' + address for sheet, cells in sheets.items() for address, item in cells.items()
+    yearless = [sheet + '!' + address for sheet, address in sorted(scope)
+                for item in [cell(sheet, address)]
                 if 'SUMIFS' in (item.get('formula') or '').upper() and 'MAPPING!' in (item.get('formula') or '').upper()
                 and re.search(r'Mapping!\$?B', item.get('formula') or '', re.I)
                 and not re.search(r'Mapping!\$?(?:A|C)', item.get('formula') or '', re.I)]
     if yearless:
-        issue('yearless_sumifs', 'error', 'Исходные формулы выбирают месяц без года', '; '.join(yearless[:5]),
-              'При добавлении другого года SUMIFS смешает периоды. Нужен фильтр по году или полному ключу YYYY-MM.')
+        issue('yearless_sumifs', 'error' if len(mapping_years) > 1 else 'warning', 'Исходные формулы выбирают месяц без года', '; '.join(yearless[:5]),
+              'Новый расчёт Mapping фильтрует год и месяц. Исходная формула при добавлении другого года может смешать периоды; нужен фильтр по году или YYYY-MM.')
+    if plan_uncached:
+        issue('plan_import_cache_missing', 'error', 'В импорте плана нет сохранённых числовых результатов', '; '.join(plan_uncached[:8]),
+              'Внешняя связь не выполняется сервером; нужен числовой результат в загруженном снимке.')
+    plan_source = ({'status': 'cached_snapshot', 'sheet': '98_CashMacro_Import',
+                    'cached_cell_count': len(plan_cached), 'sources': plan_cached,
+                    'as_of': as_of.isoformat(), 'live': False} if plan_cached else None)
 
     def output_cell(sheet, address, month, factual):
         item = cell(sheet, address)
-        n = number(item.get('value')) if item.get('type') not in ('e', 'b', 's', 'inlineStr') else None
+        n = number(item.get('value')) if item.get('type') not in ('e', 'b', 's', 'inlineStr', 'str') else None
         broken_reference = '#REF!' in (item.get('formula') or '').upper()
         status = 'error' if item.get('type') == 'e' or broken_reference else 'missing_cache' if item.get('has_formula') and item.get('value') is None else 'missing' if item.get('value') in (None, '') else 'invalid' if n is None else 'cached' if item.get('has_formula') else 'value'
         result = {'value': format(n, 'f') if n is not None else None,
                   'source': sheet + '!' + address, 'status': status}
         if item.get('formula'):
             result['formula'] = '=' + item['formula'].lstrip('=')
+        if sheet == '09_Statements' and not factual and plan_source and (sheet, address) in scope:
+            result['snapshot_as_of'] = as_of.isoformat()
         if broken_reference and result['value'] is not None:
             result['source_cache'] = result['value']
+        if sheet == '09b_Balance' and address.endswith('38') and balance_check_row(sheets) and item.get('type') == 'b':
+            result['source_cache'] = item.get('value')
+            result['source_type'] = 'b'
         if status in ('error', 'invalid'):
             result['value'] = None
         covered = coverage[month - 1]
@@ -416,6 +616,8 @@ def build_review(raw, filename, as_of=None):
         rows = []
         for row in range(first, last + 1):
             label = str(val(sheet, 'D' + str(row)) or '').strip()
+            if key == 'balance' and row == 38 and not label and balance_check_row(sheets):
+                label = 'Проверка баланса'
             # Numeric/helper rows are not financial rows; their values are never promoted to headings.
             if not label or number(label) is not None:
                 continue
@@ -436,26 +638,34 @@ def build_review(raw, filename, as_of=None):
             rows.append(output_row)
         reports[key] = {'sheet': sheet, 'title': title, 'periods': periods_by_report[key], 'rows': rows}
 
+    from .financial_statement_calculations import apply_mapping_reports
+    calculation = apply_mapping_reports(reports, records, year, coverage, sheets, issue)
+
     balance_sheet = REPORTS['balance'][0]
     pnl_sheet = REPORTS['pnl'][0]
-    for month in range(1, 13):
+    loaded_months = [c['month'] for c in coverage if c['status'] == 'available']
+    for month in loaded_months:
         fc = col(4 + 2 * month)
         plug = cell(balance_sheet, fc + '36').get('formula') or ''
         if {19, 35} <= _rows_referenced(plug, fc) and '-' in plug:
             issue('equity_plug', 'error', 'Капитал рассчитан как выравнивающая разница', balance_sheet + '!' + fc + '36',
                   'Активы минус обязательства не подтверждают капитал. Нужна сверка счетов капитала, прибыли и незакрытого финансового результата.')
             break
-    for month in range(1, 13):
+    for month in loaded_months:
         fc = col(4 + 2 * month)
         liability = cell(balance_sheet, fc + '35').get('formula') or ''
         if liability and not {30, 31} <= _rows_referenced(liability, fc) and any(cell(balance_sheet, fc + str(r)) for r in (30, 31)):
             issue('loans_omitted', 'error', 'Итог обязательств исключает строки кредитов', balance_sheet + '!' + fc + '35',
-                  'Проверьте включение краткосрочных и долгосрочных кредитов строк 30 и 31; автоматический исправленный итог не публикуется.')
+                  'Исходная формула исключает краткосрочные и долгосрочные кредиты строк 30 и 31. В распознанном профиле исправленный итог рассчитывается отдельно по Mapping.')
             break
-    if all(val(balance_sheet, 'D' + str(r)) for r in (32, 33, 34, 50, 51, 52)):
-        issue('capital_classification', 'warning', 'Строки капитала повторяются в разных блоках', balance_sheet + '!D32:D34; D50:D52',
-              'Уставный капитал, резервы и прибыль нужно отделить от обязательств и определить один источник для каждого показателя.')
-    for month in range(1, 13):
+    for month in loaded_months:
+        fc = col(4 + 2 * month)
+        equity = cell(balance_sheet, fc + '36').get('formula') or ''
+        if {32, 33, 34, 50, 51, 52} <= _rows_referenced(equity, fc):
+            issue('capital_double_count', 'error', 'Итог капитала включает повторные подробные строки', balance_sheet + '!' + fc + '36',
+                  'Детализация капитала сама по себе допустима; её повторное включение в один итог требует исправления.')
+            break
+    for month in loaded_months:
         fc = col(4 + 2 * month)
         social = cell(balance_sheet, fc + '25').get('formula') or ''
         total = cell(balance_sheet, fc + '35').get('formula') or ''
@@ -463,14 +673,14 @@ def build_review(raw, filename, as_of=None):
             issue('social_double_count', 'error', 'Социальное обязательство может учитываться дважды', balance_sheet + '!' + fc + '25; ' + fc + '35; ' + fc + '46',
                   'Социальные платежи входят и в налоги, и в прочие обязательства. Нужно согласовать классификацию по счетам.')
             break
-    for month in range(1, 13):
+    for month in loaded_months:
         fc = col(4 + 2 * month)
         ebit = cell(pnl_sheet, fc + '18').get('formula') or ''
         if 16 in _rows_referenced(ebit, fc) and 17 not in _rows_referenced(ebit, fc):
             issue('ebit_classification', 'warning', 'Формула EBIT не использует строку амортизации', pnl_sheet + '!' + fc + '18',
                   'Нужно проверить журнал и распределение амортизации в себестоимость/OPEX. Если она уже включена, повторное вычитание исказит прибыль.')
             break
-    for month in range(1, 13):
+    for month in loaded_months:
         fc = col(4 + 2 * month)
         gross = cell(pnl_sheet, fc + '8').get('formula') or ''
         net = cell(pnl_sheet, fc + '7').get('formula') or ''
@@ -478,14 +688,14 @@ def build_review(raw, filename, as_of=None):
             issue('returns_double_count', 'warning', 'Возвраты могут вычитаться дважды', pnl_sheet + '!' + fc + '8; ' + fc + '7',
                   'Возврат участвует и в исходной выручке, и в строке чистых продаж. Нужны проводки и определение выручки до/после возвратов.')
             break
-    for month in range(1, 13):
+    for month in loaded_months:
         fc = col(4 + 2 * month)
         roe = cell(balance_sheet, fc + '64').get('formula') or ''
         if re.search(r"09_Statements'?!\$?" + fc + r'\$?7\b', roe, re.I):
             issue('roe_methodology', 'warning', 'ROE использует выручку вместо чистой прибыли', balance_sheet + '!' + fc + '64',
                   'Нужно согласовать чистую прибыль периода, средний капитал и периодизацию. Авторский порог не оценивается по непроверенной формуле.')
             break
-    for month in range(1, 13):
+    for month in loaded_months:
         fc = col(4 + 2 * month)
         roa = cell(balance_sheet, fc + '63').get('formula') or ''
         if 37 in _rows_referenced(roa, fc):
@@ -495,24 +705,86 @@ def build_review(raw, filename, as_of=None):
     fact_sheet = '20_Fact_Input | Fakt'
     for row in (12, 13):
         formula = cell(fact_sheet, 'D' + str(row)).get('formula') or ''
-        if re.search(r'Mapping!\$?K', formula, re.I):
+        if (fact_sheet, 'D' + str(row)) in scope and re.search(r'Mapping!\$?K', formula, re.I):
             issue('payroll_payable_as_expense', 'warning', 'Расходы зарплаты или социальных платежей взяты из остатка долга', fact_sheet + '!D' + str(row),
                   'Конечное кредитовое сальдо не равно начисленному расходу. Нужны начисления и распределение; нельзя вычитать уже включённые в себестоимость/OPEX суммы повторно.')
     inventory_formula = cell(balance_sheet, 'F13').get('formula') or ''
     inventory_refs = re.findall(r"'20_Fact_Input \| Fakt'!\$?([A-Z]+)\$?([0-9]+)", inventory_formula)
-    if len(inventory_refs) != len(set(inventory_refs)):
+    if 1 in loaded_months and len(inventory_refs) != len(set(inventory_refs)):
         issue('inventory_duplicate', 'error', 'В запасах повторяется одна ссылка', balance_sheet + '!F13',
               'Повторный источник может завысить запасы; проверьте материалы, НЗП, полуфабрикаты и готовую продукцию по месяцам.')
-    issue('source_review_only', 'info', 'Это проверка исходной модели, а не утверждённая отчётность', '09_Statements; 09b_Balance',
-          'Показаны сохранённые значения Excel и их источники. Данные не проведены в учёт; исправленные итоговые суммы появятся после подтверждения первичных данных и методики.')
+    issue('source_review_only', 'info', 'Расчёт Mapping и проверка исходной модели', '09_Statements; 09b_Balance',
+          'Расчётные значения отмечены отдельно от сохранённых значений Excel, с источниками и методикой. Данные не проведены в учёт; незагруженные месяцы не заменяются нулями.')
     issue('ifrs_adjustments_missing', 'warning', 'Соответствие МСФО пока не подтверждено', 'Учётная политика и реестр корректировок',
           'Нужны учётная политика, корректировки, сравнительные данные и раскрытия. Пороги коэффициентов в колонке A — авторские ориентиры, а не нормативы МСФО; оценка «норма / отклонение» не выполняется.')
+    source_defects = {'equity_plug': ('balance', [36]), 'loans_omitted': ('balance', [35]),
+                      'social_double_count': ('balance', [25, 35, 46]),
+                      'capital_double_count': ('balance', [36]),
+                      'roe_methodology': ('balance', [64]), 'roa_methodology': ('balance', [63]),
+                      'inventory_duplicate': ('balance', [13]),
+                      'returns_double_count': ('pnl', [7, 8]), 'ebit_classification': ('pnl', [18])}
+    for item in issues:
+        if item['code'] not in source_defects:
+            continue
+        key, row_numbers = source_defects[item['code']]
+        match = re.search(r'!([A-Z]+)[0-9]+', item['source'])
+        month = (column_index_from_string(match.group(1)) - 4) // 2 if match else None
+        if month is None or not 1 <= month <= 12:
+            continue
+        affected = []
+        for row in reports[key]['rows']:
+            if row['row'] not in row_numbers:
+                continue
+            value = row['cells'][month - 1]['fact']
+            affected.append({'report': key, 'row': row['row'], 'month': month, 'mode': 'fact',
+                             'source': value['source'], 'status': value['status']})
+        item['stage'] = 'source_formula'
+        item['resolved_in_calculation'] = (len(affected) == len(row_numbers)
+                                          and all(c['status'] == 'calculated' for c in affected))
+        item['affected_cells'] = affected
     return {'filename': filename, 'year': year, 'currency': currency, 'unit': unit_label,
             'unit_status': unit_status, 'review_status': 'needs_review', 'reviewed_as_of': as_of.isoformat(),
+            'review_version': REVIEW_VERSION, 'plan_source': plan_source, 'calculation': calculation,
             'standards': {'presentation_basis': 'IAS 1' if year == 2026 else 'Требует подтверждения',
                           'profile': 'IAS1_2026' if year == 2026 else 'requires_confirmation',
                           'compliance_status': 'not_assessed', 'norm_status': 'author_guideline'},
-            'coverage': coverage, 'issues': issues, 'requirements': REQUIREMENTS, 'reports': reports}
+            'coverage': coverage, 'issues': issues,
+            'requirements': source_requirements({ym: rs for ym, rs in records.items() if ym[0] == year},
+                                                coverage, currency, unit_status, plan_source, calculation, issues),
+            'reports': reports}
+
+
+def current_source_review(source):
+    """Re-review immutable source bytes with current code and original cutoff.
+
+    A bounded process cache stores JSON, never mutable report objects. Its key
+    includes company, source and version; authorization always precedes lookup.
+    The database content and original snapshot remain untouched.
+    """
+    original = json.loads(source.snapshot)
+    original_date = original.get('reviewed_as_of') or source.created_at.date().isoformat()
+    try:
+        as_of = date.fromisoformat(original_date)
+    except (TypeError, ValueError):
+        as_of = source.created_at.date()
+        original_date = as_of.isoformat()
+    key = (source.company_id, source.id, source.sha256, REVIEW_VERSION, original_date)
+    with _review_cache_lock:
+        cached = _review_cache.get(key)
+        if cached is not None:
+            _review_cache.move_to_end(key)
+    if cached is None:
+        result = original if original.get('review_version') == REVIEW_VERSION else build_review(source.content, source.filename, as_of)
+        result = {**result, 'review_version': REVIEW_VERSION,
+                  'original_reviewed_as_of': original_date,
+                  'original_review_timestamp': source.created_at.replace(tzinfo=timezone.utc).isoformat()}
+        cached = json.dumps(result, ensure_ascii=False)
+        with _review_cache_lock:
+            _review_cache[key] = cached
+            _review_cache.move_to_end(key)
+            while len(_review_cache) > 4:
+                _review_cache.popitem(last=False)
+    return json.loads(cached)
 
 
 @router.get('/api/financial-statements')
@@ -526,14 +798,15 @@ def financial_statements(request: Request, source_id: int | None = Query(default
             raise HTTPException(404, 'Исходник не найден в выбранной компании.')
         result = None
         if source:
-            result = json.loads(source.snapshot)
+            result = current_source_review(source)
             result['id'] = source.id
             result['company_id'] = source.company_id
         return {'sources': [{'id': row.id, 'filename': row.filename,
                              'created_at': row.created_at.replace(tzinfo=timezone.utc).isoformat()} for row in sources],
                 'selected': source.id if source else None, 'source': result,
                 'company_id': s.info['company_id'], 'can_upload': 'import' in perms_of(user),
-                'requirements': REQUIREMENTS}
+                'review_version': REVIEW_VERSION,
+                'requirements': result['requirements'] if result else REQUIREMENTS}
 
 
 @router.post('/api/financial-statements/upload')

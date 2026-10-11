@@ -57,6 +57,17 @@ export const statementReasonLabels = {
   ratio_base_missing:N_('Не найдены подтверждённые исходные строки для расчёта маржи.'),
   zero_base:N_('Маржа за период не определена: сумма выручки равна нулю.'),
   nonfinite_result:N_('Результат расчёта выходит за допустимый числовой диапазон.'),
+  depreciation_allocation_required:N_('Для EBITDA нужно распределение амортизации в себестоимость и расходы. Повторно вычитать амортизацию нельзя.'),
+  ratio_period_method_required:N_('Этот KPI рассчитан за месяц. Для выбранного диапазона нужна методика с прибылью за период и средними остатками; месячное значение не подставляется.'),
+  zero_denominator:N_('Коэффициент не определён: его расчётная база равна нулю.'),
+  mapping_amount_invalid:N_('В Mapping есть некорректное числовое значение; расчёт не подтверждён.'),
+  mapping_period_missing:N_('ОСВ за этот месяц ещё не загружена.'),
+  plan_assumptions_required:N_('Нужно уточнить учёт НДС и процентных расходов в плане.'),
+  opening_balance_missing:N_('Нет подтверждённого остатка на начало выбранного периода.'),
+  plan_basis_unconfirmed:N_('Расчётная база планового показателя требует уточнения.'),
+  nonpositive_flow:N_('Оборачиваемость не определена: выручка или себестоимость за период должна быть положительной.'),
+  profile_unrecognized:N_('Структура счетов не соответствует поддерживаемой модели. Показаны значения источника.'),
+  incomplete_account_register:N_('Для расчёта не подтверждён полный набор счетов ОСВ.'),
 };
 
 function rowMeasure(row) {
@@ -159,7 +170,7 @@ function sourceSide(row, month, side, options, context) {
   if (missingMonths.length) {
     const status=cellNumber(original) == null ? original.status || 'missing' :
       options.coverage?.find(item=>Number(item.month) === month)?.status === 'future' ? 'future' : 'missing';
-    return {...original,value:null,status,provenance,reason:'incomplete_period',missingMonths};
+    return {...original,value:null,status,provenance,reason:original.reason || 'incomplete_period',missingMonths};
   }
   return {...original,provenance};
 }
@@ -168,7 +179,10 @@ function sumSide(row, months, side, options, context, role=null) {
   const provenance=provenanceFor(row,months,side,context,role);
   if (context.invalidMonths.length) return unavailable('invalid_period',provenance,context.invalidMonths,'invalid');
   const missingMonths=unconfirmedMonths(provenance,side,options,context);
-  if (missingMonths.length) return unavailable('incomplete_period',provenance,missingMonths);
+  if (missingMonths.length) {
+    const blocked=provenance.find(item=>item.reason && ['requires_allocation','requires_assumptions'].includes(item.status));
+    return unavailable(blocked?.reason || 'incomplete_period',provenance,missingMonths,blocked?.status || 'incomplete');
+  }
   const values=provenance.map(item=>decimal(item.value));
   if (values.some(value=>value == null)) return unavailable('nonfinite_result',provenance,[],'invalid');
   const value=decimalText(sumDecimals(values));
@@ -176,13 +190,76 @@ function sumSide(row, months, side, options, context, role=null) {
     unavailable('nonfinite_result',provenance,[],'invalid');
 }
 
+function ratioResult(top,bottom,provenance,denominatorReason='zero_denominator') {
+  if (!top || !bottom) return unavailable('nonfinite_result',provenance,[],'invalid');
+  if (bottom.coefficient === 0n) return unavailable(denominatorReason,provenance,[],'invalid');
+  const value=decimalText(divideDecimals(top,bottom));
+  return Number.isFinite(Number(value)) ? {value,status:'calculated',provenance} :
+    unavailable('nonfinite_result',provenance,[],'invalid');
+}
+
+function balancePeriodSide(report,row,months,side,options,context) {
+  if (context.invalidMonths.length) return unavailable('invalid_period',[],context.invalidMonths,'invalid');
+  const methods={62:{flow:23,base:7},63:{flow:23,stock:19},64:{flow:23,stock:36},
+    65:{flow:7,stock:9,days:true,inverse:true,positive:true},66:{flow:11,stock:13,days:true,inverse:true,positive:true},
+    67:{flow:7,stock:9,inverse:true,ending:true},68:{flow:7,stock:8,inverse:true,ending:true},
+    70:{flow:7,stock:18}};
+  const method=methods[Number(row.row)],pnl=options.pnlReport;
+  if (!method || !pnl) return unavailable('ratio_period_method_required',provenanceFor(row,months,side,context),[],'unsupported');
+  const flowRow=(pnl.rows || []).find(item=>Number(item.row) === method.flow);
+  if (!flowRow) return unavailable('ratio_base_missing',[],[],'unsupported');
+  const flow=sumSide(flowRow,months,side,options,periodContext(pnl,months,options.year),'flow');
+  if (cellNumber(flow) == null) return flow;
+  const provenance=[...flow.provenance];
+  let flowDecimal=decimal(flow.value);
+  if (method.positive && flowDecimal.coefficient < 0n) return unavailable('nonpositive_flow',provenance,[],'invalid');
+  if (method.base) {
+    const baseRow=(pnl.rows || []).find(item=>Number(item.row) === method.base);
+    if (!baseRow) return unavailable('ratio_base_missing',provenance,[],'unsupported');
+    const base=sumSide(baseRow,months,side,options,periodContext(pnl,months,options.year),'denominator');
+    provenance.push(...base.provenance);
+    if (cellNumber(base) == null) return {...base,provenance};
+    return ratioResult(flowDecimal,decimal(base.value),provenance,'zero_base');
+  }
+  const stockRow=(report.rows || []).find(item=>Number(item.row) === method.stock);
+  if (!stockRow) return unavailable('ratio_base_missing',provenance,[],'unsupported');
+  // Every selected factual month must be present, even for a stock/flow ratio.
+  const missing=months.filter(month=>side === 'fact' && Array.isArray(options.coverage) &&
+    !options.coverage.some(period=>Number(period.month) === month && period.status === 'available'));
+  if (missing.length) return unavailable('incomplete_period',provenance,missing);
+  const ending=sourceSide(stockRow,months.at(-1),side,options,context);
+  provenance.push(...ending.provenance.map(item=>({...item,role:'closing_balance'})));
+  if (cellNumber(ending) == null) return {...ending,provenance};
+  let stockDecimal=decimal(ending.value);
+  if (!method.ending) {
+    const first=statementCell(stockRow,months[0])[side];
+    const opening=first?.opening_balance;
+    if (cellNumber(opening) == null) return unavailable('opening_balance_missing',provenance,[months[0]],'unsupported');
+    provenance.push({...opening,month:months[0],period:context.periods.get(months[0]),row:stockRow.row,role:'opening_balance'});
+    stockDecimal=divideDecimals(sumDecimals([decimal(opening.value),stockDecimal]),decimal('2'));
+  }
+  if (method.days) {
+    const year=context.year;
+    if (!Number.isInteger(year)) return unavailable('invalid_period',provenance,months,'invalid');
+    const days=(Date.UTC(year,months.at(-1),1)-Date.UTC(year,months[0]-1,1))/86400000;
+    stockDecimal={...stockDecimal,coefficient:stockDecimal.coefficient*BigInt(days)};
+  }
+  return method.inverse ? ratioResult(stockDecimal,flowDecimal,provenance,'zero_base') :
+    ratioResult(flowDecimal,stockDecimal,provenance);
+}
+
 /** Source-period presentation only: cash-ledger data and immutable source cells are untouched. */
 export function aggregateStatementRow(report, row, options={}) {
   const months=selectedMonths(options);
   const balance=options.type === 'balance' || report?.sheet === '09b_Balance';
-  const checkedMonths=balance && months.length ? [months.at(-1)] : months;
+  const profileUnrecognized=options.profileUnrecognized || report?.calculation?.reason === 'profile_unrecognized';
+  // Profit and turnover ratios combine flows with stocks. An ending monthly
+  // ratio is not a quarterly/yearly ratio, even when its cache is numeric.
+  const periodKpi=!profileUnrecognized && balance && months.length > 1 && row?.kind === 'ratio' &&
+    [62,63,64,65,66,67,68,70].includes(Number(row.row));
+  const checkedMonths=balance && months.length && !periodKpi ? [months.at(-1)] : months;
   const context=periodContext(report,checkedMonths,options.year);
-  const mode=balance ? 'end_month' : months.length === 1 ? 'source' : row?.kind === 'ratio' ? 'ratio' : 'sum';
+  const mode=periodKpi ? 'ratio_period' : balance ? 'end_month' : months.length === 1 ? 'source' : row?.kind === 'ratio' ? 'ratio' : 'sum';
   const result={months,mode,year:context.year,reason:null};
   if (!months.length) {
     result.plan=unavailable('invalid_period',[],[],'invalid');
@@ -190,10 +267,14 @@ export function aggregateStatementRow(report, row, options={}) {
   } else if (row?.kind === 'section') {
     result.plan={value:null,status:'missing',provenance:[]};
     result.fact={value:null,status:'missing',provenance:[]};
+  } else if (periodKpi) {
+    for (const side of ['plan','fact']) result[side]=balancePeriodSide(report,row,months,side,options,context);
   } else if (balance || months.length === 1) {
     for (const side of ['plan','fact']) result[side]=sourceSide(row,months.at(-1),side,options,context);
   } else if (rowMeasure(row) === 'amount') {
     for (const side of ['plan','fact']) result[side]=sumSide(row,months,side,options,context);
+  } else if (profileUnrecognized) {
+    for (const side of ['plan','fact']) result[side]=unavailable('profile_unrecognized',provenanceFor(row,months,side,context),[],'unsupported');
   } else {
     const numeratorRow={13:12,24:23}[Number(row?.row)];
     const numerator=(report?.rows || []).find(item=>Number(item.row) === numeratorRow);
@@ -276,8 +357,12 @@ export const statementStatuses = {
   value:N_('Значение источника'),cached:N_('Сохранённый результат формулы'),
   missing:N_('Нет данных'),missing_cache:N_('Нет результата формулы'),
   error:N_('Ошибка формулы'),invalid:N_('Некорректное значение'),future:N_('Будущий факт не подтверждён'),
-  aggregated:N_('Сумма подтверждённых месяцев'),calculated:N_('Маржа из сумм за период'),
+  aggregated:N_('Сумма подтверждённых месяцев'),calculated:N_('Рассчитано из исходных данных'),
   incomplete:N_('Неполный период'),unsupported:N_('Методика периода не задана'),
+  requires_allocation:N_('Нужно распределение амортизации'),
+  requires_assumptions:N_('Нужно уточнить параметры плана'),
+  pending:N_('Ожидается загрузка месяца'),
+  unavailable:N_('Расчётная база не подтверждена'),
 };
 
 export function sourceScopeMatches(payload, companyId) {
