@@ -1,7 +1,9 @@
 {
-  "version": "2.21.0",
+  "version": "2.21.1",
   "date": "2026-10-11",
   "changes": [
+    "API Telegram-бота поддерживает дневные отчёты: остатки, поступления, расходы, отдельные внутренние переводы и текущие открытые заявки. Каждая группа получает данные только своей компании.",
+    "Личный дневной отчёт доступен только действующему директору конкретной компании с привязанным Telegram. Исторические остатки показываются на конец выбранного дня, а открытые заявки явно относятся к текущей очереди.",
     "В «Отчёты» добавлены P&L и баланс: исходная книга, месяц, план, факт и отклонение. Каждое значение связано с ячейкой и состоянием исходника.",
     "Загрузка XLSX сохраняет приватную неизменяемую версию в выбранной компании. Повторный файл не создаёт дубликат; данные компаний разделены.",
     "Пустые, ошибочные и будущие фактические значения показываются отдельно от нуля. Даты берутся из отчётных заголовков; единицы требуют подтверждения, если отсутствуют.",
@@ -24,6 +26,8 @@
     "Длинные названия файлов и кнопки выбора шаблона переносятся на узком экране. В ТЭО дата архива отдельно обозначена и не подменяет начало финансового прогноза."
   ],
   "changes_uz": [
+    "Telegram bot API kunlik hisobotlarni qoʻllab-quvvatlaydi: qoldiqlar, tushumlar, xarajatlar, alohida ichki oʻtkazmalar va hozirgi ochiq arizalar. Har bir guruh faqat oʻz kompaniyasi maʼlumotlarini oladi.",
+    "Shaxsiy kunlik hisobot faqat Telegrami bogʻlangan, tegishli kompaniyaning amaldagi direktoriga ochiq. Oldingi sana qoldigʻi oʻsha kun oxiriga tegishli, ochiq arizalar esa hozirgi navbat ekanligi aniq koʻrsatiladi.",
     "«Hisobotlar»ga P&L va balans qoʻshildi: manba kitobi, oy, reja, fakt va farq. Har bir qiymat manba katagi va holati bilan bogʻlangan.",
     "XLSX yuklanganda tanlangan kompaniyada shaxsiy, oʻzgartirib boʻlmaydigan nusxa saqlanadi. Bir xil fayl takrorlanmaydi; kompaniyalar maʼlumotlari ajratilgan.",
     "Boʻsh, xatoli va kelajakdagi fakt qiymatlari noldan alohida koʻrsatiladi. Sanalar hisobot sarlavhalaridan olinadi; birliklar yoʻq boʻlsa, tasdiqlash kerak.",
