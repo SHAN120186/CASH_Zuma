@@ -316,7 +316,7 @@ class AccessTests(base.SiteTests):
             payer = self.make_user('accountant', 'bank_payer')
             cashier = self.make_user('cashier', 'cash_payer')
             self.assertEqual(payer[0].get(f'/api/requests/{rid}/documents', headers=payer[1]).status_code, 200)
-            self.assertEqual(payer[0].get(f'/api/request-documents/{doc}', headers=payer[1]).status_code, 200)
+            self.assertEqual(payer[0].get(f'/api/request-documents/{doc}', headers=payer[1]).status_code, 403)
             self.assertEqual(cashier[0].get(f'/api/requests/{rid}/documents', headers=cashier[1]).status_code, 403)
             # Прежние версии остаются доступны тем, кто вправе читать документы.
             history = self.client.get(f'/api/requests/{rid}/documents?history=true', headers=self.h).json()
@@ -341,8 +341,8 @@ class AccessTests(base.SiteTests):
             self.assertEqual([x['id'] for x in accountant[0].get('/api/ledger', headers=accountant[1]).json()], [bank_entry])
             self.assertEqual([x['id'] for x in cashier[0].get('/api/ledger', headers=cashier[1]).json()], [cash_entry])
             self.assertEqual(cashier[0].get(f'/api/documents?ledger_id={bank_entry}', headers=cashier[1]).status_code, 404)
-            self.assertEqual(cashier[0].get(f'/api/documents/{doc}', headers=cashier[1]).status_code, 404)
-            self.assertEqual(accountant[0].get(f'/api/documents/{doc}', headers=accountant[1]).status_code, 200)
+            self.assertEqual(cashier[0].get(f'/api/documents/{doc}', headers=cashier[1]).status_code, 403)
+            self.assertEqual(accountant[0].get(f'/api/documents/{doc}', headers=accountant[1]).status_code, 403)
         finally:
             accountant[0].close(); cashier[0].close()
 

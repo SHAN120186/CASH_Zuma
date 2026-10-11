@@ -60,10 +60,48 @@ def test_report_reads_all36_fresh_results_and_preserves_method_and_provenance():
     assert '999' not in text  # no stale profile original or parameter fallback
     assert 'образец.xlsx' in text and 'SHA-256' in text
     assert 'момент 0' in text and 'лет 4-8' in text
+    assert 'ВНД!B3:B6' in text
+    assert 'и три годовых денежных потока после погашения кредитов' not in ' '.join(text.split())
     assert 'Нет записи' in text
     assert 'относительные месяцы 1-36' in text
     for page in reader.pages:
         assert 'Страница' in page.extract_text()
+
+
+def test_zuma_unfilled_own_working_capital_is_displayed_as_absence_not_zero():
+    values = synthetic_values()
+    del values['Стоим_проекта']['B28']
+    meta = {**profile(), 'profile_id': 'zuma-36m-usd', 'title': 'ZUMA — синтетический пример'}
+    reader = PdfReader(BytesIO(build_teo_pdf(values, meta, [])))
+    # PDF line wrapping differs between Arial (Windows) and DejaVu (server).
+    # Check the complete source row after whitespace normalization only.
+    text = ' '.join('\n'.join(page.extract_text() for page in reader.pages).split())
+    assert 'Собственный оборотный капитал Нет записи в исходной модели Стоим_проекта!B28' in text
+    assert 'не объявлено подтверждённым нулём' in text
+    with pytest.raises(NativeTeoError, match='B28'):
+        build_teo_pdf(values, profile(), [])
+    values['Стоим_проекта']['B28'] = '#REF!'
+    with pytest.raises(NativeTeoError, match='B28'):
+        build_teo_pdf(values, meta, [])
+
+
+def test_report_records_selected_template_updates_with_provenance():
+    meta = profile()
+    meta.update(input_review={'items': [
+        {'key': 'price:test', 'label': 'Цена синтетического продукта', 'unit': 'UZS',
+         'proposals': [{'id': 'proposal-test', 'source': 'prices.xlsx', 'sheet': 'Prices', 'cell': 'B2'}]},
+        {'key': 'volume:test', 'label': 'Объём синтетического продукта', 'unit': 'шт', 'proposals': []},
+    ]}, data_updates={'price:test': 125, 'volume:test': 80},
+        review_decisions={'price:test': {'choice': 'source', 'proposal_id': 'proposal-test'},
+                          'volume:test': {'choice': 'manual'}},
+        quality_notes=['Контрольная заметка исходного шаблона.'])
+    reader = PdfReader(BytesIO(build_teo_pdf(synthetic_values(), meta, [])))
+    text = '\n'.join(page.extract_text() for page in reader.pages)
+    assert 'Согласованные новые данные шаблона' in text
+    assert '125.00 UZS' in text and '80.00 шт' in text
+    assert 'prices.xlsx' in text and 'Prices!B2' in text
+    assert 'Введено пользователем' in text
+    assert 'Контрольная заметка исходного шаблона.' in text
 
 
 @pytest.mark.parametrize('bad', [None, '', '#REF!', '#DIV/0!', 'NaN', 'Infinity', True])
@@ -129,4 +167,16 @@ def test_calendar_metadata_labels_report_without_changing_financial_results():
     assert 'Период, подтверждённый владельцем' in text
     assert 'Календарное начало не подтверждено' not in text
     assert 'не переносит автоматически' in ' '.join(text.split())
+    assert '1 200.00' in text
+
+
+def test_archive_period_never_claims_confirmed_calendar_start_or_changes_results():
+    values = synthetic_values()
+    reader = PdfReader(BytesIO(build_teo_pdf(values, profile(), [], start_metadata={
+        'kind': 'archive_period', 'confirmed': True, 'label': 'Период архива с 2026-10-01'})))
+    text = ' '.join('\n'.join(page.extract_text() for page in reader.pages).split())
+    assert 'Период архива с 2026-10-01' in text
+    assert 'Дата архива не меняет календарные даты исходной модели.' in text
+    assert 'Подтверждённый календарный период' not in text
+    assert 'тестового генератора' not in text
     assert '1 200.00' in text

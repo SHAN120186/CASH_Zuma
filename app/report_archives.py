@@ -127,7 +127,8 @@ def record_json(s, record, company, user):
             'can_upload': record.status == 'draft' and owner,
             'can_delete': record.status != 'deleted' and owner,
             'can_restore': record.status == 'deleted' and owner and deleted_project is None,
-            'can_download': record.status == 'ready' or (record.status == 'draft' and record.created_by == user.id),
+            'can_download': 'download' in perms_of(user) and (
+                record.status == 'ready' or (record.status == 'draft' and record.created_by == user.id)),
             'deleted_with_project': deleted_project is not None,
             'restore_project_id': deleted_project}
 
@@ -189,7 +190,7 @@ def bot_companies(request: Request, telegram_user_id: int = Query(gt=0, lt=2**53
             if company.code == SERVICE_CODE:
                 continue
             scope_bot(s, request, user, company.id)
-            if 'export' in perms_of(user):
+            if {'export', 'download'} <= perms_of(user):
                 items.append({'id': company.id, 'code': company.code, 'name': company.name,
                               'can_upload': 'import' in perms_of(user)})
             s.info.pop('company_id', None)
@@ -388,7 +389,7 @@ def download_file(request: Request, format: Literal['pdf', 'xlsx'], id: int = Pa
     if is_bot(request):
         authenticate_bot(request)
     with unit() as s:
-        user, _ = authorize(s, request, 'export', telegram_user_id, company_id, archive_id=id)
+        user, _ = authorize(s, request, 'download', telegram_user_id, company_id, archive_id=id)
         record = get(s, ReportArchive, id)
         if record.status == 'deleted' or (record.status != 'ready' and (is_bot(request) or record.created_by != user.id)):
             raise HTTPException(404, 'Готовый отчёт не найден.')

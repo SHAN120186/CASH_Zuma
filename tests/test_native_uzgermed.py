@@ -90,6 +90,22 @@ def fixture(changes=None, omitted=()):
 
 
 class NativeUzgermedTests(unittest.TestCase):
+    def test_zuma_has_its_own_product_totals_and_requires_inspected_layout(self):
+        changes = {('Стоим_проекта', 'B4'): ('ООО "ZUMA-PHARMA"', None),
+                   ('План производства', 'E129'): (12, '+SUM(E8:E128)'),
+                   ('План производства', 'F130'): (120, '+SUMPRODUCT(E8:E128,F8:F128)')}
+        profile = describe_profile(fixture(changes), {'План производства': {'E129': 13, 'F130': 130}})
+        self.assertTrue(profile['supported'])
+        self.assertEqual(profile['profile_id'], 'zuma-36m-usd')
+        self.assertIn('ZUMA-PHARMA', profile['title'])
+        metrics = {item['key']: item for item in profile['metrics']}
+        self.assertNotIn('План производства!E48', metrics)
+        self.assertNotIn('План производства!F49', metrics)
+        self.assertEqual(metrics['План производства!E129']['calculated'], 13)
+        self.assertEqual(metrics['План производства!F130']['calculated'], 130)
+        changes[('План производства', 'F130')] = (120, 'SUMPRODUCT(E8:E48,F8:F48)')
+        self.assertFalse(describe_profile(fixture(changes))['supported'])
+
     def test_profile_uses_original_cells_and_does_not_promote_formulas_to_editable_inputs(self):
         profile = describe_profile(fixture())
         self.assertTrue(profile['supported'])

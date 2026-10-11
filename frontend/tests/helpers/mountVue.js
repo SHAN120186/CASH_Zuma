@@ -39,7 +39,15 @@ function element(tag) {
     scrollLeft: 0, scrollTop: 0, clientLeft: 0, clientTop: 0,
     clientWidth: 0, clientHeight: 0, offsetWidth: 0, offsetHeight: 0, scrollWidth: 0,
     value: '', selectedIndex: -1, addEventListener() {}, removeEventListener() {}, scrollIntoView() {this.scrolled = true;},
+    focus() {globalThis.document.activeElement = this;},
     querySelector(selector) {
+      if (selector.includes(',') || selector.includes(':not(:disabled)')) {
+        const selectors=selector.split(',').map(part=>part.trim());
+        return find(this, child=>child!==this&&selectors.some(part=>{
+          const simple=part.replace(':not(:disabled)','');
+          return child.tag===simple&&(!part.includes(':not(:disabled)')||!child.props.disabled);
+        }))??null;
+      }
       // The renderer supports the tag, class and attribute selectors used by the
       // real component; a test supplies layout boxes rather than a fake scroll function.
       const match = selector.match(/^(?:([a-z][\w-]*)|\.([\w-]+))?(?:\[([\w-]+)(?:="([^"]*)")?\])?$/i);

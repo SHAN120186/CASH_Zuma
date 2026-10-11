@@ -24,6 +24,35 @@ function mountReport(extra = {}) {
 }
 const button = (root, label) => find(root, node => node.tag === 'button' && text(node) === label);
 
+test('Cash Flow restores a shared quarter and emits presentation changes without resetting the source',async t=>{
+  const events=[];
+  const view=mountReport({selection:{year:2026,period:'q2',start:4,end:6,unit:'k',mode:'compare',sourceId:7},
+    onSelectionChange:value=>events.push(value)});t.after(view.unmount);await settle();
+  assert.deepEqual(view.state.indices,[3,4,5]);assert.equal(view.state.unit,'k');assert.equal(view.state.mode,'plan');
+  assert.equal(events.length,0,'restoration does not echo forever');
+  view.state.setPer('q3');await settle();
+  assert.deepEqual(events.at(-1),{year:2026,period:'q3',start:7,end:9,unit:'k',mode:'compare',sourceId:7});
+  view.app._instance.props.selection={year:2026,period:'month',start:2,end:2,unit:'m',mode:'actual',sourceId:7};await settle();
+  assert.deepEqual(view.state.indices,[1]);assert.equal(view.state.mode,'actual');assert.equal(view.state.unit,'m');
+});
+test('Cash Flow rejects an unavailable source year and reversed range with visible explanation and real context',async t=>{
+ for(const selection of [{year:2027,period:'q2',unit:'k',sourceId:8},{year:2026,period:'custom',start:9,end:2,unit:'k',sourceId:8}]){
+  const events=[];const view=mountReport({selection,onSelectionChange:value=>events.push(value)});t.after(view.unmount);await settle();
+  assert.deepEqual(events.at(-1),{year:2026,period:'year',start:1,end:12,unit:'m',mode:'actual',sourceId:8});
+  assert.match(text(view.container),selection.year===2027?/год исходной модели недоступен/:/Исправьте порядок месяцев/);
+ }
+});
+
+test('Cash Flow remains readable without download rights and directors keep PDF and Excel',async t=>{
+  for(const canDownload of [false,true]){
+    const view=mountReport({canDownload,canPlan:false});t.after(view.unmount);await settle();
+    assert.match(text(view.container),/Упаковка и материалы/);
+    const files=all(view.container,node=>node.tag==='a'&&String(node.props.href).startsWith('/api/export/report.'));
+    assert.equal(files.length,canDownload?2:0);
+    if(canDownload)assert.deepEqual(files.map(node=>text(node).trim()),['Excel','PDF']);
+  }
+});
+
 test('mounted Cash Flow reveals the cut-off month and keeps the right-edge cue for hidden months', async t => {
   const view = mountReport(); t.after(view.unmount);
   const wrap = find(view.container, node => node.props?.['aria-label'] === 'Cash Flow по месяцам');
