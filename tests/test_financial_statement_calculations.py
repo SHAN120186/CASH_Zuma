@@ -134,6 +134,19 @@ def calculate(reports, records, coverage, sheets, year=2026, revenue_policy=None
 
 
 class MappingCalculationTests(unittest.TestCase):
+    def test_result_account_closing_balance_is_labelled_as_stock_not_period_profit(self):
+        reports, records, coverage, sheets = fixture()
+        original = copy.deepcopy(reports)
+        set_balance(records, 2026, 1, '9900', 50, 60, credit=True)
+        calculate(reports, records, coverage, sheets)
+        self.assertEqual(cell(reports, 53)['value'], '60')
+        self.assertEqual(cell(reports, 23, report='pnl')['value'], '10')
+        row = next(r for r in reports['balance']['rows'] if r['row'] == 53)
+        self.assertEqual(row['fact_label'], 'Сальдо финансового результата (9900)')
+        self.assertEqual(row['source_label'], 'Current year net income')
+        self.assertEqual([c['plan'] for c in row['cells']],
+                         [c['plan'] for c in next(r for r in original['balance']['rows'] if r['row'] == 53)['cells']])
+
     def test_management_template_calculates_exact_subtotals_without_da_addback_or_9900_plug(self):
         reports, records, coverage, sheets = management_fixture((1, 2, 3))
         original = copy.deepcopy(reports)

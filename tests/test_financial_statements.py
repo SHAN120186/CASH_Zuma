@@ -92,16 +92,18 @@ def first_cell(snapshot, key='pnl', month=1, mode='fact'):
     return snapshot['reports'][key]['rows'][0]['cells'][month - 1][mode]
 
 
-def recognized_workbook(management=False, shared=None):
+def recognized_workbook(management=False, shared=None, months=(1,)):
     from tests.test_financial_statement_calculations import fixture, management_fixture, set_turnover
-    reports, records, _, sheets = (management_fixture if management else fixture)()
-    set_turnover(records, 2026, 1, '9040', 2, 2)
-    set_turnover(records, 2026, 1, '9050', 3, 3)
+    reports, records, _, sheets = (management_fixture if management else fixture)(months=months)
+    for month in months:
+        set_turnover(records, 2026, month, '9040', 2, 2)
+        set_turnover(records, 2026, month, '9050', 3, 3)
     def configure(wb):
         mapping = wb['Mapping']
         mapping.delete_rows(2, mapping.max_row)
-        for row in records[(2026, 1)]:
-            mapping.append([2026, 1, '2026-01', row['account'], row['account_name'], *row['measures']])
+        for (_, month), rows in records.items():
+            for row in rows:
+                mapping.append([2026, month, f'2026-{month:02}', row['account'], row['account_name'], *row['measures']])
         for key, sheet_name in (('pnl', '09_Statements'), ('balance', '09b_Balance')):
             for row in reports[key]['rows']:
                 sheet = wb[sheet_name]
@@ -115,7 +117,7 @@ def recognized_workbook(management=False, shared=None):
                     wb[sheet_name][address] = '=' + item['formula']
                 elif 'value' in item:
                     wb[sheet_name][address] = item['value']
-    return workbook(configure=configure, shared=shared)
+    return workbook(configure=configure, shared=shared, months=months)
 
 
 class FinancialStatementParserTests(unittest.TestCase):
@@ -726,6 +728,114 @@ class FinancialStatementApiTests(unittest.TestCase):
         self.assertEqual(current.status_code,200,current.text)
         self.assertEqual(current.json()['source_id'],source_id)
         self.assertEqual(current.json()['status'],'unavailable')
+
+    def test_reconciliation_shows_scoped_website_cash_without_substituting_mapping_or_scaling(self):
+        source_id = self.upload_source(recognized_workbook(months=(1, 2, 3))).json()['id']
+        user_id = self.client.get('/api/me').json()['user']['id']
+        with unit(True) as s:
+            account = s.get(Account, self.acc)
+            account.opening_date, account.opening = date(2026, 1, 1), 10000
+            introduced = Account(company_id=self.company, name='Synthetic mid-period account', kind='bank',
+                currency='UZS', opening=7000, opening_date=date(2026, 2, 15), created_by=user_id)
+            dollars = Account(company_id=self.company, name='Synthetic USD account', kind='bank',
+                currency='USD', opening=90000, opening_date=date(2026, 1, 1), created_by=user_id)
+            foreign_company = s.scalar(select(Company).where(Company.id != self.company, Company.code != 'UNASSIGNED')).id
+            foreign = Account(company_id=foreign_company, name='Synthetic unrelated firm account', kind='bank',
+                currency='UZS', opening=9990000, opening_date=date(2026, 1, 1), created_by=user_id)
+            s.add_all([introduced, dollars, foreign]); s.flush()
+            ids = {account.id, introduced.id}
+            s.add_all([
+                Ledger(account_id=self.acc, category_id=self.cat, kind='in', amount=5000,
+                       date=date(2026, 1, 15), reference='LINK-IN', creator_id=user_id),
+                Ledger(account_id=self.acc, category_id=self.cat, kind='out', amount=1000,
+                       date=date(2026, 2, 20), reference='LINK-OUT', creator_id=user_id),
+                Ledger(account_id=self.acc, category_id=self.cat, kind='in', amount=8800,
+                       date=date(2026, 4, 1), reference='LINK-AFTER', creator_id=user_id),
+            ])
+            saved = s.get(FinancialStatementSource, source_id)
+            immutable = saved.content, saved.snapshot
+            counts = s.scalar(select(func.count(Ledger.id))), s.scalar(select(func.count(Receipt.id)))
+        query = {'company_id': self.company, 'source_id': source_id, 'year': 2026,
+                 'start_month': 1, 'end_month': 3, 'currency': 'UZS'}
+        response = self.client.get('/api/financial-statements/reconciliation', params=query)
+        self.assertEqual(response.status_code, 200, response.text)
+        data = response.json()
+        cash = data['website_cash']
+        self.assertEqual(cash['status'], 'ready')
+        self.assertEqual((cash['opening_cash'], cash['net_change'], cash['opening_adjustments'], cash['closing_cash']),
+                         ('100.00', '40.00', '70.00', '210.00'))
+        self.assertEqual(cash['rollforward_difference'], '0.00')
+        self.assertEqual((cash['account_count'], cash['operation_count']), (2, 2))
+        self.assertEqual(set(cash['provenance']['account_ids']), ids)
+        self.assertEqual(cash['unit'], 'currency_units')
+        self.assertEqual(cash['as_of'], '2026-03-31')
+        self.assertEqual(data['bridges']['cash_movement']['closing_cash'], '167')
+        self.assertEqual(data['cash_comparison']['status'], 'needs_clarification')
+        self.assertEqual(data['cash_comparison']['reason'], 'account_scope_and_source_units_unconfirmed')
+        self.assertIsNone(data['cash_comparison']['difference'])
+        original = self.client.get('/api/report', params={'year': 2026, 'currency': 'UZS',
+            'company_id': self.company, 'as_of': '2026-03-31'}).json()
+        self.assertEqual(cash['opening_cash'], original['opening'][0])
+        self.assertEqual(cash['closing_cash'], original['closing'][2])
+        usd = self.client.get('/api/financial-statements/reconciliation', params={**query, 'currency': 'USD'}).json()
+        self.assertEqual(usd['website_cash']['closing_cash'], '900.00')
+        self.assertEqual(usd['website_cash']['operation_count'], 0)
+        self.assertEqual(usd['cash_comparison']['reason'], 'currency_mismatch')
+        self.assertIsNone(usd['cash_comparison']['difference'])
+        with unit() as s:
+            saved = s.get(FinancialStatementSource, source_id)
+            self.assertEqual((saved.content, saved.snapshot), immutable)
+            self.assertEqual((s.scalar(select(func.count(Ledger.id))), s.scalar(select(func.count(Receipt.id)))), counts)
+
+    def test_reconciliation_cash_missing_accounts_future_period_and_currency_validation(self):
+        source_id = self.upload_source(recognized_workbook()).json()['id']
+        query = {'company_id': self.company, 'source_id': source_id, 'year': 2026,
+                 'start_month': 1, 'end_month': 1, 'currency': 'UZS'}
+        result = self.client.get('/api/financial-statements/reconciliation', params=query).json()
+        self.assertEqual(result['website_cash']['reason'], 'no_accounts')
+        self.assertEqual(result['website_cash']['account_count'], 0)
+        self.assertIsNone(result['website_cash']['closing_cash'])
+        future = self.client.get('/api/financial-statements/reconciliation', params={
+            **query, 'start_month': 9, 'end_month': 9}).json()['website_cash']
+        self.assertEqual(future['reason'], 'incomplete_period')
+        self.assertIsNone(future['net_change'])
+        self.assertEqual(future['as_of'], '2026-09-16')
+        invalid = self.client.get('/api/financial-statements/reconciliation', params={**query, 'currency': 'ALL'})
+        self.assertEqual(invalid.status_code, 422)
+        with unit() as s:
+            other = s.scalar(select(Company).where(Company.code == 'ZUMA')).id
+        foreign_id = self.upload_source(company=other).json()['id']
+        with patch('app.financial_reconciliation.website_cash_snapshot') as snapshot:
+            foreign = self.client.get('/api/financial-statements/reconciliation', params={**query, 'source_id': foreign_id})
+            self.assertEqual(foreign.status_code, 404)
+            snapshot.assert_not_called()
+
+    def test_reconciliation_website_cash_respects_historical_cutoff_without_changing_mapping(self):
+        source_id = self.upload_source(recognized_workbook(months=(1, 2, 3))).json()['id']
+        with unit(True) as s:
+            account = s.get(Account, self.acc)
+            account.opening_date, account.opening = date(2026, 1, 1), 10000
+        query = {'company_id': self.company, 'source_id': source_id, 'year': 2026,
+                 'start_month': 1, 'end_month': 3, 'currency': 'UZS', 'as_of': '2026-02-15'}
+        response = self.client.get('/api/financial-statements/reconciliation', params=query)
+        self.assertEqual(response.status_code, 200, response.text)
+        historical = response.json()
+        self.assertEqual(historical['website_cash']['as_of'], '2026-02-15')
+        self.assertEqual(historical['website_cash']['reason'], 'incomplete_period')
+        self.assertIsNone(historical['website_cash']['closing_cash'])
+        self.assertEqual(historical['bridges']['cash_movement']['closing_cash'], '167')
+        self.assertEqual(historical['source']['reviewed_as_of'], '2026-09-16')
+        closed = self.client.get('/api/financial-statements/reconciliation', params={
+            **query, 'end_month': 1}).json()['website_cash']
+        self.assertEqual(closed['status'], 'ready')
+        self.assertEqual(closed['as_of'], '2026-01-31')
+        self.assertEqual(closed['closing_cash'], '100.00')
+        self.assertEqual(closed['provenance']['as_of'], '2026-01-31')
+        for invalid in ('2025-02-15', '2026-09-17', 'not-a-date'):
+            with self.subTest(as_of=invalid):
+                invalid_response = self.client.get('/api/financial-statements/reconciliation', params={
+                    **query, 'as_of': invalid})
+                self.assertEqual(invalid_response.status_code, 422)
 
     def test_existing_immutable_source_is_rereviewed_without_upload_or_coverage_drift(self):
         import hashlib

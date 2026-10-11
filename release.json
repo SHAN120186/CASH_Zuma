@@ -1,7 +1,11 @@
 {
-  "version": "2.25.1",
-  "date": "2026-10-11",
+  "version": "2.26.0",
+  "date": "2026-10-12",
   "changes": [
+    "После смены суток в Ташкенте обновление раздела получает сегодняшнюю дату сервера: обзор и календарь больше не расходятся из-за вчерашней даты открытой вкладки. Выбранная историческая дата отчёта сохраняется.",
+    "В общей сверке P&L, баланса и Cash Flow показаны независимые денежные остатки сайта, движение и ввод начальных остатков, валюта, дата и число операций. Пустые и незакрытые периоды не подменяются нулями; различия единиц и состава счетов остаются видимыми.",
+    "Сверка явно обозначена как фактическая, включая просмотр плана. Накопленное сальдо 9900 в балансе отделено подписью от прибыли периода; исходные суммы, план и финансовые операции сохранены.",
+    "Карточки P&L выровнены для длинных названий. В импорте вместо устаревшего «Позже» добавлен доступный по роли переход к P&L; новые подписи переведены на русский и узбекский.",
     "Фактические EBITDA и EBIT рассчитываются по проверенным формулам образца Excel из Mapping. В этом образце оба показателя равны: чистая выручка минус себестоимость плюс прочие операционные доходы минус OPEX; амортизация показана отдельно. Карточки обозначены «По образцу Excel», методика и допущения доступны в закрытой справке.",
     "Расчёт по образцу включается только для распознанных формул и полного профиля ОСВ. Необязательные отсутствующие возвраты и прочие доходы учитываются по нулевой конвенции образца с указанием основания; неполные и будущие месяцы не превращаются в нули. План, оригинальные формулы и результат 9900 сохраняются.",
     "В справке P&L можно сохранить подтверждённое правило фактической выручки отдельно для выбранной компании и исходника. Сохранение проверяет права, версию и файл, фиксируется в журнале; исходный Excel и снимок плана сохраняются.",
@@ -43,6 +47,10 @@
     "Длинные названия файлов и кнопки выбора шаблона переносятся на узком экране. В ТЭО дата архива отдельно обозначена и не подменяет начало финансового прогноза."
   ],
   "changes_uz": [
+    "Toshkentda kun almashgach bo‘lim yangilanganda serverning bugungi sanasi olinadi: ochiq sahifadagi kechagi sana sababli umumiy ko‘rinish va kalendar farqlanmaydi. Hisobot uchun tanlangan tarixiy sana saqlanadi.",
+    "P&L, balans va Cash Flow umumiy solishtirishida saytning mustaqil pul qoldiqlari, harakati va boshlang‘ich qoldiqlar kiritilishi, valyuta, sana va operatsiyalar soni ko‘rsatilgan. Bo‘sh va yopilmagan davrlar nolga almashtirilmaydi; birliklar va hisobvaraqlar tarkibidagi farqlar ko‘rinib turadi.",
+    "Reja ko‘rilganda ham solishtirish haqiqiy ma’lumotlar ekanligi aniq ko‘rsatilgan. Balansdagi 9900 yig‘ilgan saldosi davr foydasidan nomi bilan ajratilgan; asl summalar, reja va moliyaviy operatsiyalar saqlangan.",
+    "P&L kartalari uzun nomlar uchun tekislangan. Importdagi eskirgan «Keyin» o‘rniga rolga mos P&L o‘tishi qo‘shilgan; yangi yozuvlar rus va o‘zbek tillarida mavjud.",
     "Haqiqiy EBITDA va EBIT Excel namunasining tekshirilgan formulalari bo‘yicha Mappingdan hisoblanadi. Bu namunada ikkala ko‘rsatkich teng: sof tushum minus tannarx plus boshqa operatsion daromadlar minus OPEX; amortizatsiya alohida ko‘rsatiladi. Kartalarda «Excel namunasi bo‘yicha» belgisi, yopiq yordamda usul va farazlar bor.",
     "Namuna bo‘yicha hisob faqat tanilgan formulalar va to‘liq OSV profili uchun yoqiladi. Mavjud bo‘lmagan ixtiyoriy qaytarishlar va boshqa daromadlar namunaning nol qoidasi asosida, manbasi ko‘rsatilgan holda olinadi; to‘liq bo‘lmagan va kelajakdagi oylar nolga aylantirilmaydi. Reja, asl formulalar va 9900 natijasi saqlanadi.",
     "P&L yordam bo‘limida tanlangan kompaniya va manba uchun haqiqiy tushumning tasdiqlangan qoidasini saqlash mumkin. Saqlashda huquqlar, versiya va fayl tekshiriladi, jurnalga yoziladi; asl Excel va reja nusxasi saqlanadi.",

@@ -151,6 +151,82 @@ def _blank_bridges(status, reason):
     }
 
 
+def website_cash_snapshot(s, year, start_month, end_month, currency, company_id, as_of):
+    """Read the site's existing actual cash report in its own currency units.
+
+    This is a separate data basis, never a fallback for Mapping. The authorized
+    caller supplies the company; account and operation queries also scope it
+    explicitly. Accounts introduced inside the period remain opening adjustments.
+    """
+    from sqlalchemy import func, select
+    from .cash_report import report
+    from .db import Account, Ledger
+    from .services import effective_cashflows
+
+    start = date(year, start_month, 1)
+    end = date(year, end_month, calendar.monthrange(year, end_month)[1])
+    cutoff = min(as_of, end)
+    result = {'status': 'unavailable', 'reason': 'cash_currency_required',
+              'basis': 'website_cashflow_actual', 'company_id': company_id,
+              'currency': currency, 'unit': 'currency_units', 'as_of': cutoff.isoformat(),
+              'period': {'start': f'{year}-{start_month:02}', 'end': f'{year}-{end_month:02}'},
+              'opening_cash': None, 'net_change': None, 'opening_adjustments': None,
+              'closing_cash': None, 'rollforward_difference': None,
+              'account_count': 0, 'operation_count': 0,
+              'provenance': {'endpoint': '/api/report', 'basis': 'actual',
+                             'company_id': company_id, 'currency': currency, 'year': year,
+                             'start_month': start_month, 'end_month': end_month,
+                             'as_of': cutoff.isoformat(), 'account_ids': []}}
+    if currency not in ('UZS', 'USD', 'EUR'):
+        return result
+    accounts = list(s.scalars(select(Account).where(
+        Account.company_id == company_id, Account.currency == currency, Account.opening_date <= cutoff)))
+    ids = [a.id for a in accounts]
+    result['account_count'] = len(ids)
+    result['provenance']['account_ids'] = ids
+    result['operation_count'] = s.scalar(effective_cashflows(s).where(
+        Ledger.account_id.in_(ids), Ledger.kind != 'transfer', Ledger.date >= start,
+        Ledger.date <= cutoff).with_only_columns(func.count(Ledger.id))) or 0
+    if end > as_of:
+        result.update(status='missing', reason='incomplete_period')
+        return result
+    if not ids:
+        result.update(status='missing', reason='no_accounts')
+        return result
+    data = report(s, year, currency, company_id, as_of=cutoff)
+    with localcontext() as context:
+        context.prec = 8192
+        opening = _number(data['opening'][start_month - 1])
+        closing = _number(data['closing'][end_month - 1])
+        flows = [_number(v) for v in data['totals'][start_month - 1:end_month]]
+        adjustments = [_number(v) for v in data['opening_adjustments'][start_month - 1:end_month]]
+        if opening is None or closing is None or any(v is None for v in flows + adjustments):
+            result['reason'] = 'cash_report_amount_unavailable'
+            return result
+        net, introduced = sum(flows, ZERO), sum(adjustments, ZERO)
+        difference = closing - opening - net - introduced
+        result.update(status='ready' if difference == ZERO else 'unavailable',
+                      reason=None if difference == ZERO else 'cash_report_rollforward_mismatch',
+                      opening_cash=_text(opening), net_change=_text(net), opening_adjustments=_text(introduced),
+                      closing_cash=_text(closing), rollforward_difference=_text(difference))
+    return result
+
+
+def cash_basis_comparison(reconciliation, website_cash):
+    """Expose the comparison gap without inventing units or an account match."""
+    source = reconciliation.get('source', {})
+    same_currency = bool(source.get('currency')) and source.get('currency') == website_cash.get('currency')
+    ready = (website_cash.get('status') == 'ready'
+             and reconciliation.get('bridges', {}).get('cash_movement', {}).get('status') == 'ready')
+    return {'status': 'needs_clarification' if ready else 'unavailable',
+            'reason': ('currency_mismatch' if ready and not same_currency
+                       else 'account_scope_and_source_units_unconfirmed' if ready
+                       else website_cash.get('reason') or 'mapping_cash_unavailable'),
+            'currency_matches': same_currency, 'source_unit_status': source.get('unit_status'),
+            'account_scope_status': 'unconfirmed', 'difference': None,
+            'mapping_basis': 'source_units', 'website_basis': 'currency_units'}
+
+
 def build_reconciliation(review, year, start_month, end_month):
     """Return source-unit bridges for a complete, closed monthly interval.
 

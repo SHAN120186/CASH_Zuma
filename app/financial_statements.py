@@ -45,7 +45,7 @@ REPORTS = {'pnl': ('09_Statements', 'PNL · план / факт', 7, 24),
            'balance': ('09b_Balance', 'Баланс · план / факт', 7, 81)}
 PERCENT_ROWS = {'pnl': {13, 24}, 'balance': {62, 63, 64, 67, 68, 69, 75}}
 COEFFICIENT_ROWS = {70, 73, 74, 76}
-REVIEW_VERSION = 'mapping-2026-10-11-v5'
+REVIEW_VERSION = 'mapping-2026-10-12-v6'
 _review_cache = OrderedDict()
 _review_cache_lock = RLock()
 REQUIREMENTS = [
@@ -901,21 +901,28 @@ def financial_reconciliation(request: Request, year: int = Query(ge=2000, le=210
                              start_month: int = Query(default=1, ge=1, le=12),
                              end_month: int = Query(default=12, ge=1, le=12),
                              source_id: int | None = Query(default=None, ge=1),
-                             company_id: int | None = Query(default=None, ge=1)):
-    from .financial_reconciliation import build_reconciliation
+                             company_id: int | None = Query(default=None, ge=1),
+                             currency: Literal['UZS', 'USD', 'EUR'] | None = Query(default=None),
+                             as_of: date | None = Query(default=None)):
+    from .financial_reconciliation import build_reconciliation, website_cash_snapshot, cash_basis_comparison
     if start_month > end_month:
         raise HTTPException(400, 'Начало периода должно быть не позже конца.')
+    if as_of and (as_of.year != year or as_of > today()):
+        raise HTTPException(422, 'Дата отчёта должна быть в выбранном году и не позже сегодня.')
     with unit() as s:
         session_user(s, request, 'export')
         source = s.get(FinancialStatementSource, source_id) if source_id is not None else s.scalar(
             select(FinancialStatementSource).order_by(FinancialStatementSource.id.desc()).limit(1))
         if source_id is not None and source is None:
             raise HTTPException(404, 'Исходник не найден в выбранной компании.')
-        result = build_reconciliation(current_source_review(source, source_revenue_policy(s, source)) if source else None,
-                                      year, start_month, end_month)
+        review = current_source_review(source, source_revenue_policy(s, source)) if source else None
+        result = build_reconciliation(review, year, start_month, end_month)
         if source is None:
             result['status'] = 'missing'
-        return {**result, 'company_id': s.info['company_id'], 'source_id': source.id if source else None}
+        website_cash = website_cash_snapshot(s, year, start_month, end_month,
+            currency or (review or {}).get('currency'), s.info['company_id'], as_of or today())
+        return {**result, 'company_id': s.info['company_id'], 'source_id': source.id if source else None,
+                'website_cash': website_cash, 'cash_comparison': cash_basis_comparison(result, website_cash)}
 
 
 @router.post('/api/financial-statements/upload')
