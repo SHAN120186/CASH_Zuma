@@ -181,7 +181,7 @@ let searchTimer;watch(search,()=>{if(['ledger','requests'].includes(page.value))
 onUnmounted(()=>clearTimeout(searchTimer));
 function archiveAccount(a){open(a.archived?N_('Восстановить счёт'):N_('Убрать счёт в архив'),[field('reason',N_('Причина'),'textarea',{minlength:10})],{reason:''},d=>post(`/api/accounts/${a.id}/archive`,{...d,archived:!a.archived}),N_('История сохраняется. В архив можно убрать счёт с нулевым остатком и без незавершённых заявок.'))}
 
-let listRequestId=0,reportRequestId=0;
+let listRequestId=0,reportRequestId=0,loadRequestId=0;
 const stageLabel=r=>requestStage(r);
 const otherCurrencies=computed(()=>[...new Set(boot.value.accounts.map(a=>a.currency))].filter(c=>c!==currency.value));
 const currentAccounts=computed(()=>boot.value.accounts.filter(a=>a.currency===currency.value));
@@ -263,25 +263,30 @@ async function logout(){cancelPending();busy.value=true;try{await post('/api/log
 async function goWith(name,opts={}){if(!canNavigate(name))return;menuOpen.value=false;helpOpen.value=false;reportEditing.value=false;page.value=name;location.hash=name;search.value='';dateFrom.value=opts.from||'';dateTo.value=opts.to||'';requestStatus.value=opts.status||'';listPage.value=1;expandedRequest.value=null;receiptsOpen.value=false;rows.value=[];await load()}
 const canDecide=r=>canDecideRequest(r);
 async function go(name){if(!canNavigate(name))return;menuOpen.value=false;helpOpen.value=false;reportEditing.value=false;page.value=name;location.hash=name;search.value='';dateFrom.value='';dateTo.value='';requestStatus.value='';listPage.value=1;expandedRequest.value=null;receiptsOpen.value=false;rows.value=[];await load()}
-async function load(){if(!companyReady.value)return;const epoch=companyEpoch;busy.value=true;error.value='';try{
- if(bootstrapLocalDay.value&&bootstrapLocalDay.value!==localBusinessDay()){await bootstrap();if(epoch!==companyEpoch||!companyReady.value)return;}
+async function load(){if(!companyReady.value)return;const epoch=companyEpoch,id=++loadRequestId,requestedPage=page.value,requestedCurrency=currency.value;busy.value=true;error.value='';
+ const current=()=>id===loadRequestId&&epoch===companyEpoch&&page.value===requestedPage&&currency.value===requestedCurrency;
+ try{
+ if(bootstrapLocalDay.value&&bootstrapLocalDay.value!==localBusinessDay()){await bootstrap();if(!current()||!companyReady.value)return;}
  if(page.value==='home')homeRefresh.value++;
  if(page.value==='reports')reportArchiveRefresh.value++;
  if(page.value==='business')businessRefresh.value++;
  if(['pnl','balance'].includes(page.value))statementRefresh.value++;
- if(page.value==='calendar')dash.value=await api(`/api/dashboard?currency=${currency.value}&days=${days.value}`);
- if(page.value==='accounts')rows.value=await api('/api/accounts?archived='+showArchive.value);
- if(['ledger','requests'].includes(page.value)){const requestId=++listRequestId;const requestedPage=page.value;const params=new URLSearchParams({paginated:'true',page:String(listPage.value),currency:currency.value,q:search.value});if(dateFrom.value)params.set('date_from',dateFrom.value);if(dateTo.value)params.set('date_to',dateTo.value);if(page.value==='requests'&&requestStatus.value)params.set('state',requestStatus.value);const data=await api(`/api/${page.value}?${params}`);if(requestId===listRequestId&&page.value===requestedPage){rows.value=data.items;listTotal.value=data.total;}}
+ if(requestedPage==='calendar'){const horizon=days.value,data=await api(`/api/dashboard?currency=${requestedCurrency}&days=${horizon}`);if(current()&&days.value===horizon)dash.value=data;}
+ if(requestedPage==='accounts'){const archived=showArchive.value,data=await api('/api/accounts?archived='+archived);if(current()&&showArchive.value===archived)rows.value=data;}
+ if(['ledger','requests'].includes(requestedPage)){const requestId=++listRequestId;const params=new URLSearchParams({paginated:'true',page:String(listPage.value),currency:requestedCurrency,q:search.value});if(dateFrom.value)params.set('date_from',dateFrom.value);if(dateTo.value)params.set('date_to',dateTo.value);if(requestedPage==='requests'&&requestStatus.value)params.set('state',requestStatus.value);const data=await api(`/api/${requestedPage}?${params}`);if(current()&&requestId===listRequestId){rows.value=data.items;listTotal.value=data.total;}}
+ if(!current())return;
  if(page.value==='calendar'&&receiptsOpen.value)await loadReceipts();
- if(page.value==='budgets')rows.value=await api(`/api/budgets?currency=${currency.value}&month=${month.value}`);
+ if(requestedPage==='budgets'){const selectedMonth=month.value,data=await api(`/api/budgets?currency=${requestedCurrency}&month=${selectedMonth}`);if(current()&&month.value===selectedMonth)rows.value=data;}
+ if(!current())return;
  if(page.value==='report'){const requestId=++reportRequestId;const c=currency.value,y=year.value,co=companyId.value,sc=reportScenario.value,ao=reportAsOf.value;if(report.value&&(report.value.currency!==c||report.value.year!==Number(y)||report.value.company_id!==co||report.value.scenario!==sc||report.value.as_of!==ao))report.value=null;const result=await api(`/api/report?currency=${c}&year=${y}&company_id=${co}&scenario=${sc}&as_of=${ao}`);if(requestId===reportRequestId&&page.value==='report'&&currency.value===c&&year.value===y&&companyId.value===co&&reportScenario.value===sc&&reportAsOf.value===ao)report.value=result;}
+ if(!current())return;
  if(page.value==='categories')rows.value=boot.value.categories;
  if(page.value==='audit')auditRefresh.value++;
- if(page.value==='users'&&user.value?.holding_role==='admin')tgGroups.value=(await api('/api/telegram-groups')).items;
+ if(page.value==='users'&&user.value?.holding_role==='admin'){const data=await api('/api/telegram-groups');if(current())tgGroups.value=data.items;}
  if(page.value==='profile')await loadTelegram();
 
 
- }catch(e){if(epoch===companyEpoch&&e.name!=='AbortError')error.value=e.message}finally{if(epoch===companyEpoch)busy.value=false}}
+ }catch(e){if(current()&&e.name!=='AbortError')error.value=e.message}finally{if(current())busy.value=false}}
 const field=(key,label,type='text',extra={})=>({key,label,type,required:true,...extra});
 const accounts=()=>boot.value.accounts.map(a=>[a.id,`${a.name} · ${a.currency}`]);
 const categories=()=>boot.value.categories.map(c=>[c.id,`${c.name} · ${c.type==='income'?tx('приход'):tx('расход')}`]);
