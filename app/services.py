@@ -476,7 +476,8 @@ def dashboard(s,currency,horizon=30):
                      'requested_opening':money(requested_opening),'requested_outgoing':money(all_out),'requested_balance':money(requested_bal),
                      'requested_risk':requested_bal<reserve or bool(requested_shortfalls),'requested_account_shortfalls':requested_shortfalls,
                      'risk':bal<reserve or bool(shortfalls),'reserve_risk':bal<reserve,'account_shortfalls':shortfalls,
-                     'events':[{'id':r.id,'kind':'in','name':r.counterparty,'inn':r.inn,'note':r.note,'amount':money(r.amount),'overdue':r.due_date<start} for r in ins]+
+                     'events':[{'id':r.id,'kind':'in','name':r.counterparty,'inn':r.inn,'note':r.note,'amount':money(r.amount),'overdue':r.due_date<start,
+                                'date':str(r.due_date),'account_id':r.account_id,'category_id':r.category_id,'version':r.version} for r in ins]+
                      [{'id':r.id,'kind':'out','name':r.counterparty,'amount':money(r.amount),'overdue':r.due_date<start,'priority':r.priority} for r in outs],
                      'pending_events':[{'id':r.id,'kind':'pending','name':r.counterparty,'amount':money(r.amount),'overdue':r.due_date<start,'priority':r.priority} for r in waiting]})
     period=[t for t in s.scalars(effective_cashflows(s)) if t.account_id in ids and t.date.year==start.year and t.date.month==start.month and t.date<=start]

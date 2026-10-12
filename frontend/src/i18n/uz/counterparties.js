@@ -1,4 +1,6 @@
 export default {
+ 'Действия':'Amallar',
+ 'Редактировать поступление · {name}':'Tushumni tahrirlash · {name}',
  'Удалить ожидаемое поступление?':'Kutilayotgan tushum oʻchirilsinmi?',
  'План «{counterparty}» на {amount} {currency} будет убран из календаря. История сохранится.':'«{counterparty}» uchun {amount} {currency} reja kalendardan olib tashlanadi. Tarix saqlanadi.',
  'Удалить можно только ожидаемое поступление.':'Faqat kutilayotgan tushumni oʻchirish mumkin.',

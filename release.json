@@ -1,7 +1,8 @@
 {
-  "version": "2.28.0",
-  "date": "2026-10-12",
+  "version": "2.28.1",
+  "date": "2026-10-13",
   "changes": [
+    "Редактирование и удаление ожидаемых поступлений перенесены прямо в строки календаря. Нажатие на зелёную сумму открывает форму в таблице; примечание расположено после остатка, отдельный список сверху убран.",
     "В плане поступления сумма разделяется пробелами при вводе. Отдел продаж и директор могут редактировать и удалять отдельные ожидаемые поступления; удаление сохраняет историю и убирает только прогноз. ИНН подставляется из справочника.",
     "Импорт контрагентов блокирует неоднозначные старые записи с одинаковым названием. Проверки прав закупок обновлены для разрешённого календаря и справочника; чужие заявки, бюджеты, операции и скачивание остаются закрыты.",
     "Импорт контрагентов дополняет пустые ИНН и примечания существующих записей, проверяет конфликты перед сохранением и показывает число дополнений. Кнопка загрузки Excel доступна с клавиатуры.",
@@ -54,6 +55,7 @@
     "Длинные названия файлов и кнопки выбора шаблона переносятся на узком экране. В ТЭО дата архива отдельно обозначена и не подменяет начало финансового прогноза."
   ],
   "changes_uz": [
+    "Kutilayotgan tushumlarni tahrirlash va oʻchirish kalendar qatorlariga koʻchirildi. Yashil summani bosish jadval ichidagi shaklni ochadi; izoh qoldiqdan keyin, yuqoridagi alohida roʻyxat olib tashlandi.",
     "Kontragentlar importi bir xil nomdagi noaniq eski yozuvlarni bloklaydi. Xaridlar boʻlimi huquqlari taqvim va maʼlumotnoma uchun tekshiriladi; begona arizalar, byudjetlar, operatsiyalar va fayllarni yuklab olish yopiq.",
     "Kontragentlar importi mavjud yozuvlarning boʻsh STIR va izohlarini toʻldiradi, saqlashdan oldin farqlarni tekshiradi va toʻldirishlar sonini koʻrsatadi. Excel yuklash tugmasi klaviatura orqali ishlaydi.",
     "Doimiy parollar: kirishda almashtirish majburiy emas, amaldagi login va parollar saqlanadi. Taqvimda izohlar, tushum rejasida STIR, summadan oldin kontragent tanlash va xaridlar boʻlimi, administrator hamda direktor uchun tahrirlash qoʻshildi. Kompaniya boʻyicha tekshiriladigan XLSX kontragentlar importi qoʻshildi.",

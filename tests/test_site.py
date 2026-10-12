@@ -3006,6 +3006,12 @@ class SiteTests(unittest.TestCase):
         dash=buyer[0].get('/api/dashboard?currency=UZS&days=7',headers=buyer[1]).json()
         event=next(e for d in dash['forecast'] for e in d['events'] if e['kind']=='in' and e['id']==rid)
         self.assertEqual((event['amount'],event['note'],event['inn']),('700.00','Уточнённый план','001234567'))
+        self.assertEqual((event['account_id'],event['category_id'],event['date'],event['version']),
+                         (body['account_id'],body['category_id'],body['date'],changed.json()['version']))
+        with unit(True) as s:s.get(Receipt,rid).due_date=today()-timedelta(days=1)
+        overdue=buyer[0].get('/api/dashboard?currency=UZS&days=7',headers=buyer[1]).json()['forecast'][0]
+        event=next(e for e in overdue['events'] if e['kind']=='in' and e['id']==rid)
+        self.assertEqual(overdue['date'],str(today()));self.assertEqual(event['date'],str(today()-timedelta(days=1)))
         with unit() as s:self.assertEqual(s.scalar(select(func.count()).select_from(Ledger)),0)
         with unit(True) as s:s.get(Receipt,rid).status='received'
         version=changed.json()['version']

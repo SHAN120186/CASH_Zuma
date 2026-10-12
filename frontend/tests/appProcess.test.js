@@ -183,7 +183,7 @@ test('sales has only overview and calendar, saves expected income and cannot con
     calls.push({url,options});
     if(url==='/api/receipts')return {ok:true,status:200,json:async()=>options.method==='POST'?{ok:true,id:9}:[planned]};
     if(url==='/api/bootstrap')return {ok:true,status:200,json:async()=>({...bootstrapBody(sales),accounts:[account],categories:[income]})};
-    assert.match(url,/^\/api\/dashboard\?/);return {ok:true,status:200,json:async()=>({forecast:[],reserve:'0'})};
+    assert.match(url,/^\/api\/dashboard\?/);return {ok:true,status:200,json:async()=>({forecast:[{date:'2026-10-12',opening:'0',incoming:'1200',outgoing:'0',balance:'1200',account_shortfalls:[],events:[{...planned,kind:'in',name:planned.counterparty,overdue:true}]}],reserve:'0'})};
   });
   Object.assign(view.state,{user:sales,boot:{...bootstrapBody(sales),accounts:[account],categories:[income]}});await settle();
   assert.deepEqual(view.state.nav.map(item=>item[0]),['home','calendar','profile']);
@@ -194,7 +194,6 @@ test('sales has only overview and calendar, saves expected income and cannot con
   assert.equal(calls.length,0);
   const calendar=find(view.container,node=>node.tag==='button'&&text(node).trim()==='Календарь');calendar.props.onClick();await settle();
   assert.equal(view.state.page,'calendar');
-  await view.state.showReceipts();await settle();
   assert.equal(find(view.container,node=>node.tag==='button'&&text(node)==='Подтвердить приход'),undefined);
   view.state.transaction(planned,true);assert.equal(view.state.modal,null);
   find(view.container,node=>node.tag==='button'&&text(node).trim()==='План поступления').props.onClick();await settle();
@@ -228,12 +227,12 @@ test('procurement edits an expected receipt with INN and note without actual-pay
     if(url==='/api/bootstrap')return {ok:true,status:200,json:async()=>boot};
     if(url==='/api/receipts/9')return {ok:true,status:200,json:async()=>({id:9,version:3})};
     if(url==='/api/receipts')return {ok:true,status:200,json:async()=>[planned]};
-    assert.match(url,/^\/api\/dashboard\?/);return {ok:true,status:200,json:async()=>({forecast:[],reserve:'0'})};
+    assert.match(url,/^\/api\/dashboard\?/);return {ok:true,status:200,json:async()=>({forecast:[{date:'2026-10-12',opening:'0',incoming:'1200',outgoing:'0',balance:'1200',account_shortfalls:[],events:[{...planned,kind:'in',name:planned.counterparty,overdue:true}]}],reserve:'0'})};
   });
   Object.assign(view.state,{user:buyer,boot});await settle();
   assert.deepEqual(view.state.nav.map(n=>n[0]),['requests','calendar','counterparties','profile']);
   assert.equal(view.state.has('write'),false);assert.equal(view.state.has('download'),false);
-  await view.state.go('calendar');await view.state.showReceipts();await settle();
+  await view.state.go('calendar');await settle();
   assert.equal(find(view.container,n=>n.tag==='button'&&text(n).trim()==='Подтвердить приход'),undefined);
   find(view.container,n=>n.tag==='button'&&text(n).trim()==='Редактировать').props.onClick();await settle();
   const fields=view.state.modal.fields.map(f=>f.key);
