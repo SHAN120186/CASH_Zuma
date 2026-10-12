@@ -128,7 +128,7 @@ class RoleDownloadTests(base.SiteTests):
         client, headers = self.make_user('sales', name)
         self.addCleanup(client.close)
         bootstrap = client.get('/api/bootstrap', headers=headers).json()
-        self.assertEqual(set(bootstrap['user']['permissions']), {'overview', 'receipts'})
+        self.assertEqual(set(bootstrap['user']['permissions']), {'overview', 'receipts', 'receipt_edit', 'receipt_delete'})
         self.assertTrue(all(c['type'] == 'income' for c in bootstrap['categories']))
         self.assertFalse(bootstrap['counterparties'])
         self.assertTrue(all('balance' not in a and 'opening' not in a for a in bootstrap['accounts']))
@@ -208,7 +208,7 @@ class RoleDownloadTests(base.SiteTests):
             self.assertNotIn('download', bootstrap['user']['permissions'], role)
             self.assertEqual(client.get(self.file_paths(records)[-1], headers=headers).status_code, 403, role)
             if role == 'sales':
-                self.assertEqual(set(bootstrap['user']['permissions']), {'overview', 'receipts'})
+                self.assertEqual(set(bootstrap['user']['permissions']), {'overview', 'receipts', 'receipt_edit', 'receipt_delete'})
                 self.assertEqual(bootstrap['user']['acting'], [])
                 for path in ('/api/accounts', '/api/budgets', '/api/ledger', '/api/requests', '/api/report'):
                     self.assertEqual(client.get(path, headers=headers).status_code, 403, path)

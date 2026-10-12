@@ -580,11 +580,12 @@ def get_receipts(request:Request):
     with unit() as s:
         user,_=session_user(s,request,('view','overview','calendar'))
         result=[]
-        for r in s.scalars(select(Receipt).order_by(Receipt.id.desc()).limit(500)):
+        for r in s.scalars(select(Receipt).where(Receipt.status!='cancelled').order_by(Receipt.id.desc()).limit(500)):
             a=get(s,Account,r.account_id)
             result.append({'id':r.id,'account_id':a.id,'account':a.name,'currency':a.currency,'category_id':r.category_id,
                 'counterparty':r.counterparty,'inn':r.inn,'version':r.version,'amount':money(r.amount),'date':str(r.due_date),'note':r.note,'status':r.status,
-                'can_edit':r.status=='expected' and 'receipt_edit' in perms_of(user)})
+                'can_edit':r.status=='expected' and 'receipt_edit' in perms_of(user),
+                'can_delete':r.status=='expected' and 'receipt_delete' in perms_of(user)})
         return result
 @app.post('/api/receipts')
 def add_receipt(data:ReceiptIn,request:Request):
@@ -614,6 +615,20 @@ def edit_receipt(id:int,data:ReceiptIn,request:Request):
         remember_counterparty(s,data.counterparty,data.inn)
         s.flush();log(s,u,'Изменён план поступления','receipt',r.id,json.dumps({'before':before,'after':data.model_dump(mode='json')},ensure_ascii=False))
         return {'id':r.id,'version':r.version}
+
+@app.delete('/api/receipts/{id}')
+def delete_receipt(id:int,request:Request,version:int=Query(ge=1)):
+    with unit(True) as s:
+        u,_=session_user(s,request,'receipt_delete');r=get(s,Receipt,id)
+        if r.status!='expected' or s.scalar(select(Ledger.id).where(Ledger.receipt_id==id).limit(1)):
+            raise HTTPException(409,'Удалить можно только ожидаемое поступление.')
+        if version!=r.version:raise HTTPException(409,'План поступления изменён. Обновите данные и повторите правку.')
+        before={'account_id':r.account_id,'category_id':r.category_id,'amount':money(r.amount),
+                'counterparty':r.counterparty,'inn':r.inn,'date':str(r.due_date),'note':r.note,'version':r.version}
+        # Remove only the forecast; keep the original record and its author for audit.
+        r.status='cancelled';s.flush()
+        log(s,u,'Удалён план поступления','receipt',r.id,json.dumps(before,ensure_ascii=False))
+        return {'id':r.id,'version':r.version,'status':r.status}
 
 @app.get('/api/ledger')
 def ledger_list(request:Request,date_from:Optional[date]=None,date_to:Optional[date]=None,currency:Optional[Literal['UZS','USD','EUR']]=None,q:str='',page:int=Query(1,ge=1),page_size:int=Query(10,ge=1,le=100),paginated:bool=False):

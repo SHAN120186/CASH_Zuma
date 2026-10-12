@@ -426,8 +426,9 @@ class BotApiTests(unittest.TestCase):
         self.assertGreaterEqual(datetime.fromisoformat(items[0]['stage_entered_at']),entered)
 
         self.decide(director,rid)
-        # The accountant who checked the request never pays it: only the other accountant is reminded.
-        self.assertEqual([(i['stage'],i['assignee_user_id']) for i in self.pending()],[('bank_payment',accountant['id'])])
+        # Since 2.26.2 the checking accountant may also pay after full approval.
+        self.assertEqual([(i['stage'],i['assignee_user_id']) for i in self.pending()],
+                         [('bank_payment',accountant['id']),('bank_payment',book['id'])])
 
         paid=self.post('/api/ledger',{'account_id':self.acc,'category_id':self.cat,'kind':'out','amount':'600','date':str(self.today),
                                       'reference':'PAY-1','note':'Оплата по заявке','request_id':rid,'request_version':self.version(rid)},

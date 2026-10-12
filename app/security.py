@@ -17,10 +17,10 @@ COMPANY_ROLES = tuple(r for r in ROLES if r not in HOLDING_ROLES)
 PERMS = {
  # Администратор холдинга: компании, пользователи, назначения, справочники, аудит.
  # Финансовые действия — только по отдельному назначению роли в конкретной компании.
- 'admin': {'view','ledger','export','download','users','catalog','audit','approval_policy','counterparties','receipt_edit'},
+ 'admin': {'view','ledger','export','download','users','catalog','audit','approval_policy','counterparties','receipt_edit','receipt_delete'},
  # Учредитель: все компании только для чтения.
  'founder': {'view','ledger','export','download','audit'},
- 'director': {'view','ledger','export','download','request','write','approve','budget','plan','import','schedule','catalog','audit','approval_policy','request_edit','counterparties','receipt_edit'},
+ 'director': {'view','ledger','export','download','request','write','approve','budget','plan','import','schedule','catalog','audit','approval_policy','request_edit','counterparties','receipt_edit','receipt_delete'},
  'cashier': {'request','ledger','pay_cash'},
  'finance': {'view','ledger','export','request','write','approve','budget','plan','import','schedule','request_edit'},
  # Расчётный бухгалтер проверяет реквизиты и комплектность заявок и оплачивает банк.
@@ -37,7 +37,7 @@ PERMS = {
  'procurement': {'request','calendar','counterparties','receipt_edit'},
  # Продажи видят обзор/календарь и вводят только ожидаемые поступления.
  # Это не общий просмотр финансовых разделов и не право проводить операции.
- 'sales': {'overview','receipts'},
+ 'sales': {'overview','receipts','receipt_edit','receipt_delete'},
 }
 
 # Просмотр отчётов (export) и выдача файлов (download) проверяются отдельно.

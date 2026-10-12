@@ -3012,6 +3012,39 @@ class SiteTests(unittest.TestCase):
         self.assertEqual(buyer[0].put('/api/receipts/'+str(rid),json={**body,'version':version},headers=buyer[1]).status_code,409)
         buyer[0].close()
 
+    def test_receipt_sales_edit_delete_scope_versions_and_actual_income_protection(self):
+        sales=self.make_user('sales','receipt_sales');director=self.make_user('director','receipt_director')
+        buyer=self.make_user('procurement','receipt_buyer_delete')
+        foreign=self.user_in(self.company_ids()['ZUMA'],'sales','foreign_receipt_sales')
+        body={'account_id':self.acc,'category_id':self.category_id('Поступления от покупателей'),'counterparty':'Synthetic receipt','inn':'001234567','amount':'1000.25','date':self.date,'note':'Plan only'}
+        rid=self.post('/api/receipts',body,client=sales[0],headers=sales[1]).json()['id']
+        row=next(r for r in sales[0].get('/api/receipts',headers=sales[1]).json() if r['id']==rid)
+        self.assertTrue(row['can_edit']);self.assertTrue(row['can_delete'])
+        route=f'/api/receipts/{rid}'
+        changed=sales[0].put(route,json={**body,'amount':'2000.50','version':row['version']},headers=sales[1])
+        self.assertEqual(changed.status_code,200,changed.text)
+        for client,headers,expected in [(sales[0],sales[1],409),(buyer[0],buyer[1],403),(foreign[0],foreign[1],404)]:
+            response=client.delete(route,params={'version':row['version']},headers=headers)
+            self.assertEqual(response.status_code,expected,response.text)
+        self.assertEqual(sales[0].delete(route,headers=sales[1]).status_code,422)
+        self.assertEqual(foreign[0].put(route,json={**body,'version':changed.json()['version']},headers=foreign[1]).status_code,404)
+        deleted=director[0].delete(route,params={'version':changed.json()['version']},headers=director[1])
+        self.assertEqual(deleted.status_code,200,deleted.text)
+        self.assertNotIn(rid,[r['id'] for r in sales[0].get('/api/receipts',headers=sales[1]).json()])
+        dash=sales[0].get('/api/dashboard?currency=UZS&days=7',headers=sales[1]).json()
+        self.assertFalse(any(e['kind']=='in' and e['id']==rid for d in dash['forecast'] for e in d['events']))
+        with unit() as s:
+            self.assertEqual(s.get(Receipt,rid).status,'cancelled')
+            self.assertEqual(s.scalar(select(func.count()).select_from(Ledger)),0)
+            self.assertEqual(s.scalar(select(func.count()).select_from(Audit).where(Audit.action=='Удалён план поступления')),1)
+        self.assertEqual(sales[0].delete(route,params={'version':deleted.json()['version']},headers=sales[1]).status_code,409)
+        second=self.post('/api/receipts',body,client=sales[0],headers=sales[1]).json()['id']
+        self.assertEqual(sales[0].delete(f'/api/receipts/{second}',params={'version':1},headers=sales[1]).status_code,200)
+        actual=self.post('/api/receipts',body).json()['id']
+        with unit(True) as s:s.get(Receipt,actual).status='received'
+        self.assertEqual(director[0].delete(f'/api/receipts/{actual}',params={'version':2},headers=director[1]).status_code,409)
+        for client,_ in (sales,director,buyer,foreign):client.close()
+
     def test_142_channel_payers_see_transfers_into_their_own_accounts(self):
         cashier=self.make_user('cashier','till_keeper');book=self.make_user('accountant','bank_keeper')
         till=self.post('/api/accounts',{'name':'Касса офиса','kind':'cash','currency':'UZS','opening':'50000','opening_date':str(today()-timedelta(days=5))}).json()['id']
