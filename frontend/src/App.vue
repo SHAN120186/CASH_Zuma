@@ -291,12 +291,46 @@ const field=(key,label,type='text',extra={})=>({key,label,type,required:true,...
 const accounts=()=>boot.value.accounts.map(a=>[a.id,`${a.name} · ${a.currency}`]);
 const categories=()=>boot.value.categories.map(c=>[c.id,`${c.name} · ${c.type==='income'?tx('приход'):tx('расход')}`]);
 // Titles, labels and notes are Russian source text (N_) translated in the template; option labels are translated here because they mix in user data.
-function open(title,fields,values,submit,note='',titleParams=null){form.value={...values};formError.value='';modal.value={title,titleParams,fields,submit,note}}
-async function save(){saving.value=true;formError.value='';try{await modal.value.submit({...form.value});modal.value=null;await bootstrap();await load();flash(N_('Сохранено'))}catch(e){formError.value=e.message}finally{saving.value=false}}
+function open(title,fields,values,submit,note='',titleParams=null,paymentRequestId=null){form.value={...values};formError.value='';modal.value={title,titleParams,fields,submit,note,paymentRequestId}}
+function requestPaid(id){
+ // A confirmed linked ledger write has already completed payment on the server.
+ // Do not leave a stale payment button if a subsequent read is unavailable.
+ // Reads started before the write can still contain the old approved status.
+ loadRequestId++;listRequestId++;reportRequestId++;
+ if(page.value==='requests'){
+  const matched=rows.value.filter(r=>r.id===id).length;
+  if(requestStatus.value&&requestStatus.value!=='paid'){rows.value=rows.value.filter(r=>r.id!==id);listTotal.value=Math.max(0,listTotal.value-matched);}
+  else rows.value=rows.value.map(r=>r.id===id?{...r,status:'paid',actions:[],overdue:false}:r);
+ }
+ dash.value=null;
+}
+async function save(){
+ if(saving.value||!modal.value)return;
+ const task=modal.value,epoch=companyEpoch,selectedCompany=companyId.value;
+ const current=()=>epoch===companyEpoch&&companyId.value===selectedCompany&&companyReady.value&&!!user.value;
+ saving.value=true;formError.value='';
+ try{
+  await task.submit({...form.value});
+  if(!current())return;
+  modal.value=null;
+  if(task.paymentRequestId)requestPaid(task.paymentRequestId);
+  flash(task.paymentRequestId?N_('Заявка оплачена.'):N_('Сохранено'));
+  // Saving and refreshing are different outcomes. A refresh error must never
+  // imply that the accepted payment should be submitted again.
+  let refreshFailed=false;
+  try{await bootstrap();}catch(e){if(!current())return;refreshFailed=true;}
+  if(!current())return;
+  await load();
+  if(current()&&(refreshFailed||error.value))error.value=task.paymentRequestId?
+   N_('Оплата записана. Не удалось обновить данные. Нажмите «Обновить данные», оплату повторять не нужно.'):
+   N_('Изменения сохранены. Не удалось обновить данные. Нажмите «Обновить данные», повторно сохранять не нужно.');
+ }catch(e){if(current()&&modal.value===task)formError.value=e.message;}
+ finally{saving.value=false;}
+}
 function account(a=null){open(a?N_('Редактировать счёт'):N_('Добавить счёт'),[
  field('name',N_('Название')),field('kind',N_('Тип'),'select',{options:[['bank',tx('Банковский счёт')],['cash',tx('Касса')]]}),field('currency',N_('Валюта'),'select',{options:['UZS','USD','EUR'].map(x=>[x,x])}),field('opening',N_('Начальный остаток'),'number',{min:0}),field('opening_date',N_('Дата начала учёта'),'date'),field('allow_overdraft',N_('Разрешён овердрафт'),'checkbox',{required:false}),...(a?[field('reason',N_('Причина исправления'),'textarea',{minlength:10})]:[])],a||{name:'',company_id:companyId.value,kind:'bank',currency:currency.value,opening:'0',opening_date:boot.value.today,allow_overdraft:false},d=>post(a?`/api/accounts/${a.id}`:'/api/accounts',Object.fromEntries(['name','kind','currency','opening','opening_date','allow_overdraft',...(a?['reason']:[])].map(k=>[k,k==='opening'?String(d[k]):d[k]]))),N_('Остаток на начало дня. Изменения сохраняются в журнале. Валюта счёта с историей защищена от изменения.'))}
 function transaction(link=null,receipt=false){if(receipt&&!has('write'))return;if(!link&&!currentAccounts.value.length){go('accounts');return}open(link?N_('Подтвердить факт'):N_('Новая операция'),[
- field('kind',N_('Тип'),'select',{options:[['in',tx('Поступление')],['out',tx('Расход')],['transfer',tx('Внутренний перевод')]],disabled:!!link}),field('account_id',N_('Счёт'),'select',{options:accounts(),disabled:!!link}),field('to_account_id',N_('Счёт-получатель (для перевода)'),'select',{options:[[null,'—'],...accounts()],required:false}),field('category_id',N_('Статья'),'select',{options:categories(),disabled:!!link}),field('amount',N_('Сумма'),'number',{min:.01,disabled:!!link}),field('date',N_('Дата факта'),'date',{min:link&&!receipt?link.approved_on||undefined:undefined}),field('reference',N_('Номер документа')),field('counterparty',N_('Контрагент'),'text',{required:false,disabled:!!link&&!receipt}),field('note',link&&!receipt?N_('Комментарий к оплате'):N_('Основание / комментарий'),'textarea',{required:false})],{kind:link?(receipt?'in':'out'):'in',account_id:link?.account_id||currentAccounts.value[0]?.id,to_account_id:null,category_id:link?.category_id||boot.value.categories[0]?.id,amount:link?.amount||'',date:boot.value.today,reference:'',counterparty:link?.counterparty||'',note:link?.purpose||''},d=>post('/api/ledger',{...d,amount:String(d.amount),category_id:d.kind==='transfer'?null:Number(d.category_id),account_id:Number(d.account_id),to_account_id:d.kind==='transfer'?Number(d.to_account_id):null,request_id:link&&!receipt?link.id:null,request_version:link&&!receipt?link.version:null,receipt_id:link&&receipt?link.id:null}),link&&!receipt?N_('Сумма, счёт, статья и получатель берутся из утверждённой заявки. Если денег или бюджета не хватает, оплата не пройдёт: верните заявку финансовому директору через «Действия».'):N_('Записывайте только фактически совершённые операции. Для расхода без заявки основание — от 10 символов.'))}
+ field('kind',N_('Тип'),'select',{options:[['in',tx('Поступление')],['out',tx('Расход')],['transfer',tx('Внутренний перевод')]],disabled:!!link}),field('account_id',N_('Счёт'),'select',{options:accounts(),disabled:!!link}),field('to_account_id',N_('Счёт-получатель (для перевода)'),'select',{options:[[null,'—'],...accounts()],required:false}),field('category_id',N_('Статья'),'select',{options:categories(),disabled:!!link}),field('amount',N_('Сумма'),'number',{min:.01,disabled:!!link}),field('date',N_('Дата факта'),'date',{min:link&&!receipt?link.approved_on||undefined:undefined}),field('reference',N_('Номер документа')),field('counterparty',N_('Контрагент'),'text',{required:false,disabled:!!link&&!receipt}),field('note',link&&!receipt?N_('Комментарий к оплате'):N_('Основание / комментарий'),'textarea',{required:false})],{kind:link?(receipt?'in':'out'):'in',account_id:link?.account_id||currentAccounts.value[0]?.id,to_account_id:null,category_id:link?.category_id||boot.value.categories[0]?.id,amount:link?.amount||'',date:boot.value.today,reference:'',counterparty:link?.counterparty||'',note:link?.purpose||''},d=>post('/api/ledger',{...d,amount:String(d.amount),category_id:d.kind==='transfer'?null:Number(d.category_id),account_id:Number(d.account_id),to_account_id:d.kind==='transfer'?Number(d.to_account_id):null,request_id:link&&!receipt?link.id:null,request_version:link&&!receipt?link.version:null,receipt_id:link&&receipt?link.id:null}),link&&!receipt?N_('Сумма, счёт, статья и получатель берутся из утверждённой заявки. Если денег или бюджета не хватает, оплата не пройдёт: верните заявку финансовому директору через «Действия».'):N_('Записывайте только фактически совершённые операции. Для расхода без заявки основание — от 10 символов.'),null,link&&!receipt?link.id:null)}
 function requestForm(r=null){if(!boot.value.accounts.length){if(has('write'))go('accounts');else flash(N_('В компании нет активных счетов для заявки. Обратитесь к финансовому директору.'));return}editor.value={request:r}}
 function budget(r){open(N_('Бюджет · {name}'),[field('amount',N_('Лимит'),'number',{min:0,required:false,placeholder:N_('Не задан')}),field('cost_group',N_('Группа затрат'),'select',{options:Object.entries(costGroups).map(([key,label])=>[key,tx(label)])}),field('mode',N_('Контроль'),'select',{options:[['soft',tx('Разрешать превышение с обоснованием')],['hard',tx('Запрещать превышение')]]}),field('reason',N_('Причина / основание'),'textarea',{minlength:10})],{amount:r.limit??'',mode:r.mode,cost_group:r.cost_group||'other',reason:''},d=>post('/api/budgets',{...d,amount:d.amount===''?null:String(d.amount),category_id:r.category_id,month:month.value,currency:currency.value}),N_('Группа относится к статье во всех месяцах и валютах. Пустой лимит не меняет ограничение бюджета.'),{name:r.category})}
 function category(c=null){open(c?N_('Редактировать статью'):N_('Новая статья'),[field('name',N_('Название')),field('type',N_('Направление'),'select',{options:[['income',tx('Поступление')],['outcome',tx('Выплата')]]}),field('activity',N_('Деятельность'),'select',{options:[['operating',tx('Операционная')],['investing',tx('Инвестиционная')],['financing',tx('Финансовая')]]})],c?{name:c.name,type:c.type,activity:c.activity}:{name:'',type:'outcome',activity:'operating'},d=>c?api(`/api/categories/${c.id}`,{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify(d)}):post('/api/categories',d))}

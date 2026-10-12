@@ -4,6 +4,9 @@ export default {
   // Request statuses, stages and route (workflow.js)
   'Утверждена': 'Tasdiqlangan',
   'Оплачена': 'Toʻlangan',
+  'Заявка оплачена.': 'Ariza boʻyicha toʻlov amalga oshirildi.',
+  'Оплата записана. Не удалось обновить данные. Нажмите «Обновить данные», оплату повторять не нужно.': 'Toʻlov qayd etildi. Maʼlumotlarni yangilab boʻlmadi. «Maʼlumotlarni yangilash» tugmasini bosing, toʻlovni takrorlash kerak emas.',
+  'Изменения сохранены. Не удалось обновить данные. Нажмите «Обновить данные», повторно сохранять не нужно.': 'Oʻzgarishlar saqlandi. Maʼlumotlarni yangilab boʻlmadi. «Maʼlumotlarni yangilash» tugmasini bosing, qayta saqlash kerak emas.',
   'На доработке': 'Qayta ishlashda',
   'Закрыта без оплаты': 'Toʻlovsiz yopilgan',
   'Отклонена (архив)': 'Rad etilgan (arxiv)',

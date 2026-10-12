@@ -1,7 +1,8 @@
 {
-  "version": "2.26.0",
+  "version": "2.26.1",
   "date": "2026-10-12",
   "changes": [
+    "После успешного проведения оплаты ошибка последующего обновления больше не оставляет старую заявку доступной для повторной оплаты. Сайт отдельно сообщает, что операция сохранена, а данные нужно обновить; повторное обновление не отправляет платёж заново.",
     "При быстрых переходах между разделами, смене валюты или месяца поздний ответ предыдущей загрузки больше не заменяет актуальные данные и не снимает индикатор текущей загрузки.",
     "После смены суток в Ташкенте обновление раздела получает сегодняшнюю дату сервера: обзор и календарь больше не расходятся из-за вчерашней даты открытой вкладки. Выбранная историческая дата отчёта сохраняется.",
     "В общей сверке P&L, баланса и Cash Flow показаны независимые денежные остатки сайта, движение и ввод начальных остатков, валюта, дата и число операций. Пустые и незакрытые периоды не подменяются нулями; различия единиц и состава счетов остаются видимыми.",
@@ -48,6 +49,7 @@
     "Длинные названия файлов и кнопки выбора шаблона переносятся на узком экране. В ТЭО дата архива отдельно обозначена и не подменяет начало финансового прогноза."
   ],
   "changes_uz": [
+    "Toʻlov muvaffaqiyatli oʻtkazilgach, keyingi yangilash xatosi eski arizani qayta toʻlash uchun ochiq qoldirmaydi. Sayt operatsiya saqlanganini va maʼlumotlarni yangilash kerakligini alohida koʻrsatadi; qayta yangilash toʻlovni takror yubormaydi.",
     "Bo‘limlar orasida tez o‘tilganda, valyuta yoki oy almashtirilganda oldingi yuklashning kechikkan javobi joriy ma’lumotlarni almashtirmaydi va joriy yuklash indikatorini o‘chirmaydi.",
     "Toshkentda kun almashgach bo‘lim yangilanganda serverning bugungi sanasi olinadi: ochiq sahifadagi kechagi sana sababli umumiy ko‘rinish va kalendar farqlanmaydi. Hisobot uchun tanlangan tarixiy sana saqlanadi.",
     "P&L, balans va Cash Flow umumiy solishtirishida saytning mustaqil pul qoldiqlari, harakati va boshlang‘ich qoldiqlar kiritilishi, valyuta, sana va operatsiyalar soni ko‘rsatilgan. Bo‘sh va yopilmagan davrlar nolga almashtirilmaydi; birliklar va hisobvaraqlar tarkibidagi farqlar ko‘rinib turadi.",
