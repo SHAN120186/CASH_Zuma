@@ -1,7 +1,8 @@
 {
-  "version": "2.27.0",
+  "version": "2.27.1",
   "date": "2026-10-12",
   "changes": [
+    "Импорт контрагентов дополняет пустые ИНН и примечания существующих записей, проверяет конфликты перед сохранением и показывает число дополнений. Кнопка загрузки Excel доступна с клавиатуры.",
     "Постоянные пароли без обязательной смены: действующие логины и пароли сохраняются. В календаре добавлены примечания; в плане поступлений — ИНН, выбор контрагента перед суммой и редактирование для закупок, администратора и директора. Добавлен справочник контрагентов с проверкой и загрузкой XLSX по компаниям.",
     "Банковскую заявку после согласования может оплатить проверявший её расчётный бухгалтер. Второй бухгалтер не требуется; обновлены права сайта и бота, подсказки RU/UZ. Повторная оплата и ограничения для авторов, редакторов и финансовых согласующих сохраняются.",
     "После успешного проведения оплаты ошибка последующего обновления больше не оставляет старую заявку доступной для повторной оплаты. Сайт отдельно сообщает, что операция сохранена, а данные нужно обновить; повторное обновление не отправляет платёж заново.",
@@ -51,6 +52,7 @@
     "Длинные названия файлов и кнопки выбора шаблона переносятся на узком экране. В ТЭО дата архива отдельно обозначена и не подменяет начало финансового прогноза."
   ],
   "changes_uz": [
+    "Kontragentlar importi mavjud yozuvlarning boʻsh STIR va izohlarini toʻldiradi, saqlashdan oldin farqlarni tekshiradi va toʻldirishlar sonini koʻrsatadi. Excel yuklash tugmasi klaviatura orqali ishlaydi.",
     "Doimiy parollar: kirishda almashtirish majburiy emas, amaldagi login va parollar saqlanadi. Taqvimda izohlar, tushum rejasida STIR, summadan oldin kontragent tanlash va xaridlar boʻlimi, administrator hamda direktor uchun tahrirlash qoʻshildi. Kompaniya boʻyicha tekshiriladigan XLSX kontragentlar importi qoʻshildi.",
     "Kelishilgan bank arizasini uni tekshirgan hisob-kitob buxgalteri toʻlashi mumkin. Ikkinchi buxgalter talab qilinmaydi; sayt va bot huquqlari, RU/UZ izohlari yangilandi. Takroriy toʻlov, mualliflar, tahrirlovchilar va moliyaviy kelishuvchilar uchun cheklovlar saqlanadi.",
     "Toʻlov muvaffaqiyatli oʻtkazilgach, keyingi yangilash xatosi eski arizani qayta toʻlash uchun ochiq qoldirmaydi. Sayt operatsiya saqlanganini va maʼlumotlarni yangilash kerakligini alohida koʻrsatadi; qayta yangilash toʻlovni takror yubormaydi.",

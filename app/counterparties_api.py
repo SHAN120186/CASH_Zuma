@@ -1,5 +1,5 @@
 """Company-scoped counterparties and validated Excel import; no ledger writes."""
-import io, re, zipfile
+import io, re, zipfile, json
 from urllib.parse import unquote
 from fastapi import APIRouter, Request, HTTPException
 from pydantic import BaseModel, ConfigDict, Field
@@ -23,14 +23,15 @@ class ImportIn(BaseModel):
 
 def row(c):return {'id':c.id,'name':c.name,'inn':c.inn,'note':c.note}
 
-def conflict(existing,data,exclude=None):
+def conflict(existing,data,exclude=None,allow_fill=False):
+    if data.inn and any(c.id!=exclude and c.inn==data.inn and c.name.casefold()!=data.name.casefold() for c in existing):
+        raise HTTPException(409,'Этот ИНН уже указан у другого контрагента. Проверьте название.')
     for c in existing:
         if c.id==exclude:continue
         if c.name.casefold()==data.name.casefold():
+            if allow_fill and not (c.inn and data.inn and c.inn!=data.inn or c.note and data.note and c.note!=data.note):return c
             if (c.inn,c.note)==(data.inn,data.note):return c
             raise HTTPException(409,'Контрагент с таким названием уже есть. Измените его в справочнике.')
-        if data.inn and c.inn==data.inn:
-            raise HTTPException(409,'Этот ИНН уже указан у другого контрагента. Проверьте название.')
     return None
 
 @router.get('/api/counterparties')
@@ -56,7 +57,7 @@ def edit(id:int,data:CounterpartyIn,request:Request):
         if conflict(list(s.scalars(select(Counterparty))),data,c.id):raise HTTPException(409,'Контрагент с таким названием уже есть. Измените его в справочнике.')
         before=row(c)
         for k,v in data.model_dump().items():setattr(c,k,v)
-        s.flush();log(s,u,'Изменён контрагент','counterparty',c.id,str({'before':before,'after':row(c)}))
+        s.flush();log(s,u,'Изменён контрагент','counterparty',c.id,json.dumps({'before':before,'after':row(c)},ensure_ascii=False))
         return row(c)
 
 def excel_rows(raw):
@@ -103,7 +104,7 @@ async def preview(request:Request):
     source=excel_rows(await read_upload(request))
     with unit() as s:
         session_user(s,request,'counterparties');existing=list(s.scalars(select(Counterparty)))
-        rows=[];errors=[];names=set();inns=set();skipped=0
+        rows=[];errors=[];names=set();inns=set();skipped=0;updated=0
         for line,values in source:
             try:
                 data=CounterpartyIn(**values)
@@ -111,19 +112,30 @@ async def preview(request:Request):
                     raise ValueError('Дубликат названия или ИНН в файле.')
                 names.add(data.name.casefold())
                 if data.inn:inns.add(data.inn)
-                same=conflict(existing,data)
-                if same:skipped+=1
+                same=conflict(existing,data,allow_fill=True)
+                if same:
+                    if not same.inn and data.inn or not same.note and data.note:updated+=1
+                    else:skipped+=1
                 rows.append(data.model_dump())
             except HTTPException as e:errors.append({'line':line,'error':e.detail})
             except (ValueError,TypeError):errors.append({'line':line,'error':'Проверьте название, ИНН и примечание. ИНН содержит только цифры.'})
-        return {'rows':rows,'errors':errors,'skipped':skipped,'can_commit':bool(rows) and not errors}
+        return {'rows':rows,'errors':errors,'skipped':skipped,'updated':updated,'can_commit':bool(rows) and not errors}
 
 @router.post('/api/counterparties/import/commit')
 def commit(data:ImportIn,request:Request):
     with unit(True) as s:
-        u,_=session_user(s,request,'counterparties');existing=list(s.scalars(select(Counterparty)));added=0;skipped=0
+        u,_=session_user(s,request,'counterparties');existing=list(s.scalars(select(Counterparty)));added=0;skipped=0;updated=0
         for item in data.rows:
-            if conflict(existing,item):skipped+=1;continue
+            same=conflict(existing,item,allow_fill=True)
+            if same:
+                before=row(same)
+                if not same.inn:same.inn=item.inn
+                if not same.note:same.note=item.note
+                if row(same)!=before:
+                    updated+=1
+                    log(s,u,'Дополнены реквизиты контрагента','counterparty',same.id,json.dumps({'before':before,'after':row(same)},ensure_ascii=False))
+                else:skipped+=1
+                continue
             c=Counterparty(**item.model_dump());s.add(c);s.flush();existing.append(c);added+=1
-        log(s,u,'Загружен справочник контрагентов','counterparty','import',str({'added':added,'skipped':skipped}))
-        return {'added':added,'skipped':skipped}
+        log(s,u,'Загружен справочник контрагентов','counterparty','import',json.dumps({'added':added,'updated':updated,'skipped':skipped}))
+        return {'added':added,'updated':updated,'skipped':skipped}
