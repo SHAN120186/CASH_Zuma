@@ -1314,15 +1314,11 @@ class SiteTests(unittest.TestCase):
         self.assertEqual(self.finance_approve(rid).status_code,403)
         ok=self.post(f'/api/requests/{rid}/decision',{'action':'approve','note':'Подтверждаю оплату по договору'},*director)
         self.assertEqual(ok.status_code,200,ok.text);self.assertEqual(row()['status'],'approved')
-        # The accountant who checked the request is not the one who pays it.
-        own=self.post('/api/ledger',{'account_id':self.acc,'category_id':self.cat,'kind':'out','amount':'4000',
-            'date':self.date,'reference':'CYCLE-CHECKER','note':'Оплата проверявшим бухгалтером','request_id':rid},*self.stage_user('check'))
-        self.assertEqual(own.status_code,403,own.text);self.assertEqual(row()['status'],'approved')
         part=self.post('/api/ledger',{'account_id':self.acc,'category_id':self.cat,'kind':'out','amount':'1000',
             'date':self.date,'reference':'CYCLE-PART','note':'Частичная оплата заявки','request_id':rid},*book)
         self.assertEqual(part.status_code,409,part.text)
         pay=self.post('/api/ledger',{'account_id':self.acc,'category_id':self.cat,'kind':'out','amount':'4000',
-            'date':self.date,'reference':'CYCLE-PAY','note':'Оплата утверждённой заявки','request_id':rid},*book)
+            'date':self.date,'reference':'CYCLE-PAY','note':'Оплата утверждённой заявки','request_id':rid},*self.stage_user('check'))
         self.assertEqual(pay.status_code,200,pay.text);self.assertEqual(row()['status'],'paid')
         again=self.post('/api/ledger',{'account_id':self.acc,'category_id':self.cat,'kind':'out','amount':'4000',
             'date':self.date,'reference':'CYCLE-PAY-2','note':'Повторная оплата заявки','request_id':rid},*book)
@@ -1574,9 +1570,6 @@ class SiteTests(unittest.TestCase):
         # The cashier cannot pay from a bank account.
         r=self.post('/api/ledger',self.pay_body(rid),*cashier);self.assertEqual(r.status_code,403,r.text)
         self.assertIn('расчётный бухгалтер',r.text)
-        # The accountant who checked the request holds pay_bank, but a second accountant pays it.
-        r=self.post('/api/ledger',self.pay_body(rid),*self.checker);self.assertEqual(r.status_code,403,r.text)
-        self.assertIn('проверявший',r.text)
         # Even with a payment right, participants of the request are refused.
         saved={role:set(security.PERMS[role]) for role in ('finance','director','admin')}
         try:
@@ -1593,7 +1586,8 @@ class SiteTests(unittest.TestCase):
             r=self.post('/api/ledger',self.pay_body(edited['id'],amount='700'));self.assertEqual(r.status_code,403,r.text)
         finally:
             for role,perms in saved.items():security.PERMS[role].clear();security.PERMS[role].update(perms)
-        self.assertEqual(self.post('/api/ledger',self.pay_body(rid),*book).status_code,200)
+        self.assertIn('pay',self.checker[0].get(f'/api/requests/{rid}',headers=self.checker[1]).json()['actions'])
+        self.assertEqual(self.post('/api/ledger',self.pay_body(rid),*self.checker).status_code,200)
 
     def test_86_cash_requests_are_paid_by_a_cashier_who_is_not_their_author(self):
         till=self.cash_account()
@@ -2584,16 +2578,24 @@ class SiteTests(unittest.TestCase):
         actions=[a['action'] for a in self.client.get('/api/audit',headers=self.h).json()]
         self.assertIn('Назначен ВрИО',actions);self.assertIn('Отменено ВрИО',actions)
 
-    def test_124_the_checking_accountant_never_pays_the_request(self):
+    def test_124_the_checking_accountant_pays_after_final_approval(self):
         rid=self.request('600').json()['id'];self.assertEqual(self.approve(rid).status_code,200)
         card=self.row(rid);checker=self.stage_user('check')
         self.assertIsNotNone(card['checked_by']);self.assertEqual(card['people']['checked_by'],'checker')
-        denied=self.ledger('600.00','out','PAY-CHECKER',client=checker,request_id=rid)
-        self.assertEqual(denied.status_code,403);self.assertIn('проверявший',denied.json()['detail'].lower())
-        self.assertEqual(self.ledger('600.00','out','PAY-OTHER',request_id=rid).status_code,200)
+        self.assertIn('pay',checker[0].get(f'/api/requests/{rid}',headers=checker[1]).json()['actions'])
+        paid=self.ledger('600.00','out','PAY-CHECKER',client=checker,request_id=rid)
+        self.assertEqual(paid.status_code,200,paid.text);self.assertEqual(self.row(rid)['status'],'paid')
+        self.assertEqual(self.ledger('600.00','out','PAY-OTHER',request_id=rid).status_code,409)
         # Бухгалтер не проверяет свою заявку и не проходит второй этап той же заявки по ВрИО.
         other=self.request('600').json()['id'];self.assertEqual(self.check(other).status_code,200)
         self.assertEqual(self.post(f'/api/requests/{other}/decision',{'action':'check'},*checker).status_code,403)
+        self.assertEqual(self.ledger('600.00','out','PAY-BEFORE-APPROVAL',client=checker,request_id=other).status_code,409)
+        self.assertEqual(self.approve(other).status_code,200)
+        # Проверка не снимает отдельное ограничение за правку в прежнем круге.
+        with unit(True) as s:
+            s.add(Audit(company_id=self.company,user_id=card['checked_by'],action='Изменена заявка',entity='request',entity_id=str(other),detail='Правка в прежнем круге'))
+        self.assertEqual(self.ledger('600.00','out','PAY-CHECKER-EDITOR',client=checker,request_id=other).status_code,403)
+        self.assertEqual(self.row(other)['status'],'approved')
 
     def test_125_request_cards_files_and_policies_stay_inside_their_company(self):
         ids=self.company_ids();zuma=ids['ZUMA']
@@ -2642,24 +2644,22 @@ class SiteTests(unittest.TestCase):
     def audit_row(self,action):
         return next(a for a in self.client.get('/api/audit',headers=self.h).json() if a['action']==action)
 
-    def test_127_participants_of_earlier_rounds_never_pay(self):
+    def test_127_checkers_of_earlier_rounds_can_pay(self):
         first=self.stage_user('check');second=self.make_user('accountant','checker2')
         rid=self.request('600').json()['id'];self.assertEqual(self.check(rid).status_code,200)
         self.assertEqual(self.post(f'/api/requests/{rid}/decision',{'action':'return','note':'Уточните реквизиты получателя'}).status_code,200)
         self.assertEqual(self.post(f'/api/requests/{rid}/decision',{'action':'submit'}).status_code,200)
         self.assertEqual(self.post(f'/api/requests/{rid}/decision',{'action':'check'},*second).status_code,200)
         self.assertEqual(self.approve(rid).status_code,200)
-        # Бухгалтер первого круга не видит «Факт оплаты» и не проводит оплату.
-        self.assertNotIn('pay',first[0].get(f'/api/requests/{rid}',headers=first[1]).json()['actions'])
-        self.assertEqual(self.ledger('600.00','out','PAY-127A',client=first,request_id=rid).status_code,403)
+        self.assertIn('pay',first[0].get(f'/api/requests/{rid}',headers=first[1]).json()['actions'])
+        self.assertEqual(self.ledger('600.00','out','PAY-127A',client=first,request_id=rid).status_code,200)
         # То же после замены файла: сброс согласования не стирает участников.
         other=self.request('600').json()['id'];self.assertEqual(self.check(other).status_code,200)
         self.assertEqual(self.upload(other,'contract',name='invoice-v2.pdf').status_code,200)
         self.assertEqual(self.post(f'/api/requests/{other}/decision',{'action':'check'},*second).status_code,200)
         self.assertEqual(self.approve(other).status_code,200)
-        self.assertEqual(self.ledger('600.00','out','PAY-127B',client=first,request_id=other).status_code,403)
-        # Бухгалтер, не участвовавший в заявке, оплачивает.
-        self.assertEqual(self.ledger('600.00','out','PAY-127C',request_id=other).status_code,200)
+        self.assertEqual(self.ledger('600.00','out','PAY-127B',client=first,request_id=other).status_code,200)
+        self.assertEqual(self.ledger('600.00','out','PAY-127C',request_id=other).status_code,409)
         second[0].close()
 
     def test_128_editing_a_submitted_request_keeps_its_route_snapshot(self):

@@ -1096,7 +1096,7 @@ class BotApiTests(unittest.TestCase):
         self.assertEqual(self.tg_user(1203).json()['items'],[])
         with unit() as s:self.assertIsNone(s.get(Delegation,d.json()['id']).revoked_at)  # nothing rewritten behind the administrator
 
-    def test_payer_who_took_part_in_an_earlier_round_is_not_reminded(self):
+    def test_bank_checkers_are_reminded_and_can_pay_after_approval(self):
         author=self.make_user('employee','author');finance=self.make_user('finance','fin');director=self.make_user('director','boss')
         first=self.make_user('accountant','roundone');second=self.make_user('accountant','roundtwo');payer=self.make_user('accountant','payer')
         for user,tg in ((first,1001),(second,1002),(payer,1003)):self.link(user,tg)
@@ -1108,16 +1108,18 @@ class BotApiTests(unittest.TestCase):
         self.assertEqual({i['assignee_user_id'] for i in self.pending() if i['request_id']==rid},{first['id'],second['id'],payer['id']})
         self.check(rid,second);self.decide(finance,rid);self.decide(director,rid)
         with unit(True) as s:s.get(PaymentRequest,rid).due_date=self.today  # the payment day has come
-        self.assertEqual([(i['request_id'],i['stage'],i['assignee_user_id']) for i in self.pending()],[(rid,'bank_payment',payer['id'])])
-        # A replaced file resets the approvals, but the earlier checker still never pays.
+        self.assertEqual(sorted((i['request_id'],i['stage'],i['assignee_user_id']) for i in self.pending()),
+                         sorted((rid,'bank_payment',u['id']) for u in (first,second,payer)))
+        # Resetting the approvals keeps earlier checking compatible with payment.
         other=self.new_request(author,'500');self.check(other,first)
         up=author['client'].post(f'/api/requests/{other}/documents',params={'kind':'contract'},content=PDF+b'% corrected invoice\n',
                                  headers={**author['h'],'Content-Type':'application/pdf','X-Filename':'contract-v2.pdf','X-Request-Version':str(self.version(other))})
         self.assertEqual(up.status_code,200,up.text);self.assertTrue(up.json()['approval_reset'])
         self.check(other,second);self.decide(finance,other);self.decide(director,other)
-        self.assertEqual(sorted((i['request_id'],i['assignee_user_id']) for i in self.pending()),sorted([(rid,payer['id']),(other,payer['id'])]))
-        self.assertEqual(self.pay(first,rid,'600','PAY-EARLIER').status_code,403)
-        self.assertEqual(self.pay(payer,rid,'600','PAY-OUTSIDER').status_code,200)
+        self.assertEqual(sorted((i['request_id'],i['assignee_user_id']) for i in self.pending()),
+                         sorted((r,u['id']) for r in (rid,other) for u in (first,second,payer)))
+        self.assertEqual(self.pay(first,rid,'600','PAY-EARLIER').status_code,200)
+        self.assertEqual(self.pay(payer,rid,'600','PAY-OUTSIDER').status_code,409)
 
     def me(self):
         return {'client':self.client,'h':self.h}

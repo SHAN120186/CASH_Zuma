@@ -354,8 +354,8 @@ export default {
   'Оплату кассовой заявки проводит кассир.': 'Kassa arizasi toʻlovini kassir amalga oshiradi.',
   'Бухгалтер, проверявший реквизиты и комплектность заявки, не проводит её оплату: нужен другой бухгалтер.':
     'Ariza rekvizitlari va hujjatlar toʻliqligini tekshirgan buxgalter uning toʻlovini amalga oshirmaydi: boshqa buxgalter kerak.',
-  'Автор, редакторы, проверявшие и согласующие заявки (в том числе в прежних кругах согласования) не проводят её оплату.':
-    'Arizaning muallifi, tahrirlovchilari, tekshiruvchilari va kelishuvchilari (avvalgi kelishish bosqichlarida ham) uning toʻlovini amalga oshirmaydi.',
+  'Автор, редакторы и согласующие заявки (в том числе в прежних кругах согласования) не проводят её оплату.':
+    'Arizaning muallifi, tahrirlovchilari va kelishuvchilari (avvalgi kelishish bosqichlarida ham) uning toʻlovini amalga oshirmaydi.',
   'Оплата не проведена. Верните заявку финансовому директору с комментарием.': 'Toʻlov amalga oshirilmadi. Arizani izoh bilan moliya direktoriga qaytaring.',
   'Заявка не прошла все этапы согласования. Оплата не проведена. Верните заявку финансовому директору с комментарием.':
     'Ariza kelishishning barcha bosqichlaridan oʻtmagan. Toʻlov amalga oshirilmadi. Arizani izoh bilan moliya direktoriga qaytaring.',

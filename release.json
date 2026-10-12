@@ -1,7 +1,8 @@
 {
-  "version": "2.26.1",
+  "version": "2.26.2",
   "date": "2026-10-12",
   "changes": [
+    "Банковскую заявку после согласования может оплатить проверявший её расчётный бухгалтер. Второй бухгалтер не требуется; обновлены права сайта и бота, подсказки RU/UZ. Повторная оплата и ограничения для авторов, редакторов и финансовых согласующих сохраняются.",
     "После успешного проведения оплаты ошибка последующего обновления больше не оставляет старую заявку доступной для повторной оплаты. Сайт отдельно сообщает, что операция сохранена, а данные нужно обновить; повторное обновление не отправляет платёж заново.",
     "При быстрых переходах между разделами, смене валюты или месяца поздний ответ предыдущей загрузки больше не заменяет актуальные данные и не снимает индикатор текущей загрузки.",
     "После смены суток в Ташкенте обновление раздела получает сегодняшнюю дату сервера: обзор и календарь больше не расходятся из-за вчерашней даты открытой вкладки. Выбранная историческая дата отчёта сохраняется.",
@@ -49,6 +50,7 @@
     "Длинные названия файлов и кнопки выбора шаблона переносятся на узком экране. В ТЭО дата архива отдельно обозначена и не подменяет начало финансового прогноза."
   ],
   "changes_uz": [
+    "Kelishilgan bank arizasini uni tekshirgan hisob-kitob buxgalteri toʻlashi mumkin. Ikkinchi buxgalter talab qilinmaydi; sayt va bot huquqlari, RU/UZ izohlari yangilandi. Takroriy toʻlov, mualliflar, tahrirlovchilar va moliyaviy kelishuvchilar uchun cheklovlar saqlanadi.",
     "Toʻlov muvaffaqiyatli oʻtkazilgach, keyingi yangilash xatosi eski arizani qayta toʻlash uchun ochiq qoldirmaydi. Sayt operatsiya saqlanganini va maʼlumotlarni yangilash kerakligini alohida koʻrsatadi; qayta yangilash toʻlovni takror yubormaydi.",
     "Bo‘limlar orasida tez o‘tilganda, valyuta yoki oy almashtirilganda oldingi yuklashning kechikkan javobi joriy ma’lumotlarni almashtirmaydi va joriy yuklash indikatorini o‘chirmaydi.",
     "Toshkentda kun almashgach bo‘lim yangilanganda serverning bugungi sanasi olinadi: ochiq sahifadagi kechagi sana sababli umumiy ko‘rinish va kalendar farqlanmaydi. Hisobot uchun tanlangan tarixiy sana saqlanadi.",

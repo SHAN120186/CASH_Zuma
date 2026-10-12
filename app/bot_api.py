@@ -521,7 +521,8 @@ def responsible(r, account, company, users, members, acting=None, past=None):
     Pending requests: accountant check, finance, then the director only when the route snapshot
     requires one; nobody acts twice in one request and nobody who edited it or its files in this round
     (``past`` = services.round_participants). Payment: only when every required stage is done, never by
-    anybody who took part in the request in this or an earlier round (``past`` = services.all_participants)."""
+    its author, editors or financial approvers in any round. A bank checker may pay
+    (``past`` = services.all_participants with include_check=False for bank payments)."""
     acting = acting or {}
     if r.status == 'pending':
         stage = approval_stage(r)
@@ -535,7 +536,7 @@ def responsible(r, account, company, users, members, acting=None, past=None):
         right = pay_right(account)
         stage = 'cash_payment' if account.kind == 'cash' else 'bank_payment'
         fits = lambda roles: any(right in PERMS.get(x, ()) for x in roles)
-        excluded = participants(r) | (past or set())
+        excluded = participants(r, include_check=account.kind!='bank') | (past or set())
     else:
         return None, []
     return stage, [u for u in users if u.id not in excluded and fits(roles_in(u, company, members, acting))]
@@ -595,7 +596,7 @@ def pending_items(s, user_id=None):
         company = companies.get(account.company_id) if account else None
         if company is None:
             continue
-        past = all_participants(s, r) if r.status == 'approved' else round_participants(s, r)
+        past = all_participants(s, r, include_check=account.kind!='bank') if r.status == 'approved' else round_participants(s, r)
         stage, people = responsible(r, account, company, users, members, acting, past)
         since = entered.get(r.id, r.created_at)
         if r.status == 'approved':
