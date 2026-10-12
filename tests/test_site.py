@@ -2985,6 +2985,11 @@ class SiteTests(unittest.TestCase):
         collision=excel([['Контрагент','ИНН'],['Blank old name','009876543']])
         collision_preview=buyer[0].post('/api/counterparties/import/preview',content=collision,headers=h).json()
         self.assertFalse(collision_preview['can_commit']);self.assertTrue(collision_preview['errors'])
+        with unit(True) as s:
+            s.add_all([Counterparty(company_id=self.company,name='LEGACY',inn='555555555'),Counterparty(company_id=self.company,name='legacy')])
+        ambiguous=excel([['Контрагент','ИНН'],['Legacy','555555555']])
+        ambiguous_preview=buyer[0].post('/api/counterparties/import/preview',content=ambiguous,headers=h).json()
+        self.assertFalse(ambiguous_preview['can_commit']);self.assertTrue(ambiguous_preview['errors'])
         bad=excel([['Контрагент','ИНН'],['Formula','=1+2']])
         self.assertEqual(buyer[0].post('/api/counterparties/import/preview',content=bad,headers=h).status_code,422)
         for cl,_ in (buyer,foreign,sales):cl.close()

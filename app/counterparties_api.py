@@ -24,6 +24,8 @@ class ImportIn(BaseModel):
 def row(c):return {'id':c.id,'name':c.name,'inn':c.inn,'note':c.note}
 
 def conflict(existing,data,exclude=None,allow_fill=False):
+    if sum(c.id!=exclude and c.name.casefold()==data.name.casefold() for c in existing)>1:
+        raise HTTPException(409,'Контрагент с таким названием уже есть. Измените его в справочнике.')
     if data.inn and any(c.id!=exclude and c.inn==data.inn and c.name.casefold()!=data.name.casefold() for c in existing):
         raise HTTPException(409,'Этот ИНН уже указан у другого контрагента. Проверьте название.')
     for c in existing:

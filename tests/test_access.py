@@ -68,9 +68,13 @@ class AccessTests(base.SiteTests):
                            headers={**a[1], 'Content-Type': 'application/pdf', 'X-Filename': 'x.pdf'})
             self.assertIn(up.status_code, (403, 404))
             self.assertIn(a[0].delete(f'/api/request-documents/{db}', headers=a[1]).status_code, (403, 404))
-            for path in ('/api/accounts', '/api/dashboard', '/api/ledger', '/api/budgets', '/api/export/ledger.csv'):
+            self.assertEqual(a[0].get('/api/dashboard', headers=a[1]).status_code, 200)
+            self.assertEqual(a[0].get('/api/receipts', headers=a[1]).status_code, 200)
+            self.assertEqual(a[0].get('/api/counterparties', headers=a[1]).status_code, 200)
+            for path in ('/api/accounts', '/api/ledger', '/api/budgets', '/api/export/ledger.csv'):
                 self.assertEqual(a[0].get(path, headers=a[1]).status_code, 403, path)
-            self.assertEqual(a[0].get('/api/bootstrap', headers=a[1]).json()['counterparties'], [])
+            cp=a[0].get('/api/bootstrap', headers=a[1]).json()['counterparties']
+            self.assertTrue(cp);self.assertTrue(all(set(c)=={'id','name','inn'} for c in cp))
             # Форма заявки показывает только карточку выбранной статьи на период, без остатков счетов.
             check = a[0].get(f'/api/budget-check?account_id={self.acc}&category_id={self.cat}&amount=10&date={self.dues["urgent"]}', headers=a[1])
             self.assertEqual(check.status_code, 200)
