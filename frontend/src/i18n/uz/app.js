@@ -62,11 +62,11 @@ export default {
     'Parolni avtomatik toʻldirish uchun brauzer taklifida «Saqlash»ni tasdiqlang. Bu imkoniyat brauzer va uning sozlamalariga bogʻliq.',
 
   // Temporary password and company choice
-  'Смена временного пароля': 'Vaqtinchalik parolni almashtirish',
+  'Смена временного пароля': 'Berilgan parolni almashtirish',
   'Задайте свой пароль': 'Oʻz parolingizni oʻrnating',
   'Вы вошли с временным паролем. Придумайте новый пароль не короче 12 символов: после смены войдите снова.':
     'Siz vaqtinchalik parol bilan kirdingiz. Kamida 12 ta belgidan iborat yangi parol oʻylab toping: almashtirgandan keyin qayta kiring.',
-  'Временный пароль': 'Vaqtinchalik parol',
+  'Выданный пароль': 'Berilgan parol',
   'Новый пароль': 'Yangi parol',
   'Повтор нового пароля': 'Yangi parolni takrorlang',
   'Сменить пароль': 'Parolni almashtirish',
@@ -289,8 +289,8 @@ export default {
   'Центр администрирования': 'Boshqaruv markazi',
   'Поиск по имени и логину, фильтры по компании, роли и состоянию. Карточка сотрудника: имя, назначение, статус холдинга, сброс пароля, завершение сеансов, архив и восстановление. Каждое действие требует причину и записывается в журнал с прежним и новым назначением.':
     'Ism va login boʻyicha qidiruv, kompaniya, rol va holat boʻyicha filtrlar. Xodim kartochkasi: ism, tayinlov, xolding maqomi, parolni qayta oʻrnatish, seanslarni yakunlash, arxivlash va tiklash. Har bir amal sabab talab qiladi va avvalgi hamda yangi tayinlov bilan jurnalga yoziladi.',
-  'При создании, сбросе и восстановлении пароль создаётся случайным, показывается один раз и меняется сотрудником при первом входе: до смены пароля остальные разделы недоступны. Прежние сеансы и Telegram отключаются.':
-    'Yaratish, qayta oʻrnatish va tiklashda parol tasodifiy yaratiladi, bir marta koʻrsatiladi va xodim uni birinchi kirishda almashtiradi: parol almashtirilmaguncha boshqa boʻlimlar ochilmaydi. Avvalgi seanslar va Telegram uziladi.',
+  'При создании, сбросе и восстановлении выдаётся случайный постоянный пароль, который показывается один раз. Обязательной смены при входе нет. Действующие пароли автоматически не меняются. Прежние сеансы и Telegram отключаются.':
+    'Yaratish, qayta oʻrnatish va tiklashda doimiy tasodifiy parol bir marta koʻrsatiladi. Kirishda uni almashtirish majburiy emas. Amaldagi parollar avtomatik oʻzgarmaydi. Avvalgi seanslar va Telegram uziladi.',
   'Холдинг': 'Xolding',
   'Администратор холдинга видит все компании, управляет пользователями и доступами; финансовые действия — только по отдельному назначению роли в компании, которое выдаёт другой администратор. Учредитель видит все компании только для чтения.':
     'Xolding administratori barcha kompaniyalarni koʻradi, foydalanuvchilar va kirish huquqlarini boshqaradi; moliyaviy amallarni esa faqat boshqa administrator beradigan, kompaniyadagi alohida rol tayinlovi orqali bajaradi. Taʼsischi barcha kompaniyalarni faqat koʻrish rejimida koʻradi.',
@@ -312,8 +312,8 @@ export default {
   'Выберите месяц или даты, сотрудника и действие, затем нажмите «Показать». Записи показываются простым списком; технические сведения — по кнопке «Подробности». Время указано по Ташкенту.':
     'Oy yoki sanalarni, xodim va amalni tanlang, soʻng «Koʻrsatish» tugmasini bosing. Yozuvlar oddiy roʻyxat koʻrinishida chiqadi; texnik maʼlumotlar — «Batafsil» tugmasi orqali. Vaqt Toshkent vaqti boʻyicha koʻrsatilgan.',
   'Сессия и пароль': 'Seans va parol',
-  'Сессия действует 60 минут. Пароль не короче 12 символов. После смены пароля все сессии отзываются. Временный пароль от администратора меняется при первом входе.':
-    'Seans 60 daqiqa amal qiladi. Parol kamida 12 ta belgidan iborat boʻlishi kerak. Parol almashtirilgach, barcha seanslar bekor qilinadi. Administrator bergan vaqtinchalik parol birinchi kirishda almashtiriladi.',
+  'Сессия действует 60 минут. Пароль не короче 12 символов. После смены пароля все сессии отзываются. Пароль от администратора постоянный; обязательной смены при входе нет.':
+    'Seans 60 daqiqa amal qiladi. Parol kamida 12 ta belgidan iborat boʻlishi kerak. Parol almashtirilgach, barcha seanslar bekor qilinadi. Administrator bergan parol doimiy; kirishda uni almashtirish majburiy emas.',
   'Если вы временно исполняете обязанности отсутствующего сотрудника, его роль показана рядом с вашей и действует только в этой компании до конца срока замещения.':
     'Agar siz yoʻq xodimning vazifalarini vaqtincha bajarayotgan boʻlsangiz, uning roli sizning rolingiz yonida koʻrsatiladi va faqat shu kompaniyada almashtirish muddati tugaguncha amal qiladi.',
   'Чтобы бот присылал напоминания по заявкам, которые ждут вашего действия, нажмите «Привязать Telegram» и отправьте боту одноразовый код — он действует 10 минут.':

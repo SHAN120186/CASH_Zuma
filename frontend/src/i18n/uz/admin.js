@@ -42,9 +42,9 @@ export default {
   'нет доступа': 'kirish huquqi yoʻq',
 
   // User card
-  'Временный пароль для {login}': '{login} uchun vaqtinchalik parol',
-  'Показывается один раз. Передайте сотруднику по защищённому каналу: при первом входе он задаст свой пароль.':
-    'Faqat bir marta koʻrsatiladi. Xodimga himoyalangan kanal orqali yetkazing: birinchi kirishda u oʻz parolini oʻrnatadi.',
+  'Пароль для {login}': '{login} uchun parol',
+  'Показывается один раз. Передайте сотруднику по защищённому каналу. Обязательной смены при входе нет.':
+    'Faqat bir marta koʻrsatiladi. Xodimga himoyalangan kanal orqali yetkazing. Kirishda almashtirish majburiy emas.',
   'Скопировать': 'Nusxalash',
   'Пароль скопирован.': 'Parol nusxalandi.',
   'Скопируйте пароль вручную.': 'Parolni qoʻlda nusxalang.',
@@ -77,8 +77,8 @@ export default {
     '{company} kompaniyasidagi tayinlov olib tashlanadi, xodimning seanslari yakunlanadi.',
   'Вход, сеансы, Telegram и все назначения будут отключены. Документы и журнал сохранят автора.':
     'Tizimga kirish, seanslar, Telegram va barcha tayinlovlar oʻchiriladi. Hujjatlar va jurnalda muallif saqlanib qoladi.',
-  'Будет создан случайный временный пароль (20 символов). При первом входе сотрудник обязан его сменить.':
-    'Tasodifiy vaqtinchalik parol (20 ta belgi) yaratiladi. Birinchi kirishda xodim uni almashtirishi shart.',
+  'Будет создан случайный постоянный пароль (20 символов). Обязательной смены при входе нет.':
+    'Tasodifiy doimiy parol (20 ta belgi) yaratiladi. Kirishda almashtirish majburiy emas.',
   'Причина': 'Sabab',
   'Сохраняем…': 'Saqlanmoqda…',
   'Подтвердить': 'Tasdiqlash',

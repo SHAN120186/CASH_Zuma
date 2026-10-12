@@ -119,7 +119,7 @@ def create_user(data: CreateIn, request: Request):
             access.business_company(s, data.company_id)
         password = access.temporary_password()
         u = User(username=data.username, name=data.name, password_hash=hash_password(password),
-                 role=data.holding_role or data.role, must_change_password=True)
+                 role=data.holding_role or data.role, must_change_password=False)
         s.add(u)
         s.flush()
         if not data.holding_role:

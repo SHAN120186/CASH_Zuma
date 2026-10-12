@@ -174,6 +174,8 @@ class ReceiptIn(Input):
     account_id:int
     category_id:int
     counterparty:str=Field(min_length=2,max_length=160)
+    inn:str=Field(default='',max_length=20,pattern=r'^\d*$')
+    version:Optional[int]=None
     amount:str
     date:date
     note:str=Field(default='',max_length=2000)
@@ -279,22 +281,22 @@ def bootstrap(request:Request):
         if company_role(user)=='sales' and user.role not in HOLDING_ROLES:
             categories=categories.where(Category.type=='income')
         c=[{'id':c.id,'name':c.name,'activity':c.activity,'type':c.type} for c in s.scalars(categories)]
-        # Контрагенты собраны из операций и чужих заявок: только тем, кто видит реестр.
-        cp=[{'name':x.name,'inn':x.inn} for x in s.scalars(select(Counterparty).order_by(Counterparty.name).limit(1000))] if {'view','ledger'}&perms_of(user) else []
+        # Реестр и разрешённые пользователи планов получают справочник своей компании.
+        cp=[{'id':x.id,'name':x.name,'inn':x.inn} for x in s.scalars(select(Counterparty).order_by(Counterparty.name).limit(1000))] if {'view','ledger','receipts','counterparties'}&perms_of(user) else []
         return {'accounts':a,'companies':companies,'categories':c,'counterparties':cp,'roles':ROLES,'today':str(today()),
                 'due_minimums':due_minimums(s,today()),'user':user_json(user),'csrf':session.csrf}
 
-def remember_counterparty(s,name):
+def remember_counterparty(s,name,inn=''):
     """Справочник пополняется автоматически при вводе документов."""
     name=(name or '').strip()
     if len(name)<2 or len(name)>160:return
-    if not s.scalar(select(Counterparty.id).where(Counterparty.name==name)):s.add(Counterparty(name=name))
+    if not s.scalar(select(Counterparty.id).where(Counterparty.name==name)):s.add(Counterparty(name=name,inn=inn))
 
 @app.get('/api/dashboard')
 def get_dashboard(request:Request,currency:Literal['UZS','USD','EUR']='UZS',days:int=30):
     if days not in (7,30,90):raise HTTPException(422,'Период: 7, 30 или 90 дней.')
     with unit() as s:
-        session_user(s,request,('view','overview'));return dashboard(s,currency,days)
+        session_user(s,request,('view','overview','calendar'));return dashboard(s,currency,days)
 
 @app.get('/api/accounts')
 def accounts(request:Request,archived:bool=False):
@@ -576,12 +578,13 @@ def decide(id:int,data:DecisionIn,request:Request):
 @app.get('/api/receipts')
 def get_receipts(request:Request):
     with unit() as s:
-        session_user(s,request,('view','overview'))
+        user,_=session_user(s,request,('view','overview','calendar'))
         result=[]
         for r in s.scalars(select(Receipt).order_by(Receipt.id.desc()).limit(500)):
             a=get(s,Account,r.account_id)
             result.append({'id':r.id,'account_id':a.id,'account':a.name,'currency':a.currency,'category_id':r.category_id,
-                'counterparty':r.counterparty,'amount':money(r.amount),'date':str(r.due_date),'note':r.note,'status':r.status})
+                'counterparty':r.counterparty,'inn':r.inn,'version':r.version,'amount':money(r.amount),'date':str(r.due_date),'note':r.note,'status':r.status,
+                'can_edit':r.status=='expected' and 'receipt_edit' in perms_of(user)})
         return result
 @app.post('/api/receipts')
 def add_receipt(data:ReceiptIn,request:Request):
@@ -591,9 +594,26 @@ def add_receipt(data:ReceiptIn,request:Request):
             raise HTTPException(422,'Для плана поступления выберите доходную статью.')
         if a.archived:raise HTTPException(409,'Счёт в архиве.')
         if data.date<a.opening_date:raise HTTPException(422,'Дата раньше начала учёта счёта.')
-        r=Receipt(account_id=a.id,category_id=data.category_id,counterparty=data.counterparty,amount=amount(data.amount),due_date=data.date,note=data.note,creator_id=u.id)
-        remember_counterparty(s,data.counterparty)
+        r=Receipt(account_id=a.id,category_id=data.category_id,counterparty=data.counterparty,inn=data.inn,amount=amount(data.amount),due_date=data.date,note=data.note,creator_id=u.id)
+        remember_counterparty(s,data.counterparty,data.inn)
         s.add(r);s.flush();log(s,u,'План поступления','receipt',r.id,data.counterparty);return {'id':r.id}
+
+@app.put('/api/receipts/{id}')
+def edit_receipt(id:int,data:ReceiptIn,request:Request):
+    with unit(True) as s:
+        u,_=session_user(s,request,'receipt_edit');r=get(s,Receipt,id)
+        if r.status!='expected':raise HTTPException(409,'Полученное поступление нельзя изменить как план.')
+        if data.version!=r.version:raise HTTPException(409,'План поступления изменён. Обновите данные и повторите правку.')
+        a=get(s,Account,data.account_id);c=get(s,Category,data.category_id)
+        if c.type!='income':raise HTTPException(422,'Для плана поступления выберите доходную статью.')
+        if a.archived:raise HTTPException(409,'Счёт в архиве.')
+        if data.date<a.opening_date:raise HTTPException(422,'Дата раньше начала учёта счёта.')
+        before={'amount':money(r.amount),'counterparty':r.counterparty,'inn':r.inn,'date':str(r.due_date),'note':r.note}
+        for key in ('account_id','category_id','counterparty','inn','note'):setattr(r,key,getattr(data,key))
+        r.amount=amount(data.amount);r.due_date=data.date
+        remember_counterparty(s,data.counterparty,data.inn)
+        s.flush();log(s,u,'Изменён план поступления','receipt',r.id,json.dumps({'before':before,'after':data.model_dump(mode='json')},ensure_ascii=False))
+        return {'id':r.id,'version':r.version}
 
 @app.get('/api/ledger')
 def ledger_list(request:Request,date_from:Optional[date]=None,date_to:Optional[date]=None,currency:Optional[Literal['UZS','USD','EUR']]=None,q:str='',page:int=Query(1,ge=1),page_size:int=Query(10,ge=1,le=100),paginated:bool=False):
@@ -908,3 +928,5 @@ from .financial_statements import router as financial_statements_router
 app.include_router(financial_statements_router)
 from .business_templates import router as business_templates_router
 app.include_router(business_templates_router)
+from .counterparties_api import router as counterparties_router
+app.include_router(counterparties_router)

@@ -202,7 +202,7 @@ test('sales has only overview and calendar, saves expected income and cannot con
   Object.assign(view.state.form,{account_id:7,category_id:8,amount:'1200',date:'2026-10-11',counterparty:'Synthetic buyer'});
   await view.state.save();await settle();
   const writes=calls.filter(call=>call.options.method==='POST');assert.equal(writes.length,1);assert.equal(writes[0].url,'/api/receipts');
-  assert.deepEqual(JSON.parse(writes[0].options.body),{account_id:7,category_id:8,amount:'1200',date:'2026-10-11',counterparty:'Synthetic buyer'});
+  assert.deepEqual(JSON.parse(writes[0].options.body),{account_id:7,category_id:8,amount:'1200',date:'2026-10-11',counterparty:'Synthetic buyer',inn:'',note:'',version:null});
   assert.equal(view.state.modal,null);assert.equal(view.state.page,'calendar');
   assert.equal(all(view.container,node=>node.tag==='a'&&/^\/api\//.test(node.props.href||'')).length,0);
 });
@@ -216,6 +216,33 @@ test('sales assignment stays restricted even with stale acting director rights',
   assert.equal(calls.length,0);
   view.state.user={...view.state.user,holding_role:'admin'};await settle();
   assert.ok(view.state.nav.some(item=>item[0]==='users'),'holding management remains available');
+});
+
+test('procurement edits an expected receipt with INN and note without actual-payment rights',async t=>{
+  const buyer={...user,role:'procurement',company_role:'procurement',permissions:['request','calendar','counterparties','receipt_edit']};
+  const account={id:7,kind:'bank',name:'Synthetic bank',currency:'UZS'},income={id:8,type:'income',name:'Synthetic income'};
+  const planned={id:9,version:2,account_id:7,category_id:8,counterparty:'Synthetic buyer',inn:'001234567',note:'Invoice expected',amount:'1200',currency:'UZS',date:'2026-10-11',status:'expected',can_edit:true};
+  const boot={...bootstrapBody(buyer),accounts:[account],categories:[income],counterparties:[{name:'Imported buyer',inn:'009876543'}]};
+  const calls=[];const {view}=await fixture(t,async(url,options)=>{
+    calls.push({url,options});
+    if(url==='/api/bootstrap')return {ok:true,status:200,json:async()=>boot};
+    if(url==='/api/receipts/9')return {ok:true,status:200,json:async()=>({id:9,version:3})};
+    if(url==='/api/receipts')return {ok:true,status:200,json:async()=>[planned]};
+    assert.match(url,/^\/api\/dashboard\?/);return {ok:true,status:200,json:async()=>({forecast:[],reserve:'0'})};
+  });
+  Object.assign(view.state,{user:buyer,boot});await settle();
+  assert.deepEqual(view.state.nav.map(n=>n[0]),['requests','calendar','counterparties','profile']);
+  assert.equal(view.state.has('write'),false);assert.equal(view.state.has('download'),false);
+  await view.state.go('calendar');await view.state.showReceipts();await settle();
+  assert.equal(find(view.container,n=>n.tag==='button'&&text(n).trim()==='Подтвердить приход'),undefined);
+  find(view.container,n=>n.tag==='button'&&text(n).trim()==='Редактировать').props.onClick();await settle();
+  const fields=view.state.modal.fields.map(f=>f.key);
+  assert.ok(fields.indexOf('counterparty')<fields.indexOf('amount'));assert.ok(fields.includes('inn'));assert.ok(fields.includes('note'));
+  view.state.form.counterparty='Imported buyer';view.state.receiptPartyChanged();assert.equal(view.state.form.inn,'009876543');
+  view.state.form.note='Updated expected date';await view.state.save();await settle();
+  const writes=calls.filter(c=>c.options.method==='PUT');assert.equal(writes.length,1);assert.equal(writes[0].url,'/api/receipts/9');
+  const body=JSON.parse(writes[0].options.body);assert.equal(body.version,2);assert.equal(body.inn,'009876543');assert.equal(body.note,'Updated expected date');
+  assert.equal(calls.some(c=>c.url==='/api/ledger'),false);
 });
 
 test('file guard blocks ordinary and modified stale private links without starting a network download',async t=>{

@@ -228,7 +228,10 @@ class SiteTests(unittest.TestCase):
             self.assertTrue(rows[0]['budget']['hidden'])
             self.assertNotIn('spent',rows[0]['budget'])
             self.assertNotIn('used',rows[0]['budget'])
-            for path in ('/api/dashboard','/api/budgets','/api/ledger','/api/users',f'/api/requests/{foreign}/documents'):
+            self.assertEqual(cl.get('/api/dashboard',headers=h).status_code,200)
+            self.assertEqual(cl.get('/api/receipts',headers=h).status_code,200)
+            self.assertEqual(cl.get('/api/counterparties',headers=h).status_code,200)
+            for path in ('/api/budgets','/api/ledger','/api/users',f'/api/requests/{foreign}/documents'):
                 self.assertEqual(cl.get(path,headers=h).status_code,403,path)
             # Чужую заявку закупщик не закрывает: для него её нет; прежнее действие «cancel» отклоняется.
             self.assertEqual(self.post(f'/api/requests/{foreign}/decision',{'action':'close','note':'Cannot close another buyer request'},cl,h).status_code,404)
@@ -2936,6 +2939,55 @@ class SiteTests(unittest.TestCase):
         self.assertEqual(self.post('/api/ledger',{'account_id':acc,'category_id':self.cat,'kind':'in','amount':'700000','date':str(today()),'reference':'BACK-1','counterparty':'Покупатель'}).status_code,200)
         ok=self.post(f'/api/requests/{rid}/decision',{'action':'approve','note':'Утверждение после срока'},*self.stage_user('director'))
         self.assertEqual(ok.status_code,200,ok.text);self.assertEqual(ok.json()['status'],'approved')
+
+    def test_counterparty_excel_preview_commit_and_scope(self):
+        import io
+        from openpyxl import Workbook
+        buyer=self.make_user('procurement','cp_buyer')
+        def excel(rows):
+            book=Workbook();sheet=book.active
+            for row in rows:sheet.append(row)
+            buffer=io.BytesIO();book.save(buffer);book.close();return buffer.getvalue()
+        payload=excel([['Контрагент','ИНН','Примечание'],['Synthetic buyer','001234567','Отсрочка 30 дней']])
+        h={**buyer[1],'X-Filename':'counterparties.xlsx','Content-Type':'application/octet-stream'}
+        preview=buyer[0].post('/api/counterparties/import/preview',content=payload,headers=h)
+        self.assertEqual(preview.status_code,200,preview.text);self.assertTrue(preview.json()['can_commit'])
+        self.assertEqual(buyer[0].get('/api/counterparties',headers=buyer[1]).json(),[])
+        commit=self.post('/api/counterparties/import/commit',{'rows':preview.json()['rows']},*buyer)
+        self.assertEqual(commit.json(),{'added':1,'skipped':0})
+        again=self.post('/api/counterparties/import/commit',{'rows':preview.json()['rows']},*buyer)
+        self.assertEqual(again.json(),{'added':0,'skipped':1})
+        row=buyer[0].get('/api/counterparties',headers=buyer[1]).json()[0]
+        self.assertEqual(row['inn'],'001234567')
+        changed=buyer[0].put('/api/counterparties/'+str(row['id']),json={'name':row['name'],'inn':row['inn'],'note':'Предоплата'},headers=buyer[1])
+        self.assertEqual(changed.status_code,200,changed.text)
+        zuma=self.company_ids()['ZUMA'];foreign=self.user_in(zuma,'director','cp_foreign')
+        denied=foreign[0].put('/api/counterparties/'+str(row['id']),json={'name':'Foreign change','inn':'','note':''},headers=foreign[1])
+        self.assertEqual(denied.status_code,404)
+        sales=self.make_user('sales','cp_sales')
+        self.assertEqual(sales[0].get('/api/counterparties',headers=sales[1]).status_code,403)
+        self.assertEqual(self.post('/api/ledger',self.pay_body(0),*buyer).status_code,403)
+        bad=excel([['Контрагент','ИНН'],['Formula','=1+2']])
+        self.assertEqual(buyer[0].post('/api/counterparties/import/preview',content=bad,headers=h).status_code,422)
+        for cl,_ in (buyer,foreign,sales):cl.close()
+
+    def test_receipt_inn_notes_and_editing_do_not_create_actual_income(self):
+        buyer=self.make_user('procurement','receipt_buyer')
+        body={'account_id':self.acc,'category_id':self.category_id('Поступления от покупателей'),'counterparty':'Synthetic client','inn':'001234567','amount':'500','date':self.date,'note':'Оплата по договору'}
+        rid=self.post('/api/receipts',body).json()['id']
+        row=next(x for x in buyer[0].get('/api/receipts',headers=buyer[1]).json() if x['id']==rid)
+        self.assertTrue(row['can_edit']);self.assertEqual(row['inn'],body['inn'])
+        changed=buyer[0].put('/api/receipts/'+str(rid),json={**body,'amount':'700','note':'Уточнённый план','version':row['version']},headers=buyer[1])
+        self.assertEqual(changed.status_code,200,changed.text)
+        self.assertEqual(buyer[0].put('/api/receipts/'+str(rid),json={**body,'version':row['version']},headers=buyer[1]).status_code,409)
+        dash=buyer[0].get('/api/dashboard?currency=UZS&days=7',headers=buyer[1]).json()
+        event=next(e for d in dash['forecast'] for e in d['events'] if e['kind']=='in' and e['id']==rid)
+        self.assertEqual((event['amount'],event['note'],event['inn']),('700.00','Уточнённый план','001234567'))
+        with unit() as s:self.assertEqual(s.scalar(select(func.count()).select_from(Ledger)),0)
+        with unit(True) as s:s.get(Receipt,rid).status='received'
+        version=changed.json()['version']
+        self.assertEqual(buyer[0].put('/api/receipts/'+str(rid),json={**body,'version':version},headers=buyer[1]).status_code,409)
+        buyer[0].close()
 
     def test_142_channel_payers_see_transfers_into_their_own_accounts(self):
         cashier=self.make_user('cashier','till_keeper');book=self.make_user('accountant','bank_keeper')

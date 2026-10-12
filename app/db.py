@@ -202,11 +202,14 @@ class Receipt(Base):
     account_id = Column(Integer, ForeignKey('accounts.id'), nullable=False)
     category_id = Column(Integer, ForeignKey('categories.id'), nullable=False)
     counterparty = Column(String(160), nullable=False)
+    inn = Column(String(20), nullable=False, default='')
+    version = Column(Integer, nullable=False, default=1)
     amount = Column(BigInteger, nullable=False)
     due_date = Column(Date, nullable=False)
     note = Column(Text, nullable=False, default='')
     creator_id = Column(Integer, ForeignKey('users.id'), nullable=False)
     status = Column(String(20), nullable=False, default='expected')
+    __mapper_args__ = {'version_id_col': version}
 
 class Ledger(Base):
     __tablename__ = 'ledger'
@@ -526,6 +529,12 @@ def initialize():
         columns={c['name'] for c in inspect(conn).get_columns('users')}
         if 'role_id' not in columns:conn.execute(text('ALTER TABLE users ADD COLUMN role_id INTEGER REFERENCES roles(id)'))
         if 'must_change_password' not in columns:conn.execute(text('ALTER TABLE users ADD COLUMN must_change_password BOOLEAN NOT NULL DEFAULT FALSE'))
+        # Постоянные пароли: снимаем только требование смены, не меняя хеши,
+        # логины, назначения, Telegram или действующие сеансы.
+        conn.execute(text('UPDATE users SET must_change_password=FALSE WHERE active=TRUE AND must_change_password=TRUE'))
+        receipt_columns={c['name'] for c in inspect(conn).get_columns('expected_receipts')}
+        if 'inn' not in receipt_columns:conn.execute(text("ALTER TABLE expected_receipts ADD COLUMN inn VARCHAR(20) NOT NULL DEFAULT ''"))
+        if 'version' not in receipt_columns:conn.execute(text('ALTER TABLE expected_receipts ADD COLUMN version INTEGER NOT NULL DEFAULT 1'))
         columns={c['name'] for c in inspect(conn).get_columns('categories')}
         if 'cost_group' not in columns:conn.execute(text("ALTER TABLE categories ADD COLUMN cost_group VARCHAR(12) NOT NULL DEFAULT 'other'"))
         if 'type' not in columns:

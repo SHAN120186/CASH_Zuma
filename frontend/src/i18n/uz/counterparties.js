@@ -1,0 +1,23 @@
+export default {
+ 'Контрагенты':'Kontragentlar',
+ 'ИНН':'STIR',
+ 'Примечание':'Izoh',
+ 'Редактировать':'Tahrirlash',
+ 'Редактировать план поступления':'Tushum rejasini tahrirlash',
+ 'Добавить контрагента':'Kontragent qoʻshish',
+ 'Загрузить список Excel':'Excel roʻyxatini yuklash',
+ 'Excel: столбцы «Контрагент», «ИНН», необязательно «Примечание». ИНН лучше хранить как текст. До 1000 строк и 5 МБ.':'Excel ustunlari: Kontragent, STIR, ixtiyoriy Izoh. STIRni matn sifatida saqlang. 1000 qatorgacha va 5 MB.',
+ 'Проверка списка контрагентов':'Kontragentlar roʻyxatini tekshirish',
+ 'Уже есть в справочнике: {n}':'Maʼlumotnomada mavjud: {n}',
+ 'Сохранить список контрагентов':'Kontragentlar roʻyxatini saqlash',
+ 'Контрагент сохранён.':'Kontragent saqlandi.',
+ 'Добавлено: {added}. Уже были в справочнике: {skipped}.':'Qoʻshildi: {added}. Maʼlumotnomada avval mavjud: {skipped}.',
+ 'Контрагент с таким названием уже есть. Измените его в справочнике.':'Bu nomdagi kontragent mavjud. Uni maʼlumotnomada tahrirlang.',
+ 'Этот ИНН уже указан у другого контрагента. Проверьте название.':'Bu STIR boshqa kontragentda koʻrsatilgan. Nomini tekshiring.',
+ 'Нужны столбцы «Контрагент», «ИНН»; «Примечание» необязательно.':'Kontragent va STIR ustunlari zarur; Izoh ixtiyoriy.',
+ 'Не удалось прочитать Excel. Используйте XLSX.':'Excelni oʻqib boʻlmadi. XLSXdan foydalaning.',
+ 'В файле нет контрагентов.':'Faylda kontragentlar yoʻq.',
+ 'Проверьте название, ИНН и примечание. ИНН содержит только цифры.':'Nom, STIR va izohni tekshiring. STIR faqat raqamlardan iborat.',
+ 'Полученное поступление нельзя изменить как план.':'Olingan tushumni reja sifatida oʻzgartirib boʻlmaydi.',
+ 'План поступления изменён. Обновите данные и повторите правку.':'Tushum rejasi oʻzgargan. Maʼlumotlarni yangilab, tahrirni takrorlang.'
+};
