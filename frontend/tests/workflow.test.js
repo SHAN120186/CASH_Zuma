@@ -90,3 +90,12 @@ test('a request sent before 2.14.0 shows no accountant check in its route', () =
   assert.deepEqual(paid.map(s => s.c), ['done', 'skip', 'done', 'done', 'done']);
   assert.equal(steps({status: 'draft', route: {policy: null}})[1].l, 'Проверка');
 });
+
+test('a request created or posted with an earlier date is highlighted', async () => {
+  const {isBackdated, BACKDATED_HINT} = await import('../src/requests/workflow.js');
+  assert.equal(isBackdated({backdated_created: true, backdated_posted: false}), true);
+  assert.equal(isBackdated({backdated_created: false, backdated_posted: true}), true);
+  assert.equal(isBackdated({backdated_created: false, backdated_posted: false}), false);
+  assert.equal(isBackdated(null), false);
+  assert.match(BACKDATED_HINT, /раньше дня ввода/);
+});

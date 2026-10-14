@@ -100,6 +100,10 @@ export function steps(r) {
 
 export const minDue = (dues, priority) => (dues && dues[priority]) || '';
 
+// Заявка создана или проведена с датой раньше дня ввода: её строка и карточка выделяются оранжевым.
+export const isBackdated = r => !!(r && (r.backdated_created || r.backdated_posted));
+export const BACKDATED_HINT = N_('Создано или проведено с датой раньше дня ввода');
+
 const HISTORY = {
   submit: N_('Отправлена на согласование'), check: N_('Проверено бухгалтером: реквизиты и комплектность'), approve: N_('Согласована'),
   return: N_('Возвращена на доработку'), return_finance: N_('Возвращена финансовому директору'), close: N_('Закрыта без оплаты'),

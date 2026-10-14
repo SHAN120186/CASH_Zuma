@@ -363,15 +363,32 @@ def route_json(r,currency):
     return {'policy':r.route_policy,'threshold':money(r.route_threshold) if r.route_threshold is not None else None,
             'at':str(r.route_at) if r.route_at else None,'director_required':required,'reason':reason}
 
+def backdated_flags(s,r):
+    """Признаки «с датой задним числом» для списка заявок.
+
+    late_created: заявка создана позже своей плановой даты (введена дата раньше дня создания);
+    late_posted: оплата проведена позже даты фактической операции (разноска с датой раньше дня проведения).
+    Дни считаются по часовому поясу Ташкента; проведение берётся из журнала «Оплата заявки»."""
+    created = local_date(r.created_at) if r.created_at else None
+    late_created = bool(created and r.due_date and r.due_date < created)
+    late_posted = False
+    if r.status == 'paid':
+        row = s.scalar(select(Ledger).where(Ledger.request_id == r.id))
+        entered = s.scalar(select(func.min(Audit.created_at)).where(Audit.entity == 'request', Audit.entity_id == str(r.id),
+                                                                   Audit.action == 'Оплата заявки'))
+        late_posted = bool(row and entered and row.date < local_date(entered))
+    return late_created, late_posted
+
 def request_json(s,r,accounts=None,categories=None,users=None):
     a=get(s,Account,r.account_id);c=get(s,Category,r.category_id)
     b=budget_state(s,c.id,str(r.due_date)[:7],a.currency,r.amount if r.status in ('pending','draft') else 0)
     docs=current_documents(s,r.id)
+    late_created,late_posted=backdated_flags(s,r)
     return {'id':r.id,'number':f'CF-{r.id:05d}','creator_id':r.creator_id,'category_id':c.id,'category':c.name,
             'account_id':a.id,'account':a.name,'account_kind':a.kind,'channel':a.kind,'currency':a.currency,'company_id':a.company_id,
             'counterparty':r.counterparty,'amount':money(r.amount),'date':str(r.due_date),'status':r.status,'purpose':r.purpose,
             'version':r.version,'last_editor_id':r.last_editor_id,'priority':r.priority,
-            'created_at':str(r.created_at),'checked_by':r.checked_by,'finance_approved_by':r.finance_approved_by,'approved_by':r.approved_by,
+            'created_at':str(r.created_at),'backdated_created':late_created,'backdated_posted':late_posted,'checked_by':r.checked_by,'finance_approved_by':r.finance_approved_by,'approved_by':r.approved_by,
             'approved_on':str(local_date(r.approved_at)) if r.approved_at else None,
             'approval_stage':approval_stage(r),'route':route_json(r,a.currency),
             'documents':{k:sum(d.kind==k for d in docs) for k in DOCUMENT_KINDS},'missing_documents':missing_documents(s,r),

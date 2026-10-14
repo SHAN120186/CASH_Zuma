@@ -30,7 +30,7 @@ import RequestEditor from './requests/RequestEditor.vue';
 import RequestCard from './requests/RequestCard.vue';
 import PolicyPage from './requests/PolicyPage.vue';
 import Delegations from './requests/Delegations.vue';
-import {steps as requestSteps,stageLabel as requestStage,canDecide as canDecideRequest} from './requests/workflow.js';
+import {steps as requestSteps,stageLabel as requestStage,canDecide as canDecideRequest,isBackdated,BACKDATED_HINT} from './requests/workflow.js';
 import release from '../../release.json';
 const availableRelease=ref(null),showRelease=ref(false);
 let releaseTimer;
@@ -515,7 +515,7 @@ onMounted(async()=>{try{const r=await api('/api/me');user.value=r.user;csrf.valu
     <template v-if="page==='requests'">
      <PeriodFilter :key="page" :date-from="dateFrom" :date-to="dateTo" @apply="applyPeriod"><select :aria-label="tx('Статус заявки')" v-model="requestStatus" @change="listPage=1;load()"><option value="">{{tx('Статус: все')}}</option><option v-for="(label,key) in requestStatuses" :key="key" :value="key">{{tx(label)}}</option></select><label class="search"><AppIcon name="search"/><input v-model="search" :placeholder="tx('Поиск заявки')" :aria-label="tx('Поиск заявки')"></label><div class="grow actions"><button v-if="has('request')" @click="requestForm()"><AppIcon name="plus"/> {{tx('Создать заявку')}}</button></div></PeriodFilter>
      <p class="sumline"><span>{{tx('Найдено')}} <b>{{listTotal}}</b></span><span>{{listTotal<=4?tx('До 4 заявок — карточки'):tx('С 5 заявок — таблица со страницами')}}</span></p>
-     <div v-if="listTotal<=4&&visibleRows.length" class="rq-grid"><section v-for="r in visibleRows" :key="r.id" class="card rq-card">
+     <div v-if="listTotal<=4&&visibleRows.length" class="rq-grid"><section v-for="r in visibleRows" :key="r.id" class="card rq-card" :class="{backdated: isBackdated(r)}" :title="isBackdated(r)?tx(BACKDATED_HINT):null">
       <div class="rq-top"><span>{{r.number}}</span><span class="pill" :class="statusClass(r)">{{stageLabel(r)}}</span></div>
       <h3>{{r.counterparty}}</h3><p class="cp">{{r.purpose}}</p>
       <div class="amt num">{{money(r.amount)}}<small>{{r.currency}}</small></div>
@@ -525,7 +525,7 @@ onMounted(async()=>{try{const r=await api('/api/me');user.value=r.user;csrf.valu
       <div class="actions"><button class="secondary tiny" @click="openRequest(r)">{{tx('Открыть заявку')}}</button><button v-if="canPayRequest(r)" class="tiny" @click="transaction(r)">{{tx('Факт оплаты')}}</button></div>
      </section></div>
      <div v-if="listTotal>4" class="table-card rsp-wrap"><table class="rsp"><thead><tr><th>{{tx('Заявка')}}</th><th class="num">{{tx('Сумма')}}</th><th>{{tx('Оплатить до')}}</th><th>{{tx('Этапы')}}</th><th>{{tx('Статус')}}</th><th></th></tr></thead><tbody><template v-for="r in visibleRows" :key="r.id">
-      <tr><td :data-l="tx('Заявка')"><b class="nowrap">{{r.number}}</b>&nbsp;· {{r.counterparty}}<small>{{r.account}}</small></td><td class="num" :data-l="tx('Сумма')"><b>{{money(r.amount)}}</b> {{r.currency}}</td><td :data-l="tx('Оплатить до')">{{r.date}}</td><td :data-l="tx('Этапы')"><span class="mini"><template v-for="(s,i) in trkSteps(r)" :key="i"><i v-if="i"></i><u :class="s.c" :title="s.l">{{[tx('З'),tx('П'),tx('Ф'),tx('Д'),tx('О')][i]}}</u></template></span></td><td :data-l="tx('Статус')"><span class="pill" :class="statusClass(r)">{{stageLabel(r)}}</span></td><td data-l=""><div class="actions"><button class="secondary tiny" @click="openRequest(r)">{{tx('Открыть')}}</button><button v-if="canPayRequest(r)" class="tiny" @click="transaction(r)">{{tx('Факт оплаты')}}</button></div></td></tr>
+      <tr :class="{backdated: isBackdated(r)}" :title="isBackdated(r)?tx(BACKDATED_HINT):null"><td :data-l="tx('Заявка')"><b class="nowrap">{{r.number}}</b>&nbsp;· {{r.counterparty}}<small>{{r.account}}</small></td><td class="num" :data-l="tx('Сумма')"><b>{{money(r.amount)}}</b> {{r.currency}}</td><td :data-l="tx('Оплатить до')">{{r.date}}</td><td :data-l="tx('Этапы')"><span class="mini"><template v-for="(s,i) in trkSteps(r)" :key="i"><i v-if="i"></i><u :class="s.c" :title="s.l">{{[tx('З'),tx('П'),tx('Ф'),tx('Д'),tx('О')][i]}}</u></template></span></td><td :data-l="tx('Статус')"><span class="pill" :class="statusClass(r)">{{stageLabel(r)}}</span></td><td data-l=""><div class="actions"><button class="secondary tiny" @click="openRequest(r)">{{tx('Открыть')}}</button><button v-if="canPayRequest(r)" class="tiny" @click="transaction(r)">{{tx('Факт оплаты')}}</button></div></td></tr>
      </template></tbody></table></div>
      <section v-if="!visibleRows.length&&!busy" class="empty card"><b>{{tx('Заявок не найдено')}}</b><br>{{tx('Измените период, статус или поисковый запрос.')}}</section>
     </template>
