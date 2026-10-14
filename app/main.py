@@ -941,6 +941,8 @@ from .native_projects import router as native_projects_router
 app.include_router(native_projects_router)
 from .financial_statements import router as financial_statements_router
 app.include_router(financial_statements_router)
+from .ifrs_rating import router as ifrs_rating_router
+app.include_router(ifrs_rating_router)
 from .business_templates import router as business_templates_router
 app.include_router(business_templates_router)
 from .counterparties_api import router as counterparties_router

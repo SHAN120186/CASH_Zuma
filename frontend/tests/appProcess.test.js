@@ -261,7 +261,7 @@ test('treasury viewing preserves report tabs but CSV templates, ledger exports a
   for(const canDownload of [false,true]){
     view.state.user={...user,role:canDownload?'director':'finance',permissions:['view','ledger','import','export',...(canDownload?['download']:[])]};
     view.state.page='ledger';await settle();
-    assert.deepEqual(view.state.reportTabs.map(item=>item[0]),['report','pnl','balance','business','reports']);
+    assert.deepEqual(view.state.reportTabs.map(item=>item[0]),['report','pnl','balance','rating','business','reports']);
     assert.equal(all(view.container,node=>node.tag==='a'&&node.props.href?.includes('/api/export/ledger.csv')).length,canDownload?1:0);
     view.state.page='import';await settle();
     assert.equal(all(view.container,node=>node.tag==='a'&&node.props.href?.includes('/api/import/template.csv')).length,canDownload?1:0);
