@@ -1,7 +1,8 @@
 {
-  "version": "2.29.0",
+  "version": "2.29.1",
   "date": "2026-10-14",
   "changes": [
+    "Источник IFRS Rating хранится отдельно от источников P&L и баланса. Обновление рейтинга не переключает другие отчёты на новую книгу.",
     "В «Отчёты» Zuma добавлен IFRS Rating: данные Google Drive, 21 показатель, прозрачная шкала баллов, риски, месячная динамика и полнота данных. Все расчёты и оформление в коде; отдельный файл рейтинга не требуется.",
     "Редактирование и удаление ожидаемых поступлений перенесены прямо в строки календаря. Нажатие на зелёную сумму открывает форму в таблице; примечание расположено после остатка, отдельный список сверху убран.",
     "В плане поступления сумма разделяется пробелами при вводе. Отдел продаж и директор могут редактировать и удалять отдельные ожидаемые поступления; удаление сохраняет историю и убирает только прогноз. ИНН подставляется из справочника.",
@@ -56,6 +57,7 @@
     "Длинные названия файлов и кнопки выбора шаблона переносятся на узком экране. В ТЭО дата архива отдельно обозначена и не подменяет начало финансового прогноза."
   ],
   "changes_uz": [
+    "IFRS Rating manbasi P&L va balans manbalaridan alohida saqlanadi. Reytingni yangilash boshqa hisobotlar manbasini almashtirmaydi.",
     "Zuma hisobotlariga IFRS Rating qoʻshildi: Google Drive maʼlumotlari, 21 koʻrsatkich, ochiq ballar shkalasi, xatarlar, oylik dinamika va maʼlumotlar toʻliqligi. Hisoblash va dizayn kodda; alohida reyting fayli kerak emas.",
     "Kutilayotgan tushumlarni tahrirlash va oʻchirish kalendar qatorlariga koʻchirildi. Yashil summani bosish jadval ichidagi shaklni ochadi; izoh qoldiqdan keyin, yuqoridagi alohida roʻyxat olib tashlandi.",
     "Kontragentlar importi bir xil nomdagi noaniq eski yozuvlarni bloklaydi. Xaridlar boʻlimi huquqlari taqvim va maʼlumotnoma uchun tekshiriladi; begona arizalar, byudjetlar, operatsiyalar va fayllarni yuklab olish yopiq.",

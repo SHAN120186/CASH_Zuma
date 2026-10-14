@@ -8,7 +8,7 @@ from unittest.mock import patch, Mock
 import tests.test_site as base
 from openpyxl import Workbook
 from sqlalchemy import select, func
-from app.db import Company, FinancialStatementSource, Ledger, User, unit
+from app.db import Company, FinancialStatementSource, IfrsRatingSource, Ledger, User, unit
 from app.ifrs_rating import build_rating, score_value, grade, RULES
 from app import ifrs_rating
 
@@ -126,7 +126,8 @@ class RatingApiTests(unittest.TestCase):
             self.assertFalse(result.json()['stale'])
             for _ in range(2):self.assertEqual(self.client.post('/api/ifrs-rating/sync',headers=h).status_code,200)
         with unit() as s:
-            self.assertEqual(s.scalar(select(func.count()).select_from(FinancialStatementSource)),1)
+            self.assertEqual(s.scalar(select(func.count()).select_from(IfrsRatingSource)),1)
+            self.assertEqual(s.scalar(select(func.count()).select_from(FinancialStatementSource)),0)
             self.assertEqual(s.scalar(select(func.count()).select_from(Ledger)),before)
         with patch('app.ifrs_rating.download_rating_source',side_effect=RuntimeError('Unavailable')):
             result=self.client.get('/api/ifrs-rating',headers=h)

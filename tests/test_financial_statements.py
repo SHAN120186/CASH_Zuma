@@ -701,6 +701,38 @@ class FinancialStatementApiTests(unittest.TestCase):
             self.assertEqual(stored.content, raw)
         self.assertEqual(before, after)
 
+    def test_legacy_rating_sync_preserves_pnl_selection_until_explicit_pnl_upload(self):
+        import hashlib
+        original_id = self.upload_source().json()['id']
+        raw = workbook(months=(1, 2))
+        user_id = self.client.get('/api/me').json()['user']['id']
+        with unit(True) as s:
+            legacy = FinancialStatementSource(company_id=self.company, created_by=user_id,
+                filename='rating-only.xlsx', sha256=hashlib.sha256(raw).hexdigest(),
+                size=len(raw), snapshot='{}', content=raw)
+            s.add(legacy); s.flush()
+            legacy_id = legacy.id
+            s.add(Setting(key=f'ifrs_rating:{self.company}', value=json.dumps({'source_id': legacy_id})))
+        result = self.client.get('/api/financial-statements').json()
+        self.assertEqual(result['selected'], original_id)
+        self.assertEqual([row['id'] for row in result['sources']], [original_id])
+        query = {'year': 2026, 'start_month': 1, 'end_month': 1}
+        bridge = self.client.get('/api/financial-statements/reconciliation', params=query).json()
+        self.assertEqual(bridge['source_id'], original_id)
+        for endpoint in ('/api/financial-statements', '/api/financial-statements/reconciliation'):
+            response = self.client.get(endpoint, params={**query, 'source_id': legacy_id})
+            self.assertEqual(response.status_code, 404, response.text)
+        with unit() as s:
+            self.assertEqual(s.get(FinancialStatementSource, legacy_id).content, raw)
+            self.assertEqual(s.get(FinancialStatementSource, legacy_id).snapshot, '{}')
+        adopted = self.upload_source(raw)
+        self.assertEqual(adopted.status_code, 200, adopted.text)
+        self.assertEqual(adopted.json()['id'], legacy_id)
+        self.assertEqual(self.client.get('/api/financial-statements').json()['selected'], legacy_id)
+        with unit() as s:
+            self.assertEqual(s.get(FinancialStatementSource, legacy_id).content, raw)
+            self.assertEqual(s.get(FinancialStatementSource, legacy_id).snapshot, '{}')
+
     def test_explicit_foreign_source_is_404_and_headers_must_match(self):
         with unit() as s:
             zuma = s.scalar(select(Company).where(Company.code == 'ZUMA')).id

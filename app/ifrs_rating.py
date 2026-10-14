@@ -21,7 +21,7 @@ from fastapi import APIRouter, HTTPException, Query, Request
 from sqlalchemy import select
 
 from .clock import today
-from .db import Company, FinancialStatementSource, Setting, unit
+from .db import Company, IfrsRatingSource, Setting, unit
 from .financial_statements import read_workbook, number, date_value, col
 from .security import session_user, require_permission, perms_of
 from .services import log
@@ -338,7 +338,7 @@ def build_rating(raw, end_month=None, as_of=None):
 
 
 def binding_key(cid):
-    return f'ifrs_rating:{cid}'
+    return f'ifrs_rating_v1:{cid}'
 
 
 def authorize(s,request,write=False):
@@ -355,10 +355,10 @@ def save_drive_source(s,user,cid,raw,filename,origin):
     # Validate before storing. No transactions, plans, or source model changes.
     build_rating(raw)
     digest = hashlib.sha256(raw).hexdigest()
-    source = s.scalar(select(FinancialStatementSource).where(FinancialStatementSource.sha256==digest))
+    source = s.scalar(select(IfrsRatingSource).where(IfrsRatingSource.sha256==digest))
     if source is None:
-        source = FinancialStatementSource(company_id=cid,created_by=user.id,filename=filename,sha256=digest,
-                                          size=len(raw),content=raw,snapshot='{}')
+        source = IfrsRatingSource(company_id=cid,created_by=user.id,filename=filename,sha256=digest,
+                                 size=len(raw),content=raw)
         s.add(source)
         s.flush()
     binding = {'source_id':source.id,'file_id':DRIVE_FILE_ID,'synced_at':datetime.now(timezone.utc).isoformat(),'origin':origin}
@@ -367,7 +367,7 @@ def save_drive_source(s,user,cid,raw,filename,origin):
         s.add(Setting(key=binding_key(cid),value=json.dumps(binding)))
     else:
         setting.value = json.dumps(binding)
-    log(s,user,'Обновлён источник IFRS Rating','financial_statement_source',source.id,filename)
+    log(s,user,'Обновлён источник IFRS Rating','ifrs_rating_source',source.id,filename)
     return binding
 
 
@@ -377,7 +377,7 @@ def get_rating(request:Request,end_month:int|None=Query(default=None,ge=1,le=12)
         user,cid = authorize(s,request)
         setting = s.get(Setting,binding_key(cid))
         binding = json.loads(setting.value) if setting else None
-        source = s.get(FinancialStatementSource,binding['source_id']) if binding else None
+        source = s.get(IfrsRatingSource,binding['source_id']) if binding else None
         base = {'company_id':cid,'source_url':SOURCE_URL if 'download' in perms_of(user) else None,
                 'can_sync':'import' in perms_of(user),'binding':binding}
         saved = (source.content,source.filename,source.sha256) if source else None

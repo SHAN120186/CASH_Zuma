@@ -873,13 +873,29 @@ def current_source_review(source, revenue_policy=None):
     return json.loads(cached)
 
 
+def statement_sources(s):
+    """Keep a rating-only snapshot from v2.29.0 out of PNL selection.
+
+    Preserve its bytes and audit history. A source actually uploaded for PNL
+    has a review snapshot and remains selectable even if rating reused it.
+    """
+    query = select(FinancialStatementSource)
+    legacy = s.get(Setting, f"ifrs_rating:{s.info['company_id']}")
+    binding = json.loads(legacy.value) if legacy else {}
+    if binding and not binding.get('pnl_uploaded'):
+        source_id = binding.get('source_id')
+        query = query.where((FinancialStatementSource.id != source_id) |
+                            (FinancialStatementSource.snapshot != '{}'))
+    return query
+
+
 @router.get('/api/financial-statements')
 def financial_statements(request: Request, source_id: int | None = Query(default=None, ge=1),
                          company_id: int | None = Query(default=None, ge=1)):
     with unit() as s:
         user, _ = session_user(s, request, 'export')
-        sources = list(s.scalars(select(FinancialStatementSource).order_by(FinancialStatementSource.id.desc())))
-        source = s.get(FinancialStatementSource, source_id) if source_id is not None else (sources[0] if sources else None)
+        sources = list(s.scalars(statement_sources(s).order_by(FinancialStatementSource.id.desc())))
+        source = next((row for row in sources if row.id == source_id), None) if source_id is not None else (sources[0] if sources else None)
         if source_id is not None and source is None:
             raise HTTPException(404, 'Исходник не найден в выбранной компании.')
         result = None
@@ -911,8 +927,9 @@ def financial_reconciliation(request: Request, year: int = Query(ge=2000, le=210
         raise HTTPException(422, 'Дата отчёта должна быть в выбранном году и не позже сегодня.')
     with unit() as s:
         session_user(s, request, 'export')
-        source = s.get(FinancialStatementSource, source_id) if source_id is not None else s.scalar(
-            select(FinancialStatementSource).order_by(FinancialStatementSource.id.desc()).limit(1))
+        query = statement_sources(s)
+        source = s.scalar(query.where(FinancialStatementSource.id == source_id)) if source_id is not None else s.scalar(
+            query.order_by(FinancialStatementSource.id.desc()).limit(1))
         if source_id is not None and source is None:
             raise HTTPException(404, 'Исходник не найден в выбранной компании.')
         review = current_source_review(source, source_revenue_policy(s, source)) if source else None
@@ -946,7 +963,7 @@ async def upload_financial_statements(request: Request, company_id: int | None =
         user, _ = session_user(s, request, 'export')
         require_permission(user, 'import')
         existing = s.scalar(select(FinancialStatementSource).where(FinancialStatementSource.sha256 == digest))
-        if existing:
+        if existing and existing.snapshot != '{}':
             return {'id': existing.id, 'created': False, 'company_id': s.info['company_id']}
     try:
         snapshot = build_review(bytes(raw), filename)
@@ -957,6 +974,15 @@ async def upload_financial_statements(request: Request, company_id: int | None =
         require_permission(user, 'import')
         existing = s.scalar(select(FinancialStatementSource).where(FinancialStatementSource.sha256 == digest))
         if existing:
+            if existing.snapshot == '{}':
+                # Explicit PNL upload adopts a legacy rating-only source.
+                # Preserve both immutable bytes and its original snapshot.
+                legacy = s.get(Setting, f"ifrs_rating:{s.info['company_id']}")
+                binding = json.loads(legacy.value) if legacy else {}
+                if binding.get('source_id') == existing.id:
+                    legacy.value = json.dumps({**binding, 'pnl_uploaded': True})
+                log(s, user, 'Загружен исходник PNL и баланса', 'financial_statement_source', existing.id,
+                    f'{filename}; сохранён для проверки, без проведения операций')
             return {'id': existing.id, 'created': False, 'company_id': s.info['company_id']}
         source = FinancialStatementSource(company_id=s.info['company_id'], created_by=user.id, filename=filename,
                                           sha256=digest, size=len(raw), snapshot=json.dumps(snapshot, ensure_ascii=False), content=bytes(raw))

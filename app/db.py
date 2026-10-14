@@ -240,6 +240,20 @@ class ModelVersion(Base):
     source = Column(String(240), nullable=False)
     snapshot = Column(Text, nullable=False)
 
+class IfrsRatingSource(Base):
+    """Private Drive rating snapshot, independent of PNL/balance source selection."""
+    __tablename__ = 'ifrs_rating_sources'
+    id = Column(Integer, primary_key=True)
+    company_id = Column(Integer, ForeignKey('companies.id'), nullable=False)
+    created_by = Column(Integer, ForeignKey('users.id'), nullable=False)
+    filename = Column(String(220), nullable=False)
+    sha256 = Column(String(64), nullable=False)
+    size = Column(BigInteger, nullable=False)
+    created_at = Column(DateTime, default=now, nullable=False)
+    content = deferred(Column(LargeBinary, nullable=False))
+    __table_args__ = (UniqueConstraint('company_id', 'sha256'),)
+
+
 class FinancialStatementSource(Base):
     """Immutable private workbook and review snapshot; never posted accounting data."""
     __tablename__ = 'financial_statement_sources'
