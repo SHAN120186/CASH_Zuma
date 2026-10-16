@@ -1,11 +1,16 @@
 import {test} from 'node:test';
 import assert from 'node:assert/strict';
-import {isAppFileLink,downloadFilename,fetchDownload} from '../src/fileDownload.js';
+import {isAppFileLink,isRequestDocumentLink,downloadFilename,fetchDownload} from '../src/fileDownload.js';
 
 test('only existing same-origin API file actions are intercepted',()=>{
   const origin='https://example.test';
   for(const path of ['/api/report-archives/3/files/pdf?company_id=2','/api/business-projects/1/sources/2/download?company_id=2','/api/business-projects/1/native.xlsx','/api/business-projects/template.xlsx','/api/export.xlsx','/api/documents/3?company_id=2','/api/request-documents/4?company_id=2']) assert.ok(isAppFileLink(path,origin));
   for(const path of ['https://other.test/api/export.xlsx','/api/business-projects/1','/api/profile','/help.pdf','#reports']) assert.equal(isAppFileLink(path,origin),false);
+});
+test('the request attachment exception accepts only the exact same-origin numeric document route',()=>{
+  const origin='https://example.test';
+  for(const path of ['/api/request-documents/4','/api/request-documents/42?company_id=2','https://example.test/api/request-documents/123?company_id=3']) assert.equal(isRequestDocumentLink(path,origin),true,path);
+  for(const path of ['https://other.test/api/request-documents/4','//other.test/api/request-documents/4','https://example.test:8443/api/request-documents/4','/api/documents/4','/api/request-documents','/api/request-documents/','/api/request-documents/-1','/api/request-documents/4.5','/api/request-documents/%34','/api/request-documents/4/','/api/request-documents/4/remove','/api/request-documents/4.pdf','/api/export/ledger.csv','/api/report-archives/4/files/pdf','/api/business-projects/4/sources/2/download','http://[']) assert.equal(isRequestDocumentLink(path,origin),false,path);
 });
 test('UTF8 names remain readable and cannot introduce local paths',()=>{
   assert.equal(downloadFilename("attachment; filename*=UTF-8''%D0%9E%D1%82%D1%87%D1%91%D1%82.pdf"),'Отчёт.pdf');

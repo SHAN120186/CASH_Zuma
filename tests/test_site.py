@@ -2607,7 +2607,7 @@ class SiteTests(unittest.TestCase):
         foreign={**h,'X-Company-ID':str(self.company)}
         try:
             for path in (f'/api/requests/{rid}',f'/api/request-documents/{doc}'):
-                self.assertEqual(cl.get(path,headers=h).status_code,403 if path.startswith('/api/request-documents/') else 404,path);self.assertEqual(cl.get(path,headers=foreign).status_code,403,path)
+                self.assertEqual(cl.get(path,headers=h).status_code,404,path);self.assertEqual(cl.get(path,headers=foreign).status_code,403,path)
             self.assertEqual(self.upload(rid,'other',cl,h,version=1).status_code,404)
             self.assertEqual(cl.put(f'/api/categories/{self.cat}/director-policy',json={'policy':'always','reason':'Чужая статья компании'},headers=h).status_code,403)
             self.assertEqual(self.client.put(f'/api/categories/{self.cat}/director-policy',json={'policy':'always','reason':'Чужая статья компании'},headers={**self.h,'X-Company-ID':str(zuma)}).status_code,404)
@@ -2880,7 +2880,7 @@ class SiteTests(unittest.TestCase):
             # Проверяющий бухгалтер читает документы заявки на проверке; другой заявитель и закупки — нет.
             checker=self.stage_user('check')
             self.assertEqual(checker[0].get(f'/api/requests/{rid}/documents',headers=checker[1]).status_code,200)
-            self.assertEqual(checker[0].get(f'/api/request-documents/{internal}',headers=checker[1]).status_code,403)
+            self.assertTrue(checker[0].get(f'/api/request-documents/{internal}',headers=checker[1]).content.startswith(PDF))
             for who in (stranger,buyer):
                 self.assertEqual(who[0].get(f'/api/requests/{rid}/documents',headers=who[1]).status_code,403)
                 self.assertEqual(who[0].get(f'/api/request-documents/{internal}',headers=who[1]).status_code,403)

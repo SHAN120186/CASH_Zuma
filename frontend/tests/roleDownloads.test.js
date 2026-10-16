@@ -32,21 +32,21 @@ test('business folders, input templates and sources expose no file links without
  }
 });
 
-test('request documents and their previous versions show filenames without downloadable links',async t=>{
+test('visible request documents, previous versions and saved editor files download without general download rights',async t=>{
  const previousDocument=globalThis.document,views=[];
  globalThis.document={activeElement:null,addEventListener(){},removeEventListener(){},querySelector(){return null;}};
  t.after(()=>{for(const view of views)view.unmount();globalThis.document=previousDocument;});
  const document={id:9,kind:'contract',filename:'Synthetic.pdf',version:2,current:true,url:'/api/request-documents/9',created_at:'2026-10-11',created_by:'Synthetic'};
  const request={id:1,version:1,status:'draft',number:'Synthetic request',date:'2026-10-20',priority:'normal',account_kind:'bank',channel:'bank',account_id:7,category_id:8,currency:'UZS',amount:'100',counterparty:'Synthetic buyer',purpose:'Synthetic purpose',actions:['documents'],documents_list:[document,{...document,id:10,current:false,version:1,url:'/api/request-documents/10'}],history:[]};
  const boot={accounts:[{id:7,kind:'bank',currency:'UZS',name:'Synthetic bank'}],categories:[{id:8,type:'outcome',name:'Synthetic cost'}],due_minimums:{normal:'2026-10-20',high:'2026-10-15',urgent:'2026-10-12'}};
- for(const canDownload of [false,true]){
-  const card=mount(requestCard,{id:1,canDownload,companyUrl:url=>url+'?company_id=2',money:v=>v,api:async()=>request});views.push(card);await settle();
-  assert.match(text(card.container),/Synthetic.pdf/);assert.equal(fileLinks(card).length,canDownload?1:0);
-  const history=find(card.container,node=>node.tag==='button'&&text(node).includes('Прежние версии:'));history.props.onClick();await settle();
-  assert.equal(fileLinks(card).length,canDownload?2:0);
-  const editor=mount(requestEditor,{canDownload,boot,company,request,currency:'UZS',money:v=>v,companyUrl:url=>url+'?company_id=2',api:async()=>({due_minimums:boot.due_minimums})});views.push(editor);await settle();
-  assert.match(text(editor.container),/Synthetic.pdf/);assert.equal(fileLinks(editor).length,canDownload?1:0);
- }
+ const card=mount(requestCard,{id:1,companyUrl:url=>url+'?company_id=2',money:v=>v,api:async()=>request});views.push(card);await settle();
+ assert.match(text(card.container),/Synthetic.pdf/);
+ assert.deepEqual(fileLinks(card).map(link=>link.props.href),['/api/request-documents/9?company_id=2']);
+ const history=find(card.container,node=>node.tag==='button'&&text(node).includes('Прежние версии:'));history.props.onClick();await settle();
+ assert.deepEqual(fileLinks(card).map(link=>link.props.href),['/api/request-documents/9?company_id=2','/api/request-documents/10?company_id=2']);
+ const editor=mount(requestEditor,{boot,company,request,currency:'UZS',money:v=>v,companyUrl:url=>url+'?company_id=2',api:async()=>({due_minimums:boot.due_minimums})});views.push(editor);await settle();
+ assert.match(text(editor.container),/Synthetic.pdf/);
+ assert.deepEqual(fileLinks(editor).map(link=>link.props.href),['/api/request-documents/9?company_id=2']);
 });
 
 test('sales overview loads only the permitted dashboard and links to calendar',async t=>{

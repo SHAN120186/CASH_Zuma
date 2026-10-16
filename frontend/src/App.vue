@@ -17,7 +17,7 @@ import {tx,N_,lang,formatDate} from './i18n/index.js';
 import OperationProgress from './OperationProgress.vue';
 import {createOperationProgress} from './operationProgress.js';
 import {invalidFormFields,focusInvalidField} from './formFeedback.js';
-import {isAppFileLink,fetchDownload} from './fileDownload.js';
+import {isAppFileLink,isRequestDocumentLink,fetchDownload} from './fileDownload.js';
 import CompanyCard from './CompanyCard.vue';
 import OverviewPage from './overview/OverviewPage.vue';
 import SalesOverview from './overview/SalesOverview.vue';
@@ -86,7 +86,7 @@ function requestLabel(url,method='GET'){
 async function downloadFile(event){
  if(event.defaultPrevented)return;
  const link=event.target?.closest?.('a[href]');if(!link||link.hasAttribute('data-browser-download')||!isAppFileLink(link.href,location.origin))return;
- if(!has('download')){event.preventDefault();flash(N_('Скачивание файлов недоступно для вашей роли.'));return}
+ if(!has('download')&&!isRequestDocumentLink(link.href,location.origin)){event.preventDefault();flash(N_('Скачивание файлов недоступно для вашей роли.'));return}
  if(event.button!==0||event.ctrlKey||event.metaKey||event.shiftKey||event.altKey)return;
  event.preventDefault();
  const epoch=companyEpoch,controller=new AbortController(),ticket=requestProgress.begin(N_('Запрашиваем файл…'),3);pendingCalls.add(controller);
@@ -633,8 +633,8 @@ onMounted(async()=>{try{const r=await api('/api/me');user.value=r.user;csrf.valu
  </template>
 
  <!-- Заявка: форма и карточка -->
- <RequestEditor :can-download="has('download')" v-if="editor" :api="api" :boot="boot" :company="company" :request="editor.request" :currency="currency" :money="money" :company-url="companyUrl" @close="editorClosed" @saved="editorSaved" @open-card="editorOpenCard"/>
- <RequestCard :can-download="has('download')" v-if="cardId" :id="cardId" :api="api" :company-url="companyUrl" :money="money" :dues="boot.due_minimums" @close="cardId=null" @changed="load" @edit="cardEdit" @record-payment="cardPay"/>
+ <RequestEditor v-if="editor" :api="api" :boot="boot" :company="company" :request="editor.request" :currency="currency" :money="money" :company-url="companyUrl" @close="editorClosed" @saved="editorSaved" @open-card="editorOpenCard"/>
+ <RequestCard v-if="cardId" :id="cardId" :api="api" :company-url="companyUrl" :money="money" :dues="boot.due_minimums" @close="cardId=null" @changed="load" @edit="cardEdit" @record-payment="cardPay"/>
 
  <!-- Формы -->
  <div v-if="modal&&!modal.inlineDay" class="modal-backdrop"><form v-modal-focus class="modal" role="dialog" aria-modal="true" aria-labelledby="modal-title" @submit.prevent="save" @keydown.esc="!saving&&(modal=null)"><div class="section-head"><h2 id="modal-title">{{tx(modal.title,modal.titleParams)}}</h2><button type="button" class="ghost icon-btn" :aria-label="tx('Закрыть')" @click="modal=null" :disabled="saving"><AppIcon name="x"/></button></div><p v-if="modal.note" class="form-note">{{tx(modal.note,modal.noteParams)}}</p><div class="form-grid"><label v-for="f in modalFields" :key="f.key" :class="{wide:f.type==='textarea'}">{{tx(f.label)}}<select v-if="f.type==='select'" v-model="form[f.key]" :required="f.required" :disabled="f.disabled"><option v-for="o in f.options" :key="o[0]" :value="o[0]">{{o[1]}}</option></select><textarea v-else-if="f.type==='textarea'" v-model="form[f.key]" :required="f.required" :minlength="f.minlength"  :maxlength="f.maxlength||3000"></textarea><MoneyInput v-else-if="modal.receipt&&f.key==='amount'" v-model="form[f.key]" :required="f.required" :disabled="f.disabled"/><input v-else v-model="form[f.key]" :type="amountFields.includes(f.key)?'text':f.type" :inputmode="f.inputmode||(amountFields.includes(f.key)?'decimal':undefined)" :pattern="f.pattern||(amountFields.includes(f.key)?'[0-9]+([.][0-9]{1,2})?':undefined)" :maxlength="f.maxlength" :required="f.required" :disabled="f.disabled" :min="f.min" :max="f.max" :minlength="f.minlength" :list="f.key==='counterparty'&&modal.receipt?'receipt-counterparties':undefined" @input="f.key==='counterparty'&&receiptPartyChanged()" :step="f.step||'0.01'"></label></div><p v-if="categoryHint" class="warning category-hint" role="status">{{categoryHint}}</p><p v-if="formError" class="error">{{tx(formError)}}</p><datalist v-if="modal.receipt" id="receipt-counterparties"><option v-for="c in boot.counterparties" :key="c.name" :value="c.name">{{c.inn}}</option></datalist><div class="form-actions"><button type="button" class="secondary" @click="modal=null" :disabled="saving">{{tx('Отмена')}}</button><button :disabled="saving">{{saving?tx('Сохраняем…'):modal.saveLabel?tx(modal.saveLabel):tx('Сохранить')}}</button></div></form></div>

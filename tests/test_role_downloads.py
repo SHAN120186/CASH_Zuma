@@ -14,7 +14,7 @@ import tests.test_site as base
 from sqlalchemy import func, select
 from app.db import (Account, Audit, BusinessProject, BusinessSourceFile, Category,
                     Delegation, Ledger, Receipt, ReportArchive, ReportArchiveFile,
-                    TelegramLink, unit)
+                    TelegramLink, User, unit)
 from app.security import NO_DOWNLOAD_ROLES
 
 BOT = ('role-test-bot', 'temporary-role-test-secret-' + 'x' * 32)
@@ -73,7 +73,10 @@ class RoleDownloadTests(base.SiteTests):
                     self.addCleanup(client.close)
                     user = client.get('/api/bootstrap', headers=headers).json()['user']
                     self.assertNotIn('download', user['permissions'])
+                    # Attachments follow request visibility, independently of report downloads.
                     for path in self.file_paths(records):
+                        if path.startswith('/api/request-documents/'):
+                            continue
                         response = client.get(path, headers=headers)
                         self.assertEqual(response.status_code, 403, (role, path, response.text))
                         self.assertNotIn('Content-Disposition', response.headers)
@@ -89,6 +92,75 @@ class RoleDownloadTests(base.SiteTests):
                     choices = self.client.get('/api/bot/v1/report-archive-companies',
                         params={'telegram_user_id': telegram_id}, auth=BOT)
                     self.assertEqual(choices.json()['items'], [])
+
+    def test_request_attachments_follow_visibility_for_roles_and_previous_versions(self):
+        author = self.make_user('employee', 'attachment_author')
+        self.addCleanup(author[0].close)
+        rid = self.request('10', client=author[0], headers=author[1]).json()['id']
+        original = next(d for d in self.row(rid)['documents_list'] if d['kind'] == 'internal')
+        replacement = PDF + b'% replacement version\n'
+        replaced = self.upload(rid, client=author[0], headers=author[1], content=replacement)
+        self.assertEqual(replaced.status_code, 200, replaced.text)
+        current = next(d for d in self.row(rid)['documents_list'] if d['kind'] == 'internal' and d['current'])
+        self.assertNotEqual(original['id'], current['id'])
+        for role in ('finance', 'accountant', 'auditor'):
+            actor = self.make_user(role, 'attachment_' + role)
+            self.addCleanup(actor[0].close)
+            permissions = actor[0].get('/api/bootstrap', headers=actor[1]).json()['user']['permissions']
+            self.assertNotIn('download', permissions)
+            self.assertEqual(actor[0].get(f'/api/requests/{rid}', headers=actor[1]).status_code, 200)
+            for doc in (original, current):
+                response = actor[0].get(doc['url'], headers=actor[1])
+                self.assertEqual(response.status_code, 200, (role, response.text))
+                self.assertIn('attachment;', response.headers['Content-Disposition'])
+                self.assertEqual(response.headers['Cache-Control'], 'no-store')
+                if doc == current:
+                    self.assertEqual(response.content, replacement)
+                else:
+                    self.assertTrue(response.content.startswith(base.PDF))
+        for role in ('employee', 'procurement'):
+            owner = author if role == 'employee' else self.make_user(role, 'attachment_buyer')
+            if role != 'employee':
+                self.addCleanup(owner[0].close)
+                own_rid = self.request('10', client=owner[0], headers=owner[1]).json()['id']
+                document = self.row(own_rid)['documents_list'][0]
+            else:
+                document = current
+            self.assertEqual(owner[0].get(document['url'], headers=owner[1]).status_code, 200)
+
+    def test_request_attachments_reject_foreign_channel_company_and_invalid_sessions(self):
+        rid = self.request('10').json()['id']
+        doc = self.row(rid)['documents_list'][0]
+        stranger = self.make_user('employee', 'attachment_stranger')
+        cashier = self.make_user('cashier', 'attachment_cashier')
+        foreign = self.user_in(self.company_ids()['ZUMA'], 'director', 'attachment_foreign')
+        for actor in (stranger, cashier, foreign):
+            self.addCleanup(actor[0].close)
+        for actor, status in ((stranger, 403), (cashier, 403), (foreign, 404)):
+            response = actor[0].get(doc['url'], headers=actor[1])
+            self.assertEqual(response.status_code, status, response.text)
+            self.assertNotIn('Content-Disposition', response.headers)
+        self.assertEqual(foreign[0].get(doc['url'], headers={**foreign[1], 'X-Company-ID': str(self.company)}).status_code, 403)
+        self.assertEqual(self.client.get(doc['url'], params={'company_id': self.company_ids()['ZUMA']}).status_code, 404)
+        anonymous = base.TestClient(base.app)
+        self.addCleanup(anonymous.close)
+        self.assertEqual(anonymous.get(doc['url']).status_code, 401)
+        self.assertEqual(self.approve(rid).status_code, 200)
+        accountant = self.make_user('accountant', 'attachment_bank_payer')
+        self.addCleanup(accountant[0].close)
+        self.assertEqual(accountant[0].get(doc['url'], headers=accountant[1]).status_code, 200)
+        self.assertEqual(cashier[0].get(doc['url'], headers=cashier[1]).status_code, 403)
+        cash_id = self.post('/api/accounts', {'name': 'Attachment cash', 'kind': 'cash', 'currency': 'UZS',
+            'opening': '1000', 'opening_date': self.date}).json()['id']
+        cash_rid = self.request('10', account=cash_id).json()['id']
+        self.assertEqual(self.approve(cash_rid).status_code, 200)
+        cash_doc = self.row(cash_rid)['documents_list'][0]
+        self.assertEqual(cashier[0].get(cash_doc['url'], headers=cashier[1]).status_code, 200)
+        self.assertEqual(accountant[0].get(cash_doc['url'], headers=accountant[1]).status_code, 403)
+        user_id = accountant[0].get('/api/me').json()['user']['id']
+        with unit(True) as s:
+            s.get(User, user_id).active = False
+        self.assertEqual(accountant[0].get(doc['url'], headers=accountant[1]).status_code, 401)
 
     def test_authorized_roles_keep_report_and_document_downloads(self):
         records = self.fixtures()

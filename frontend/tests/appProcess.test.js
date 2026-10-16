@@ -256,6 +256,61 @@ test('file guard blocks ordinary and modified stale private links without starti
   assert.match(view.state.notice,/Скачивание файлов недоступно/);
 });
 
+test('finance downloads an available request attachment without general download rights',async t=>{
+  const revokeTimers=[],setTimeoutBefore=globalThis.setTimeout;
+  globalThis.setTimeout=(callback,delay,...args)=>{const timer=setTimeoutBefore(callback,delay,...args);if(delay===60000)revokeTimers.push(timer);return timer;};
+  t.after(()=>{globalThis.setTimeout=setTimeoutBefore;for(const timer of revokeTimers)clearTimeout(timer);});
+  const calls=[];
+  const {view,files}=await fixture(t,async(url,options)=>{
+    calls.push({url,options});
+    return {ok:true,status:200,redirected:false,
+      headers:new Headers({'content-type':'application/pdf','content-disposition':'attachment; filename=invoice.pdf'}),
+      blob:async()=>new Blob(['Synthetic request invoice'])};
+  });
+  view.state.user={...user,role:'finance',permissions:['view','export']};await settle();
+  assert.equal(view.state.has('download'),false);
+  let prevented=false;const link={href:'https://isolated.test/api/request-documents/9?company_id=2',hasAttribute(){return false;}};
+  await view.state.downloadFile({button:0,target:{closest(){return link;}},preventDefault(){prevented=true;}});await settle();
+  assert.equal(prevented,true);assert.equal(calls.length,1);assert.equal(calls[0].url,link.href);
+  assert.equal(calls[0].options.headers['X-Company-ID'],'2');assert.equal(calls[0].options.credentials,'same-origin');
+  assert.deepEqual(files,{blobs:1,anchors:1,clicks:1});
+  assert.equal(view.state.globalProgress.active,false);assert.equal(view.state.globalProgress.error,'');
+  assert.equal(view.state.globalProgress.completed,3);assert.equal(view.state.globalProgress.total,3);
+});
+
+for(const status of [403,404]) {
+  test(`finance request attachment denied with ${status} never creates a browser download`,async t=>{
+    const calls=[];let bodies=0;const message=`Synthetic attachment access ${status}`;
+    const {view,files}=await fixture(t,async(url,options)=>{
+      calls.push({url,options});return {ok:false,status,json:async()=>({detail:message}),blob:async()=>{bodies++;return new Blob(['Forbidden file']);}};
+    });
+    view.state.user={...user,role:'finance',permissions:['view','export']};await settle();
+    assert.equal(view.state.has('download'),false);
+    const link={href:'https://isolated.test/api/request-documents/9?company_id=2',hasAttribute(){return false;}};
+    await view.state.downloadFile({button:0,target:{closest(){return link;}},preventDefault(){}});await settle();
+    assert.equal(calls.length,1);assert.equal(calls[0].options.headers['X-Company-ID'],'2');assert.equal(bodies,0);
+    assert.deepEqual(files,{blobs:0,anchors:0,clicks:0});assert.equal(view.state.globalProgress.active,false);
+    assert.equal(view.state.globalProgress.error,message);
+  });
+}
+
+test('finance request attachment is cancelled when the company changes and ignores its late body',async t=>{
+  const body=deferred();let signal;
+  const {view,files}=await fixture(t,async(url,options)=>{
+    assert.equal(url,'https://isolated.test/api/request-documents/9?company_id=2');assert.equal(options.headers['X-Company-ID'],'2');signal=options.signal;
+    return {ok:true,status:200,redirected:false,
+      headers:new Headers({'content-type':'application/pdf','content-disposition':'attachment; filename=invoice.pdf'}),blob:()=>body.promise};
+  });
+  view.state.user={...user,role:'finance',permissions:['view','export']};await settle();
+  assert.equal(view.state.has('download'),false);
+  const link={href:'https://isolated.test/api/request-documents/9?company_id=2',hasAttribute(){return false;}};
+  const download=view.state.downloadFile({button:0,target:{closest(){return link;}},preventDefault(){}});await settle();
+  assert.equal(signal.aborted,false);assert.equal(view.state.globalProgress.active,true);
+  view.state.chooseCompany();await settle();assert.equal(signal.aborted,true);assert.equal(view.state.companyId,null);
+  const cancelled={...view.state.globalProgress};body.resolve(new Blob(['Late request invoice']));await download;await settle();
+  assert.deepEqual(files,{blobs:0,anchors:0,clicks:0});assert.deepEqual(view.state.globalProgress,cancelled);
+});
+
 test('treasury viewing preserves report tabs but CSV templates, ledger exports and attachments require download permission',async t=>{
   const {view}=await fixture(t,async()=>{throw Error('No file request expected');});
   for(const canDownload of [false,true]){

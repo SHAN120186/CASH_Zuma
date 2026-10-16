@@ -345,7 +345,7 @@ def remove_request_document(id:int,data:RemoveDocumentIn,request:Request):
 @router.get('/api/request-documents/{id}')
 def download_request_document(id:int,request:Request):
     with unit() as s:
-        user,_=session_user(s,request,'download');doc=s.get(RequestDocument,id)
+        user,_=session_user(s,request);doc=s.get(RequestDocument,id)
         # Прежние версии остаются доступны тем, кто вправе читать документы заявки.
         if not doc:raise HTTPException(404,'Документ не найден.')
         payment=get(s,PaymentRequest,doc.request_id);request_document_access(s,user,payment)
