@@ -80,7 +80,7 @@ def request_actions(s, u, r):
         actions.append('close')
     if 'request_edit' in perms and r.status in ('pending', 'approved'):
         actions.append('reschedule')
-    if r.status == 'approved' and pay_right(account) in perms and route_complete(r) and u.id not in all_participants(s, r):
+    if r.status == 'approved' and pay_right(account) in perms and route_complete(r) and u.id not in all_participants(s, r, include_check=account.kind!='bank'):
         actions.append('pay')
     return actions
 

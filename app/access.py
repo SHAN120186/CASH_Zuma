@@ -272,7 +272,7 @@ def archive(s, actor, user, reason, request=None):
 
 
 def restore(s, actor, user, reason, holding_role=None, company_id=None, role=None, request=None):
-    """Восстановление только с явным новым назначением и новым временным паролем.
+    """Восстановление только с явным новым назначением и новым постоянным паролем.
     Прежний статус холдинга не возвращается сам: его указывают явно."""
     from .security import hash_password
     if user.active:
@@ -290,7 +290,7 @@ def restore(s, actor, user, reason, holding_role=None, company_id=None, role=Non
         s.add(CompanyUser(company_id=company.id, user_id=user.id, role=role))
     password = temporary_password()
     user.password_hash = hash_password(password)
-    user.must_change_password = True
+    user.must_change_password = False
     user.active = True
     s.flush()
     end_sessions(s, user.id)
@@ -299,7 +299,7 @@ def restore(s, actor, user, reason, holding_role=None, company_id=None, role=Non
 
 
 def reset_password(s, actor, user, reason, request=None):
-    """Новый временный пароль: прежние сеансы и Telegram отключаются, при входе пароль нужно сменить."""
+    """Явный сброс выдаёт постоянный пароль; прежние сеансы и Telegram отключаются."""
     from .security import hash_password
     if actor is not None and user.id == actor.id:
         raise HTTPException(409, 'Свой пароль меняют в профиле с вводом текущего пароля.')
@@ -308,7 +308,7 @@ def reset_password(s, actor, user, reason, request=None):
     before = snapshot(s, user)
     password = temporary_password()
     user.password_hash = hash_password(password)
-    user.must_change_password = True
+    user.must_change_password = False
     revoke_links_and_sessions(s, user, actor)
     s.flush()
     record(s, actor, 'Сброшен пароль; сеансы и Telegram отключены', user, before, reason, None, request)
