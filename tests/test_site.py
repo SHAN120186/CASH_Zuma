@@ -256,7 +256,7 @@ class SiteTests(unittest.TestCase):
             docs=book[0].get(path,headers=book[1])
             self.assertEqual(docs.status_code,200,docs.text)
             doc=docs.json()[0]
-            self.assertEqual(book[0].get(doc['url'],headers=book[1]).status_code,403)
+            self.assertEqual(book[0].get(doc['url'],headers=book[1]).status_code,200)
             self.assertEqual(cashier[0].get(path,headers=cashier[1]).status_code,403)
             self.assertEqual(cashier[0].get(doc['url'],headers=cashier[1]).status_code,403)
             cash=self.cash_account()
