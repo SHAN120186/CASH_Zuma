@@ -36,7 +36,7 @@ async def lifespan(app):
     drop_shadowed_groups()
     drop_orphan_groups()
     yield
-app=FastAPI(title='UZGERMED Treasury',version='2.25.1',docs_url=None,redoc_url=None,openapi_url=None,lifespan=lifespan)
+app=FastAPI(title='UZGERMED Treasury',version='2.30.0',docs_url=None,redoc_url=None,openapi_url=None,lifespan=lifespan)
 app.add_middleware(TrustedHostMiddleware,allowed_hosts=ALLOWED)
 app.mount('/static',StaticFiles(directory=ROOT/'app'/'static'),name='static')
 
@@ -407,7 +407,7 @@ def requests_list(request:Request,date_from:Optional[date]=None,date_to:Optional
         perms=perms_of(u);channels=payment_channels(perms);checker='request_check' in perms
         if not ({'request','view'} & perms or channels or checker):raise HTTPException(403,'Недостаточно прав для просмотра заявок.')
         if date_from and date_to and date_from>date_to:raise HTTPException(422,'Начало периода позже окончания.')
-        query=select(PaymentRequest).join(Account,Account.id==PaymentRequest.account_id)
+        query=select(PaymentRequest).where(PaymentRequest.status!='deleted').join(Account,Account.id==PaymentRequest.account_id)
         if 'view' not in perms:
             # Граница та же, что у карточки заявки: свои заявки, заявки к оплате своего канала
             # и очередь проверки расчётного бухгалтера — по правам, включая замещение.
@@ -461,6 +461,29 @@ def add_request(data:RequestIn,request:Request):
         log(s,u,'Создана заявка','request',r.id,json.dumps({'status':r.status,'version':r.version,'amount':money(n),'currency':a.currency,
             'category':c.name,'channel':a.kind,'date':str(r.due_date),'priority':r.priority},ensure_ascii=False))
         return request_view(s,u,r)
+class RequestDeleteIn(Input):
+    version:int=Field(ge=1)
+    reason:str=Field(min_length=10,max_length=1000)
+
+@app.post('/api/requests/{id}/delete')
+def delete_request(id:int,data:RequestDeleteIn,request:Request):
+    with unit(True) as s:
+        u,_=session_user(s,request)
+        if u.role!='admin':raise HTTPException(403,'Удалять заявки может только администратор холдинга.')
+        r=get(s,PaymentRequest,id)
+        if r.status=='deleted':raise HTTPException(404,'Запись не найдена.')
+        check_request_version(r,data.version)
+        before=request_json(s,r)
+        entries=list(s.scalars(select(Ledger).where(Ledger.request_id==r.id)))
+        documents=list(s.scalars(select(RequestDocument).where(RequestDocument.request_id==r.id)))
+        # Keep immutable IDs, payment links and private document history for audit.
+        # A deleted request no longer reserves funds or appears in active lists.
+        log(s,u,'Удалена заявка','request',r.id,json.dumps({'before':before,'reason':data.reason,
+            'preserved_ledger_ids':[e.id for e in entries],
+            'documents':[{'id':d.id,'filename':d.filename,'sha256':d.sha256} for d in documents]},ensure_ascii=False))
+        r.status='deleted'
+        return {'deleted':True,'preserved_payments':len(entries)}
+
 @app.put('/api/requests/{id}')
 def edit_request(id:int,data:RequestEdit,request:Request):
     with unit(True) as s:

@@ -1,6 +1,10 @@
 // Uzbek (Latin) translations: requests/*.
 // Key: the exact Russian text; value: the Uzbek text with the same {placeholders}.
 export default {
+  'Удалить заявку': 'Arizani o‘chirish',
+  'Удалить заявку {number} и её вложения?': '{number} ariza va uning fayllari o‘chirilsinmi?',
+  'Причина удаления заявки (не менее 10 символов). Платёж останется в операциях.': 'Arizani o‘chirish sababi (kamida 10 belgi). To‘lov operatsiyalarda qoladi.',
+
   // Backdated highlight (workflow.js BACKDATED_HINT)
   'Создано или проведено с датой раньше дня ввода': 'Kiritilgan kundan oldingi sana bilan yaratilgan yoki o‘tkazilgan',
   // Request statuses, stages and route (workflow.js)

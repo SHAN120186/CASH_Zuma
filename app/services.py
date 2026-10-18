@@ -324,7 +324,7 @@ def accepted_overrun(s,category,month,currency):
         PaymentRequest.due_date>=start,PaymentRequest.due_date<end)
     approved=s.scalar(base.where(PaymentRequest.status=='approved')) or 0
     paid=s.scalar(base.join(Ledger,Ledger.request_id==PaymentRequest.id).where(
-        PaymentRequest.status=='paid',Ledger.date>=start,Ledger.date<end)) or 0
+        PaymentRequest.status.in_(['paid','deleted']),Ledger.date>=start,Ledger.date<end)) or 0
     return max(approved,paid)
 
 def enforce_payment_budget(s,req,account,paid_on):

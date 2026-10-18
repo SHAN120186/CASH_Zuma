@@ -64,6 +64,18 @@ async function run(fn, message) {
 
 const json = body => ({method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(body)});
 
+async function deleteRequest() {
+  const reason = window.prompt(tx('Причина удаления заявки (не менее 10 символов). Платёж останется в операциях.'));
+  if (!reason) return;
+  if (!window.confirm(tx('Удалить заявку {number} и её вложения?', {number: r.value.number}))) return;
+  busy.value = true; error.value = '';
+  try {
+    await props.api(`/api/requests/${r.value.id}/delete`, json({version:r.value.version, reason}));
+    emit('changed'); emit('close');
+  } catch (e) { error.value = tx(e.message); if (e.status === 409) await load(); }
+  finally { busy.value = false; }
+}
+
 function submit() {
   run(() => props.api(`/api/requests/${r.value.id}/decision`, json({action: 'submit', version: r.value.version})), N_('Заявка отправлена на согласование.'));
 }
@@ -187,6 +199,7 @@ onUnmounted(() => document.removeEventListener('keydown', onKey));
         <p class="sub">{{ tx('PDF, PNG, JPEG, DOCX или XLSX до 5 МБ. После отправки новая версия документа или удаление прочего документа начинают проверку и согласования заново.') }}</p>
 
         <div class="form-actions rq-actions">
+          <button v-if="can('delete')" type="button" class="secondary" :disabled="busy" @click="deleteRequest">{{ tx('Удалить заявку') }}</button>
           <button v-if="can('edit')" type="button" class="secondary" :disabled="busy" @click="emit('edit', r)">{{ tx('Изменить') }}</button>
           <button v-if="can('submit')" type="button" :disabled="busy || missing.length > 0" @click="submit">{{ tx('Отправить на согласование') }}</button>
           <button v-if="can('pay')" type="button" :disabled="busy" @click="emit('record-payment', r)">{{ tx('Факт оплаты') }}</button>
