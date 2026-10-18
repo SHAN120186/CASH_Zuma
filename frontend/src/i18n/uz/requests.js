@@ -1,6 +1,8 @@
 // Uzbek (Latin) translations: requests/*.
 // Key: the exact Russian text; value: the Uzbek text with the same {placeholders}.
 export default {
+  // Backdated highlight (workflow.js BACKDATED_HINT)
+  'Создано или проведено с датой раньше дня ввода': 'Kiritilgan kundan oldingi sana bilan yaratilgan yoki o‘tkazilgan',
   // Request statuses, stages and route (workflow.js)
   'Утверждена': 'Tasdiqlangan',
   'Оплачена': 'Toʻlangan',
