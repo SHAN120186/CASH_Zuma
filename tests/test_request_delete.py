@@ -7,11 +7,13 @@ from app.db import unit, Ledger, RequestDocument, PaymentRequest, Audit
 class RequestDeleteTests(base.SiteTests):
     def test_admin_deletes_request_and_documents(self):
         rid=self.request(submit=False).json()['id']
-        self.upload(rid)
+        document=self.upload(rid).json()
         version=self.version_of(rid)
         response=self.post(f'/api/requests/{rid}/delete',{'version':version,'reason':'Confirmed test cleanup'})
         self.assertEqual(response.status_code,200,response.text)
         self.assertIsNone(self.row(rid))
+        self.assertNotIn(rid,[r['id'] for r in self.client.get('/api/requests',headers=self.h).json()])
+        self.assertEqual(self.client.get(document['url'],headers=self.h).status_code,403)
         with unit() as s:
             self.assertEqual(s.get(PaymentRequest,rid).status,'deleted')
             event=s.scalar(select(Audit).where(Audit.entity=='request',Audit.entity_id==str(rid),Audit.action=='Удалена заявка'))
