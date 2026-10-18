@@ -470,6 +470,7 @@ def delete_request(id:int,data:RequestDeleteIn,request:Request):
     with unit(True) as s:
         u,_=session_user(s,request)
         if u.role!='admin':raise HTTPException(403,'Удалять заявки может только администратор холдинга.')
+        act_with_right(u,'request_delete')
         r=get(s,PaymentRequest,id)
         if r.status=='deleted':raise HTTPException(404,'Запись не найдена.')
         check_request_version(r,data.version)

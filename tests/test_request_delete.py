@@ -2,7 +2,7 @@
 import unittest
 import tests.test_site as base
 from sqlalchemy import select
-from app.db import unit, Ledger, RequestDocument, PaymentRequest
+from app.db import unit, Ledger, RequestDocument, PaymentRequest, Audit
 
 class RequestDeleteTests(base.SiteTests):
     def test_admin_deletes_request_and_documents(self):
@@ -14,6 +14,8 @@ class RequestDeleteTests(base.SiteTests):
         self.assertIsNone(self.row(rid))
         with unit() as s:
             self.assertEqual(s.get(PaymentRequest,rid).status,'deleted')
+            event=s.scalar(select(Audit).where(Audit.entity=='request',Audit.entity_id==str(rid),Audit.action=='Удалена заявка'))
+            self.assertEqual(event.role,'admin')
             self.assertTrue(list(s.scalars(select(RequestDocument).where(RequestDocument.request_id==rid))))
 
     def test_nonadmin_cannot_delete_and_stale_version_rejected(self):
