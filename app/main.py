@@ -705,7 +705,9 @@ def reverse(id:int,data:ReverseIn,request:Request):
         s.add(inv)
         # Освобождаем уникальную связь оплаты, но сохраняем историю в журнале.
         if t.request_id:
-            get(s,PaymentRequest,t.request_id).status='approved';log(s,u,'Отмена оплаты заявки','request',t.request_id,f'Сторно операции {id}');t.request_id=None
+            linked=get(s,PaymentRequest,t.request_id)
+            if linked.status!='deleted':linked.status='approved'
+            log(s,u,'Отмена оплаты заявки','request',t.request_id,f'Сторно операции {id}');t.request_id=None
         if t.receipt_id:
             get(s,Receipt,t.receipt_id).status='expected';log(s,u,'Отмена поступления','receipt',t.receipt_id,f'Сторно операции {id}');t.receipt_id=None
         s.flush();validate_running_balance(s,get(s,Account,t.account_id))

@@ -62,5 +62,9 @@ class RequestDeleteTests(base.SiteTests):
             self.assertIsNotNone(entry)
             self.assertEqual(entry.amount,30000)
             self.assertEqual(entry.request_id,rid)
+        reversed=self.post(f'/api/ledger/{eid}/reverse',{'reason':'Correct the preserved actual payment'})
+        self.assertEqual(reversed.status_code,200,reversed.text)
+        self.assertIsNone(self.row(rid))
+        with unit() as s:self.assertEqual(s.get(PaymentRequest,rid).status,'deleted')
 
 if __name__=='__main__':unittest.main()
