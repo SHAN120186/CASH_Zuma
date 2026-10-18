@@ -6,7 +6,7 @@ import {createOperationProgress} from './operationProgress.js';
 import {tx, N_} from './i18n/index.js';
 import {FORMATS, fileProblem, filterProblem, archiveUrl, archiveFileUrl, dateLabel, uploadLabel, createArchiveState, saveArchive, archiveRequirements} from './reportArchive.js';
 
-const props = defineProps({api: {type: Function, required: true}, company: {type: Object, required: true}, refresh: {type: Number, default: 0}});
+const props = defineProps({api: {type: Function, required: true}, company: {type: Object, required: true}, refresh: {type: Number, default: 0}, canDownload: Boolean});
 const emit = defineEmits(['editing']);
 const items = ref([]), canUpload = ref(false), loading = ref(false), error = ref(''), notice = ref('');
 const filters = ref({date_from: '', date_to: '', uploaded_on: ''});
@@ -135,7 +135,7 @@ async function save() {
               <td :data-l="tx('Загружен')">{{uploadLabel(record.uploaded_at)}}</td>
               <td :data-l="tx('Состояние')"><span class="pill" :class="record.status==='ready'?'good':'warn'">{{record.status==='deleted'?tx('Удалён'):record.status==='ready'?tx('Готов'):tx('Черновик')}}</span></td>
               <td :data-l="tx('Файлы')"><div class="archive-downloads">
-                <template v-if="record.status==='ready'"><a v-for="format in FORMATS" :key="format" class="button secondary tiny" :href="archiveFileUrl(record,format)"><AppIcon name="download"/> {{format==='pdf'?'PDF':'Excel'}}</a></template>
+                <template v-if="record.status==='ready'"><span v-if="!canDownload" class="sub">{{tx('Только просмотр')}}</span><a v-if="canDownload" v-for="format in FORMATS" :key="format" class="button secondary tiny" :href="archiveFileUrl(record,format)"><AppIcon name="download"/> {{format==='pdf'?'PDF':'Excel'}}</a></template>
                 <template v-else-if="record.status!=='deleted'"><span class="sub">{{tx('Не хватает: {formats}',{formats:FORMATS.filter(format=>!record.formats.includes(format)).map(format=>format==='pdf'?'PDF':'Excel').join(', ')})}}</span><button v-if="record.can_upload" class="secondary tiny" :disabled="saving||!!editor" @click="open(record)">{{tx('Завершить загрузку')}}</button></template>
                 <button v-if="record.can_delete" class="secondary tiny" :disabled="saving||changingState||!!editor" @click="changeArchiveState(record)">{{tx('Удалить отчёт')}}</button><button v-if="record.can_restore" class="secondary tiny" :disabled="saving||changingState||!!editor" @click="changeArchiveState(record,true)">{{tx('Восстановить')}}</button><small v-if="record.deleted_with_project">{{tx('Для возврата восстановите папку проекта №{id}.',{id:record.restore_project_id})}}</small>
               </div></td>

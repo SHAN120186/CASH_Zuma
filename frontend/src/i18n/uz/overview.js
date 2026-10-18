@@ -1,6 +1,10 @@
 // Uzbek (Latin) translations: overview/*, CompanyCard.vue, PeriodFilter.vue.
 // Key: the exact Russian text; value: the Uzbek text with the same {placeholders}.
 export default {
+  'План поступлений': 'Tushumlar rejasi',
+  'План поступлений на 7 дней': '7 kunlik tushumlar rejasi',
+  'Добавляйте ожидаемые поступления в календаре. Факт получения подтверждает бухгалтер.': 'Kutilayotgan tushumlarni kalendarga kiriting. Haqiqiy tushumni buxgalter tasdiqlaydi.',
+  'Открыть календарь': 'Kalendarni ochish',
   // Today's chips and risks
   'Что требует внимания сегодня': 'Bugun eʼtibor talab qiladigan ishlar',
   'Сегодня': 'Bugun',

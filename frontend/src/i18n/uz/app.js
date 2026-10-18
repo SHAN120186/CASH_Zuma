@@ -62,11 +62,11 @@ export default {
     'Parolni avtomatik toʻldirish uchun brauzer taklifida «Saqlash»ni tasdiqlang. Bu imkoniyat brauzer va uning sozlamalariga bogʻliq.',
 
   // Temporary password and company choice
-  'Смена временного пароля': 'Vaqtinchalik parolni almashtirish',
+  'Смена временного пароля': 'Berilgan parolni almashtirish',
   'Задайте свой пароль': 'Oʻz parolingizni oʻrnating',
   'Вы вошли с временным паролем. Придумайте новый пароль не короче 12 символов: после смены войдите снова.':
     'Siz vaqtinchalik parol bilan kirdingiz. Kamida 12 ta belgidan iborat yangi parol oʻylab toping: almashtirgandan keyin qayta kiring.',
-  'Временный пароль': 'Vaqtinchalik parol',
+  'Выданный пароль': 'Berilgan parol',
   'Новый пароль': 'Yangi parol',
   'Повтор нового пароля': 'Yangi parolni takrorlang',
   'Сменить пароль': 'Parolni almashtirish',
@@ -268,8 +268,8 @@ export default {
 
   // Help: approval route
   'Маршрут заявки': 'Ariza yoʻnalishi',
-  'Расчётный бухгалтер проверяет реквизиты и комплектность → финансовый директор проверяет бюджет и дату → директор, если этого требует политика статьи → оплата: банк — расчётный бухгалтер, касса — кассир. Один сотрудник не проходит два этапа одной заявки; автор и последний редактор её не согласуют и не оплачивают.':
-    'Hisob-kitob buxgalteri rekvizitlar va hujjatlar toʻliqligini tekshiradi → moliya direktori byudjet va sanani tekshiradi → modda siyosati talab qilsa, direktor → toʻlov: bank — hisob-kitob buxgalteri, kassa — kassir. Bitta xodim bitta arizaning ikki bosqichidan oʻtmaydi; muallif va oxirgi tahrirlovchi uni kelishmaydi va toʻlamaydi.',
+  'Расчётный бухгалтер проверяет реквизиты и комплектность → финансовый директор проверяет бюджет и дату → директор, если этого требует политика статьи → оплата: банк — расчётный бухгалтер, касса — кассир. Проверявший бухгалтер может оплатить банковскую заявку после согласования. Автор и редакторы её не согласуют и не оплачивают; финансовый директор и директор её не оплачивают.':
+    'Hisob-kitob buxgalteri rekvizitlar va hujjatlar toʻliqligini tekshiradi → moliya direktori byudjet va sanani tekshiradi → modda siyosati talab qilsa, direktor → toʻlov: bank — hisob-kitob buxgalteri, kassa — kassir. Tekshirgan buxgalter kelishilgan bank arizasini toʻlashi mumkin. Muallif va tahrirlovchilar uni kelishmaydi va toʻlamaydi; moliya direktori va direktor uni toʻlamaydi.',
   'Политика директора': 'Direktor siyosati',
   'Для каждой расходной статьи: директор утверждает всегда, только выше порога валюты заявки или не участвует. Без директора — только статьи из утверждённого перечня регулярных платежей, который ведёт администратор холдинга. Нет политики или порога валюты — директор утверждает любую сумму.':
     'Har bir xarajat moddasi uchun: direktor har doim tasdiqlaydi, faqat ariza valyutasidagi chegaradan yuqori summani tasdiqlaydi yoki ishtirok etmaydi. Direktorsiz — faqat xolding administratori yuritadigan muntazam toʻlovlarning tasdiqlangan roʻyxatidagi moddalar. Siyosat yoki valyuta chegarasi boʻlmasa, direktor istalgan summani tasdiqlaydi.',
@@ -289,14 +289,14 @@ export default {
   'Центр администрирования': 'Boshqaruv markazi',
   'Поиск по имени и логину, фильтры по компании, роли и состоянию. Карточка сотрудника: имя, назначение, статус холдинга, сброс пароля, завершение сеансов, архив и восстановление. Каждое действие требует причину и записывается в журнал с прежним и новым назначением.':
     'Ism va login boʻyicha qidiruv, kompaniya, rol va holat boʻyicha filtrlar. Xodim kartochkasi: ism, tayinlov, xolding maqomi, parolni qayta oʻrnatish, seanslarni yakunlash, arxivlash va tiklash. Har bir amal sabab talab qiladi va avvalgi hamda yangi tayinlov bilan jurnalga yoziladi.',
-  'При создании, сбросе и восстановлении пароль создаётся случайным, показывается один раз и меняется сотрудником при первом входе: до смены пароля остальные разделы недоступны. Прежние сеансы и Telegram отключаются.':
-    'Yaratish, qayta oʻrnatish va tiklashda parol tasodifiy yaratiladi, bir marta koʻrsatiladi va xodim uni birinchi kirishda almashtiradi: parol almashtirilmaguncha boshqa boʻlimlar ochilmaydi. Avvalgi seanslar va Telegram uziladi.',
+  'При создании, сбросе и восстановлении выдаётся случайный постоянный пароль, который показывается один раз. Обязательной смены при входе нет. Действующие пароли автоматически не меняются. Прежние сеансы и Telegram отключаются.':
+    'Yaratish, qayta oʻrnatish va tiklashda doimiy tasodifiy parol bir marta koʻrsatiladi. Kirishda uni almashtirish majburiy emas. Amaldagi parollar avtomatik oʻzgarmaydi. Avvalgi seanslar va Telegram uziladi.',
   'Холдинг': 'Xolding',
   'Администратор холдинга видит все компании, управляет пользователями и доступами; финансовые действия — только по отдельному назначению роли в компании, которое выдаёт другой администратор. Учредитель видит все компании только для чтения.':
     'Xolding administratori barcha kompaniyalarni koʻradi, foydalanuvchilar va kirish huquqlarini boshqaradi; moliyaviy amallarni esa faqat boshqa administrator beradigan, kompaniyadagi alohida rol tayinlovi orqali bajaradi. Taʼsischi barcha kompaniyalarni faqat koʻrish rejimida koʻradi.',
   'Согласование и оплата': 'Kelishish va toʻlov',
-  'Расчётный бухгалтер проверяет реквизиты и комплектность, финансовый директор — бюджет и дату, директор участвует по политике статьи. Банковскую заявку оплачивает расчётный бухгалтер, кассовую — кассир; проверявший бухгалтер, автор, редактор и согласующие её не оплачивают.':
-    'Hisob-kitob buxgalteri rekvizitlar va hujjatlar toʻliqligini, moliya direktori — byudjet va sanani tekshiradi, direktor modda siyosatiga koʻra ishtirok etadi. Bank arizasini hisob-kitob buxgalteri, kassa arizasini kassir toʻlaydi; tekshirgan buxgalter, muallif, tahrirlovchi va kelishuvchilar uni toʻlamaydi.',
+  'Расчётный бухгалтер проверяет реквизиты и комплектность, финансовый директор — бюджет и дату, директор участвует по политике статьи. Банковскую заявку оплачивает расчётный бухгалтер, в том числе проверявший её, кассовую — кассир. Автор, редакторы, финансовый директор и директор её не оплачивают.':
+    'Hisob-kitob buxgalteri rekvizitlar va hujjatlar toʻliqligini, moliya direktori — byudjet va sanani tekshiradi, direktor modda siyosatiga koʻra ishtirok etadi. Bank arizasini hisob-kitob buxgalteri, shu jumladan uni tekshirgan buxgalter, kassa arizasini kassir toʻlaydi. Muallif, tahrirlovchilar, moliya direktori va direktor uni toʻlamaydi.',
   'ВрИО': 'v.b.',
   'На время отсутствия администратор холдинга назначает временно исполняющего из сотрудников этой же компании (или администратора холдинга). ВрИО работает под своим логином с ролью отсутствующего только в этой компании и только до конца срока. Сотрудника другой компании сначала переводят в центре администрирования. Собственную заявку ВрИО не согласует; журнал хранит обоих сотрудников. Смена назначения или архив завершают замещения, потерявшие основание.':
     'Xodim yoʻqligida xolding administratori shu kompaniya xodimlari (yoki xolding administratori) orasidan vaqtincha bajaruvchini (v.b.) tayinlaydi. V.b. oʻz logini bilan, yoʻq xodimning roli bilan faqat shu kompaniyada va faqat muddat oxirigacha ishlaydi. Boshqa kompaniya xodimi avval boshqaruv markazida shu kompaniyaga oʻtkaziladi. V.b. oʻz arizasini kelishmaydi; jurnalda ikkala xodim ham saqlanadi. Tayinlovning oʻzgarishi yoki arxivlash asosini yoʻqotgan almashtirishlarni yakunlaydi.',
@@ -312,8 +312,8 @@ export default {
   'Выберите месяц или даты, сотрудника и действие, затем нажмите «Показать». Записи показываются простым списком; технические сведения — по кнопке «Подробности». Время указано по Ташкенту.':
     'Oy yoki sanalarni, xodim va amalni tanlang, soʻng «Koʻrsatish» tugmasini bosing. Yozuvlar oddiy roʻyxat koʻrinishida chiqadi; texnik maʼlumotlar — «Batafsil» tugmasi orqali. Vaqt Toshkent vaqti boʻyicha koʻrsatilgan.',
   'Сессия и пароль': 'Seans va parol',
-  'Сессия действует 60 минут. Пароль не короче 12 символов. После смены пароля все сессии отзываются. Временный пароль от администратора меняется при первом входе.':
-    'Seans 60 daqiqa amal qiladi. Parol kamida 12 ta belgidan iborat boʻlishi kerak. Parol almashtirilgach, barcha seanslar bekor qilinadi. Administrator bergan vaqtinchalik parol birinchi kirishda almashtiriladi.',
+  'Сессия действует 60 минут. Пароль не короче 12 символов. После смены пароля все сессии отзываются. Пароль от администратора постоянный; обязательной смены при входе нет.':
+    'Seans 60 daqiqa amal qiladi. Parol kamida 12 ta belgidan iborat boʻlishi kerak. Parol almashtirilgach, barcha seanslar bekor qilinadi. Administrator bergan parol doimiy; kirishda uni almashtirish majburiy emas.',
   'Если вы временно исполняете обязанности отсутствующего сотрудника, его роль показана рядом с вашей и действует только в этой компании до конца срока замещения.':
     'Agar siz yoʻq xodimning vazifalarini vaqtincha bajarayotgan boʻlsangiz, uning roli sizning rolingiz yonida koʻrsatiladi va faqat shu kompaniyada almashtirish muddati tugaguncha amal qiladi.',
   'Чтобы бот присылал напоминания по заявкам, которые ждут вашего действия, нажмите «Привязать Telegram» и отправьте боту одноразовый код — он действует 10 минут.':
@@ -560,14 +560,14 @@ export default {
   'Внутренняя заявка (индент) и договор или счёт обязательны до отправки. Срок оплаты — не раньше 7 рабочих дней, при высоком приоритете — 3, срочная — 1.':
     'Ichki ariza (indent) hamda shartnoma yoki toʻlov uchun hisobvaraq yuborishdan oldin majburiy. Toʻlov muddati — kamida 7 ish kuni, yuqori ustuvorlikda — 3, shoshilinch arizada — 1.',
   'Финансовый директор проверяет бюджет и дату': 'Moliya direktori byudjet va sanani tekshiradi',
-  'Автор и последний редактор заявку не согласуют; один сотрудник не проходит два этапа. Вернуть на доработку или закрыть без оплаты можно только с комментарием.':
-    'Muallif va oxirgi tahrirlovchi arizani kelishmaydi; bitta xodim ikki bosqichdan oʻtmaydi. Qayta ishlashga qaytarish yoki toʻlovsiz yopish faqat izoh bilan mumkin.',
+  'Автор и последний редактор заявку не согласуют; один сотрудник не проходит два этапа согласования. Вернуть на доработку или закрыть без оплаты можно только с комментарием.':
+    'Muallif va oxirgi tahrirlovchi arizani kelishmaydi; bitta xodim kelishishning ikki bosqichidan oʻtmaydi. Qayta ishlashga qaytarish yoki toʻlovsiz yopish faqat izoh bilan mumkin.',
   'Директор — по политике статьи': 'Direktor — modda siyosati boʻyicha',
   'Всегда, выше порога валюты или не участвует (только регулярные статьи из утверждённого перечня). Настройка — в разделе «Согласование».':
     'Har doim, valyuta chegarasidan yuqori boʻlsa yoki ishtirok etmaydi (faqat tasdiqlangan roʻyxatdagi muntazam moddalar). Sozlash — «Kelishish» boʻlimida.',
   'Оплата': 'Toʻlov',
-  'Банк — расчётный бухгалтер, касса — кассир. Проверявший бухгалтер, автор, редактор и согласующие заявку не оплачивают.':
-    'Bank — hisob-kitob buxgalteri, kassa — kassir. Tekshirgan buxgalter, muallif, tahrirlovchi va kelishuvchilar arizani toʻlamaydi.',
+  'Банк — расчётный бухгалтер, в том числе проверявший заявку; касса — кассир. Автор, редакторы, финансовый директор и директор заявку не оплачивают.':
+    'Bank — hisob-kitob buxgalteri, shu jumladan arizani tekshirgan buxgalter; kassa — kassir. Muallif, tahrirlovchilar, moliya direktori va direktor arizani toʻlamaydi.',
 
   // Profile, password and personal Telegram
   'Имя': 'Ism',

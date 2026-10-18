@@ -10,7 +10,7 @@ from fastapi.responses import Response
 from pydantic import BaseModel, Field, ConfigDict
 from sqlalchemy import select
 from .db import *
-from .security import session_user, PERMS, can_attach_document, payment_channels, perms_of, act_with_right, pay_right
+from .security import session_user, PERMS, can_attach_document, payment_channels, perms_of, act_with_right, pay_right, require_permission
 from sqlalchemy.orm.attributes import flag_modified
 from .services import (post_ledger, money, get, log, today, clear_approval, check_request_version,
                        DOCUMENT_KINDS, REQUIRED_DOCUMENTS)
@@ -105,7 +105,8 @@ def preview(s,u,raw,name):
 
 @router.get('/api/import/template.csv')
 def template(request:Request):
-    with unit() as s:session_user(s,request,'import')
+    with unit() as s:
+        user,_=session_user(s,request,'import');require_permission(user,'download')
     return Response(('\ufeff'+';'.join(FRIENDLY)+'\r\n').encode('utf-8'),media_type='text/csv',headers={'Content-Disposition':'attachment; filename="transactions-template.csv"'})
 
 @router.post('/api/import/preview')
@@ -197,7 +198,7 @@ async def add_document(id:int,request:Request):
 @router.get('/api/documents/{id}')
 def download_document(id:int,request:Request):
     with unit() as s:
-        u,_=session_user(s,request,'ledger');d=get(s,Document,id);readable_ledger(s,u,get(s,Ledger,d.ledger_id))
+        u,_=session_user(s,request,'ledger');require_permission(u,'download');d=get(s,Document,id);readable_ledger(s,u,get(s,Ledger,d.ledger_id))
         return Response(d.content,media_type=d.mime,headers={'Content-Disposition':"attachment; filename*=UTF-8''"+quote(d.filename),'Cache-Control':'no-store'})
 
 OPEN_REQUEST_STATUSES=('draft','returned','pending','approved')
@@ -371,7 +372,7 @@ def render_report(s,year,currency,format,mode='actual',start_month=1,end_month=1
 def export_report(format:Literal['xlsx','pdf'],request:Request,year:int=2026,currency:Literal['UZS','USD','EUR']='UZS',mode:Literal['actual','plan']='actual',start_month:int=1,end_month:int=12,company_id:int|None=None,scenario:Literal['A','B','V']='A',as_of:date|None=None):
     if not 2000<=year<=2100:raise HTTPException(422,'Некорректный год.')
     with unit() as s:
-        session_user(s,request,'export')
+        user,_=session_user(s,request,'export');require_permission(user,'download')
         if not 1<=start_month<=end_month<=12:raise HTTPException(422,'Некорректные месяцы.')
         if as_of and (as_of.year!=year or as_of>today()):raise HTTPException(422,'Некорректная дата отчёта.')
         company_id=company_id or s.info['company_id']

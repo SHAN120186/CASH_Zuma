@@ -7,7 +7,7 @@ from zipfile import ZipFile,ZIP_DEFLATED
 from defusedxml import ElementTree as ET
 
 sys.path.insert(0,str(Path(__file__).resolve().parents[1]))
-from app.native_documents import patch_business_docx,report_sources,prepare_pdf_layout,COST_ROWS,COST_COLUMNS,WORD,NO_LOSS_TEXT,POSITIVE_CASH_TEXT,PROFIT_CELLS,CASH_FLOW_CELLS,CUMULATIVE_CASH_CELLS,_containers
+from app.native_documents import patch_business_docx,report_sources,prepare_pdf_layout,COST_ROWS,COST_COLUMNS,WORD,NO_LOSS_TEXT,POSITIVE_CASH_TEXT,PROFIT_CELLS,CASH_FLOW_CELLS,CUMULATIVE_CASH_CELLS,_containers,OBSOLETE_SECTOR_PARAGRAPH,OBSOLETE_SECTOR_TEXT,PHARMACEUTICAL_MARKET_TEXT
 
 
 def paragraph(text):return '<w:p><w:r><w:rPr><w:b/></w:rPr><w:t>'+text+'</w:t></w:r></w:p>'
@@ -69,6 +69,48 @@ def change_xml(raw,transform):
 
 
 class NativeDocumentTests(unittest.TestCase):
+    def test_verified_obsolete_sector_paragraph_changes_only_its_text_and_keeps_runs_and_zip_parts(self):
+        custom='Авторский пример: на рынке текстиля сохраняется собственная оценка.'
+        split=OBSOLETE_SECTOR_TEXT.index('на рынке')
+        styled=('<w:p><w:pPr><w:spacing w:after="100"/></w:pPr>'
+                '<w:r><w:rPr><w:i/></w:rPr><w:t>'+OBSOLETE_SECTOR_TEXT[:split]+'</w:t></w:r>'
+                '<w:r><w:rPr><w:b/></w:rPr><w:t xml:space="preserve">'+OBSOLETE_SECTOR_TEXT[split:]+'</w:t></w:r></w:p>')
+        raw=change_xml(patch_business_docx(template(),values())[0],lambda xml:xml.replace(b'</w:body>',
+            ('<w:p/>'*(OBSOLETE_SECTOR_PARAGRAPH-147)+styled+paragraph(custom)+paragraph(OBSOLETE_SECTOR_TEXT)+'</w:body>').encode()))
+        updated,meta=patch_business_docx(raw,values())
+        edits=[edit for edit in meta['edits'] if edit.get('reason')=='obsolete_sector_reference']
+        self.assertEqual(len(edits),1)
+        self.assertEqual(edits[0]['paragraph'],OBSOLETE_SECTOR_PARAGRAPH)
+        self.assertEqual(meta['updated_fields'],1)
+        with ZipFile(BytesIO(raw)) as before,ZipFile(BytesIO(updated)) as after:
+            self.assertEqual(before.namelist(),after.namelist())
+            for name in before.namelist():
+                if name!='word/document.xml':self.assertEqual(before.read(name),after.read(name))
+            original=before.read('word/document.xml');patched=after.read('word/document.xml')
+        original_spans=_containers(original);patched_spans=_containers(patched)
+        for key,span in original_spans.items():
+            if key==('paragraph',OBSOLETE_SECTOR_PARAGRAPH):continue
+            self.assertEqual(original[slice(*span)],patched[slice(*patched_spans[key])],key)
+        content=patched[slice(*patched_spans['paragraph',OBSOLETE_SECTOR_PARAGRAPH])]
+        tree=ET.fromstring(('<root xmlns:w="'+WORD+'">').encode()+content+b'</root>')
+        self.assertEqual(''.join(tree.itertext()),PHARMACEUTICAL_MARKET_TEXT+' ')
+        self.assertEqual(content.count(b'<w:r>'),2)
+        self.assertIn(b'<w:rPr><w:i/></w:rPr>',content)
+        self.assertIn(b'<w:rPr><w:b/></w:rPr>',content)
+        self.assertIn(b'<w:spacing w:after="100"/>',content)
+        self.assertIn(custom.encode(),patched)
+        self.assertEqual(patched.count(OBSOLETE_SECTOR_TEXT.encode()),1,'an identical sentence outside the verified slot is preserved')
+
+    def test_obsolete_sector_slot_with_custom_or_nonexact_text_is_unchanged(self):
+        for text in (OBSOLETE_SECTOR_TEXT.replace('бурно','умеренно'),
+                     OBSOLETE_SECTOR_TEXT.rstrip(), ' '+OBSOLETE_SECTOR_TEXT,
+                     PHARMACEUTICAL_MARKET_TEXT):
+            raw=change_xml(patch_business_docx(template(),values())[0],lambda xml:xml.replace(b'</w:body>',
+                ('<w:p/>'*(OBSOLETE_SECTOR_PARAGRAPH-147)+paragraph(text)+'</w:body>').encode()))
+            updated,meta=patch_business_docx(raw,values())
+            self.assertEqual(updated,raw)
+            self.assertFalse(any(edit.get('reason')=='obsolete_sector_reference' for edit in meta['edits']))
+
     def test_only_numeric_text_changes_other_parts_and_native_markup_survive(self):
         raw=template();data=values();data['Стоим_проекта'].update(B10=20,D34=2000,B38=1500)
         updated,meta=patch_business_docx(raw,data)

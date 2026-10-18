@@ -122,7 +122,7 @@ onUnmounted(() => document.removeEventListener('keydown', onKey));
           <small v-if="!u.holding_role && !u.assignments.length">{{ tx('Нет назначения') }}</small>
         </td>
         <td :data-l="tx('Состояние')"><span class="pill" :class="STATE_CLASS[u.state]">{{ tx(u.state_label) }}</span>
-          <small v-if="u.must_change_password && u.active">{{ tx('Временный пароль') }}</small><small v-if="u.telegram">{{ tx('Telegram привязан') }}</small></td>
+          <small v-if="u.telegram">{{ tx('Telegram привязан') }}</small></td>
         <td data-l=""><button class="secondary tiny" @click="openCard(u)">{{ tx('Открыть') }}</button></td>
       </tr>
       <tr v-if="!shown.length"><td colspan="4" class="sub">{{ tx('Никого не найдено.') }}</td></tr>
@@ -145,9 +145,9 @@ onUnmounted(() => document.removeEventListener('keydown', onKey));
         <button class="ghost icon-btn" :aria-label="tx('Закрыть')" :disabled="busy" @click="closeCard(); form = null">✕</button></div>
 
       <section v-if="secret" class="admin-secret" role="status">
-        <b>{{ tx('Временный пароль для {login}', {login: secret.login}) }}</b>
+        <b>{{ tx('Пароль для {login}', {login: secret.login}) }}</b>
         <code>{{ secret.password }}</code>
-        <p class="sub">{{ tx('Показывается один раз. Передайте сотруднику по защищённому каналу: при первом входе он задаст свой пароль.') }}</p>
+        <p class="sub">{{ tx('Показывается один раз. Передайте сотруднику по защищённому каналу. Обязательной смены при входе нет.') }}</p>
         <div class="actions"><button class="secondary tiny" @click="copy(secret.password)">{{ tx('Скопировать') }}</button><button class="ghost tiny" @click="secret = null">{{ tx('Скрыть') }}</button></div>
       </section>
 
@@ -194,7 +194,7 @@ onUnmounted(() => document.removeEventListener('keydown', onKey));
         <p v-if="form.kind === 'holding'" class="form-note wide">{{ tx('Все прежние назначения снимаются. Администратор получает финансовые права только по отдельному назначению другого администратора.') }}</p>
         <p v-if="form.kind === 'unassign'" class="form-note wide">{{ tx('Назначение в {company} будет снято, сеансы сотрудника завершены.', {company: form.company}) }}</p>
         <p v-if="form.kind === 'archive'" class="form-note wide">{{ tx('Вход, сеансы, Telegram и все назначения будут отключены. Документы и журнал сохранят автора.') }}</p>
-        <p v-if="['password', 'restore', 'create'].includes(form.kind)" class="form-note wide">{{ tx('Будет создан случайный временный пароль (20 символов). При первом входе сотрудник обязан его сменить.') }}</p>
+        <p v-if="['password', 'restore', 'create'].includes(form.kind)" class="form-note wide">{{ tx('Будет создан случайный постоянный пароль (20 символов). Обязательной смены при входе нет.') }}</p>
         <label class="wide">{{ tx('Причина') }}<textarea v-model="form.reason" minlength="10" maxlength="1000" required></textarea></label>
         <p v-if="error" class="error wide" role="alert">{{ tx(error) }}</p>
         <div class="form-actions wide"><button type="button" class="secondary" :disabled="busy" @click="form = null">{{ tx('Отмена') }}</button><button :disabled="busy">{{ busy ? tx('Сохраняем…') : tx('Подтвердить') }}</button></div>

@@ -12,7 +12,7 @@ const original = () => ({id:7,company_id:2,revision:4,can_edit:true,native_model
   metrics:[{key:'investment',label:'Investment',sheet:'Calc',cell:'B3',original:100,unit:'USD'}]}});
 test('native view preserves original values and sends only explicitly entered native parameters',async t=>{
   const project=original(), calls=[];
-  const view=mount(component,{company,project,api:async(url,options)=>{calls.push({url,options});return project;}}); t.after(view.unmount);
+  const view=mount(component,{canDownload:true,company,project,api:async(url,options)=>{calls.push({url,options});return project;}}); t.after(view.unmount);
   await settle(); assert.match(text(view.container),/100 USD/); assert.match(text(view.container),/Ещё не пересчитано/);
   view.state.parameters['Input!B2']=150; await view.state.calculate();
   assert.equal(calls[0].url,'/api/business-projects/7/native/preview?company_id=2');
@@ -22,15 +22,24 @@ test('native view preserves original values and sends only explicitly entered na
 test('unresolved native formulas block publishing, show the cell and hide stale downloads after parameter edits',async t=>{
   const project=original();project.native_model.preview={blocked:true,formula_count:10,error_count:1,issues:[{sheet:'Calc',cell:'B3',error:'#REF!',message:'Восстановите ссылку.'}]};
   project.native_model.metrics[0].calculated='#REF!';
-  const view=mount(component,{company,project,api:async()=>project});t.after(view.unmount);await settle();
+  const view=mount(component,{canDownload:true,company,project,api:async()=>project});t.after(view.unmount);await settle();
   assert.match(text(view.container),/нельзя публиковать/);assert.match(text(view.container),/Calc!B3/);assert.match(text(view.container),/#REF!/);
   assert.equal(find(view.container,n=>n.tag==='a').props.href,'/api/business-projects/7/native.xlsx?company_id=2&revision=4');
   view.state.parameters['Input!B2']=110;await settle();assert.equal(find(view.container,n=>n.tag==='a'),undefined);
 });
 test('readonly native view cannot submit changes or expose private recalculated download',async t=>{
   const project=original();project.can_edit=false;project.native_model.preview={blocked:false,formula_count:10,error_count:0,issues:[]};
-  const calls=[];const view=mount(component,{company,project,api:async(...args)=>calls.push(args)});t.after(view.unmount);await settle();
+  const calls=[];const view=mount(component,{canDownload:true,company,project,api:async(...args)=>calls.push(args)});t.after(view.unmount);await settle();
   await view.state.calculate();assert.equal(calls.length,0);assert.equal(find(view.container,n=>n.tag==='form'||n.tag==='a'),undefined);
+});
+
+test('editable native reports expose no current, previous or recalculated files without download rights',async t=>{
+  const project=original();project.native_model.preview={blocked:false,formula_count:10,error_count:0,issues:[]};
+  project.generations=[{id:5,native:true,revision:4,business_archive:{id:11,company_id:2,status:'ready'}}];
+  project.current_generation_id=5;project.status='ready';
+  const view=mount(component,{canDownload:false,company,project,api:async()=>project});t.after(view.unmount);await settle();
+  assert.match(text(view.container),/100 USD/);
+  assert.equal(all(view.container,node=>node.tag==='a').length,0);
 });
 
 const readyOriginal = () => {
@@ -47,7 +56,7 @@ const publishedOriginal = project => ({...project,status:'ready',inputs:{...proj
 test('native preparation requires an explicit month and generates using the preview response revision and editable parameters',async t=>{
   const project=readyOriginal(),calls=[],events=[];
   const checked={...project,revision:5}, response=publishedOriginal(checked);
-  const view=mount(component,{company,project,onUpdated:value=>events.push(['updated',value]),onGenerated:()=>events.push(['generated']),
+  const view=mount(component,{canDownload:true,company,project,onUpdated:value=>events.push(['updated',value]),onGenerated:()=>events.push(['generated']),
     api:async(url,options)=>{calls.push({url,options});return url.includes('/preview?')?checked:response;}});t.after(view.unmount);await settle();
   assert.equal(view.state.reportStart,'');
   const calendar=find(view.container,node=>node.tag==='input'&&node.props.type==='month');
@@ -71,7 +80,7 @@ test('native preparation refreshes edited parameters and stops on fresh blocking
     const project=readyOriginal(),calls=[];
     if(scenario==='blocked')project.native_model.preview.blocked=true;
     if(scenario==='readonly')project.can_edit=false;
-    const view=mount(component,{company,project,api:async(...args)=>{calls.push(args);return project;}});t.after(view.unmount);await settle();
+    const view=mount(component,{canDownload:true,company,project,api:async(...args)=>{calls.push(args);return project;}});t.after(view.unmount);await settle();
     view.state.reportStart='2028-04';
     if(scenario==='changed')view.state.parameters['Input!B2']=101;
     await view.state.generate();assert.equal(calls.length,scenario==='readonly'?0:scenario==='blocked'?1:2,scenario);
@@ -92,7 +101,7 @@ test('native primary report has one PDF and one Excel with secondary TEO and clo
     {id:31,native:true,business_archive:archive(310),teo_archive:archive(311)},
     {id:20,native:false,business_archive:archive(200),teo_archive:archive(201)},
   ];
-  const view=mount(component,{company,project,api:async()=>project});t.after(view.unmount);await settle();
+  const view=mount(component,{canDownload:true,company,project,api:async()=>project});t.after(view.unmount);await settle();
   const results=find(view.container,node=>node.props?.class==='native-results');
   const downloads=all(results,node=>node.tag==='a'&&String(node.props.href).startsWith('/api/report-archives/'));
   assert.deepEqual(downloads.map(node=>node.props.href),[
@@ -111,14 +120,14 @@ test('native report links cannot expose another company or a deleted archive and
     project.generations=[{id:31,native:scenario!=='generic',
       business_archive:{id:310,company_id:scenario==='foreign'?3:2,status:scenario==='deleted'?'deleted':'ready'},
       teo_archive:{id:311,company_id:scenario==='foreign'?3:2,status:scenario==='deleted'?'deleted':'ready'}}];
-    const view=mount(component,{company,project,api:async()=>project});t.after(view.unmount);await settle();
+    const view=mount(component,{canDownload:true,company,project,api:async()=>project});t.after(view.unmount);await settle();
     assert.equal(all(view.container,node=>node.tag==='a'&&String(node.props.href).startsWith('/api/report-archives/')).length,0,scenario);
   }
 });
 
 test('native generation suppresses a duplicate in-flight submit and reports server failure without altering original figures',async t=>{
   const project=readyOriginal(),calls=[],events=[];let reject;
-  const view=mount(component,{company,project,onGenerated:()=>events.push('generated'),api:async(...args)=>{
+  const view=mount(component,{canDownload:true,company,project,onGenerated:()=>events.push('generated'),api:async(...args)=>{
     calls.push(args);return new Promise((resolve,fail)=>{reject=fail;});}});t.after(view.unmount);await settle();
   view.state.reportStart='2028-04';
   const pending=view.state.generate();await settle();
@@ -145,7 +154,7 @@ test('native groups convert percentages to fractions, preserve blanks and keep l
     ...['B5','B6','B7','B10'].map(cell=>({key:'Раб_капит!'+cell,sheet:'Раб_капит',cell,label:'Days '+cell,value:30,unit:'дней',min:1})),
     ...['AA7','AA8','AA10'].map(cell=>({key:'РКЛ!'+cell,sheet:'РКЛ',cell,label:'Locked '+cell,value:6,editable:false})),
   ];
-  const view=mount(component,{company,project,api:async(url,options)=>{calls.push({url,...options});return project;}});t.after(view.unmount);await settle();
+  const view=mount(component,{canDownload:true,company,project,api:async(url,options)=>{calls.push({url,...options});return project;}});t.after(view.unmount);await settle();
   assert.equal(all(view.container,node=>Object.hasOwn(node.props||{},'data-native-group')).length,4);
   assert.equal(all(view.container,node=>node.tag==='input'&&node.props.inputmode==='decimal').length,10);
   assert.equal(view.state.parameters['РКЛ!AA6'],'12');
@@ -166,7 +175,7 @@ test('native report remains available as a labelled previous calculation after e
   const project=reactive(readyOriginal());project.status='ready';project.inputs={start:'2028-04-01'};project.current_generation_id=31;
   const archive=id=>({id,company_id:2,status:'ready'});
   project.generations=[{id:31,revision:4,native:true,business_archive:archive(310),teo_archive:archive(311)}];
-  const view=mount(component,{company,project,api:async()=>project});t.after(view.unmount);await settle();
+  const view=mount(component,{canDownload:true,company,project,api:async()=>project});t.after(view.unmount);await settle();
   assert.equal(view.state.stale,false);assert.equal(find(view.container,node=>node.props?.class==='native-results').tag,'section');
   view.state.parameters['Input!B2']=101;await settle();
   assert.equal(view.state.stale,true);assert.match(text(view.container),/Предыдущая сохранённая версия/);
@@ -181,7 +190,7 @@ test('native report remains available as a labelled previous calculation after e
 test('native preparation never generates after a foreign preview response or after the view unmounts',async t=>{
   for(const unmount of [false,true]){
     const project=readyOriginal(),calls=[];let resolve;
-    const view=mount(component,{company,project,api:async(...args)=>{calls.push(args);return new Promise(done=>{resolve=done;});}});
+    const view=mount(component,{canDownload:true,company,project,api:async(...args)=>{calls.push(args);return new Promise(done=>{resolve=done;});}});
     t.after(view.unmount);await settle();view.state.reportStart='2028-04';
     const pending=view.state.generate();await settle();
     if(unmount)view.unmount();
@@ -193,7 +202,7 @@ test('native preparation never generates after a foreign preview response or aft
 
 test('native missing summary names parameters and archive month without default amounts, and attempts add accessible helpers',async t=>{
   const project=readyOriginal();project.native_model.parameters[0].value=null;project.native_model.parameters[0].label='Новый кредит';project.native_model.parameters[1].value=null;
-  const calls=[];const view=mount(component,{company,project,stage:'report',api:async(...args)=>{calls.push(args);return project;}});t.after(view.unmount);await settle();
+  const calls=[];const view=mount(component,{canDownload:true,company,project,stage:'report',api:async(...args)=>{calls.push(args);return project;}});t.after(view.unmount);await settle();
   assert.deepEqual(view.state.missingFields.map(item=>item.label),['Новый кредит','Первый месяц периода в архиве']);assert.equal(view.state.parameters['Input!B2'],'');assert.equal(view.state.reportStart,'');
   const summary=find(view.container,node=>node.props?.['aria-labelledby']==='native-missing-title');assert.match(text(summary),/Новый кредит/);assert.doesNotMatch(text(summary),/Read only source/);
   const prepare=find(view.container,node=>node.tag==='button'&&text(node).includes('Подготовить бизнес-план'));assert.equal(prepare.props.disabled,false);
@@ -242,7 +251,7 @@ test('ready native responses require the current published archive before claimi
 });
 
 test('native missing-field navigation opens the correct group and focuses its input',async t=>{
-  const project=readyOriginal(),events=[];const view=mount(component,{company,project,onData:()=>events.push('data'),onReport:()=>events.push('report'),api:async()=>project});t.after(view.unmount);await settle();
+  const project=readyOriginal(),events=[];const view=mount(component,{canDownload:true,company,project,onData:()=>events.push('data'),onReport:()=>events.push('report'),api:async()=>project});t.after(view.unmount);await settle();
   const group={tagName:'DETAILS',open:false,parentElement:null};let focused=false,scrolled=false;const target={parentElement:group,getAttribute:()=> 'Input!B2',focus:()=>{focused=true;},scrollIntoView:()=>{scrolled=true;}};
   view.state.nativeForm={querySelectorAll:()=>[target]};await view.state.goToField('Input!B2');assert.equal(group.open,true);assert.equal(focused,true);assert.equal(scrolled,true);assert.deepEqual(events,['data']);
   await view.state.goToField('period');assert.deepEqual(events,['data','report']);

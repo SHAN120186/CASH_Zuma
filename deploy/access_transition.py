@@ -242,7 +242,7 @@ def apply(db, plan, folder, backup):
         for a in actions['create']:
             password = access.temporary_password()
             holding = a['section'] == 'HOLDING'
-            u = db.User(username=a['login'], name=a['name'], password_hash=hash_password(password), role=a['role'], must_change_password=True)
+            u = db.User(username=a['login'], name=a['name'], password_hash=hash_password(password), role=a['role'], must_change_password=False)
             s.add(u)
             s.flush()
             if not holding:

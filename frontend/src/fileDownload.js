@@ -7,6 +7,13 @@ export function isAppFileLink(url, origin) {
     /(?:\/files\/(?:pdf|xlsx)$|\/sources\/\d+\/download$|\/(?:native|template)\.xlsx$|\/document(?:\/|$)|\/(?:documents|request-documents)\/\d+$|\/(?:export|exports)(?:\/|\.|$)|\.(?:csv|xlsx|pdf)$)/.test(parsed.pathname);
 }
 
+// Request attachments use request visibility; the server verifies company and reader access.
+export function isRequestDocumentLink(url, origin) {
+  let parsed;
+  try {parsed=new URL(url,origin);} catch {return false;}
+  return parsed.origin===origin && /^\/api\/request-documents\/\d+$/.test(parsed.pathname);
+}
+
 // The fallback name ("отчёт") follows the interface language; names sent by the server are kept as is.
 export function downloadFilename(disposition='', fallback=tx('отчёт')) {
   const encoded=/filename\*\s*=\s*UTF-8''([^;]+)/i.exec(disposition);

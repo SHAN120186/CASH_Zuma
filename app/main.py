@@ -36,7 +36,7 @@ async def lifespan(app):
     drop_shadowed_groups()
     drop_orphan_groups()
     yield
-app=FastAPI(title='UZGERMED Treasury',version='2.18.0',docs_url=None,redoc_url=None,openapi_url=None,lifespan=lifespan)
+app=FastAPI(title='UZGERMED Treasury',version='2.20.0',docs_url=None,redoc_url=None,openapi_url=None,lifespan=lifespan)
 app.add_middleware(TrustedHostMiddleware,allowed_hosts=ALLOWED)
 app.mount('/static',StaticFiles(directory=ROOT/'app'/'static'),name='static')
 
@@ -46,8 +46,8 @@ async def safety(request,call_next):
         try:length=int(request.headers.get('content-length','0' if request.method=='DELETE' else '-1'))
         except ValueError:length=-1
         archive_file=bool(re.fullmatch(r'/api/(?:bot/v1/)?report-archives/[0-9]+/files/(?:pdf|xlsx)',request.url.path)) or bool(re.fullmatch(r'/api/business-projects/[0-9]+/sources',request.url.path))
-        business_params=bool(re.fullmatch(r'/api/business-projects/[0-9]+/(?:generate|analyse|inputs)',request.url.path))
-        limit=MAX_SIZE if request.url.path=='/api/model/upload' or archive_file else 1024*1024 if business_params else 5*1024*1024 if request.url.path in ('/api/import/preview','/api/plan-import/preview') or request.url.path.endswith('/document') or '/documents' in request.url.path else 65536
+        business_params=bool(re.fullmatch(r'/api/business-projects/[0-9]+/(?:generate|analyse|inputs|native/(?:preview|generate))',request.url.path))
+        limit=MAX_SIZE if request.url.path in ('/api/model/upload','/api/financial-statements/upload') or archive_file else 1024*1024 if business_params else 5*1024*1024 if request.url.path in ('/api/import/preview','/api/plan-import/preview') or request.url.path.endswith('/document') or '/documents' in request.url.path else 65536
         if length<0 or length>limit:return JSONResponse({'detail':'Неверный размер запроса.'},status_code=413)
         origin=request.headers.get('origin')
         expected=PUBLIC_ORIGIN or str(request.base_url).rstrip('/')
@@ -114,10 +114,10 @@ class UserIn(Input):
     username:str=Field(pattern=r'^[a-zA-Z0-9_.-]{3,80}$')
     name:str=Field(min_length=2,max_length=160)
     password:str=Field(min_length=12,max_length=128)
-    role:Literal['admin','founder','director','finance','accountant','employee','auditor','cashier','operator','investor','material_accountant','procurement']
+    role:Literal['admin','founder','director','finance','accountant','employee','auditor','cashier','operator','investor','material_accountant','procurement','sales']
 class UserEdit(Input):
     model_config=ConfigDict(extra='forbid',str_strip_whitespace=False)
-    role:Literal['admin','founder','director','finance','accountant','employee','auditor','cashier','operator','investor','material_accountant','procurement']
+    role:Literal['admin','founder','director','finance','accountant','employee','auditor','cashier','operator','investor','material_accountant','procurement','sales']
     active:bool
     password:str=Field(default='',max_length=128)
 class PasswordIn(Input):
@@ -174,6 +174,8 @@ class ReceiptIn(Input):
     account_id:int
     category_id:int
     counterparty:str=Field(min_length=2,max_length=160)
+    inn:str=Field(default='',max_length=20,pattern=r'^\d*$')
+    version:Optional[int]=None
     amount:str
     date:date
     note:str=Field(default='',max_length=2000)
@@ -275,23 +277,26 @@ def bootstrap(request:Request):
         user,session=session_user(s,request)
         companies=[{'id':x.id,'code':x.code,'name':x.name} for x in available_companies(s,user)]
         a=[{'id':a.id,'name':a.name,'kind':a.kind,'currency':a.currency,'company_id':a.company_id,'opening_date':str(a.opening_date)} for a in s.scalars(select(Account).where(Account.archived==False).order_by(Account.name))]
-        c=[{'id':c.id,'name':c.name,'activity':c.activity,'type':c.type} for c in s.scalars(select(Category).order_by(Category.id))]
-        # Контрагенты собраны из операций и чужих заявок: только тем, кто видит реестр.
-        cp=[{'name':x.name,'inn':x.inn} for x in s.scalars(select(Counterparty).order_by(Counterparty.name).limit(1000))] if {'view','ledger'}&perms_of(user) else []
+        categories=select(Category).order_by(Category.id)
+        if company_role(user)=='sales' and user.role not in HOLDING_ROLES:
+            categories=categories.where(Category.type=='income')
+        c=[{'id':c.id,'name':c.name,'activity':c.activity,'type':c.type} for c in s.scalars(categories)]
+        # Реестр и разрешённые пользователи планов получают справочник своей компании.
+        cp=[{'id':x.id,'name':x.name,'inn':x.inn} for x in s.scalars(select(Counterparty).order_by(Counterparty.name).limit(1000))] if {'view','ledger','receipts','counterparties'}&perms_of(user) else []
         return {'accounts':a,'companies':companies,'categories':c,'counterparties':cp,'roles':ROLES,'today':str(today()),
                 'due_minimums':due_minimums(s,today()),'user':user_json(user),'csrf':session.csrf}
 
-def remember_counterparty(s,name):
+def remember_counterparty(s,name,inn=''):
     """Справочник пополняется автоматически при вводе документов."""
     name=(name or '').strip()
     if len(name)<2 or len(name)>160:return
-    if not s.scalar(select(Counterparty.id).where(Counterparty.name==name)):s.add(Counterparty(name=name))
+    if not s.scalar(select(Counterparty.id).where(Counterparty.name==name)):s.add(Counterparty(name=name,inn=inn))
 
 @app.get('/api/dashboard')
 def get_dashboard(request:Request,currency:Literal['UZS','USD','EUR']='UZS',days:int=30):
     if days not in (7,30,90):raise HTTPException(422,'Период: 7, 30 или 90 дней.')
     with unit() as s:
-        session_user(s,request,'view');return dashboard(s,currency,days)
+        session_user(s,request,('view','overview','calendar'));return dashboard(s,currency,days)
 
 @app.get('/api/accounts')
 def accounts(request:Request,archived:bool=False):
@@ -573,22 +578,57 @@ def decide(id:int,data:DecisionIn,request:Request):
 @app.get('/api/receipts')
 def get_receipts(request:Request):
     with unit() as s:
-        session_user(s,request,'view')
+        user,_=session_user(s,request,('view','overview','calendar'))
         result=[]
-        for r in s.scalars(select(Receipt).order_by(Receipt.id.desc()).limit(500)):
+        for r in s.scalars(select(Receipt).where(Receipt.status!='cancelled').order_by(Receipt.id.desc()).limit(500)):
             a=get(s,Account,r.account_id)
             result.append({'id':r.id,'account_id':a.id,'account':a.name,'currency':a.currency,'category_id':r.category_id,
-                'counterparty':r.counterparty,'amount':money(r.amount),'date':str(r.due_date),'note':r.note,'status':r.status})
+                'counterparty':r.counterparty,'inn':r.inn,'version':r.version,'amount':money(r.amount),'date':str(r.due_date),'note':r.note,'status':r.status,
+                'can_edit':r.status=='expected' and 'receipt_edit' in perms_of(user),
+                'can_delete':r.status=='expected' and 'receipt_delete' in perms_of(user)})
         return result
 @app.post('/api/receipts')
 def add_receipt(data:ReceiptIn,request:Request):
     with unit(True) as s:
-        u,_=session_user(s,request,'schedule');a=get(s,Account,data.account_id);get(s,Category,data.category_id)
+        u,_=session_user(s,request,('schedule','receipts'));a=get(s,Account,data.account_id);category=get(s,Category,data.category_id)
+        if 'schedule' not in perms_of(u) and category.type!='income':
+            raise HTTPException(422,'Для плана поступления выберите доходную статью.')
         if a.archived:raise HTTPException(409,'Счёт в архиве.')
         if data.date<a.opening_date:raise HTTPException(422,'Дата раньше начала учёта счёта.')
-        r=Receipt(account_id=a.id,category_id=data.category_id,counterparty=data.counterparty,amount=amount(data.amount),due_date=data.date,note=data.note,creator_id=u.id)
-        remember_counterparty(s,data.counterparty)
+        r=Receipt(account_id=a.id,category_id=data.category_id,counterparty=data.counterparty,inn=data.inn,amount=amount(data.amount),due_date=data.date,note=data.note,creator_id=u.id)
+        remember_counterparty(s,data.counterparty,data.inn)
         s.add(r);s.flush();log(s,u,'План поступления','receipt',r.id,data.counterparty);return {'id':r.id}
+
+@app.put('/api/receipts/{id}')
+def edit_receipt(id:int,data:ReceiptIn,request:Request):
+    with unit(True) as s:
+        u,_=session_user(s,request,'receipt_edit');r=get(s,Receipt,id)
+        if r.status!='expected':raise HTTPException(409,'Полученное поступление нельзя изменить как план.')
+        if data.version!=r.version:raise HTTPException(409,'План поступления изменён. Обновите данные и повторите правку.')
+        a=get(s,Account,data.account_id);c=get(s,Category,data.category_id)
+        if c.type!='income':raise HTTPException(422,'Для плана поступления выберите доходную статью.')
+        if a.archived:raise HTTPException(409,'Счёт в архиве.')
+        if data.date<a.opening_date:raise HTTPException(422,'Дата раньше начала учёта счёта.')
+        before={'amount':money(r.amount),'counterparty':r.counterparty,'inn':r.inn,'date':str(r.due_date),'note':r.note}
+        for key in ('account_id','category_id','counterparty','inn','note'):setattr(r,key,getattr(data,key))
+        r.amount=amount(data.amount);r.due_date=data.date
+        remember_counterparty(s,data.counterparty,data.inn)
+        s.flush();log(s,u,'Изменён план поступления','receipt',r.id,json.dumps({'before':before,'after':data.model_dump(mode='json')},ensure_ascii=False))
+        return {'id':r.id,'version':r.version}
+
+@app.delete('/api/receipts/{id}')
+def delete_receipt(id:int,request:Request,version:int=Query(ge=1)):
+    with unit(True) as s:
+        u,_=session_user(s,request,'receipt_delete');r=get(s,Receipt,id)
+        if r.status!='expected' or s.scalar(select(Ledger.id).where(Ledger.receipt_id==id).limit(1)):
+            raise HTTPException(409,'Удалить можно только ожидаемое поступление.')
+        if version!=r.version:raise HTTPException(409,'План поступления изменён. Обновите данные и повторите правку.')
+        before={'account_id':r.account_id,'category_id':r.category_id,'amount':money(r.amount),
+                'counterparty':r.counterparty,'inn':r.inn,'date':str(r.due_date),'note':r.note,'version':r.version}
+        # Remove only the forecast; keep the original record and its author for audit.
+        r.status='cancelled';s.flush()
+        log(s,u,'Удалён план поступления','receipt',r.id,json.dumps(before,ensure_ascii=False))
+        return {'id':r.id,'version':r.version,'status':r.status}
 
 @app.get('/api/ledger')
 def ledger_list(request:Request,date_from:Optional[date]=None,date_to:Optional[date]=None,currency:Optional[Literal['UZS','USD','EUR']]=None,q:str='',page:int=Query(1,ge=1),page_size:int=Query(10,ge=1,le=100),paginated:bool=False):
@@ -718,7 +758,7 @@ def group_report(request:Request,company_id:int,currency:Literal['UZS','USD','EU
 @app.get('/api/export/ledger.csv')
 def export_ledger(request:Request):
     with unit() as s:
-        session_user(s,request,'export');out=io.StringIO();w=csv.writer(out,delimiter=';');w.writerow(['ID','Дата','Тип','Счёт','Валюта','Сумма','Контрагент','Документ','Комментарий'])
+        u,_=session_user(s,request,'export');require_permission(u,'download');out=io.StringIO();w=csv.writer(out,delimiter=';');w.writerow(['ID','Дата','Тип','Счёт','Валюта','Сумма','Контрагент','Документ','Комментарий'])
         def safe(x):
             v=str(x or '');return "'"+v if v[:1] in ('=','+','-','@','\t','\r') else v
         for t in s.scalars(select(Ledger).order_by(Ledger.date,Ledger.id)):
@@ -783,7 +823,7 @@ def users(request:Request):
 class CompanyUserIn(Input):
     username:str=Field(min_length=3,max_length=80)
     # Роль в выбранной компании; для администратора холдинга это отдельное финансовое назначение.
-    role:Optional[Literal['director','finance','accountant','employee','auditor','cashier','operator','investor','material_accountant','procurement']]=None
+    role:Optional[Literal['director','finance','accountant','employee','auditor','cashier','operator','investor','material_accountant','procurement','sales']]=None
 
 @app.post('/api/company-users')
 def grant_company_access(data:CompanyUserIn,request:Request):
@@ -899,3 +939,11 @@ from .business_projects import router as business_projects_router
 app.include_router(business_projects_router)
 from .native_projects import router as native_projects_router
 app.include_router(native_projects_router)
+from .financial_statements import router as financial_statements_router
+app.include_router(financial_statements_router)
+from .ifrs_rating import router as ifrs_rating_router
+app.include_router(ifrs_rating_router)
+from .business_templates import router as business_templates_router
+app.include_router(business_templates_router)
+from .counterparties_api import router as counterparties_router
+app.include_router(counterparties_router)

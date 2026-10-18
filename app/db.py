@@ -202,11 +202,14 @@ class Receipt(Base):
     account_id = Column(Integer, ForeignKey('accounts.id'), nullable=False)
     category_id = Column(Integer, ForeignKey('categories.id'), nullable=False)
     counterparty = Column(String(160), nullable=False)
+    inn = Column(String(20), nullable=False, default='')
+    version = Column(Integer, nullable=False, default=1)
     amount = Column(BigInteger, nullable=False)
     due_date = Column(Date, nullable=False)
     note = Column(Text, nullable=False, default='')
     creator_id = Column(Integer, ForeignKey('users.id'), nullable=False)
     status = Column(String(20), nullable=False, default='expected')
+    __mapper_args__ = {'version_id_col': version}
 
 class Ledger(Base):
     __tablename__ = 'ledger'
@@ -236,6 +239,34 @@ class ModelVersion(Base):
     imported_at = Column(DateTime, nullable=False, default=now)
     source = Column(String(240), nullable=False)
     snapshot = Column(Text, nullable=False)
+
+class IfrsRatingSource(Base):
+    """Private Drive rating snapshot, independent of PNL/balance source selection."""
+    __tablename__ = 'ifrs_rating_sources'
+    id = Column(Integer, primary_key=True)
+    company_id = Column(Integer, ForeignKey('companies.id'), nullable=False)
+    created_by = Column(Integer, ForeignKey('users.id'), nullable=False)
+    filename = Column(String(220), nullable=False)
+    sha256 = Column(String(64), nullable=False)
+    size = Column(BigInteger, nullable=False)
+    created_at = Column(DateTime, default=now, nullable=False)
+    content = deferred(Column(LargeBinary, nullable=False))
+    __table_args__ = (UniqueConstraint('company_id', 'sha256'),)
+
+
+class FinancialStatementSource(Base):
+    """Immutable private workbook and review snapshot; never posted accounting data."""
+    __tablename__ = 'financial_statement_sources'
+    id = Column(Integer, primary_key=True)
+    company_id = Column(Integer, ForeignKey('companies.id'), nullable=False)
+    created_by = Column(Integer, ForeignKey('users.id'), nullable=False)
+    filename = Column(String(220), nullable=False)
+    sha256 = Column(String(64), nullable=False)
+    size = Column(BigInteger, nullable=False)
+    created_at = Column(DateTime, default=now, nullable=False)
+    snapshot = Column(Text, nullable=False)
+    content = deferred(Column(LargeBinary, nullable=False))
+    __table_args__ = (UniqueConstraint('company_id', 'sha256'),)
 
 class ReportArchive(Base):
     """Private immutable pair of prepared PDF/XLSX reports; never a financial ledger."""
@@ -297,6 +328,25 @@ class BusinessSourceFile(Base):
     content = deferred(Column(LargeBinary, nullable=False))
     uploaded_at = Column(DateTime, nullable=False, default=now)
     __table_args__ = (UniqueConstraint('project_id', 'relative_path'),)
+
+class BusinessTemplate(Base):
+    """Private immutable Excel/Word pair, reusable by its author in one company."""
+    __tablename__ = 'business_templates'
+    id = Column(Integer, primary_key=True)
+    company_id = Column(Integer, ForeignKey('companies.id'), nullable=False)
+    created_by = Column(Integer, ForeignKey('users.id'), nullable=False)
+    title = Column(String(160), nullable=False)
+    request_key = Column(String(36), nullable=False)
+    xlsx_name = Column(String(220), nullable=False)
+    xlsx_sha256 = Column(String(64), nullable=False)
+    xlsx_size = Column(Integer, nullable=False)
+    xlsx_content = deferred(Column(LargeBinary, nullable=False))
+    docx_name = Column(String(220), nullable=False)
+    docx_sha256 = Column(String(64), nullable=False)
+    docx_size = Column(Integer, nullable=False)
+    docx_content = deferred(Column(LargeBinary, nullable=False))
+    created_at = Column(DateTime, nullable=False, default=now)
+    __table_args__ = (UniqueConstraint('company_id', 'request_key'),)
 
 class BusinessGeneration(Base):
     """Immutable calculated inputs/results and two archive pairs for each revision."""
@@ -493,6 +543,12 @@ def initialize():
         columns={c['name'] for c in inspect(conn).get_columns('users')}
         if 'role_id' not in columns:conn.execute(text('ALTER TABLE users ADD COLUMN role_id INTEGER REFERENCES roles(id)'))
         if 'must_change_password' not in columns:conn.execute(text('ALTER TABLE users ADD COLUMN must_change_password BOOLEAN NOT NULL DEFAULT FALSE'))
+        # Постоянные пароли: снимаем только требование смены, не меняя хеши,
+        # логины, назначения, Telegram или действующие сеансы.
+        conn.execute(text('UPDATE users SET must_change_password=FALSE WHERE active=TRUE AND must_change_password=TRUE'))
+        receipt_columns={c['name'] for c in inspect(conn).get_columns('expected_receipts')}
+        if 'inn' not in receipt_columns:conn.execute(text("ALTER TABLE expected_receipts ADD COLUMN inn VARCHAR(20) NOT NULL DEFAULT ''"))
+        if 'version' not in receipt_columns:conn.execute(text('ALTER TABLE expected_receipts ADD COLUMN version INTEGER NOT NULL DEFAULT 1'))
         columns={c['name'] for c in inspect(conn).get_columns('categories')}
         if 'cost_group' not in columns:conn.execute(text("ALTER TABLE categories ADD COLUMN cost_group VARCHAR(12) NOT NULL DEFAULT 'other'"))
         if 'type' not in columns:

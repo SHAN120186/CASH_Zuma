@@ -4,6 +4,9 @@ export default {
   // Request statuses, stages and route (workflow.js)
   'Утверждена': 'Tasdiqlangan',
   'Оплачена': 'Toʻlangan',
+  'Заявка оплачена.': 'Ariza boʻyicha toʻlov amalga oshirildi.',
+  'Оплата записана. Не удалось обновить данные. Нажмите «Обновить данные», оплату повторять не нужно.': 'Toʻlov qayd etildi. Maʼlumotlarni yangilab boʻlmadi. «Maʼlumotlarni yangilash» tugmasini bosing, toʻlovni takrorlash kerak emas.',
+  'Изменения сохранены. Не удалось обновить данные. Нажмите «Обновить данные», повторно сохранять не нужно.': 'Oʻzgarishlar saqlandi. Maʼlumotlarni yangilab boʻlmadi. «Maʼlumotlarni yangilash» tugmasini bosing, qayta saqlash kerak emas.',
   'На доработке': 'Qayta ishlashda',
   'Закрыта без оплаты': 'Toʻlovsiz yopilgan',
   'Отклонена (архив)': 'Rad etilgan (arxiv)',
@@ -212,8 +215,8 @@ export default {
   'Директор — по политике статьи': 'Direktor — modda siyosati boʻyicha',
   'Политика фиксируется при отправке заявки: поздняя правка справочника маршрут уже отправленной заявки не меняет. Нет политики или порога валюты — директор утверждает любую сумму.':
     'Siyosat ariza yuborilganda qayd etiladi: maʼlumotnomaning keyingi tahriri yuborilgan ariza yoʻnalishini oʻzgartirmaydi. Siyosat yoki valyuta chegarasi boʻlmasa, direktor istalgan summani tasdiqlaydi.',
-  'Банк — расчётный бухгалтер, касса — кассир. Автор, редактор, проверявший бухгалтер и согласующие заявку не оплачивают.':
-    'Bank — hisob-kitob buxgalteri, kassa — kassir. Muallif, tahrirlovchi, tekshirgan buxgalter va arizani kelishganlar toʻlovni amalga oshirmaydi.',
+  'Банк — расчётный бухгалтер, в том числе проверявший заявку; касса — кассир. Автор, редакторы, финансовый директор и директор заявку не оплачивают.':
+    'Bank — hisob-kitob buxgalteri, shu jumladan arizani tekshirgan buxgalter; kassa — kassir. Muallif, tahrirlovchilar, moliya direktori va direktor arizani toʻlamaydi.',
   'Политика директора по статьям': 'Moddalar boʻyicha direktor siyosati',
   'Порог по умолчанию для обычных статей: {uzs} UZS и {usd} USD; EUR без порога — директор всегда.':
     'Oddiy moddalar uchun standart chegara: {uzs} UZS va {usd} USD; EUR uchun chegara yoʻq — direktor har doim ishtirok etadi.',
