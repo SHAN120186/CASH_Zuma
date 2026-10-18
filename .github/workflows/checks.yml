@@ -24,6 +24,7 @@ jobs:
       - run: python -m unittest tests.test_business_projects -q
       - run: python -m unittest tests.test_business_templates -q
       - run: python tests/test_site.py
+      - run: python -m unittest tests.test_request_delete -q
       - run: python tests/test_access.py
       - run: python -m unittest tests.test_role_downloads -q
       - run: python -m unittest tests.test_future_reservations -q
@@ -63,6 +64,7 @@ jobs:
       - run: python -m pip install -r requirements-tested.txt
       # Separate processes avoid the suites' temporary DATA_DIR cleanup affecting each other.
       - run: python tests/test_site.py
+      - run: python -m unittest tests.test_request_delete -q
       - run: python tests/test_access.py
       - run: python -m unittest tests.test_role_downloads -q
       - run: python tests/test_bot_api.py

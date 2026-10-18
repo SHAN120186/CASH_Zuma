@@ -69,4 +69,9 @@ class RequestDeleteTests(base.SiteTests):
         self.assertIsNone(self.row(rid))
         with unit() as s:self.assertEqual(s.get(PaymentRequest,rid).status,'deleted')
 
+def load_tests(loader, tests, pattern):
+    return unittest.TestSuite(RequestDeleteTests(name) for name in RequestDeleteTests.__dict__ if name.startswith('test_'))
+
+def tearDownModule():base.tearDownModule()
+
 if __name__=='__main__':unittest.main()
