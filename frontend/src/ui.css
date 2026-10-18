@@ -714,3 +714,13 @@ button:active:not(:disabled),.button:active{transform:translateY(1px)}
 :root{--backdated:#C2410C}
 .backdated,.backdated *{color:var(--backdated)!important}
 .rq-card.backdated{border-color:color-mix(in srgb,var(--backdated) 45%,transparent)}
+/* ===== Отчёты: крупнее текст и значения итогов (2.25.1) =====
+   Только размеры. Цвета, отступы и структура берутся из текущих токенов и правил. */
+table.cf{font-size:14px}
+.cf thead th{font-size:13px}
+.cf thead tr+tr th{font-size:12px}
+.cf tr.r-sub{font-size:12px}
+.tile .k{font-size:13px}
+.tile .v{font-size:28px}
+.tile .v small{font-size:13px}
+.tile .d{font-size:13px}
