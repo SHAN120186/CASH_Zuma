@@ -51,7 +51,7 @@ def visible(s, u, id):
 
 def can_edit(u, r):
     perms = perms_of(u)
-    return 'request' in perms and (r.creator_id == u.id or 'request_edit' in perms)
+    return 'request_edit' in perms or ('request' in perms and r.creator_id == u.id)
 
 
 STAGE_ROLE = {'check': 'accountant', 'finance': 'finance', 'director': 'director'}

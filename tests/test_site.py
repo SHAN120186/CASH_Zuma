@@ -1694,7 +1694,7 @@ class SiteTests(unittest.TestCase):
             old=s.get(PaymentRequest,rid);old.status='rejected';old.finance_approved_by=None
         listed=self.client.get('/api/requests?state=rejected').json()
         self.assertEqual([x['id'] for x in listed],[rid])
-        row=listed[0];self.assertEqual(row['actions'],[])
+        row=listed[0];self.assertEqual(row['actions'],['delete'])
         data={k:row[k] for k in ('company_id','account_id','channel','currency','category_id','counterparty','amount','date','purpose','priority','version')}
         data.update(status='pending',reason='Попытка вернуть отклонённую заявку')
         self.assertEqual(self.client.put(f'/api/requests/{rid}',json=data,headers=self.h).status_code,409)
@@ -2507,7 +2507,7 @@ class SiteTests(unittest.TestCase):
         self.assertEqual(decide('submit').status_code,200);self.assertEqual(self.row(rid)['status'],'pending')
         self.assertEqual(decide('close').status_code,422)
         self.assertEqual(decide('close','Закупка отменена поставщиком').status_code,200)
-        card=self.row(rid);self.assertEqual(card['status'],'cancelled');self.assertEqual(card['actions'],[])
+        card=self.row(rid);self.assertEqual(card['status'],'cancelled');self.assertEqual(card['actions'],['delete'])
         self.assertEqual(decide('submit').status_code,403)
         self.assertEqual(decide('return','Повторный возврат закрытой').status_code,409)
         self.assertEqual(self.upload(rid,'other').status_code,409)

@@ -488,7 +488,7 @@ def delete_request(id:int,data:RequestDeleteIn,request:Request):
 @app.put('/api/requests/{id}')
 def edit_request(id:int,data:RequestEdit,request:Request):
     with unit(True) as s:
-        u,_=session_user(s,request,'request');r=get(s,PaymentRequest,id)
+        u,_=session_user(s,request,('request','request_edit'));r=get(s,PaymentRequest,id)
         if not can_view_request(s,u,r):raise HTTPException(404,'Запись не найдена.')
         if r.creator_id!=u.id and 'request_edit' not in perms_of(u):raise HTTPException(403,'Редактировать может автор или финансовый руководитель.')
         check_request_version(r,data.version)
