@@ -1,5 +1,7 @@
 # Project delivery workflow
 
+Before any work, read `COORDINATION_RU.md` (shared with the bot repository): who owns which branch, the current release lines, taken version numbers and the handoff log. Add your line to «Сейчас в работе» when you start and a journal entry when you finish.
+
 The user wants every completed update saved to GitHub and available for review.
 
 - Preserve unrelated edits and financial data. Run the relevant tests and build the Vue frontend before delivery.
