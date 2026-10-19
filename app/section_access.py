@@ -59,6 +59,13 @@ def apply(s,user,request):
             if mode=='edit' and user.role!='founder':base|=SECTIONS[name][3]
     user._permissions=frozenset(base);user._sections=modes;user._section_overrides=overrides
     enforce(user,request)
+def can_edit_section(user,*names):
+    """Capabilities in GET responses must agree with the write-route guards."""
+    if user.role=='admin':return True
+    if user.role=='founder':return False
+    modes=getattr(user,'_sections',None)
+    return modes is None or all(modes.get(name)=='edit' for name in names)
+
 def modules(path):
     path=path.replace('/api/bot/v1/','/api/',1)
     if path.startswith('/api/admin/') or path in ('/api/me','/api/bootstrap','/api/companies','/api/logout','/api/password'):return ()
@@ -88,6 +95,8 @@ def enforce(user,request):
     if not names:return
     if request.url.path.endswith('/financial-statements/reconciliation') and not all(modes.get(n)!='hidden' for n in ('pnl','balance')):
         raise HTTPException(403,'Сверка требует доступа к P&L и балансу.')
+    # Archive writes belong to the archive, even if business plans remain editable.
+    if names==('reports','business') and request.method not in ('GET','HEAD'):names=('reports',)
     available=[n for n in names if modes.get(n,'hidden')!='hidden']
     if not available:raise HTTPException(403,'Раздел скрыт администратором.')
     if request.method not in ('GET','HEAD') and not any(modes[n]=='edit' for n in available):

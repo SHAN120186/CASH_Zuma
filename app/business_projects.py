@@ -23,6 +23,7 @@ from fastapi.responses import Response
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 from sqlalchemy import func, or_, select
 
+from .section_access import can_edit_section
 from .db import (BusinessGeneration, BusinessProject, BusinessSourceFile, ReportArchive,
                  ReportArchiveFile, now, unit)
 from .main import get, log
@@ -164,7 +165,7 @@ def archive_meta(s, id):
 
 
 def summary(s, project, user):
-    owner = (project.created_by == user.id or user.role == 'admin') and 'import' in perms_of(user)
+    owner = (project.created_by == user.id or user.role == 'admin') and 'import' in perms_of(user) and can_edit_section(user,'business')
     return {'id': project.id, 'company_id': project.company_id, 'title': project.title,
             'mode': project_mode(json.loads(project.extraction_json)),
             'status': project.status, 'revision': project.revision,
@@ -268,7 +269,7 @@ def list_projects(request: Request, company_id: int = Query(gt=0), include_delet
         elif not include_deleted or 'import' not in perms_of(user):
             q = q.where(BusinessProject.status != 'deleted')
         records = s.scalars(q.order_by(BusinessProject.updated_at.desc()))
-        return {'items': [summary(s, p, user) for p in records], 'can_upload': 'import' in perms_of(user)}
+        return {'items': [summary(s, p, user) for p in records], 'can_upload': 'import' in perms_of(user) and can_edit_section(user,'business')}
 
 
 @router.delete('/api/business-projects/{id}')

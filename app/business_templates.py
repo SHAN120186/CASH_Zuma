@@ -14,6 +14,7 @@ from fastapi import APIRouter, HTTPException, Path, Query, Request
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 from sqlalchemy import func, select
 
+from .section_access import can_edit_section
 from .db import BusinessProject, BusinessSourceFile, BusinessTemplate, now, unit
 from .business_projects import (dump, expanded_sources, own, revision_ok,
                                 sources, timestamp, validate_source)
@@ -53,7 +54,7 @@ def list_templates(request: Request, company_id: int = Query(gt=0)):
             BusinessTemplate.company_id == company.id,
             BusinessTemplate.created_by == user.id).order_by(
                 BusinessTemplate.created_at.desc(), BusinessTemplate.id.desc()))
-        return {'items': [template_meta(record) for record in records], 'can_upload': True}
+        return {'items': [template_meta(record) for record in records], 'can_upload': can_edit_section(user,'business')}
 
 
 @router.post('/api/business-projects/{id}/save-template')

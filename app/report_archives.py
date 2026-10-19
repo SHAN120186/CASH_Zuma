@@ -5,6 +5,8 @@ nor imports financial facts. A pair is published only when both formats are pres
 """
 from __future__ import annotations
 
+from .section_access import can_edit_section
+
 import hashlib
 import io
 import posixpath
@@ -119,7 +121,7 @@ def authorize(s, request, permission, telegram_user_id=None, company_id=None, ar
 
 def record_json(s, record, company, user):
     formats = list(s.scalars(select(ReportArchiveFile.format).where(ReportArchiveFile.archive_id == record.id)))
-    owner = (record.created_by == user.id or user.role == 'admin') and 'import' in perms_of(user)
+    owner = (record.created_by == user.id or user.role == 'admin') and 'import' in perms_of(user) and can_edit_section(user,'reports')
     deleted_project = deleted_project_id(s, record) if record.status == 'deleted' else None
     return {'id': record.id, 'title': record.title, 'company_id': company.id,
             'company_code': company.code, 'company_name': company.name,
@@ -195,7 +197,7 @@ def bot_companies(request: Request, telegram_user_id: int = Query(gt=0, lt=2**53
             scope_bot(s, request, user, company.id)
             if {'export', 'download'} <= perms_of(user):
                 items.append({'id': company.id, 'code': company.code, 'name': company.name,
-                              'can_upload': 'import' in perms_of(user)})
+                              'can_upload': 'import' in perms_of(user) and can_edit_section(user,'reports')})
             s.info.pop('company_id', None)
         return {'linked': True, 'items': items}
 
@@ -231,7 +233,7 @@ def list_archives(request: Request, company_id: int = Query(gt=0), date_from: da
             start = datetime.combine(uploaded_on, time.min, LOCAL_TZ).astimezone(timezone.utc).replace(tzinfo=None)
             q = q.where(ReportArchive.uploaded_at >= start, ReportArchive.uploaded_at < start + timedelta(days=1))
         return {'items': [record_json(s, r, company, user) for r in s.scalars(q.order_by(ReportArchive.version.desc()))],
-                'can_upload': can_upload}
+                'can_upload': can_upload and can_edit_section(user,'reports')}
 
 
 @router.delete('/api/report-archives/{id}')

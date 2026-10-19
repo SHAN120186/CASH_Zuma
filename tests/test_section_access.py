@@ -97,6 +97,73 @@ class SectionAccessTests(base.SiteTests):
         self.assertEqual(response.status_code,200,response.text)
         book[0].close()
 
+    def report_records(self,uid):
+        from app.db import BusinessProject,ReportArchive
+        from datetime import date
+        from uuid import uuid4
+        with unit(True) as s:
+            project=BusinessProject(company_id=self.company,title='Synthetic own project',created_by=uid,request_key=str(uuid4()))
+            foreign=BusinessProject(company_id=self.company,title='Synthetic foreign project',created_by=self.uid('admin'),request_key=str(uuid4()))
+            archive=ReportArchive(company_id=self.company,title='Synthetic archive',created_by=uid,request_key=str(uuid4()),version=1,status='ready',period_start=date(2026,1,1),period_end=date(2026,1,31))
+            s.add_all([project,foreign,archive]);s.flush();return project.id,foreign.id,archive.id
+
+    def test_read_only_reports_hide_all_write_capabilities(self):
+        from unittest.mock import patch
+        cl,h=self.make_user('finance','read_only_reports');uid=self.uid('read_only_reports');pid,_,aid=self.report_records(uid)
+        self.assertEqual(self.save_sections(uid,{k:'view' for k in ['business','reports','rating','pnl','balance']}).status_code,200)
+        cl.close();cl,h=self.relogin('read_only_reports')
+        projects=cl.get(f'/api/business-projects?company_id={self.company}',headers=h).json()
+        self.assertFalse(projects['can_upload'])
+        own=next(x for x in projects['items'] if x['id']==pid)
+        self.assertFalse(own['can_edit']);self.assertFalse(own['can_delete']);self.assertFalse(own['can_restore'])
+        self.assertFalse(cl.get(f'/api/business-templates?company_id={self.company}',headers=h).json()['can_upload'])
+        archives=cl.get(f'/api/report-archives?company_id={self.company}',headers=h).json()
+        self.assertFalse(archives['can_upload']);self.assertFalse(next(x for x in archives['items'] if x['id']==aid)['can_delete'])
+        fs=cl.get('/api/financial-statements',headers=h).json();self.assertFalse(fs['can_upload']);self.assertFalse(fs['can_confirm_revenue_basis'])
+        cl.close()
+
+    def test_read_only_archive_cannot_be_changed_through_business_editor(self):
+        cl,h=self.make_user('finance','business_editor');uid=self.uid('business_editor');pid,foreign,aid=self.report_records(uid)
+        self.assertEqual(self.save_sections(uid,{'reports':'view','business':'edit'}).status_code,200)
+        cl.close();cl,h=self.relogin('business_editor')
+        projects=cl.get(f'/api/business-projects?company_id={self.company}',headers=h).json()
+        self.assertTrue(next(x for x in projects['items'] if x['id']==pid)['can_edit'])
+        self.assertFalse(next(x for x in projects['items'] if x['id']==foreign)['can_edit'])
+        archive=cl.get(f'/api/report-archives?company_id={self.company}',headers=h).json()
+        self.assertFalse(archive['can_upload']);self.assertFalse(next(x for x in archive['items'] if x['id']==aid)['can_delete'])
+        r=cl.delete(f'/api/report-archives/{aid}?company_id={self.company}&expected_version=1',headers=h)
+        self.assertEqual(r.status_code,403,r.text)
+        cl.close()
+
+    def test_shared_source_capabilities_require_both_reports_to_be_editable(self):
+        cl,h=self.make_user('finance','shared_source_editor');uid=self.uid('shared_source_editor')
+        self.assertEqual(self.save_sections(uid,{'pnl':'edit','balance':'view'}).status_code,200)
+        cl.close();cl,h=self.relogin('shared_source_editor')
+        self.assertFalse(cl.get('/api/financial-statements',headers=h).json()['can_upload'])
+        self.assertEqual(self.save_sections(uid,{'pnl':'edit','balance':'edit'},version=1).status_code,200)
+        cl.close();cl,h=self.relogin('shared_source_editor')
+        flags=cl.get('/api/financial-statements',headers=h).json()
+        self.assertTrue(flags['can_upload']);self.assertTrue(flags['can_confirm_revenue_basis'])
+        cl.close()
+
+
+    def test_read_only_rating_hides_sync_action(self):
+        from unittest.mock import patch
+        from app.db import Company
+        cl,h=self.make_user('finance','rating_reader');uid=self.uid('rating_reader')
+        with unit(True) as s:
+            cid=s.scalar(select(Company.id).where(Company.code=='ZUMA'))
+            s.execute(delete(CompanyUser).where(CompanyUser.user_id==uid))
+            s.add(CompanyUser(company_id=cid,user_id=uid,role='finance'))
+        saved=self.client.put(f'/api/admin/users/{uid}/sections',headers=self.h,json={'company_id':cid,'version':0,'sections':{'rating':'view'},'reason':'Reader may only view the rating'})
+        self.assertEqual(saved.status_code,200,saved.text)
+        cl.close();cl,h=self.relogin('rating_reader',company=cid)
+        with patch('app.ifrs_rating.download_rating_source',return_value=(b'synthetic','synthetic.xlsx','test','2026-01-01')),patch('app.ifrs_rating.build_rating',return_value={}):
+            rating=cl.get('/api/ifrs-rating',headers=h)
+        self.assertEqual(rating.status_code,200,rating.text);self.assertFalse(rating.json()['can_sync'])
+        self.assertEqual(cl.post('/api/ifrs-rating/sync',headers=h).status_code,403)
+        cl.close()
+
     def test_admin_cannot_be_locked_and_founder_cannot_become_editor(self):
         self.assertEqual(self.save_sections(self.uid('admin'),{'users':'hidden'}).status_code,409)
         cl,h=self.make_user('founder','custom_founder')

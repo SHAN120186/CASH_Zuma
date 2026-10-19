@@ -6,6 +6,8 @@ amounts have provenance; this module never changes Excel or the cash ledger.
 """
 from __future__ import annotations
 
+from .section_access import can_edit_section
+
 import hashlib
 import io
 import json
@@ -909,8 +911,8 @@ def financial_statements(request: Request, source_id: int | None = Query(default
         return {'sources': [{'id': row.id, 'filename': row.filename,
                              'created_at': row.created_at.replace(tzinfo=timezone.utc).isoformat()} for row in sources],
                 'selected': source.id if source else None, 'source': result,
-                'company_id': s.info['company_id'], 'can_upload': 'import' in perms_of(user),
-                'can_confirm_revenue_basis': 'import' in perms_of(user),
+                'company_id': s.info['company_id'], 'can_upload': 'import' in perms_of(user) and can_edit_section(user,'pnl','balance'),
+                'can_confirm_revenue_basis': 'import' in perms_of(user) and can_edit_section(user,'pnl','balance'),
                 'review_version': REVIEW_VERSION,
                 'requirements': result['requirements'] if result else REQUIREMENTS}
 

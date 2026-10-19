@@ -6,6 +6,8 @@ example dashboard. This is not a certification of IFRS compliance.
 """
 from __future__ import annotations
 
+from .section_access import can_edit_section
+
 import calendar
 import hashlib
 import json
@@ -379,7 +381,7 @@ def get_rating(request:Request,end_month:int|None=Query(default=None,ge=1,le=12)
         binding = json.loads(setting.value) if setting else None
         source = s.get(IfrsRatingSource,binding['source_id']) if binding else None
         base = {'company_id':cid,'source_url':SOURCE_URL if 'download' in perms_of(user) else None,
-                'can_sync':'import' in perms_of(user),'binding':binding}
+                'can_sync':'import' in perms_of(user) and can_edit_section(user,'rating'),'binding':binding}
         saved = (source.content,source.filename,source.sha256) if source else None
     try:
         raw,name,origin,synced_at = download_rating_source()
