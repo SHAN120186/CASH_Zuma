@@ -216,9 +216,10 @@ def list_archives(request: Request, company_id: int = Query(gt=0), date_from: da
         user, company = authorize(s, request, 'export', telegram_user_id, company_id)
         q = select(ReportArchive).where(ReportArchive.company_id == company.id)
         can_upload = 'import' in perms_of(user)
-        if can_upload and (not is_bot(request) or include_drafts) and user.role!='admin':
-            q = q.where(or_(ReportArchive.status == 'ready', ReportArchive.created_by == user.id))
-        elif user.role!='admin' or is_bot(request):
+        if can_upload and (not is_bot(request) or include_drafts):
+            if user.role!='admin' or is_bot(request):
+                q = q.where(or_(ReportArchive.status == 'ready', ReportArchive.created_by == user.id))
+        else:
             q = q.where(ReportArchive.status == 'ready')
         if not (include_deleted and can_upload and not is_bot(request)):
             q = q.where(ReportArchive.status != 'deleted')

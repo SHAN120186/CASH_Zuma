@@ -891,6 +891,8 @@ class BusinessProjectTests(unittest.TestCase):
         def revoke_during_render(_):
             with unit(True) as s:
                 s.get(CompanyUser, (self.cid, self.uid)).role = 'investor'
+                s.get(User, self.uid).role = 'investor'
+                s.delete(s.get(CompanyUser, (self.other, self.uid)))
             return b'%PDF-1.4\nSynthetic native test\n%%EOF\n'
         stack, _, _, _ = self.native_renderers(word, revoke_during_render)
         with stack:
@@ -1338,6 +1340,8 @@ class BusinessProjectTests(unittest.TestCase):
         self.assertTrue(all('download_url' not in f for f in peer_detail['files']))
         with unit(True) as s:
             s.get(CompanyUser, (self.cid, self.uid)).role = 'investor'
+            s.get(User, self.uid).role = 'investor'
+            s.delete(s.get(CompanyUser, (self.other, self.uid)))
         self.assertEqual(self.client.get(url).status_code, 403)
         owner_detail = self.client.get(f"/api/business-projects/{project['id']}", params={'company_id': self.cid}).json()
         self.assertFalse(owner_detail['can_edit'])
@@ -1371,6 +1375,8 @@ class BusinessProjectTests(unittest.TestCase):
             output = build_documents(*args)
             with unit(True) as s:
                 s.get(CompanyUser, (self.cid, self.uid)).role = 'investor'
+                s.get(User, self.uid).role = 'investor'
+                s.delete(s.get(CompanyUser, (self.other, self.uid)))
             return output
         with patch('app.business_exports.build_documents', side_effect=revoke):
             self.assertEqual(self.analyse(project).status_code, 403)

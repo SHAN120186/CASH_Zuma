@@ -24,6 +24,30 @@ class SectionAccessTests(base.SiteTests):
             self.assertEqual(s.get(Ledger,response.json()['id']).amount,15000)
             self.assertIsNotNone(s.scalar(select(Ledger).where(Ledger.reversal_of==entry)))
         self.assertEqual(self.client.put(f'/api/ledger/{entry}',headers=self.h,json=body).status_code,409)
+    def operation_body(self,row,amount=None):
+        return {'account_id':row['account_id'],'to_account_id':row['to_account_id'],'category_id':row['category_id'],'kind':row['kind'],'amount':amount or row['amount'],'date':row['date'],'counterparty':row['counterparty'],'reference':row['reference'],'note':'Correct operation details','request_id':row['request_id'],'receipt_id':row['receipt_id'],'expected':row['edit_token'],'reason':'Owner confirmed accounting correction'}
+    def test_insufficient_funds_correction_rolls_back_every_ledger_change(self):
+        account=self.post('/api/accounts',{'name':'Atomic correction','kind':'bank','currency':'UZS','opening':'0','opening_date':self.date}).json()['id']
+        original=self.ledger('100',reference='ATOMIC-IN',account_id=account).json()['id']
+        self.assertEqual(self.ledger('90','out',reference='ATOMIC-OUT',account_id=account).status_code,200)
+        rows=self.client.get('/api/ledger',headers=self.h).json();row=next(r for r in rows if r['id']==original)
+        response=self.client.put(f'/api/ledger/{original}',headers=self.h,json=self.operation_body(row,'50'))
+        self.assertEqual(response.status_code,409,response.text)
+        with unit() as s:
+            self.assertEqual(s.get(Ledger,original).amount,10000)
+            self.assertIsNone(s.scalar(select(Ledger).where(Ledger.reversal_of==original)))
+        self.assertEqual(len(self.client.get('/api/ledger',headers=self.h).json()),len(rows))
+    def test_paid_request_metadata_can_change_but_amount_is_locked(self):
+        self.budget('100000','soft');rid=self.request('100').json()['id'];self.approve(rid)
+        entry=self.ledger('100','out',reference='LINKED-EDIT',request_id=rid).json()['id']
+        row=next(r for r in self.client.get('/api/ledger',headers=self.h).json() if r['id']==entry)
+        response=self.client.put(f'/api/ledger/{entry}',headers=self.h,json=self.operation_body(row))
+        self.assertEqual(response.status_code,200,response.text)
+        self.assertEqual(self.row(rid)['status'],'paid')
+        row=next(r for r in self.client.get('/api/ledger',headers=self.h).json() if r['id']==entry)
+        self.assertEqual(self.client.put(f'/api/ledger/{entry}',headers=self.h,json=self.operation_body(row,'101')).status_code,409)
+        with unit() as s:self.assertEqual(s.get(Ledger,entry).amount,10000)
+
     def test_hidden_and_view_enforced_and_existing_sessions_end(self):
         cl,h=self.make_user('finance','restricted_finance');uid=self.uid('restricted_finance')
         response=self.save_sections(uid,{'accounts':'hidden','ledger':'view','requests':'view','calendar':'edit','pnl':'hidden'})
