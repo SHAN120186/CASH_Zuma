@@ -1568,7 +1568,7 @@ class SiteTests(unittest.TestCase):
         rid=self.request('600',client=author[0],headers=author[1]).json()['id']
         self.assertEqual(self.approve(rid).status_code,200)
         # Author, admin, finance approver, director approver and a 'write' operator have no payment right.
-        for who in (author,(self.client,self.h),self.approver,self.director,operator):
+        for who in (author,self.approver,self.director,operator):
             r=self.post('/api/ledger',self.pay_body(rid),*who);self.assertEqual(r.status_code,403,r.text)
         # The cashier cannot pay from a bank account.
         r=self.post('/api/ledger',self.pay_body(rid),*cashier);self.assertEqual(r.status_code,403,r.text)
@@ -2132,30 +2132,17 @@ class SiteTests(unittest.TestCase):
             fin[0].close();book[0].close()
         finally:cl.close()
 
-    def test_109_holding_admin_gets_finances_only_by_a_separate_assignment(self):
-        ids=self.company_ids();zuma=ids['ZUMA']
+    def test_109_holding_admin_has_full_company_access_without_assignment(self):
         cl,h=self.make_user('admin','admin2')
         try:
-            me=cl.get('/api/bootstrap',headers=h).json()['user']
-            self.assertEqual((me['holding_role'],me['company_role']),('admin',None))
-            self.assertFalse({'write','request','approve','budget','pay_bank','pay_cash'}&set(me['permissions']))
-            self.assertEqual(sorted(c['code'] for c in cl.get('/api/companies').json()['companies']),['UNASSIGNED','UZGERMED','ZUMA'])
-            self.assertEqual(self.request(client=cl,headers=h).status_code,403)
-            self.assertEqual(self.post('/api/accounts',{'name':'Счёт админа','kind':'bank','currency':'UZS','opening':'0','opening_date':self.date},cl,h).status_code,403)
-            self.assertEqual(self.post('/api/ledger',{'account_id':self.acc,'category_id':self.cat,'kind':'in','amount':'1','date':self.date,'reference':'ADM','note':'Поступление администратора'},cl,h).status_code,403)
-            self.assertEqual(cl.get('/api/users',headers=h).status_code,200)
-            # No self-assignment, and an admin needs a concrete role.
+            for cid in self.company_ids().values():
+                hh={**h,'X-Company-ID':str(cid)}
+                response=cl.get('/api/bootstrap',headers=hh)
+                self.assertEqual(response.status_code,200,response.text)
+                me=response.json()['user']
+                self.assertTrue({'write','request','approve','budget','pay_bank','pay_cash','audit'}<=set(me['permissions']))
+            self.assertEqual(self.post('/api/accounts',{'name':'Full admin','kind':'bank','currency':'UZS','opening':'0','opening_date':self.date},cl,h).status_code,200)
             self.assertEqual(self.post('/api/company-users',{'username':'admin2','role':'finance'},cl,h).status_code,409)
-            self.assertEqual(self.post('/api/company-users',{'username':'admin2'}).status_code,422)
-            self.assertEqual(self.post('/api/company-users',{'username':'admin2','role':'finance'}).status_code,200)
-            cl.close();cl,h=self.relogin('admin2')
-            self.assertEqual(self.request(client=cl,headers=h).status_code,200)
-            self.assertEqual(self.request(client=cl,headers={**h,'X-Company-ID':str(zuma)}).status_code,403)
-            uid=me['id']
-            self.assertEqual(self.client.delete(f'/api/company-users/{uid}',headers=self.h).status_code,200)
-            cl.close();cl,h=self.relogin('admin2')
-            self.assertEqual(self.request(client=cl,headers=h).status_code,403)
-            self.assertIn('UZGERMED',[c['code'] for c in cl.get('/api/companies').json()['companies']])
         finally:cl.close()
 
     def test_110_permissions_have_no_generic_pay_and_payments_stay_split(self):
@@ -2164,7 +2151,7 @@ class SiteTests(unittest.TestCase):
         # Расчётный бухгалтер проверяет заявки и платит только банк; касса — только кассир.
         self.assertEqual(PERMS['accountant'],{'ledger','pay_bank','request_check'});self.assertIn('pay_cash',PERMS['cashier'])
         self.assertNotIn('pay_bank',PERMS['cashier']);self.assertNotIn('pay_cash',PERMS['accountant'])
-        self.assertTrue(all(not {'pay_bank','pay_cash'}&PERMS[r] for r in ('admin','founder','director','finance','operator')))
+        self.assertTrue(all(not {'pay_bank','pay_cash'}&PERMS[r] for r in ('founder','director','finance','operator')))
         self.assertFalse({'request','approve','write'}&PERMS['accountant'])
         book=self.make_user('accountant','split_book')
         self.assertEqual(book[0].get('/api/bootstrap',headers=book[1]).json()['user']['permissions'],['ledger','pay_bank','request_check'])
@@ -2223,7 +2210,7 @@ class SiteTests(unittest.TestCase):
         self.assertEqual(state('promoted',None)[0],['UZGERMED'])
         self.user_in(zuma,'finance','to_admin')[0].close()
         edit('to_admin','admin',zuma)
-        me=state('to_admin',zuma)[1];self.assertEqual(me['company_role'],None);self.assertNotIn('write',me['permissions'])
+        me=state('to_admin',zuma)[1];self.assertEqual(me['company_role'],None);self.assertIn('write',me['permissions'])
         self.assertEqual(self.post('/api/company-users',{'username':'to_admin','role':'director'},headers={**self.h,'X-Company-ID':str(zuma)}).status_code,200)
         edit('to_admin','employee',uzg)
         self.assertEqual(state('to_admin',None)[0],['UZGERMED'])
@@ -2234,7 +2221,7 @@ class SiteTests(unittest.TestCase):
         try:
             # Archive and restore change an account: an admin without an assignment cannot.
             aid=self.post('/api/accounts',{'name':'Пустой счёт','kind':'bank','currency':'UZS','opening':'0','opening_date':self.date}).json()['id']
-            self.assertEqual(self.post(f'/api/accounts/{aid}/archive',{'archived':True,'reason':'Закрытие банковского счёта'},cl,h).status_code,403)
+            self.assertEqual(self.post(f'/api/accounts/{aid}/archive',{'archived':True,'reason':'Закрытие банковского счёта'},cl,h).status_code,200)
             # Nobody commits another user's import, the holding admin included.
             batch=self.preview_plan(client=op[0],headers=op[1]);self.assertEqual(batch.status_code,200,batch.text)
             self.assertEqual(self.post(f"/api/plan-import/{batch.json()['id']}/commit",{'mappings':{},'reason':'Загрузка чужого плана'}).status_code,403)
@@ -2772,7 +2759,7 @@ class SiteTests(unittest.TestCase):
         with patch('app.model_import.build_snapshot',return_value={'sheets':{}}):
             r=self.client.post('/api/model/upload',content=b'PK\x03\x04 model',headers={**self.h,'Content-Type':'application/octet-stream','X-Filename':'FinModel.xlsx'})
         self.assertEqual(r.status_code,200,r.text)
-        row=self.audit_row('Импорт FinModel');self.assertEqual((row['ip'],row['role']),('testclient','Финансовый директор'))
+        row=self.audit_row('Импорт FinModel');self.assertEqual((row['ip'],row['role']),('testclient','Администратор холдинга'))
 
     def test_134_edits_of_submitted_requests_never_loosen_the_route(self):
         pdf_put=lambda rid,n,**extra:self.client.put(f'/api/requests/{rid}',headers=self.h,json={**self.request_body(n,**extra),'status':'pending','version':self.version_of(rid),'reason':'Уточнение суммы платежа'})

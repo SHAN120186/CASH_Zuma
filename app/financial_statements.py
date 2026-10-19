@@ -903,6 +903,9 @@ def financial_statements(request: Request, source_id: int | None = Query(default
             result = current_source_review(source, source_revenue_policy(s, source))
             result['id'] = source.id
             result['company_id'] = source.company_id
+            modes=getattr(user,'_sections',None)
+            if modes:
+                result['reports']={k:v for k,v in result.get('reports',{}).items() if modes.get(k)!='hidden'}
         return {'sources': [{'id': row.id, 'filename': row.filename,
                              'created_at': row.created_at.replace(tzinfo=timezone.utc).isoformat()} for row in sources],
                 'selected': source.id if source else None, 'source': result,

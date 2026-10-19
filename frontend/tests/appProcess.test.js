@@ -326,3 +326,19 @@ test('treasury viewing preserves report tabs but CSV templates, ledger exports a
     view.state.documents=null;
   }
 });
+
+
+test('personal section modes hide exact report tabs and block navigation to hidden modules',async t=>{
+ const {view}=await fixture(t,async()=>({ok:true,status:200,json:async()=>({items:[]})}));
+ view.state.user={...user,sections:{home:'view',accounts:'hidden',ledger:'view',pnl:'hidden',balance:'view',reports:'hidden'}};
+ await settle();
+ assert.deepEqual(view.state.nav.map(n=>n[0]).sort(),['home','ledger','balance','profile'].sort());
+ assert.equal(view.state.canNavigate('pnl'),false);assert.equal(view.state.canNavigate('accounts'),false);
+});
+test('read-only section mode hides write controls without removing read access',async t=>{
+ const {view}=await fixture(t,async()=>({ok:true,status:200,json:async()=>({items:[]})}));
+ view.state.user={...user,permissions:['view','ledger','write','import'],sections:{home:'view',ledger:'view'}};
+ view.state.page='ledger';await settle();
+ assert.equal(view.state.has('ledger'),true);assert.equal(view.state.has('write'),false);assert.equal(view.state.has('import'),false);
+ assert.equal(all(view.container,n=>n.tag==='button'&&text(n).includes('Новая операция')).length,0);
+});

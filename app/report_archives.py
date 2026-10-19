@@ -84,6 +84,9 @@ def scope_bot(s, request, user, company_id, permission=None):
     acting = [{'role': d.role, 'replaced_user_id': d.replaced_user_id, 'ends_on': str(d.ends_on)}
               for d in active_delegations(s, user.id, company_id)]
     scope_user(user, membership.role if membership else None, acting)
+    s.info['company_id']=company_id
+    from .section_access import apply
+    apply(s,user,request)
     if permission and permission not in perms_of(user):
         raise HTTPException(403, 'У вашей роли нет прав на это действие.')
     if permission:
@@ -116,7 +119,7 @@ def authorize(s, request, permission, telegram_user_id=None, company_id=None, ar
 
 def record_json(s, record, company, user):
     formats = list(s.scalars(select(ReportArchiveFile.format).where(ReportArchiveFile.archive_id == record.id)))
-    owner = record.created_by == user.id and 'import' in perms_of(user)
+    owner = (record.created_by == user.id or user.role == 'admin') and 'import' in perms_of(user)
     deleted_project = deleted_project_id(s, record) if record.status == 'deleted' else None
     return {'id': record.id, 'title': record.title, 'company_id': company.id,
             'company_code': company.code, 'company_name': company.name,
@@ -166,7 +169,7 @@ def restore_archive_record(s, record, user):
 
 
 def own_archive(record, user):
-    if record.created_by != user.id:
+    if record.created_by != user.id and user.role != 'admin':
         raise HTTPException(403, 'Удалять и восстанавливать отчёт может только его автор.')
 
 
@@ -213,9 +216,9 @@ def list_archives(request: Request, company_id: int = Query(gt=0), date_from: da
         user, company = authorize(s, request, 'export', telegram_user_id, company_id)
         q = select(ReportArchive).where(ReportArchive.company_id == company.id)
         can_upload = 'import' in perms_of(user)
-        if can_upload and (not is_bot(request) or include_drafts):
+        if can_upload and (not is_bot(request) or include_drafts) and user.role!='admin':
             q = q.where(or_(ReportArchive.status == 'ready', ReportArchive.created_by == user.id))
-        else:
+        elif user.role!='admin' or is_bot(request):
             q = q.where(ReportArchive.status == 'ready')
         if not (include_deleted and can_upload and not is_bot(request)):
             q = q.where(ReportArchive.status != 'deleted')
@@ -328,7 +331,7 @@ def valid_file(raw, filename, format):
 
 
 def own_draft(record, user):
-    if record.created_by != user.id:
+    if record.created_by != user.id and user.role != 'admin':
         raise HTTPException(403, 'Завершать загрузку может только автор черновика.')
 
 
@@ -391,7 +394,7 @@ def download_file(request: Request, format: Literal['pdf', 'xlsx'], id: int = Pa
     with unit() as s:
         user, _ = authorize(s, request, 'download', telegram_user_id, company_id, archive_id=id)
         record = get(s, ReportArchive, id)
-        if record.status == 'deleted' or (record.status != 'ready' and (is_bot(request) or record.created_by != user.id)):
+        if record.status == 'deleted' or (record.status != 'ready' and (is_bot(request) or record.created_by != user.id and user.role!='admin')):
             raise HTTPException(404, 'Готовый отчёт не найден.')
         file = s.scalar(select(ReportArchiveFile).where(ReportArchiveFile.archive_id == id, ReportArchiveFile.format == format))
         if file is None:

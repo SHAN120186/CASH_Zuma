@@ -1,6 +1,7 @@
 <script setup>
 import {ref, computed, onMounted, onUnmounted, nextTick} from 'vue';
 import {STATE_CLASS, historyLine, filterUsers, stateCounts, canResolve} from './adminCenter.js';
+import UserSections from './UserSections.vue';
 import GroupRegistration from './GroupRegistration.vue';
 import {tx, N_, formatDate} from '../i18n/index.js';
 
@@ -12,6 +13,7 @@ const props = defineProps({
 const meta = ref(null), users = ref([]), error = ref(''), notice = ref(''), busy = ref(false);
 const filters = ref({q: '', company: '', role: '', state: ''});
 const card = ref(null), form = ref(null), secret = ref(null), dialog = ref(null);
+const showSections=ref(false);
 const journal = ref(null), journalPage = ref(1);
 
 const shown = computed(() => filterUsers(users.value, filters.value));
@@ -32,7 +34,7 @@ async function load() {
 }
 
 async function openCard(u) {
-  form.value = null; secret.value = null; error.value = '';
+  showSections.value=false;form.value = null; secret.value = null; error.value = '';
   try { card.value = await props.api(`/api/admin/users/${u.id}`); } catch (e) { error.value = e.message; return; }
   await nextTick(); dialog.value?.querySelector('button')?.focus();
 }
@@ -167,6 +169,7 @@ onUnmounted(() => document.removeEventListener('keydown', onKey));
 
         <div class="actions admin-actions" v-if="!form">
           <template v-if="card.active">
+            <button class="secondary tiny" @click="showSections=!showSections">{{tx('Доступ к разделам')}}</button>
             <button class="secondary tiny" @click="start('name')">{{ tx('Имя') }}</button>
             <button v-if="card.holding_role !== 'founder' && card.id !== currentUserId" class="secondary tiny" @click="start('assign')">{{ canResolve(card) ? tx('Выбрать компанию') : tx('Назначение') }}</button>
             <button v-if="card.id !== currentUserId" class="secondary tiny" @click="start('holding')">{{ tx('Статус холдинга') }}</button>
@@ -178,6 +181,7 @@ onUnmounted(() => document.removeEventListener('keydown', onKey));
         </div>
       </template>
 
+      <UserSections v-if="showSections&&card" :key="card.id" :api="api" :user="card" :companies="meta.companies"/>
       <form v-if="form" class="form-grid admin-form" @submit.prevent="submit">
         <template v-if="form.kind === 'create'">
           <label>{{ tx('Логин') }}<input v-model="form.username" pattern="[a-z0-9_.\-]{3,80}" required placeholder="zuma.aziz" autocomplete="off"></label>
@@ -191,7 +195,7 @@ onUnmounted(() => document.removeEventListener('keydown', onKey));
           <label>{{ tx('Роль') }}<select v-model="form.role" required><option v-for="[k, label] in meta.company_roles" :key="k" :value="k">{{ tx(label) }}</option></select></label>
         </template>
         <p v-if="form.kind === 'assign' && !card.holding_role" class="form-note wide">{{ tx('Сотрудник работает в одной компании: назначения в других компаниях будут сняты, прежние сеансы завершены.') }}</p>
-        <p v-if="form.kind === 'holding'" class="form-note wide">{{ tx('Все прежние назначения снимаются. Администратор получает финансовые права только по отдельному назначению другого администратора.') }}</p>
+        <p v-if="form.kind === 'holding'" class="form-note wide">{{ tx('Все прежние назначения снимаются. Администратор холдинга получает полный доступ во всех компаниях.') }}</p>
         <p v-if="form.kind === 'unassign'" class="form-note wide">{{ tx('Назначение в {company} будет снято, сеансы сотрудника завершены.', {company: form.company}) }}</p>
         <p v-if="form.kind === 'archive'" class="form-note wide">{{ tx('Вход, сеансы, Telegram и все назначения будут отключены. Документы и журнал сохранят автора.') }}</p>
         <p v-if="['password', 'restore', 'create'].includes(form.kind)" class="form-note wide">{{ tx('Будет создан случайный постоянный пароль (20 символов). Обязательной смены при входе нет.') }}</p>

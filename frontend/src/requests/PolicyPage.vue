@@ -5,6 +5,7 @@ import {tx, N_, formatDate} from '../i18n/index.js';
 const props = defineProps({
   api: {type: Function, required: true},
   money: {type: Function, required: true},
+  canEdit:{type:Boolean,default:true},
   canEditCalendar: {type: Boolean, default: false},
 });
 
@@ -73,8 +74,8 @@ onMounted(load);
           <td :data-l="tx('Политика')">{{ tx(POLICIES[c.policy]) }}</td>
           <td class="num" data-l="UZS">{{ threshold(c, 'UZS') }}</td><td class="num" data-l="USD">{{ threshold(c, 'USD') }}</td><td class="num" data-l="EUR">{{ threshold(c, 'EUR') }}</td>
           <td :data-l="tx('Изменено')">{{ when(c.changed_at) }}<small>{{ c.changed_by }}</small></td>
-          <td data-l=""><div class="actions"><button class="secondary tiny" :disabled="busy" @click="edit(c)">{{ tx('Изменить') }}</button>
-            <button v-if="data.can_edit_skip_list" class="ghost tiny" :disabled="busy" @click="skipForm = {id: c.id, reason: ''}">{{ c.skip_allowed ? tx('Убрать из перечня') : tx('В перечень без директора') }}</button></div></td>
+          <td data-l=""><div class="actions"><button v-if="canEdit" class="secondary tiny" :disabled="busy" @click="edit(c)">{{ tx('Изменить') }}</button>
+            <button v-if="canEdit&&data.can_edit_skip_list" class="ghost tiny" :disabled="busy" @click="skipForm = {id: c.id, reason: ''}">{{ c.skip_allowed ? tx('Убрать из перечня') : tx('В перечень без директора') }}</button></div></td>
         </tr>
         <tr v-if="editing === c.id" class="detail-row"><td colspan="7" class="detail-cell">
           <form class="form-grid" @submit.prevent="save(c)">

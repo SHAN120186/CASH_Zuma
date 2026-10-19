@@ -93,7 +93,7 @@ def request_view(s, u, r):
     # по выбранной статье и периоду остаётся карточка budget_card (лимит, использовано, резерв, доступно, после заявки).
     if 'view' not in perms_of(u):
         data['budget'] = {'limit': None, 'hidden': True, 'over': data['budget']['over'], 'mode': data['budget']['mode']}
-    data['actions'] = request_actions(s, u, r)
+    data['actions'] = [] if (getattr(u,'_sections',None) or {}).get('requests')=='view' else request_actions(s, u, r)
     return data
 
 

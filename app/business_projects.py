@@ -129,7 +129,7 @@ def checked_draft(inputs):
 
 
 def own(project, user):
-    if project.created_by != user.id:
+    if project.created_by != user.id and user.role != 'admin':
         raise HTTPException(403, 'Изменять исходные файлы и параметры может автор проекта.')
 
 
@@ -164,7 +164,7 @@ def archive_meta(s, id):
 
 
 def summary(s, project, user):
-    owner = project.created_by == user.id and 'import' in perms_of(user)
+    owner = (project.created_by == user.id or user.role == 'admin') and 'import' in perms_of(user)
     return {'id': project.id, 'company_id': project.company_id, 'title': project.title,
             'mode': project_mode(json.loads(project.extraction_json)),
             'status': project.status, 'revision': project.revision,
@@ -263,9 +263,9 @@ def list_projects(request: Request, company_id: int = Query(gt=0), include_delet
     with unit() as s:
         user, company = authorize(s, request, 'export', company_id=company_id)
         q = select(BusinessProject).where(BusinessProject.company_id == company.id)
-        if include_deleted and 'import' in perms_of(user):
+        if include_deleted and 'import' in perms_of(user) and user.role!='admin':
             q = q.where(or_(BusinessProject.status != 'deleted', BusinessProject.created_by == user.id))
-        else:
+        elif not include_deleted or 'import' not in perms_of(user):
             q = q.where(BusinessProject.status != 'deleted')
         records = s.scalars(q.order_by(BusinessProject.updated_at.desc()))
         return {'items': [summary(s, p, user) for p in records], 'can_upload': 'import' in perms_of(user)}

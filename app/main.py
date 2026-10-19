@@ -36,7 +36,7 @@ async def lifespan(app):
     drop_shadowed_groups()
     drop_orphan_groups()
     yield
-app=FastAPI(title='UZGERMED Treasury',version='2.30.0',docs_url=None,redoc_url=None,openapi_url=None,lifespan=lifespan)
+app=FastAPI(title='UZGERMED Treasury',version='2.31.0',docs_url=None,redoc_url=None,openapi_url=None,lifespan=lifespan)
 app.add_middleware(TrustedHostMiddleware,allowed_hosts=ALLOWED)
 app.mount('/static',StaticFiles(directory=ROOT/'app'/'static'),name='static')
 
@@ -679,6 +679,8 @@ def ledger_list(request:Request,date_from:Optional[date]=None,date_to:Optional[d
                  'category':cats.get(t.category_id,'Внутренний перевод'),'amount':money(t.amount),'counterparty':t.counterparty,
                  'reference':t.reference,'note':t.note,'request_id':t.request_id,'receipt_id':t.receipt_id,
                  'can_attach_document':can_attach_document(u,t),
+                 'category_id':t.category_id,'to_account_id':t.to_account_id,
+                 'edit_token':ledger_edit_token(t),'can_edit':u.role=='admin' and not t.reversal_of and t.id not in reversed_ids,
                  'reversal_of':t.reversal_of,'reversed':t.id in reversed_ids} for t in s.scalars(query.offset((page-1)*page_size).limit(page_size) if paginated else query.limit(500))]
         return {'items':items,'total':total,'page':page,'page_size':page_size} if paginated else items
 @app.post('/api/ledger')
@@ -689,6 +691,49 @@ def add_ledger(data:LedgerIn,request:Request):
         # Оплату заявки отмечает проверка плательщика; прочие операции идут по праву записи (в том числе ВрИО).
         if not data.request_id and 'write' in perms_of(u):act_with_right(u,'write')
         t=post_ledger(s,u,data);remember_counterparty(s,data.counterparty);return {'id':t.id}
+def ledger_edit_token(entry):
+    import hashlib
+    return hashlib.sha256(json.dumps({k:str(getattr(entry,k)) for k in ('account_id','to_account_id','category_id','kind','amount','date','counterparty','reference','note','request_id','receipt_id','reversal_of')},sort_keys=True).encode()).hexdigest()
+
+class LedgerEditIn(LedgerIn):
+    expected:str=Field(min_length=64,max_length=64)
+    reason:str=Field(min_length=10,max_length=1000)
+
+@app.put('/api/ledger/{id}')
+def edit_ledger(id:int,data:LedgerEditIn,request:Request):
+    with unit(True) as s:
+        u,_=session_user(s,request,'write')
+        if u.role!='admin':raise HTTPException(403,'Операции редактирует администратор холдинга.')
+        old=get(s,Ledger,id)
+        if any(get(s,Account,x).archived for x in (old.account_id,old.to_account_id) if x):raise HTTPException(409,'Счёт в архиве. Сначала восстановите его.')
+        if ledger_edit_token(old)!=data.expected:raise HTTPException(409,'Операция уже изменена. Обновите данные.')
+        if old.reversal_of or s.scalar(select(Ledger.id).where(Ledger.reversal_of==id)):raise HTTPException(409,'Операция уже сторнирована.')
+        before={k:str(getattr(old,k)) for k in ('account_id','to_account_id','category_id','kind','amount','date','counterparty','reference','note')}
+        fields=('account_id','to_account_id','category_id','kind','date','counterparty')
+        same=amount(data.amount)==old.amount and all(getattr(data,k)==getattr(old,k) for k in fields)
+        if data.request_id!=old.request_id or data.receipt_id!=old.receipt_id:raise HTTPException(422,'Связь операции с документом менять нельзя.')
+        if same:
+            old.reference=data.reference;old.note=data.note
+            log(s,u,'Изменены реквизиты операции','ledger',id,json.dumps({'before':before,'reason':data.reason},ensure_ascii=False))
+            return {'id':old.id}
+        if old.request_id or old.receipt_id:raise HTTPException(409,'Связанный платёж исправляется через сторно и исходный документ. Реквизиты можно изменить без изменения суммы.')
+        # Correct an independent actual movement atomically: inverse + new movement.
+        # The old amount, its attachments and audit trail remain inspectable.
+        inverse=Ledger(account_id=old.to_account_id if old.kind=='transfer' else old.account_id,
+            to_account_id=old.account_id if old.kind=='transfer' else None,category_id=old.category_id,
+            kind={'in':'out','out':'in','transfer':'transfer'}[old.kind],amount=old.amount,date=old.date,
+            counterparty=old.counterparty,reference=reversal_reference(s,old.to_account_id if old.kind=='transfer' else old.account_id,old.id),
+            note=data.reason,reversal_of=old.id,creator_id=u.id)
+        s.add(inverse);s.flush()
+        replacement_data=data
+        if data.account_id==old.account_id and data.reference==old.reference:
+            replacement_data=data.model_copy(update={'reference':f'CORR-{old.id}-{data.expected[:12]}'})
+        replacement=post_ledger(s,u,replacement_data);s.flush()
+        for account_id in {old.account_id,old.to_account_id,data.account_id,data.to_account_id}-{None}:
+            account=get(s,Account,account_id);validate_running_balance(s,account);enforce_reservations_after_correction(s,account)
+        log(s,u,'Исправлена операция','ledger',id,json.dumps({'before':before,'replacement_id':replacement.id,'reason':data.reason},ensure_ascii=False))
+        return {'id':replacement.id}
+
 @app.post('/api/ledger/{id}/reverse')
 def reverse(id:int,data:ReverseIn,request:Request):
     with unit(True) as s:
