@@ -24,6 +24,63 @@ function mountReport(extra = {}) {
 }
 const button = (root, label) => find(root, node => node.tag === 'button' && text(node) === label);
 
+test('Cash Flow restores a shared quarter and emits presentation changes without resetting the source',async t=>{
+  const events=[];
+  const view=mountReport({selection:{year:2026,period:'q2',start:4,end:6,unit:'k',mode:'compare',sourceId:7},
+    onSelectionChange:value=>events.push(value)});t.after(view.unmount);await settle();
+  assert.deepEqual(view.state.indices,[3,4,5]);assert.equal(view.state.unit,'k');assert.equal(view.state.mode,'plan');
+  assert.equal(events.length,0,'restoration does not echo forever');
+  view.state.setPer('q3');await settle();
+  assert.deepEqual(events.at(-1),{year:2026,period:'q3',start:7,end:9,unit:'k',mode:'compare',sourceId:7});
+  view.app._instance.props.selection={year:2026,period:'month',start:2,end:2,unit:'m',mode:'actual',sourceId:7};await settle();
+  assert.deepEqual(view.state.indices,[1]);assert.equal(view.state.mode,'actual');assert.equal(view.state.unit,'m');
+});
+test('Cash Flow rejects an unavailable source year and reversed range with visible explanation and real context',async t=>{
+ for(const selection of [{year:2027,period:'q2',unit:'k',sourceId:8},{year:2026,period:'custom',start:9,end:2,unit:'k',sourceId:8}]){
+  const events=[];const view=mountReport({selection,onSelectionChange:value=>events.push(value)});t.after(view.unmount);await settle();
+  assert.deepEqual(events.at(-1),{year:2026,period:'year',start:1,end:12,unit:'m',mode:'actual',sourceId:8});
+  assert.match(text(view.container),selection.year===2027?/год исходной модели недоступен/:/Исправьте порядок месяцев/);
+ }
+});
+
+test('Cash Flow remains readable without download rights and directors keep PDF and Excel',async t=>{
+  for(const canDownload of [false,true]){
+    const view=mountReport({canDownload,canPlan:false});t.after(view.unmount);await settle();
+    assert.match(text(view.container),/Упаковка и материалы/);
+    const files=all(view.container,node=>node.tag==='a'&&String(node.props.href).startsWith('/api/export/report.'));
+    assert.equal(files.length,canDownload?2:0);
+    if(canDownload)assert.deepEqual(files.map(node=>text(node).trim()),['Excel','PDF']);
+  }
+});
+
+test('mounted Cash Flow reveals the cut-off month and keeps the right-edge cue for hidden months', async t => {
+  const view = mountReport(); t.after(view.unmount);
+  const wrap = find(view.container, node => node.props?.['aria-label'] === 'Cash Flow по месяцам');
+  Object.assign(wrap, {layout:{left:100, width:638, height:300}, clientLeft:1, clientTop:1,
+    clientWidth:620, clientHeight:282, offsetWidth:639, offsetHeight:300, scrollWidth:1600});
+  const headers = all(wrap, node => node.tag === 'th' && 'data-m' in node.props);
+  assert.equal(headers.length, 12);
+  for (const header of headers) header.layout = {left:221 + Number(header.props['data-m']) * 120, width:120, height:32};
+  assert.equal(wrap.querySelector('th[data-m="9"]'), headers[9], 'selector finds the rendered October header');
+  await settle();
+  const visibleRight = wrap.getBoundingClientRect().left + wrap.clientLeft + wrap.clientWidth;
+  assert.equal(wrap.scrollLeft, 732);
+  assert.equal(headers[9].getBoundingClientRect().right, visibleRight - 32);
+  assert.equal(view.state.moreRight, true);
+  assert.deepEqual(view.state.bars, {x:17, y:16});
+  const frame = find(view.container, node => node.props?.class?.includes?.('cf-frame'));
+  assert.match(frame.props.class, /more/);
+  assert.equal(frame.props.style['--cf-bar-x'], '17px');
+  view.app._instance.props.asOf = '2026-03-15'; await settle();
+  assert.equal(wrap.scrollLeft, 0, 'earlier month returns to the leftmost visible position');
+  assert.equal(headers[2].getBoundingClientRect().right, 581);
+  view.state.setPer('q1');
+  view.app._instance.props.asOf = '2026-10-06'; await settle();
+  assert.deepEqual(view.state.indices, [0,1,2]);
+  assert.equal(wrap.querySelector('th[data-m="9"]'), null, 'the hidden October column is not fabricated');
+  assert.equal(wrap.scrollLeft, 0, 'cut-off outside the period uses the last rendered month');
+});
+
 test('scenario comparison labels partial, explicit-zero and missing plans without claiming a full subtotal', async t => {
   const replies = {
     A:{expense_plan:'100.00', expense_plan_complete:false, expense_plan_defined_rows:1, expense_plan_missing_rows:11},
@@ -141,7 +198,7 @@ test('mounted date input refuses a future cut-off before emitting and keeps its 
 test('mounted App returns from a past year to server today and rejects future or wrong-year cut-offs', async t => {
   globalThis.window = {addEventListener() {}, localStorage:{getItem:() => null}};
   globalThis.location = {hash:'#report'};
-  globalThis.document = {hidden:true, activeElement:null, querySelector:() => ({scrollIntoView() {}})};
+  globalThis.document = {hidden:true, activeElement:null, addEventListener() {}, removeEventListener() {}, querySelector:() => ({scrollIntoView() {}})};
   const previousFetch = globalThis.fetch, calls = [];
   globalThis.fetch = async url => {
     if (url === '/api/me') return {ok:false, status:401, json:async () => ({detail:'Synthetic unauthenticated startup'})};

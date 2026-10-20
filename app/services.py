@@ -252,8 +252,8 @@ def clear_approval(r,keep_check=False):
 def local_date(moment):
     return moment.replace(tzinfo=timezone.utc).astimezone(clock.LOCAL_TZ).date()
 
-def participants(r):
-    return {x for x in (r.creator_id,r.last_editor_id,r.checked_by,r.finance_approved_by,r.approved_by) if x}
+def participants(r,include_check=True):
+    return {x for x in (r.creator_id,r.last_editor_id,r.checked_by if include_check else None,r.finance_approved_by,r.approved_by) if x}
 
 # Действия, после которых сотрудник считается участником заявки навсегда, даже если
 # возврат или замена файла сняли согласования текущего круга.
@@ -269,11 +269,12 @@ def request_journal(r_id):
     return or_(and_(Audit.entity=='request',Audit.entity_id==str(r_id)),
                and_(Audit.entity=='request_document',Audit.action.in_(LEGACY_DOCUMENT_ACTIONS),Audit.detail.like(f'request={r_id};%')))
 
-def all_participants(s,r):
+def all_participants(s,r,include_check=True):
     """Автор, редакторы, проверявшие и согласующие заявки во всех кругах согласования."""
+    actions=PARTICIPANT_ACTIONS if include_check else tuple(x for x in PARTICIPANT_ACTIONS if x!='Действие по заявке: check')
     past=s.scalars(select(Audit.user_id).where(request_journal(r.id),Audit.user_id.is_not(None),
-                                              Audit.action.in_(PARTICIPANT_ACTIONS+LEGACY_DOCUMENT_ACTIONS)))
-    return participants(r)|set(past)
+                                              Audit.action.in_(actions+LEGACY_DOCUMENT_ACTIONS)))
+    return participants(r,include_check)|set(past)
 
 # Правки заявки и её файлов. После возврата на доработку круг согласования начинается заново.
 EDIT_ACTIONS=('Изменена заявка','Действие по заявке: reschedule','Добавлен документ заявки','Новая версия документа заявки','Убран документ заявки')
@@ -293,15 +294,16 @@ def route_complete(r):
     return not requires_director(r) or (r.approved_by is not None and r.approved_by!=r.finance_approved_by)
 
 def check_payer(s,u,req):
-    """Кто может провести оплату заявки: отдельное право канала и не участник заявки."""
+    """Плательщик по каналу; проверка реквизитов не запрещает банковскую оплату."""
     account=get(s,Account,req.account_id)
     right=pay_right(account)
     if right not in perms_of(u):
         raise HTTPException(403,'Оплату кассовой заявки проводит кассир.' if account.kind=='cash' else 'Оплату банковской заявки проводит расчётный бухгалтер.')
-    if req.checked_by is not None and u.id==req.checked_by:
-        raise HTTPException(403,'Бухгалтер, проверявший реквизиты и комплектность заявки, не проводит её оплату: нужен другой бухгалтер.')
-    if u.id in all_participants(s,req):
-        raise HTTPException(403,'Автор, редакторы, проверявшие и согласующие заявки (в том числе в прежних кругах согласования) не проводят её оплату.')
+    # Только проверка совместима с банковской оплатой: авторство, правки и
+    # финансовые согласования этого же сотрудника в прежних кругах остаются запретом.
+    blocked=all_participants(s,req,include_check=account.kind!='bank')
+    if u.id in blocked:
+        raise HTTPException(403,'Автор, редакторы и согласующие заявки (в том числе в прежних кругах согласования) не проводят её оплату.')
     act_with_right(u,right)
     return account
 
@@ -322,7 +324,7 @@ def accepted_overrun(s,category,month,currency):
         PaymentRequest.due_date>=start,PaymentRequest.due_date<end)
     approved=s.scalar(base.where(PaymentRequest.status=='approved')) or 0
     paid=s.scalar(base.join(Ledger,Ledger.request_id==PaymentRequest.id).where(
-        PaymentRequest.status=='paid',Ledger.date>=start,Ledger.date<end)) or 0
+        PaymentRequest.status.in_(['paid','deleted']),Ledger.date>=start,Ledger.date<end)) or 0
     return max(approved,paid)
 
 def enforce_payment_budget(s,req,account,paid_on):
@@ -361,15 +363,32 @@ def route_json(r,currency):
     return {'policy':r.route_policy,'threshold':money(r.route_threshold) if r.route_threshold is not None else None,
             'at':str(r.route_at) if r.route_at else None,'director_required':required,'reason':reason}
 
+def backdated_flags(s,r):
+    """Признаки «с датой задним числом» для списка заявок.
+
+    late_created: заявка создана позже своей плановой даты (введена дата раньше дня создания);
+    late_posted: оплата проведена позже даты фактической операции (разноска с датой раньше дня проведения).
+    Дни считаются по часовому поясу Ташкента; проведение берётся из журнала «Оплата заявки»."""
+    created = local_date(r.created_at) if r.created_at else None
+    late_created = bool(created and r.due_date and r.due_date < created)
+    late_posted = False
+    if r.status == 'paid':
+        row = s.scalar(select(Ledger).where(Ledger.request_id == r.id))
+        entered = s.scalar(select(func.min(Audit.created_at)).where(Audit.entity == 'request', Audit.entity_id == str(r.id),
+                                                                   Audit.action == 'Оплата заявки'))
+        late_posted = bool(row and entered and row.date < local_date(entered))
+    return late_created, late_posted
+
 def request_json(s,r,accounts=None,categories=None,users=None):
     a=get(s,Account,r.account_id);c=get(s,Category,r.category_id)
     b=budget_state(s,c.id,str(r.due_date)[:7],a.currency,r.amount if r.status in ('pending','draft') else 0)
     docs=current_documents(s,r.id)
+    late_created,late_posted=backdated_flags(s,r)
     return {'id':r.id,'number':f'CF-{r.id:05d}','creator_id':r.creator_id,'category_id':c.id,'category':c.name,
             'account_id':a.id,'account':a.name,'account_kind':a.kind,'channel':a.kind,'currency':a.currency,'company_id':a.company_id,
             'counterparty':r.counterparty,'amount':money(r.amount),'date':str(r.due_date),'status':r.status,'purpose':r.purpose,
             'version':r.version,'last_editor_id':r.last_editor_id,'priority':r.priority,
-            'created_at':str(r.created_at),'checked_by':r.checked_by,'finance_approved_by':r.finance_approved_by,'approved_by':r.approved_by,
+            'created_at':str(r.created_at),'backdated_created':late_created,'backdated_posted':late_posted,'checked_by':r.checked_by,'finance_approved_by':r.finance_approved_by,'approved_by':r.approved_by,
             'approved_on':str(local_date(r.approved_at)) if r.approved_at else None,
             'approval_stage':approval_stage(r),'route':route_json(r,a.currency),
             'documents':{k:sum(d.kind==k for d in docs) for k in DOCUMENT_KINDS},'missing_documents':missing_documents(s,r),
@@ -474,7 +493,8 @@ def dashboard(s,currency,horizon=30):
                      'requested_opening':money(requested_opening),'requested_outgoing':money(all_out),'requested_balance':money(requested_bal),
                      'requested_risk':requested_bal<reserve or bool(requested_shortfalls),'requested_account_shortfalls':requested_shortfalls,
                      'risk':bal<reserve or bool(shortfalls),'reserve_risk':bal<reserve,'account_shortfalls':shortfalls,
-                     'events':[{'id':r.id,'kind':'in','name':r.counterparty,'amount':money(r.amount),'overdue':r.due_date<start} for r in ins]+
+                     'events':[{'id':r.id,'kind':'in','name':r.counterparty,'inn':r.inn,'note':r.note,'amount':money(r.amount),'overdue':r.due_date<start,
+                                'date':str(r.due_date),'account_id':r.account_id,'category_id':r.category_id,'version':r.version} for r in ins]+
                      [{'id':r.id,'kind':'out','name':r.counterparty,'amount':money(r.amount),'overdue':r.due_date<start,'priority':r.priority} for r in outs],
                      'pending_events':[{'id':r.id,'kind':'pending','name':r.counterparty,'amount':money(r.amount),'overdue':r.due_date<start,'priority':r.priority} for r in waiting]})
     period=[t for t in s.scalars(effective_cashflows(s)) if t.account_id in ids and t.date.year==start.year and t.date.month==start.month and t.date<=start]

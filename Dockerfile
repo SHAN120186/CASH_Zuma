@@ -8,7 +8,7 @@ COPY release.json /release.json
 RUN pnpm run build
 
 FROM postgres:18-bookworm
-RUN apt-get update && apt-get install -y --no-install-recommends python3 python3-venv fonts-dejavu-core && rm -rf /var/lib/apt/lists/*
+RUN apt-get update && apt-get install -y --no-install-recommends python3 python3-venv fonts-dejavu-core fonts-liberation2 fonts-crosextra-carlito fonts-crosextra-caladea libreoffice-writer && rm -rf /var/lib/apt/lists/*
 RUN python3 -m venv /opt/venv
 ENV PATH=/opt/venv/bin:$PATH PYTHONUNBUFFERED=1 PYTHONDONTWRITEBYTECODE=1 PYTHONUTF8=1 DATA_DIR=/app/data BACKUP_DIR=/app/backups
 WORKDIR /app

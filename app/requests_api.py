@@ -27,6 +27,8 @@ class Input(BaseModel):
 def can_view_request(s, u, r):
     """Та же граница, что у списка заявок: реестр целиком, свои заявки, заявки к оплате своего канала
     и заявки на проверке у расчётного бухгалтера."""
+    if r.status == 'deleted':
+        return False
     perms = perms_of(u)
     if 'view' in perms:
         return True
@@ -49,7 +51,7 @@ def visible(s, u, id):
 
 def can_edit(u, r):
     perms = perms_of(u)
-    return 'request' in perms and (r.creator_id == u.id or 'request_edit' in perms)
+    return 'request_edit' in perms or ('request' in perms and r.creator_id == u.id)
 
 
 STAGE_ROLE = {'check': 'accountant', 'finance': 'finance', 'director': 'director'}
@@ -62,7 +64,7 @@ def request_actions(s, u, r):
     stage = approval_stage(r)
     # Без прав согласующего, проверяющего или финансового руководителя сотрудник действует только в своих заявках.
     own_only = not ({'approve', 'request_edit', 'request_check'} & perms)
-    actions = []
+    actions = ['delete'] if u.role == 'admin' else []
     editable = can_edit(u, r) and (not own_only or r.creator_id == u.id)
     if editable and r.status in ('draft', 'pending', 'returned'):
         actions.append('edit')
@@ -80,7 +82,7 @@ def request_actions(s, u, r):
         actions.append('close')
     if 'request_edit' in perms and r.status in ('pending', 'approved'):
         actions.append('reschedule')
-    if r.status == 'approved' and pay_right(account) in perms and route_complete(r) and u.id not in all_participants(s, r):
+    if r.status == 'approved' and pay_right(account) in perms and route_complete(r) and u.id not in all_participants(s, r, include_check=account.kind!='bank'):
         actions.append('pay')
     return actions
 
@@ -91,7 +93,7 @@ def request_view(s, u, r):
     # по выбранной статье и периоду остаётся карточка budget_card (лимит, использовано, резерв, доступно, после заявки).
     if 'view' not in perms_of(u):
         data['budget'] = {'limit': None, 'hidden': True, 'over': data['budget']['over'], 'mode': data['budget']['mode']}
-    data['actions'] = request_actions(s, u, r)
+    data['actions'] = [] if (getattr(u,'_sections',None) or {}).get('requests')=='view' else request_actions(s, u, r)
     return data
 
 

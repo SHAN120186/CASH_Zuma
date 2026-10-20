@@ -9,32 +9,44 @@ from .db import User, LoginSession, LoginAttempt, now, DATA
 ROLES = {'admin':'Администратор холдинга', 'founder':'Учредитель', 'director':'Директор', 'finance':'Финансовый директор',
          'cashier':'Кассир', 'accountant':'Расчётный бухгалтер', 'employee':'Заявитель', 'auditor':'Аудитор',
          'operator':'Сотрудник / оператор', 'investor':'Инвестор / управленец',
-         'material_accountant':'Материальный бухгалтер', 'procurement':'Отдел закупок'}
+         'material_accountant':'Материальный бухгалтер', 'procurement':'Отдел закупок', 'sales':'Отдел продаж'}
 # Роли холдинга действуют во всех компаниях; остальные роли назначаются на пару
 # «пользователь × компания» (company_users.role).
 HOLDING_ROLES = ('admin', 'founder')
 COMPANY_ROLES = tuple(r for r in ROLES if r not in HOLDING_ROLES)
 PERMS = {
  # Администратор холдинга: компании, пользователи, назначения, справочники, аудит.
- # Финансовые действия — только по отдельному назначению роли в конкретной компании.
- 'admin': {'view','ledger','export','users','catalog','audit','approval_policy'},
+ # Полный рабочий доступ во всех компаниях. Самосогласование остаётся запрещено.
+ 'admin': {'view','ledger','export','download','users','catalog','audit','approval_policy','counterparties','receipt_edit','receipt_delete','request_edit','request_delete'},
  # Учредитель: все компании только для чтения.
- 'founder': {'view','ledger','export','audit'},
- 'director': {'view','ledger','export','request','write','approve','budget','plan','import','schedule','catalog','audit','approval_policy','request_edit'},
+ 'founder': {'view','ledger','export','download','audit'},
+ 'director': {'view','ledger','export','download','request','write','approve','budget','plan','import','schedule','catalog','audit','approval_policy','request_edit','counterparties','receipt_edit','receipt_delete'},
  'cashier': {'request','ledger','pay_cash'},
  'finance': {'view','ledger','export','request','write','approve','budget','plan','import','schedule','request_edit'},
  # Расчётный бухгалтер проверяет реквизиты и комплектность заявок и оплачивает банк.
  'accountant': {'ledger','pay_bank','request_check'},
  'employee': {'request'},
  'auditor': {'view','ledger','export','audit'},
- 'operator': {'view','ledger','export','request','write','plan','import','schedule'},
- 'investor': {'view','ledger','export'},
+ 'operator': {'view','ledger','export','download','request','write','plan','import','schedule'},
+ 'investor': {'view','ledger','export','download'},
  # Материальный бухгалтер: только чтение журнала операций и документов к ним. Отдельного
  # материального (складского) учёта в продукте нет; остальные разделы — после согласования.
  'material_accountant': {'ledger'},
- # Закупки создают и отслеживают свои заявки, но не видят счета и остатки.
- 'procurement': {'request'},
+ # Закупки: свои заявки, календарь, правка плановых поступлений и контрагентов;
+ # фактические операции, финансовые отчёты и файлы им недоступны.
+ 'procurement': {'request','calendar','counterparties','receipt_edit'},
+ # Продажи видят обзор/календарь и вводят только ожидаемые поступления.
+ # Это не общий просмотр финансовых разделов и не право проводить операции.
+ 'sales': {'overview','receipts','receipt_edit','receipt_delete'},
 }
+
+# Holding admin operates across all companies without separate financial assignments.
+PERMS['admin'] |= set().union(*(rights for role,rights in PERMS.items() if role != 'founder'))
+
+# Просмотр отчётов (export) и выдача файлов (download) проверяются отдельно.
+# Замещение не отменяет запрет скачивания для собственной роли сотрудника.
+NO_DOWNLOAD_ROLES = frozenset({'finance', 'accountant', 'cashier', 'auditor',
+                              'material_accountant', 'procurement', 'employee', 'sales'})
 
 # Paying an approved request is a separate right per channel: the bank account
 # is paid by the settlement accountant, the cash desk by the cashier. The
@@ -68,6 +80,8 @@ def scope_user(user, assigned, acting=(), member=True):
         # Для сотрудника действует только явное назначение в выбранной компании.
         # Поле users.role хранится для совместимости и не расширяет область доступа.
         role = assigned if assigned in COMPANY_ROLES else None
+    if user.role not in HOLDING_ROLES and role == 'sales':
+        acting = ()
     permissions = set(PERMS.get(user.role, set())) if user.role in HOLDING_ROLES else set()
     if role:
         permissions |= PERMS[role]
@@ -76,6 +90,8 @@ def scope_user(user, assigned, acting=(), member=True):
         if d['role'] in COMPANY_ROLES and d['role'] != role and d['role'] not in delegated:
             delegated[d['role']] = d
             permissions |= PERMS[d['role']]
+    if user.role not in HOLDING_ROLES and (role or user.role) in NO_DOWNLOAD_ROLES:
+        permissions.discard('download')
     user._company_role = role
     user._acting = delegated
     user._acted = None
@@ -84,12 +100,14 @@ def scope_user(user, assigned, acting=(), member=True):
 
 def has_role(user, role):
     """Собственная роль в компании или действующее замещение этой роли."""
-    return company_role(user) == role or role in getattr(user, '_acting', {})
+    return user.role == 'admin' or company_role(user) == role or role in getattr(user, '_acting', {})
 
 
 def act_as(user, role):
     """Отмечает роль, в которой выполняется действие: для аудита ВрИО хранит заменяемого."""
-    if company_role(user) == role:
+    if user.role == 'admin':
+        user._acted = ('admin', None)
+    elif company_role(user) == role:
         user._acted = (role, None)
     elif role in getattr(user, '_acting', {}):
         user._acted = (role, user._acting[role]['replaced_user_id'])
@@ -116,6 +134,16 @@ def perms_of(user):
     if hasattr(user, '_permissions'):
         return user._permissions
     return frozenset(PERMS.get(user.role, set()))
+
+
+def require_permission(user, permission):
+    """Require one right, or one of the explicitly listed equivalent rights."""
+    rights = (permission,) if isinstance(permission, str) else permission
+    right = next((r for r in rights if r in perms_of(user)), None)
+    if right is None:
+        raise HTTPException(403, 'У вашей роли нет прав на это действие.')
+    act_with_right(user, right)
+    return right
 
 
 def company_role(user):
@@ -198,10 +226,10 @@ def session_user(s, request: Request, permission=None):
             raise HTTPException(403, 'Защитный токен не совпадает. Обновите страницу.')
     from .company_scope import activate
     activate(s, request, user)
+    from .section_access import apply
+    apply(s,user,request)
     # Права проверяются после выбора компании: роль назначается отдельно в каждой.
-    if permission and permission not in perms_of(user):
-        raise HTTPException(403,'У вашей роли нет прав на это действие.')
-    if permission:act_with_right(user,permission)
+    if permission:require_permission(user,permission)
     return user,session
 
 def client_ip(request):
@@ -246,7 +274,7 @@ def user_json(user):
     return {'id':user.id,'username':user.username,'name':user.name,'role':role or user.role,
             'holding_role':holding,'company_role':role,'role_label':label,'acting':acting,
             'roles':sorted({x for x in [role,*[a['role'] for a in acting]] if x}),
-            'permissions':sorted(perms_of(user)),'active':user.active,'must_change_password':bool(user.must_change_password)}
+            'permissions':sorted(perms_of(user)),'sections':getattr(user,'_sections',None),'active':user.active,'must_change_password':bool(user.must_change_password)}
 
 
 def member_json(user, assigned):

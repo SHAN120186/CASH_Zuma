@@ -119,7 +119,7 @@ def create_user(data: CreateIn, request: Request):
             access.business_company(s, data.company_id)
         password = access.temporary_password()
         u = User(username=data.username, name=data.name, password_hash=hash_password(password),
-                 role=data.holding_role or data.role, must_change_password=True)
+                 role=data.holding_role or data.role, must_change_password=False)
         s.add(u)
         s.flush()
         if not data.holding_role:
@@ -253,3 +253,50 @@ def holding_audit(request: Request, page: int = Query(1, ge=1), page_size: int =
         return {'total': total, 'items': [{'id': a.id, 'at': str(a.created_at), 'company': companies.get(a.company_id, 'Холдинг'),
                                            'user': names.get(a.user_id, 'Система'), 'action': a.action, 'entity': a.entity,
                                            'entity_id': a.entity_id, 'detail': a.detail} for a in rows]}
+
+# ---------- Personal access to site sections ----------
+class SectionAccessIn(Input):
+    company_id:int
+    version:int=Field(ge=0)
+    sections:dict[str,str]
+    reason:str=Field(min_length=10,max_length=1000)
+
+@router.get('/api/admin/users/{id}/sections')
+def user_sections(id:int,request:Request,company_id:int):
+    from .section_access import SECTIONS,stored,defaults
+    from .security import PERMS
+    with unit() as s:
+        holding_admin(s,request);u=access.unscoped_user(s,id)
+        companies=access.business_companies(s)
+        if company_id not in companies:raise HTTPException(404,'Компания не найдена.')
+        if u.role not in HOLDING_ROLES and company_id not in access.staff_company_ids(s,u):raise HTTPException(403,'У пользователя нет доступа к выбранной компании.')
+        assignment=next((m for m in access.links(s,u.id) if m.company_id==company_id),None)
+        role=u.role if u.role in HOLDING_ROLES else assignment.role if assignment else None
+        policy=stored(s,company_id,id);base=defaults(PERMS.get(role,set()))
+        return {**policy,'company_id':company_id,'locked':u.role=='admin',
+                'modules':[{'key':k,'label':v[0],'default':base[k]} for k,v in SECTIONS.items()]}
+
+@router.put('/api/admin/users/{id}/sections')
+def save_user_sections(id:int,data:SectionAccessIn,request:Request):
+    import json
+    from .db import Setting
+    from .section_access import SECTIONS,MODES,key,stored
+    with unit(True) as s:
+        admin=holding_admin(s,request);u=access.unscoped_user(s,id)
+        if u.role=='admin':raise HTTPException(409,'Администратор холдинга всегда имеет полный доступ.')
+        if data.company_id not in access.business_companies(s):raise HTTPException(404,'Компания не найдена.')
+        if u.role not in HOLDING_ROLES and data.company_id not in access.staff_company_ids(s,u):raise HTTPException(403,'У пользователя нет доступа к выбранной компании.')
+        if any(k not in SECTIONS or v not in MODES for k,v in data.sections.items()):raise HTTPException(422,'Неизвестный раздел или режим доступа.')
+        if u.role=='founder' and 'edit' in data.sections.values():raise HTTPException(422,'Учредителю доступен только просмотр.')
+        if data.sections.get('users')=='edit':raise HTTPException(422,'Управлять пользователями может только администратор холдинга.')
+        before=stored(s,data.company_id,id)
+        if before['version']!=data.version:raise HTTPException(409,'Права уже изменены. Обновите карточку пользователя.')
+        after={'version':data.version+1,'sections':{k:v for k,v in data.sections.items() if v!='default'}}
+        row=s.get(Setting,key(data.company_id,id))
+        if row:row.value=json.dumps(after,ensure_ascii=False)
+        else:s.add(Setting(key=key(data.company_id,id),value=json.dumps(after,ensure_ascii=False)))
+        # Rights are checked on each request. Existing browser and bot sessions end as well.
+        access.end_sessions(s,id)
+        access.record(s,admin,'Изменён доступ к разделам',u,access.snapshot(s,u),data.reason,
+                      {'company_id':data.company_id,'sections_before':before,'sections_after':after},request)
+        return after

@@ -68,9 +68,13 @@ class AccessTests(base.SiteTests):
                            headers={**a[1], 'Content-Type': 'application/pdf', 'X-Filename': 'x.pdf'})
             self.assertIn(up.status_code, (403, 404))
             self.assertIn(a[0].delete(f'/api/request-documents/{db}', headers=a[1]).status_code, (403, 404))
-            for path in ('/api/accounts', '/api/dashboard', '/api/ledger', '/api/budgets', '/api/export/ledger.csv'):
+            self.assertEqual(a[0].get('/api/dashboard', headers=a[1]).status_code, 200)
+            self.assertEqual(a[0].get('/api/receipts', headers=a[1]).status_code, 200)
+            self.assertEqual(a[0].get('/api/counterparties', headers=a[1]).status_code, 200)
+            for path in ('/api/accounts', '/api/ledger', '/api/budgets', '/api/export/ledger.csv'):
                 self.assertEqual(a[0].get(path, headers=a[1]).status_code, 403, path)
-            self.assertEqual(a[0].get('/api/bootstrap', headers=a[1]).json()['counterparties'], [])
+            cp=a[0].get('/api/bootstrap', headers=a[1]).json()['counterparties']
+            self.assertTrue(cp);self.assertTrue(all(set(c)=={'id','name','inn'} for c in cp))
             # Форма заявки показывает только карточку выбранной статьи на период, без остатков счетов.
             check = a[0].get(f'/api/budget-check?account_id={self.acc}&category_id={self.cat}&amount=10&date={self.dues["urgent"]}', headers=a[1])
             self.assertEqual(check.status_code, 200)
@@ -210,7 +214,7 @@ class AccessTests(base.SiteTests):
         self.assertEqual(detail['after']['assignments'], [['UZGERMED', 'procurement']])
 
     # ---- Временный пароль и архив
-    def test_temporary_password_must_be_changed_and_old_sessions_end(self):
+    def test_issued_password_is_permanent_and_explicit_reset_ends_old_sessions(self):
         r = self.client.post('/api/admin/users', headers=self.h, json={'username': 'uzgermed.new', 'name': 'Новый сотрудник',
                              'company_id': self.company, 'role': 'employee', 'reason': 'Приём на работу по приказу'})
         self.assertEqual(r.status_code, 200, r.text)
@@ -219,9 +223,9 @@ class AccessTests(base.SiteTests):
         cl, login = self.login('uzgermed.new', temp)
         try:
             self.assertEqual(login.status_code, 200)
-            self.assertTrue(login.json()['user']['must_change_password'])
+            self.assertFalse(login.json()['user']['must_change_password'])
             h = {'X-CSRF-Token': login.json()['csrf']}
-            self.assertEqual(cl.get('/api/companies').status_code, 403)
+            self.assertEqual(cl.get('/api/companies').status_code, 200)
             self.assertEqual(cl.post('/api/password', json={'old_password': temp, 'new_password': temp}, headers=h).status_code, 422)
             self.assertEqual(cl.post('/api/password', json={'old_password': temp, 'new_password': 'MyOwnPassword_2026!'}, headers=h).status_code, 200)
         finally:
@@ -283,8 +287,18 @@ class AccessTests(base.SiteTests):
         self.assertGreaterEqual(len(password), 16)
         self.assertNotIn(password, journal, 'the journal never holds passwords')
         cl, login = self.login('zuma.aziz', password)
-        self.assertTrue(login.json()['user']['must_change_password'])
+        self.assertFalse(login.json()['user']['must_change_password'])
         cl.close()
+
+    def test_fixed_password_migration_preserves_existing_hash_and_login(self):
+        with unit(True) as s:
+            user=s.scalar(select(User).where(User.username=='admin').execution_options(company_unscoped=True))
+            user.must_change_password=True;original=user.password_hash
+        initialize()
+        with unit() as s:
+            user=s.scalar(select(User).where(User.username=='admin').execution_options(company_unscoped=True))
+            self.assertFalse(user.must_change_password);self.assertEqual(user.password_hash,original)
+        cl,login=self.login('admin');self.assertEqual(login.status_code,200);cl.close()
 
     # ---- Документы и журнал операций по праву в компании и каналу оплаты
     def cash(self):
@@ -341,8 +355,8 @@ class AccessTests(base.SiteTests):
             self.assertEqual([x['id'] for x in accountant[0].get('/api/ledger', headers=accountant[1]).json()], [bank_entry])
             self.assertEqual([x['id'] for x in cashier[0].get('/api/ledger', headers=cashier[1]).json()], [cash_entry])
             self.assertEqual(cashier[0].get(f'/api/documents?ledger_id={bank_entry}', headers=cashier[1]).status_code, 404)
-            self.assertEqual(cashier[0].get(f'/api/documents/{doc}', headers=cashier[1]).status_code, 404)
-            self.assertEqual(accountant[0].get(f'/api/documents/{doc}', headers=accountant[1]).status_code, 200)
+            self.assertEqual(cashier[0].get(f'/api/documents/{doc}', headers=cashier[1]).status_code, 403)
+            self.assertEqual(accountant[0].get(f'/api/documents/{doc}', headers=accountant[1]).status_code, 403)
         finally:
             accountant[0].close(); cashier[0].close()
 
