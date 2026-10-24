@@ -181,8 +181,12 @@ def check_request_version(r,version):
     if r.version!=version:raise HTTPException(409,'Заявка уже изменена другим пользователем. Обновите список и проверьте изменения.')
 
 THRESHOLD_FIELDS={'UZS':'director_threshold_uzs','USD':'director_threshold_usd','EUR':'director_threshold_eur'}
-# Три раздела вложений заявки; первые два обязательны перед отправкой (таблица request_documents).
+# Existing bank clients retain the original required_documents list. Cash needs the indent only.
 REQUIRED_DOCUMENTS=('internal','contract')
+REQUIRED_DOCUMENTS_BY_CHANNEL={'bank':REQUIRED_DOCUMENTS,'cash':('internal',)}
+REQUEST_DEPARTMENTS={'qc':'QC','ml':'ML','engineering':'Инженерный отдел (ИТО)',
+                     'warehouse':'Склад','production':'Производство','office':'Общие закупки (офис)',
+                     'facilities':'Хозяйственная часть'}
 DOCUMENT_KINDS={'internal':'Внутренняя заявка / Индент','contract':'Договор / Счёт на оплату','other':'Прочие подтверждающие документы'}
 
 def category_policy(c,currency):
@@ -220,9 +224,14 @@ def current_documents(s,request_id):
     return list(s.scalars(select(RequestDocument).where(RequestDocument.request_id==request_id,RequestDocument.active.is_(True))
                           .order_by(RequestDocument.id)))
 
+def required_documents(s,r):
+    # Always derive the policy from the real company-scoped account, never a supplied channel.
+    account=get(s,Account,r.account_id)
+    return REQUIRED_DOCUMENTS_BY_CHANNEL.get(account.kind,REQUIRED_DOCUMENTS)
+
 def missing_documents(s,r):
     kinds={d.kind for d in current_documents(s,r.id)}
-    return [k for k in REQUIRED_DOCUMENTS if k not in kinds]
+    return [k for k in required_documents(s,r) if k not in kinds]
 
 def enforce_documents(s,r):
     missing=missing_documents(s,r)
@@ -392,6 +401,8 @@ def request_json(s,r,accounts=None,categories=None,users=None):
             'approved_on':str(local_date(r.approved_at)) if r.approved_at else None,
             'approval_stage':approval_stage(r),'route':route_json(r,a.currency),
             'documents':{k:sum(d.kind==k for d in docs) for k in DOCUMENT_KINDS},'missing_documents':missing_documents(s,r),
+            'required_documents':list(required_documents(s,r)),
+            'department':r.department or '','department_label':REQUEST_DEPARTMENTS.get(r.department or '',''),
             'project':r.project,'decision_note':r.decision_note,'overdue':r.due_date<today() and r.status in ('pending','approved'),
             'budget':budget_json(b),'budget_card':budget_card(s,c.id,str(r.due_date)[:7],a.currency,0 if r.status=='paid' else r.amount,r.id)}
 

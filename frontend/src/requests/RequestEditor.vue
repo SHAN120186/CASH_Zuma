@@ -2,7 +2,7 @@
 // Форма заявки на оплату — одно окно: поля, три блока вложений, «Сохранить черновик» и «Отправить на согласование».
 // Порядок сохранения (черновик → файлы → отправка) и повтор после ошибки — в saveFlow.js.
 import {ref, computed, watch, onMounted, onUnmounted, nextTick} from 'vue';
-import {PRIORITIES, LEAD_DAYS, CHANNELS, DOC_KINDS, REQUIRED_DOCS, SINGLE_DOCS, DOC_ACCEPT, accountsFor, minDue, budgetRows, budgetNote,
+import {PRIORITY_TERMS, DEPARTMENTS, CHANNELS, DOC_KINDS, requiredDocs, SINGLE_DOCS, DOC_ACCEPT, accountsFor, minDue, budgetRows, budgetNote,
         periodLabel, fileProblem, fileSize} from './workflow.js';
 import {createSaveState, requestBody, saveRequest, removeSavedDocument, missingRequired} from './saveFlow.js';
 import {tx, N_} from '../i18n/index.js';
@@ -26,11 +26,11 @@ const firstAccount = props.boot.accounts.find(a => a.currency === props.currency
   || props.boot.accounts.find(a => a.currency === props.currency) || props.boot.accounts[0];
 const form = ref(r ? {
   channel: r.channel || r.account_kind, currency: r.currency, account_id: r.account_id, category_id: r.category_id,
-  amount: r.amount, counterparty: r.counterparty, purpose: r.purpose, priority: r.priority, date: r.date, project: r.project || '', reason: '',
+  amount: r.amount, counterparty: r.counterparty, purpose: r.purpose, priority: r.priority, date: r.date, project: r.project || '', department: r.department || '', reason: '',
 } : {
   channel: firstAccount?.kind || 'bank', currency: firstAccount?.currency || props.currency, account_id: firstAccount?.id ?? null,
   category_id: props.boot.categories.find(c => c.type === 'outcome')?.id ?? null, amount: '', counterparty: '', purpose: '',
-  priority: 'normal', date: minDue(props.boot.due_minimums, 'normal'), project: '',
+  priority: 'normal', date: minDue(props.boot.due_minimums, 'normal'), project: '', department: '',
 });
 const error = ref(''), notice = ref(''), saving = ref(false), step = ref(''), blocked = ref(''), card = ref(null), dialog = ref(null);
 // Номер появляется, когда форма создала черновик (например, до ошибки загрузки файла).
@@ -48,7 +48,8 @@ const earliest = computed(() => minDue(dues.value, form.value.priority));
 const earliestLabel = computed(() => earliest.value ? earliest.value.split('-').reverse().join('.') : '');
 const title = computed(() => r ? tx('Изменить {number}', {number: r.number}) : number.value ? tx('Черновик {number}', {number: number.value}) : tx('Новая заявка на оплату'));
 const needsReason = computed(() => !!r);
-const missing = computed(() => missingRequired(saved.value, files.value));
+const required = computed(() => requiredDocs(form.value.channel));
+const missing = computed(() => missingRequired(saved.value, files.value, form.value.channel));
 // Убрать сохранённый файл можно до отправки; после — в карточке заявки с причиной.
 const canRemoveSaved = computed(() => !sentMode && state.id != null && ['draft', 'returned'].includes(status.value));
 const savedOf = kind => saved.value.filter(d => d.kind === kind);
@@ -62,7 +63,7 @@ watch(() => [form.value.channel, form.value.currency], () => {
   if (!accountOptions.value.some(a => a.id === form.value.account_id)) form.value.account_id = accountOptions.value[0]?.id ?? null;
 });
 watch(() => form.value.priority, () => {
-  if (earliest.value && (!form.value.date || form.value.date < earliest.value)) form.value.date = earliest.value;
+  if (earliest.value) form.value.date = earliest.value;
 });
 
 // Бюджет выбранной статьи на период: лимит, использовано, резерв, доступно и остаток после заявки.
@@ -159,8 +160,10 @@ function onKey(e) {
 onMounted(async () => {
   document.addEventListener('keydown', onKey); await nextTick(); dialog.value?.querySelector('select,input:not(:disabled)')?.focus();
   try {
-    dues.value = (await props.api('/api/request-rules')).due_minimums;
-    if (!r && (!form.value.date || form.value.date < earliest.value)) form.value.date = earliest.value;
+    const fresh = await props.api('/api/request-rules');
+    const previousAutoDate = earliest.value;
+    dues.value = fresh.due_minimums || dues.value;
+    if (!r && earliest.value && (!form.value.date || form.value.date === previousAutoDate || form.value.date < earliest.value)) form.value.date = earliest.value;
   } catch { /* остаются сроки из загрузки страницы; сервер всё равно проверит дату */ }
   if (r && !r.documents_list) {
     try { saved.value = ((await props.api(`/api/requests/${r.id}`)).documents_list || []).filter(d => d.current); } catch { /* покажем без файлов */ }
@@ -175,19 +178,20 @@ onUnmounted(() => { document.removeEventListener('keydown', onKey); clearTimeout
       <div class="section-head"><h2 id="rq-editor-title">{{ title }}</h2>
         <button type="button" class="ghost icon-btn" :aria-label="tx('Закрыть')" :disabled="saving" @click="close">✕</button></div>
       <p v-if="sentMode" class="form-note">{{ tx('Заявка на согласовании. После сохранения она останется на согласовании, а проверка и согласования начнутся заново. Новый файл заменит прежний (прежняя версия останется в истории); убрать файл можно в карточке заявки с причиной.') }}</p>
-      <p v-else class="form-note">{{ tx('«Сохранить черновик» — без отправки, файлы можно приложить позже. «Отправить на согласование» — сохранить, загрузить файлы и отправить: нужны внутренняя заявка (индент) и договор или счёт. Автор и последний редактор не согласуют свою заявку.') }}</p>
+      <p v-else class="form-note">{{ tx('Черновик можно сохранить без файлов. При отправке обязательность документов зависит от канала оплаты. Автор и последний редактор не согласуют свою заявку.') }}</p>
       <div class="form-grid">
         <label>{{ tx('Компания') }}<input :value="company?.name" disabled></label>
         <label>{{ tx('Канал оплаты') }}<select v-model="form.channel" required><option v-for="(label, k) in CHANNELS" :key="k" :value="k">{{ tx(label) }}</option></select></label>
         <label>{{ tx('Валюта') }}<select v-model="form.currency" required><option v-for="c in ['UZS','USD','EUR']" :key="c" :value="c">{{ c }}</option></select></label>
         <label>{{ tx('Счёт списания') }}<select v-model="form.account_id" required><option v-for="a in accountOptions" :key="a.id" :value="a.id">{{ a.name }}</option></select>
           <small v-if="!accountOptions.length" class="field-error">{{ tx('Нет счёта для выбранного канала и валюты.') }}</small></label>
+        <label>{{ tx('Отдел') }}<select v-model="form.department"><option value="">{{ tx('Выберите отдел') }}</option><option v-for="(label, key) in DEPARTMENTS" :key="key" :value="key">{{ tx(label) }}</option></select></label>
         <label>{{ tx('Статья расходов') }}<select v-model="form.category_id" required><option v-for="c in outcomeCategories" :key="c.id" :value="c.id">{{ c.name }}</option></select></label>
         <label>{{ tx('Сумма') }}<input v-model="form.amount" type="text" inputmode="decimal" pattern="[0-9]+([.][0-9]{1,2})?" required autocomplete="off"></label>
         <label>{{ tx('Контрагент') }}<input v-model="form.counterparty" minlength="2" maxlength="160" required></label>
-        <label>{{ tx('Приоритет') }}<select v-model="form.priority" required><option v-for="(label, k) in PRIORITIES" :key="k" :value="k">{{ tx('{label} · от {n} раб. дн.', {label: tx(label), n: LEAD_DAYS[k]}) }}</option></select></label>
+        <label>{{ tx('Приоритет') }}<select v-model="form.priority" required><option v-for="(label, k) in PRIORITY_TERMS" :key="k" :value="k">{{ tx(label) }}</option></select></label>
         <label>{{ tx('Плановая дата оплаты') }}<input v-model="form.date" type="date" :min="earliest" required aria-describedby="rq-date-hint">
-          <small id="rq-date-hint" class="sub">{{ tx('Не раньше {date}: сегодняшняя дата не допускается.', {date: earliestLabel}) }}</small></label>
+          <small id="rq-date-hint" class="sub">{{ tx('Ближайшая дата оплаты: {date}.', {date: earliestLabel}) }} <span v-if="form.priority !== 'urgent'">{{ tx('Выходные и праздники пропускаются по рабочему календарю.') }}</span><span v-else>{{ tx('Для срочной заявки дата — сегодня, включая выходной.') }}</span></small></label>
         <label class="wide">{{ tx('Назначение платежа') }}<textarea v-model="form.purpose" minlength="5" maxlength="3000" required></textarea></label>
         <label v-if="needsReason" class="wide">{{ tx('Причина изменения') }}<textarea v-model="form.reason" minlength="10" maxlength="1000" required></textarea></label>
       </div>
@@ -203,10 +207,10 @@ onUnmounted(() => { document.removeEventListener('keydown', onKey); clearTimeout
 
       <section class="request-documents-placeholder" aria-labelledby="rq-docs-title">
         <strong id="rq-docs-title">{{ tx('Документы к заявке') }}</strong>
-        <p>{{ sentMode ? tx('Первые два раздела обязательны.') : tx('Черновик можно сохранить без файлов. Для отправки обязательны первые два раздела.') }} {{ tx('PDF, PNG, JPEG, DOCX или XLSX, до 5 МБ на файл.') }}</p>
+        <p>{{ form.channel === 'cash' ? tx('Касса: обязателен только индент. Договор и прочие документы — при наличии.') : tx('Банк: обязательны индент и договор или счёт. Прочие документы — при наличии.') }} {{ tx('PDF, PNG, JPEG, DOCX или XLSX, до 5 МБ на файл.') }}</p>
         <div class="request-document-grid">
           <div v-for="(label, kind) in DOC_KINDS" :key="kind" class="request-document-slot">
-            <b>{{ tx(label) }} <span v-if="REQUIRED_DOCS.includes(kind)" class="required-mark" :aria-label="tx('обязательно')">*</span></b>
+            <b>{{ tx(label) }} <span v-if="required.includes(kind)" class="required-mark" :aria-label="tx('обязательно')">*</span><small v-else class="sub"> · {{ tx('Необязательно') }}</small></b>
             <span v-for="doc in savedOf(kind)" :key="doc.id" class="saved-file">
               <a :href="companyUrl(doc.url)">{{ doc.filename }}</a><small>{{ tx('версия {n}', {n: doc.version}) }}{{ replacing(kind) ? ' · ' + tx('будет заменён') : '' }}</small>
               <button v-if="canRemoveSaved" type="button" class="ghost tiny" :disabled="saving" @click="removeSaved(doc)">{{ tx('Убрать') }}</button>

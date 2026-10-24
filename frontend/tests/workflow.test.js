@@ -52,7 +52,7 @@ test('the budget card shows limit, used, reserved, available and the rest after 
 });
 
 test('lead times and required documents match the server rules', () => {
-  assert.deepEqual(LEAD_DAYS, {normal: 7, high: 3, urgent: 1});
+  assert.deepEqual(LEAD_DAYS, {normal: 7, high: 3, urgent: 0});
   assert.equal(minDue({urgent: '2026-09-17'}, 'urgent'), '2026-09-17');
   assert.deepEqual(REQUIRED_DOCS, ['internal', 'contract']);
   assert.deepEqual(Object.keys(DOC_KINDS), ['internal', 'contract', 'other']);

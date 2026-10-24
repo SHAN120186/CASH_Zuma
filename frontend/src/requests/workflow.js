@@ -15,8 +15,10 @@ const WAITING = {
 };
 
 export const PRIORITIES = { normal: N_('Обычный'), high: N_('Высокий'), urgent: N_('Срочный') };
-export const LEAD_DAYS = { normal: 7, high: 3, urgent: 1 };
-export const CHANNELS = { bank: N_('Банк (расчётный счёт)'), cash: N_('Касса') };
+export const LEAD_DAYS = { normal: 7, high: 3, urgent: 0 };
+export const CHANNELS = { bank: N_('Банк — перечисление'), cash: N_('Касса — наличные') };
+export const PRIORITY_TERMS = {normal:N_('Обычный — 7 рабочих дней'),high:N_('Высокий — 3 рабочих дня'),urgent:N_('Срочный — сегодня')};
+export const DEPARTMENTS = {qc:'QC',ml:'ML',engineering:N_('Инженерный отдел (ИТО)'),warehouse:N_('Склад'),production:N_('Производство'),office:N_('Общие закупки (офис)'),facilities:N_('Хозяйственная часть')};
 
 // Разделы вложений заявки — как в таблице request_documents на сервере.
 export const DOC_KINDS = {
@@ -25,6 +27,7 @@ export const DOC_KINDS = {
   other: N_('Прочие подтверждающие документы'),
 };
 export const REQUIRED_DOCS = ['internal', 'contract'];
+export const requiredDocs = channel => channel === 'cash' ? ['internal'] : REQUIRED_DOCS;
 // Внутренняя заявка и договор — по одному действующему файлу (новый файл — новая версия); прочих может быть несколько.
 export const SINGLE_DOCS = ['internal', 'contract'];
 export const DOC_EXTENSIONS = ['.pdf', '.png', '.jpg', '.jpeg', '.docx', '.xlsx'];
@@ -133,7 +136,7 @@ export function accountsFor(accounts, channel, currency) {
 }
 
 export function missingDocs(r) {
-  return (r.missing_documents || REQUIRED_DOCS.filter(k => !(r.documents && r.documents[k])));
+  return (r.missing_documents || (r.required_documents || requiredDocs(r.channel || r.account_kind)).filter(k => !(r.documents && r.documents[k])));
 }
 
 export function budgetRows(card) {

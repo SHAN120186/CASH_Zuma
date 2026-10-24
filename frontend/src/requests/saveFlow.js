@@ -12,14 +12,14 @@
 //  - если заявка уже на согласовании (например, потерялся ответ на отправку), форма не пишет
 //    в неё статус «черновик» и не создаёт вторую заявку: дальнейшие изменения — в карточке с причиной.
 
-import {DOC_KINDS, REQUIRED_DOCS, STATUS} from './workflow.js';
+import {DOC_KINDS, requiredDocs, STATUS} from './workflow.js';
 import {tx, N_} from '../i18n/index.js';
 
 // Причина уходит на сервер по-русски (её видно в истории заявки); при показе она переводится.
 export const RETRY_REASON = N_('Повторное сохранение формы после ошибки загрузки файла');
 export const KIND_ORDER = ['internal', 'contract', 'other'];
 const EDITABLE = ['draft', 'returned'];
-const FIELDS = ['company_id', 'account_id', 'channel', 'currency', 'category_id', 'amount', 'counterparty', 'purpose', 'priority', 'date', 'project'];
+const FIELDS = ['company_id', 'account_id', 'channel', 'currency', 'category_id', 'amount', 'counterparty', 'purpose', 'priority', 'date', 'project', 'department'];
 
 // Постоянные сообщения хранятся по-русски (N_) и переводятся формой при показе;
 // сообщения с номером, статусом или текстом сервера собираются на текущем языке (tx).
@@ -55,16 +55,16 @@ export function requestBody(form, companyId) {
     company_id: companyId, account_id: form.account_id == null ? null : Number(form.account_id), channel: form.channel,
     currency: form.currency, category_id: form.category_id == null ? null : Number(form.category_id),
     amount: String(form.amount ?? '').trim(), counterparty: String(form.counterparty ?? '').trim(),
-    purpose: String(form.purpose ?? '').trim(), priority: form.priority, date: form.date, project: String(form.project ?? '').trim(),
+    purpose: String(form.purpose ?? '').trim(), priority: form.priority, date: form.date, project: String(form.project ?? '').trim(), department: String(form.department ?? '').trim(),
   };
 }
 
 const snapshot = fields => JSON.stringify(FIELDS.map(k => fields[k] ?? null));
 
 // Обязательные разделы, которых нет ни среди сохранённых файлов, ни среди выбранных.
-export function missingRequired(saved = [], files = []) {
+export function missingRequired(saved = [], files = [], channel = 'bank') {
   const kinds = new Set([...saved.filter(d => d.current !== false).map(d => d.kind), ...files.map(f => f.kind)]);
-  return REQUIRED_DOCS.filter(k => !kinds.has(k));
+  return requiredDocs(channel).filter(k => !kinds.has(k));
 }
 
 export function missingMessage(missing) {
@@ -102,7 +102,7 @@ export async function saveRequest(api, state, {fields, files = [], saved = [], s
   const fail = (code, message, extra = {}) => ({ok: false, code, message, ...extra});
   const sending = submit || state.mode === 'sent';
   if (sending) {
-    const missing = missingRequired(saved, files);
+    const missing = missingRequired(saved, files, fields.channel);
     if (missing.length) return fail('missing_documents', missingMessage(missing), {step: 'check'});
   }
   if (state.createUnknown) return fail('unknown_create', MESSAGES.unknownCreate, {step: 'create'});

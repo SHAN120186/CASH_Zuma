@@ -1,7 +1,7 @@
 <script setup>
 // Карточка заявки: маршрут, бюджет статьи, документы с версиями, решения из r.actions и история.
 import {ref, computed, onMounted, onUnmounted, nextTick} from 'vue';
-import {PRIORITIES, CHANNELS, DOC_KINDS, REQUIRED_DOCS, SINGLE_DOCS, DOC_ACCEPT, COMMENT_REQUIRED, stageLabel, steps, decisionOptions,
+import {PRIORITIES, CHANNELS, DEPARTMENTS, DOC_KINDS, requiredDocs, SINGLE_DOCS, DOC_ACCEPT, COMMENT_REQUIRED, stageLabel, steps, decisionOptions,
         missingDocs, budgetRows, budgetNote, periodLabel, minDue, historyLabel, historyNote, historyFile, fileProblem} from './workflow.js';
 import {RETRY_REASON} from './saveFlow.js';
 import {tx, N_, formatDate} from '../i18n/index.js';
@@ -31,10 +31,11 @@ const byKind = computed(() => {
   }]));
 });
 const missing = computed(() => r.value ? missingDocs(r.value) : []);
+const required = computed(() => r.value?.required_documents || requiredDocs(r.value?.channel || r.value?.account_kind));
 // До отправки файл убирается сразу; после отправки — только прочий документ и с причиной
 // (обязательный заменяется новой версией).
 const draftLike = computed(() => ['draft', 'returned'].includes(r.value?.status));
-const canRemove = kind => can('documents') && (draftLike.value || !REQUIRED_DOCS.includes(kind));
+const canRemove = kind => can('documents') && (draftLike.value || !required.value.includes(kind));
 
 async function load(afterAction = false) {
   try {
@@ -152,6 +153,7 @@ onUnmounted(() => document.removeEventListener('keydown', onKey));
         <p class="sub rq-route">{{ tx('Маршрут: проверка бухгалтера → финансовый директор → директор по политике статьи → оплата.') }} {{ tx(r.route?.reason) }}</p>
 
         <dl class="kv rq-kv">
+          <template v-if="r.department"><dt>{{ tx('Отдел') }}</dt><dd>{{ tx(DEPARTMENTS[r.department] || r.department) }}</dd></template>
           <dt>{{ tx('Статья') }}</dt><dd>{{ r.category }}</dd>
           <dt>{{ tx('Канал и счёт') }}</dt><dd>{{ tx(CHANNELS[r.channel] || r.channel) }} · {{ r.account }}</dd>
           <dt>{{ tx('Плановая дата') }}</dt><dd>{{ dateRu(r.date) }} · {{ tx('{priority} приоритет', {priority: tx(PRIORITIES[r.priority])}) }}</dd>
@@ -177,7 +179,7 @@ onUnmounted(() => document.removeEventListener('keydown', onKey));
         <p v-if="missing.length && draftLike" class="warning">{{ tx('Для отправки не хватает: {list}.', {list: missing.map(k => tx(DOC_KINDS[k])).join(', ')}) }}</p>
         <div class="rq-docs">
           <section v-for="(label, kind) in DOC_KINDS" :key="kind" class="rq-doc">
-            <div class="rq-doc-h"><b>{{ tx(label) }}</b><span class="pill" :class="REQUIRED_DOCS.includes(kind) ? (byKind[kind].current.length ? 'good' : 'warn') : 'gray'">{{ REQUIRED_DOCS.includes(kind) ? tx('Обязательно') : tx('Необязательно') }}</span></div>
+            <div class="rq-doc-h"><b>{{ tx(label) }}</b><span class="pill" :class="required.includes(kind) ? (byKind[kind].current.length ? 'good' : 'warn') : 'gray'">{{ required.includes(kind) ? tx('Обязательно') : tx('Необязательно') }}</span></div>
             <ul v-if="byKind[kind].current.length" class="rq-files">
               <li v-for="d in byKind[kind].current" :key="d.id">
                 <a :href="companyUrl(d.url)">{{ d.filename }}</a><small>{{ tx('версия {n}', {n: d.version}) }} · {{ d.created_by }} · {{ when(d.created_at) }}</small>

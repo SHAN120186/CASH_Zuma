@@ -1,15 +1,15 @@
 """Рабочие дни и минимальные сроки заявок по приоритету.
 
 Неделя Пн–Пт рабочая, Сб и Вс выходные. Настраиваемый календарь холдинга (calendar_days)
-добавляет праздники и рабочие выходные. Срок считается в рабочих днях строго после
-сегодняшнего дня, поэтому текущая дата никогда не подходит.
+добавляет праздники и рабочие выходные. Обычные и высокоприоритетные заявки считаются
+строго после сегодняшнего дня; срочная заявка допускается сегодня, включая выходной.
 """
 from datetime import timedelta
 from fastapi import HTTPException
 from sqlalchemy import select
 from .db import CalendarDay
 
-LEAD_DAYS = {'normal': 7, 'high': 3, 'urgent': 1}
+LEAD_DAYS = {'normal': 7, 'high': 3, 'urgent': 0}
 PRIORITY_LABELS = {'normal': 'обычного', 'high': 'высокого', 'urgent': 'срочного'}
 MAX_SCAN = 400
 
@@ -28,7 +28,9 @@ def is_working_day(day, overrides):
 
 
 def add_working_days(s, start, n):
-    """N-й рабочий день строго после ``start``."""
+    """N-й рабочий день после ``start``; нулевой срок — сам ``start``."""
+    if n == 0:
+        return start
     overrides = calendar_overrides(s, start, start + timedelta(days=MAX_SCAN))
     day, left = start, n
     for _ in range(MAX_SCAN):
@@ -50,8 +52,8 @@ def due_minimums(s, today):
 
 def enforce_lead_time(s, priority, due, today):
     earliest = earliest_due(s, priority, today)
-    if due <= today:
-        raise HTTPException(422, 'Плановая дата заявки не может быть сегодняшней или прошедшей.')
+    if due < today:
+        raise HTTPException(422, 'Плановая дата заявки не может быть прошедшей.')
     if due < earliest:
         raise HTTPException(422, f'Для {PRIORITY_LABELS[priority]} приоритета нужно не меньше {LEAD_DAYS[priority]} '
                                  f'рабочих дней: ближайшая допустимая дата {earliest.strftime("%d.%m.%Y")}.')

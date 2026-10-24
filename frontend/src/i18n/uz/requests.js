@@ -1,6 +1,36 @@
 // Uzbek (Latin) translations: requests/*.
 // Key: the exact Russian text; value: the Uzbek text with the same {placeholders}.
 export default {
+  "Индент обязателен всегда. Для банка нужен также договор или счёт; для кассы остальные документы — при наличии. Срок оплаты: обычная заявка — 7 рабочих дней, высокий приоритет — 3 рабочих дня, срочная — сегодня.": "Indent har doim majburiy. Bank uchun shartnoma yoki hisob-faktura ham kerak; kassa uchun qolgan hujjatlar — mavjud bo‘lsa. To‘lov muddati: oddiy ariza — 7 ish kuni, yuqori ustuvorlik — 3 ish kuni, shoshilinch — bugun.",
+  "Плановая дата заявки не может быть прошедшей.": "Arizaning reja sanasi o‘tgan kun bo‘lishi mumkin emas.",
+  "Для срочной заявки дата — сегодня, включая выходной.": "Shoshilinch ariza sanasi — bugun, dam olish kuni bo‘lsa ham.",
+
+  "Срочный — сегодня": "Shoshilinch — bugun",
+  "Черновик сохраняется без файлов. Индент обязателен при отправке всегда; для банка нужен также договор или счёт, для кассы остальные документы — при наличии. PDF, PNG, JPEG, DOCX или XLSX до 5 МБ. Изменение документов после отправки с причиной начинает согласование заново; прежние версии остаются в истории.": "Qoralama fayllarsiz saqlanadi. Yuborishda indent doim majburiy; bank uchun shartnoma yoki hisob-faktura ham kerak, kassa uchun boshqa hujjatlar — mavjud bo‘lsa. PDF, PNG, JPEG, DOCX yoki XLSX, 5 MB gacha. Yuborilgandan keyin sabab bilan hujjatlarni o‘zgartirish kelishishni qayta boshlaydi; oldingi versiyalar tarixda qoladi.",
+  "Обычная заявка — через 7 рабочих дней, высокий приоритет — через 3 рабочих дня, срочная — сегодня, включая выходные. Для обычного и высокого приоритета праздники и выходные берутся из календаря холдинга.": "Oddiy ariza — 7 ish kunidan keyin, yuqori ustuvorlik — 3 ish kunidan keyin, shoshilinch — bugun, dam olish kunlari ham. Oddiy va yuqori ustuvorlik uchun bayram va dam olish kunlari xolding taqvimidan olinadi.",
+  "Обычный приоритет — 7 рабочих дней, высокий — 3 рабочих дня, срочный — сегодня. При выборе приоритета плановая дата обновляется автоматически.": "Oddiy ustuvorlik — 7 ish kuni, yuqori — 3 ish kuni, shoshilinch — bugun. Ustuvorlik tanlanganda reja sanasi avtomatik yangilanadi.",
+  "Срок оплаты: обычная заявка — 7 рабочих дней, высокий приоритет — 3 рабочих дня, срочная — сегодня.": "To‘lov muddati: oddiy ariza — 7 ish kuni, yuqori ustuvorlik — 3 ish kuni, shoshilinch — bugun.",
+
+  "Банк — перечисление": "Bank — pul o‘tkazmasi",
+  "Касса — наличные": "Kassa — naqd pul",
+  "Обычный — 7 рабочих дней": "Oddiy — 7 ish kuni",
+  "Высокий — 3 рабочих дня": "Yuqori — 3 ish kuni",
+  "Срочный — 1 рабочий день": "Shoshilinch — 1 ish kuni",
+  "Инженерный отдел (ИТО)": "Muhandislik bo‘limi (ITO)",
+  "Общие закупки (офис)": "Umumiy xaridlar (ofis)",
+  "Хозяйственная часть": "Xo‘jalik qismi",
+  "Ближайшая дата оплаты: {date}.": "Eng yaqin to‘lov sanasi: {date}.",
+  "Выходные и праздники пропускаются по рабочему календарю.": "Dam olish va bayram kunlari ish taqvimiga ko‘ra o‘tkazib yuboriladi.",
+  "Касса: обязателен только индент. Договор и прочие документы — при наличии.": "Kassa: faqat indent majburiy. Shartnoma va boshqa hujjatlar — mavjud bo‘lsa.",
+  "Банк: обязательны индент и договор или счёт. Прочие документы — при наличии.": "Bank: indent hamda shartnoma yoki hisob-faktura majburiy. Boshqa hujjjatlar — mavjud bo‘lsa.",
+  "Черновик можно сохранить без файлов. При отправке обязательность документов зависит от канала оплаты. Автор и последний редактор не согласуют свою заявку.": "Qoralamani fayllarsiz saqlash mumkin. Yuborishda majburiy hujjatlar to‘lov usuliga bog‘liq. Muallif va oxirgi tahrirchi o‘z arizasini tasdiqlamaydi.",
+  "Индент обязателен всегда. Для банка нужен также договор или счёт; для кассы остальные документы — при наличии.": "Indent har doim majburiy. Bank uchun shartnoma yoki hisob-faktura ham kerak; kassa uchun qolgan hujjatlar — mavjud bo‘lsa.",
+  "Сначала сохраните черновик и приложите «Внутренняя заявка / Индент», затем отправьте заявку.": "Avval qoralamani saqlang va «Ichki ariza / Indent»ni biriktiring, keyin arizani yuboring.",
+  "Отдел": "Bo‘lim",
+  "Выберите отдел": "Bo‘limni tanlang",
+  "Склад": "Ombor",
+  "Производство": "Ishlab chiqarish",
+
   'Удалить заявку': 'Arizani o‘chirish',
   'Удалить заявку {number} и её вложения?': '{number} ariza va uning fayllari o‘chirilsinmi?',
   'Причина удаления заявки (не менее 10 символов). Платёж останется в операциях.': 'Arizani o‘chirish sababi (kamida 10 belgi). To‘lov operatsiyalarda qoladi.',

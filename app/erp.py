@@ -13,7 +13,7 @@ from .db import *
 from .security import session_user, PERMS, can_attach_document, payment_channels, perms_of, act_with_right, pay_right, require_permission
 from sqlalchemy.orm.attributes import flag_modified
 from .services import (post_ledger, money, get, log, today, clear_approval, check_request_version,
-                       DOCUMENT_KINDS, REQUIRED_DOCUMENTS)
+                       DOCUMENT_KINDS, required_documents)
 
 router=APIRouter()
 MAX_IMPORT=5*1024*1024
@@ -330,7 +330,7 @@ class RemoveDocumentIn(BaseModel):
 
 @router.post('/api/request-documents/{id}/remove')
 def remove_request_document(id:int,data:RemoveDocumentIn,request:Request):
-    """После отправки убирается только прочий документ; обязательные заменяются новой версией.
+    """После отправки убираются необязательные для канала документы; обязательные заменяются новой версией.
     Согласование при этом начинается заново."""
     with unit(True) as s:
         user,_=session_user(s,request);doc=s.get(RequestDocument,id)
@@ -338,7 +338,7 @@ def remove_request_document(id:int,data:RemoveDocumentIn,request:Request):
         payment=get(s,PaymentRequest,doc.request_id);request_document_access(s,user,payment,True)
         check_request_version(payment,data.version)
         if not doc.active:raise HTTPException(409,'Документ уже заменён или убран.')
-        if doc.kind in REQUIRED_DOCUMENTS and payment.status in ('pending','approved'):
+        if doc.kind in required_documents(s,payment) and payment.status in ('pending','approved'):
             raise HTTPException(409,'Обязательный документ не убирается: загрузите новую версию.')
         return remove_document(s,user,doc,data.reason)
 

@@ -159,6 +159,7 @@ class RequestIn(Input):
     date:date
     purpose:str=Field(min_length=5,max_length=3000)
     project:str=Field(default='',max_length=120)
+    department:Literal['','qc','ml','engineering','warehouse','production','office','facilities']=''
     priority:Literal['normal','high','urgent']
     status:Literal['draft','pending']='draft'
 class RequestEdit(RequestIn):
@@ -448,18 +449,20 @@ def request_target(s,data):
 
 def request_state(r):
     return {'status':r.status,'stage':approval_stage(r),'date':str(r.due_date),'version':r.version,'checked_by':r.checked_by,
-            'finance_approved_by':r.finance_approved_by,'approved_by':r.approved_by}
+            'finance_approved_by':r.finance_approved_by,'approved_by':r.approved_by,'department':r.department or ''}
 
 @app.post('/api/requests')
 def add_request(data:RequestIn,request:Request):
     with unit(True) as s:
         u,_=session_user(s,request,'request');a,c=request_target(s,data);n=amount(data.amount)
-        if data.status=='pending':raise HTTPException(422,'Сначала сохраните черновик и приложите «Внутренняя заявка / Индент» и «Договор / Счёт на оплату», затем отправьте заявку.')
-        r=PaymentRequest(creator_id=u.id,last_editor_id=u.id,category_id=c.id,account_id=a.id,counterparty=data.counterparty,amount=n,due_date=data.date,purpose=data.purpose,project=data.project,status='draft',priority=data.priority)
+        if data.status=='pending':
+            message='Сначала сохраните черновик и приложите «Внутренняя заявка / Индент», затем отправьте заявку.' if a.kind=='cash' else 'Сначала сохраните черновик и приложите «Внутренняя заявка / Индент» и «Договор / Счёт на оплату», затем отправьте заявку.'
+            raise HTTPException(422,message)
+        r=PaymentRequest(creator_id=u.id,last_editor_id=u.id,category_id=c.id,account_id=a.id,counterparty=data.counterparty,amount=n,due_date=data.date,purpose=data.purpose,project=data.project,department=data.department,status='draft',priority=data.priority)
         remember_counterparty(s,data.counterparty)
         s.add(r);s.flush()
         log(s,u,'Создана заявка','request',r.id,json.dumps({'status':r.status,'version':r.version,'amount':money(n),'currency':a.currency,
-            'category':c.name,'channel':a.kind,'date':str(r.due_date),'priority':r.priority},ensure_ascii=False))
+            'category':c.name,'channel':a.kind,'date':str(r.due_date),'priority':r.priority,'department':r.department},ensure_ascii=False))
         return request_view(s,u,r)
 class RequestDeleteIn(Input):
     version:int=Field(ge=1)
@@ -499,6 +502,8 @@ def edit_request(id:int,data:RequestEdit,request:Request):
         before=request_json(s,r)
         was_pending=r.status=='pending';route_changed=r.category_id!=c.id or get(s,Account,r.account_id).currency!=a.currency
         for key in ('account_id','category_id','counterparty','purpose','project','priority'):setattr(r,key,getattr(data,key))
+        # Additive field: older clients that omit it must not erase an existing department.
+        if 'department' in data.model_fields_set:r.department=data.department
         r.amount=n;r.due_date=data.date;clear_approval(r);r.last_editor_id=u.id;r.decision_note=data.reason;r.status=data.status
         s.flush()
         if data.status=='pending':

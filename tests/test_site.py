@@ -24,7 +24,7 @@ from app.security import hash_password
 from app import clock
 PASSWORD='OnlyForTemporaryTests_9841!'
 HASH=hash_password(PASSWORD)
-# Среда в середине месяца: сроки 1/3/7 рабочих дней не переходят в следующий месяц,
+# Среда в середине месяца: сроки сегодня/3/7 рабочих дней не переходят в следующий месяц,
 # и тесты не зависят от даты запуска.
 FROZEN_TODAY=date(2026,9,16)
 PDF=b'%PDF-1.4\n% synthetic test document\n'
@@ -1810,9 +1810,9 @@ class SiteTests(unittest.TestCase):
         body=lambda ref:{'account_id':acc,'category_id':self.cat,'kind':'out','amount':'100','date':self.date,'reference':ref,'request_id':rid}
         r=self.post('/api/ledger',body('MONTH-1'),*book);self.assertEqual(r.status_code,409,r.text);self.assertIn('перенести срок',r.text)
         self.assertEqual(self.post(f'/api/requests/{rid}/decision',{'action':'return_finance','note':'Бюджет месяца оплаты превышен'},*book).status_code,200)
-        # Today is no longer a valid due date; the new one keeps the priority's lead time within the payment month.
-        today_date=self.post(f'/api/requests/{rid}/decision',{'action':'reschedule','date':self.date,'note':'Срок переносится на месяц оплаты'})
-        self.assertEqual(today_date.status_code,422,today_date.text)
+        # Urgent requests can move to today; a past date still cannot restart the approval/payment loop.
+        past_date=self.post(f'/api/requests/{rid}/decision',{'action':'reschedule','date':str(today()-timedelta(days=1)),'note':'Перенос на прошедшую дату'})
+        self.assertEqual(past_date.status_code,422,past_date.text)
         moved=self.post(f'/api/requests/{rid}/decision',{'action':'reschedule','date':self.dues['urgent'],'note':'Срок переносится на месяц оплаты'})
         self.assertEqual(moved.status_code,200,moved.text)
         self.assertEqual((moved.json()['date'][:7],moved.json()['approval_stage']),(self.month,'finance'))
@@ -1891,7 +1891,7 @@ class SiteTests(unittest.TestCase):
         self.assertEqual(new.status_code,200,new.text);new=new.json()['id']
         self.assertEqual(self.ledger('100','in',reference='NEW-DAY-IN',account_id=new).status_code,200)
         self.assertEqual(self.ledger('50','transfer',reference='OLD-TO-NEW',to_account_id=new).status_code,200)
-        # Утверждённая заявка со сроком в день отчёта. Новая заявка на сегодня невозможна, поэтому срок ставится напрямую.
+        # Утверждённая заявка со сроком в день отчёта. Срок задаётся напрямую для точного тестового сценария.
         r=self.request('600','Резерв на дату отчёта',account=new);self.assertEqual(r.status_code,200,r.text)
         rid=r.json()['id'];self.assertEqual(self.approve(rid).status_code,200)
         with unit(True) as s:s.get(PaymentRequest,rid).due_date=today()
@@ -1944,7 +1944,7 @@ class SiteTests(unittest.TestCase):
         self.assertEqual(self.ledger('100','in',reference='DAY-IN').status_code,200)
         self.assertEqual(self.ledger('40','out',reference='DAY-OUT').status_code,200)
         self.assertEqual(self.ledger('50','transfer',reference='DAY-TRANSFER',to_account_id=cash).status_code,200)
-        # Утверждённая заявка со сроком в день отчёта. Новая заявка на сегодня невозможна, поэтому срок ставится напрямую.
+        # Утверждённая заявка со сроком в день отчёта. Срок задаётся напрямую для точного тестового сценария.
         r=self.request('600','Резерв на дату отчёта');self.assertEqual(r.status_code,200,r.text)
         rid=r.json()['id'];self.assertEqual(self.approve(rid).status_code,200)
         with unit(True) as s:s.get(PaymentRequest,rid).due_date=day
@@ -2438,9 +2438,9 @@ class SiteTests(unittest.TestCase):
         self.assertEqual(self.upload(rid,'other').status_code,409)
 
     def test_120_lead_times_count_working_days_from_the_holiday_calendar(self):
-        self.assertEqual(self.dues,{'urgent':'2026-09-17','high':'2026-09-21','normal':'2026-09-25'})
+        self.assertEqual(self.dues,{'urgent':'2026-09-16','high':'2026-09-21','normal':'2026-09-25'})
         create=lambda priority,day:self.post('/api/requests',self.request_body('600',priority=priority,date=day))
-        for priority,early,ok in [('urgent','2026-09-16','2026-09-17'),('high','2026-09-18','2026-09-21'),('normal','2026-09-24','2026-09-25')]:
+        for priority,early,ok in [('urgent','2026-09-15','2026-09-16'),('high','2026-09-18','2026-09-21'),('normal','2026-09-24','2026-09-25')]:
             self.assertEqual(create(priority,early).status_code,422,priority);self.assertEqual(create(priority,ok).status_code,200,priority)
         self.assertEqual(create('urgent','2026-09-15').status_code,422)
         days={d['day']:d['name'] for d in self.client.get('/api/calendar-days?year=2026',headers=self.h).json()}
@@ -2451,8 +2451,8 @@ class SiteTests(unittest.TestCase):
         self.assertEqual(self.client.post('/api/calendar-days',json={'day':'2026-09-17','kind':'holiday','name':'Перенос выходного'},headers=self.h).status_code,200)
         self.assertEqual(self.client.post('/api/calendar-days',json={'day':'2026-09-19','kind':'workday','name':'Рабочая суббота'},headers=self.h).status_code,200)
         dues=self.client.get('/api/bootstrap',headers=self.h).json()['due_minimums']
-        self.assertEqual(dues,{'urgent':'2026-09-18','high':'2026-09-21','normal':'2026-09-25'})
-        self.assertEqual(create('urgent','2026-09-17').status_code,422)
+        self.assertEqual(dues,{'urgent':'2026-09-16','high':'2026-09-21','normal':'2026-09-25'})
+        self.assertEqual(create('urgent','2026-09-17').status_code,200)
         # Черновик с верной датой проверяется повторно при отправке: новый праздник сдвигает срок.
         rid=self.request(submit=False,priority='normal',date='2026-09-25').json()['id']
         for kind in ('internal','contract'):self.assertEqual(self.upload(rid,kind).status_code,200)
@@ -2461,7 +2461,7 @@ class SiteTests(unittest.TestCase):
         self.assertEqual(self.client.delete('/api/calendar-days/2026-09-22',headers=self.h).status_code,200)
         self.assertEqual(self.client.delete('/api/calendar-days/2026-09-17',headers=self.h).status_code,200)
         sent=self.request('600').json()['id']
-        self.assertEqual(self.post(f'/api/requests/{sent}/decision',{'action':'reschedule','date':'2026-09-16','note':'Перенос на сегодня'},*self.stage_user('finance')).status_code,422)
+        self.assertEqual(self.post(f'/api/requests/{sent}/decision',{'action':'reschedule','date':'2026-09-16','note':'Перенос на сегодня'},*self.stage_user('finance')).status_code,200)
         self.assertEqual(self.post(f'/api/requests/{sent}/decision',{'action':'reschedule','date':'2026-09-18','note':'Перенос на пятницу'},*self.stage_user('finance')).status_code,200)
 
     def test_121_requester_sees_the_chosen_category_budget_but_no_accounts(self):
@@ -3099,5 +3099,41 @@ class SiteTests(unittest.TestCase):
             self.assertEqual(self.client.post(f'/api/users/{me}',json={'role':'admin','active':True,'password':PASSWORD+'y'},headers=self.h).status_code,409)
             self.assertEqual(self.client.get('/api/me').status_code,200)
         finally:cl.close()
+
+    def test_145_urgent_today_keeps_creation_submission_and_reschedule_rules(self):
+        # Zero lead time is specific to urgent; other priorities retain their working-day minimums.
+        self.assertEqual(self.client.get('/api/request-rules',headers=self.h).json()['lead_days'],{'normal':7,'high':3,'urgent':0})
+        for priority in ('normal','high'):
+            response=self.post('/api/requests',self.request_body(priority=priority,date=self.date))
+            self.assertEqual(response.status_code,422,(priority,response.text))
+        past=self.post('/api/requests',self.request_body(priority='urgent',date=str(today()-timedelta(days=1))))
+        self.assertEqual(past.status_code,422,past.text)
+        created=self.request('100','Срочная заявка на сегодня',priority='urgent',date=self.date,submit=False)
+        self.assertEqual(created.status_code,200,created.text);rid=created.json()['id']
+        for kind in ('internal','contract'):self.assertEqual(self.upload(rid,kind).status_code,200)
+        sent=self.post(f'/api/requests/{rid}/decision',{'action':'submit'})
+        self.assertEqual(sent.status_code,200,sent.text);self.assertEqual(sent.json()['date'],self.date)
+        moved=self.post(f'/api/requests/{rid}/decision',{'action':'reschedule','date':self.date,'note':'Срочная оплата в день заявки'},*self.stage_user('finance'))
+        self.assertEqual(moved.status_code,200,moved.text)
+        self.assertEqual((moved.json()['date'],moved.json()['status']),(self.date,'pending'))
+        self.assertEqual(self.post(f'/api/requests/{rid}/decision',{'action':'reschedule','date':str(today()-timedelta(days=1)),'note':'Нельзя перенести в прошлое'},*self.stage_user('finance')).status_code,422)
+
+    def test_146_urgent_allows_today_on_weekends_while_regular_dates_skip_weekends(self):
+        from app.workdays import due_minimums,earliest_due
+        for day in (date(2026,10,24),date(2026,10,25)):
+            clock.FROZEN=day
+            # Advancing the synthetic business date expires September's session.
+            auth=self.client.post('/api/login',json={'username':'admin','password':PASSWORD})
+            self.assertEqual(auth.status_code,200,auth.text);self.h={'X-CSRF-Token':auth.json()['csrf']}
+            with unit() as s:
+                self.assertEqual(earliest_due(s,'urgent',day),day)
+                if day==date(2026,10,24):
+                    self.assertEqual(due_minimums(s,day),{'urgent':'2026-10-24','high':'2026-10-28','normal':'2026-11-03'})
+            created=self.request('100','Срочная заявка выходного дня',priority='urgent',date=str(day))
+            self.assertEqual(created.status_code,200,created.text)
+            self.assertEqual((created.json()['date'],created.json()['status']),(str(day),'pending'))
+            for priority in ('normal','high'):
+                blocked=self.post('/api/requests',self.request_body(priority=priority,date=str(day)))
+                self.assertEqual(blocked.status_code,422,(priority,blocked.text))
 
 if __name__=='__main__':unittest.main(verbosity=2)

@@ -330,7 +330,7 @@ test('a saved draft file is removed with DELETE; the request body keeps numbers 
   assert.equal(s.docs[0].active, false);
   assert.deepEqual(requestBody({...FORM, account_id: '3', category_id: '9', amount: 1500.5, counterparty: '  ООО Альфа '}, 7),
     {company_id: 7, account_id: 3, channel: 'bank', currency: 'UZS', category_id: 9, amount: '1500.5', counterparty: 'ООО Альфа',
-     purpose: 'Оплата по счёту поставщика', priority: 'normal', date: '2026-10-09', project: ''});
+     purpose: 'Оплата по счёту поставщика', priority: 'normal', date: '2026-10-09', project: '', department: ''});
   assert.equal(createSaveState({id: 5, status: 'returned', version: 2}).mode, 'draft');
   assert.equal(createSaveState({id: 5, status: 'pending', version: 2}).mode, 'sent');
 });

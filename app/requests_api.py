@@ -9,7 +9,8 @@ from sqlalchemy import select, func
 from .db import (unit, now, User, Account, Category, PaymentRequest, RequestDocument, CalendarDay, Delegation, Audit)
 from .security import (session_user, perms_of, has_role, payment_channels, pay_right, ROLES, COMPANY_ROLES)
 from .services import (get, log, money, amount, today, approval_stage, round_participants, all_participants, route_complete,
-                       DOCUMENT_KINDS, REQUIRED_DOCUMENTS, THRESHOLD_FIELDS, category_policy, request_json, request_journal)
+                       DOCUMENT_KINDS, REQUIRED_DOCUMENTS, REQUIRED_DOCUMENTS_BY_CHANNEL, REQUEST_DEPARTMENTS,
+                       THRESHOLD_FIELDS, category_policy, request_json, request_journal)
 from .workdays import due_minimums, LEAD_DAYS
 from .workflow_setup import DEFAULT_THRESHOLDS
 
@@ -137,7 +138,9 @@ def request_rules(request: Request):
     with unit() as s:
         session_user(s, request)
         return {'due_minimums': due_minimums(s, today()), 'lead_days': LEAD_DAYS, 'document_kinds': DOCUMENT_KINDS,
-                'required_documents': list(REQUIRED_DOCUMENTS), 'max_document_mb': MAX_DOCUMENT // (1024 * 1024),
+                'required_documents': list(REQUIRED_DOCUMENTS),
+                'required_documents_by_channel': {k:list(v) for k,v in REQUIRED_DOCUMENTS_BY_CHANNEL.items()},
+                'departments':REQUEST_DEPARTMENTS, 'max_document_mb': MAX_DOCUMENT // (1024 * 1024),
                 'document_types': ['PDF', 'PNG', 'JPEG', 'DOCX', 'XLSX'], 'open_statuses': list(OPEN_STATUSES)}
 
 
