@@ -100,6 +100,34 @@ async function refetch(api, state, onServer) {
  */
 export async function saveRequest(api, state, {fields, files = [], saved = [], submit = false, reason = '', onUploaded, onServer, onStep} = {}) {
   const fail = (code, message, extra = {}) => ({ok: false, code, message, ...extra});
+  // The same upload path serves a required pre-upload and the ordinary file stage.
+  // Keep version/deduplication/error handling identical for retries in both stages.
+  async function uploadOne(item, current) {
+    const kind = item.kind;
+    if (state.uploaded.has(item.key)) return null;
+    if (item.sha256 && current.some(d => d.kind === kind && d.sha256 === item.sha256)) {
+      state.uploaded.add(item.key);
+      onUploaded?.(item, null);
+      return null;
+    }
+    let res;
+    try {
+      res = await api(`/api/requests/${state.id}/documents?kind=${kind}`, {method: 'POST', body: item.file, headers: {
+        'Content-Type': 'application/octet-stream', 'X-Filename': encodeURIComponent(item.name), 'X-Request-Version': String(state.version)}});
+    } catch (e) {
+      if (e.status === 409 || e.status === 428) return conflictOr(api, state, e, 'upload', onServer);
+      const why = unknownOutcome(e) ? tx('сервер не ответил') : clause(tx(e.message));
+      const message = tx('Файл «{name}» не загружен: {why}. Черновик {number} сохранён; исправьте и нажмите кнопку ещё раз — уже загруженные файлы повторно не отправляются.',
+        {name: item.name, why, number: state.number || ''});
+      return fail('upload_failed', message, {step: 'upload', file: item.key});
+    }
+    state.uploaded.add(item.key);
+    if (res?.request_version != null) state.version = res.request_version;
+    if (res?.status) state.status = res.status;
+    onUploaded?.(item, res);
+    return null;
+  }
+
   const sending = submit || state.mode === 'sent';
   if (sending) {
     const missing = missingRequired(saved, files, fields.channel);
@@ -148,7 +176,25 @@ export async function saveRequest(api, state, {fields, files = [], saved = [], s
         remember(state, server);
         return fail('status_changed', MESSAGES.statusChanged(state.number, server.status), {step: 'refresh', request: server});
       }
-      if (state.lastSent !== snapshot(fields) || server.version !== known) {
+      // A pending cash request may lack the contract that a new bank account requires.
+      // Attach only newly required kinds before updating fields: the server never has
+      // to accept a pending bank request without its required saved documents.
+      const current = (server.documents_list || saved).filter(d => d.current !== false);
+      const absent = requiredDocs(fields.channel).filter(kind => !current.some(d => d.kind === kind));
+      const unavailable = missingRequired(current, files, fields.channel);
+      if (unavailable.length) return fail('missing_documents', missingMessage(unavailable), {step: 'check'});
+      const preUploads = files.filter(item => absent.includes(item.kind) && !state.uploaded.has(item.key));
+      if (preUploads.length) {
+        onStep?.('upload');
+        for (const kind of KIND_ORDER) {
+          for (const item of preUploads.filter(item => item.kind === kind)) {
+            const problem = await uploadOne(item, current);
+            if (problem) return problem;
+          }
+        }
+        onStep?.('save');
+      }
+      if (state.lastSent !== snapshot(fields) || server.version !== known || preUploads.length) {
         try { request = await api(`/api/requests/${state.id}`, json('PUT', {...fields, status: 'pending', version: state.version, reason: String(reason || '').trim()})); }
         catch (e) { return conflictOr(api, state, e, 'update', onServer); }
         remember(state, request);
@@ -162,28 +208,8 @@ export async function saveRequest(api, state, {fields, files = [], saved = [], s
   if (files.some(f => !state.uploaded.has(f.key))) onStep?.('upload');
   for (const kind of KIND_ORDER) {
     for (const item of files.filter(f => f.kind === kind)) {
-      if (state.uploaded.has(item.key)) continue;
-      // Ответ на прошлую загрузку мог потеряться: тот же файл уже есть на сервере — не дублируем.
-      if (item.sha256 && current.some(d => d.kind === kind && d.sha256 === item.sha256)) {
-        state.uploaded.add(item.key);
-        onUploaded?.(item, null);
-        continue;
-      }
-      let res;
-      try {
-        res = await api(`/api/requests/${state.id}/documents?kind=${kind}`, {method: 'POST', body: item.file, headers: {
-          'Content-Type': 'application/octet-stream', 'X-Filename': encodeURIComponent(item.name), 'X-Request-Version': String(state.version)}});
-      } catch (e) {
-        if (e.status === 409 || e.status === 428) return conflictOr(api, state, e, 'upload', onServer);
-        const why = unknownOutcome(e) ? tx('сервер не ответил') : clause(tx(e.message));
-        const message = tx('Файл «{name}» не загружен: {why}. Черновик {number} сохранён; исправьте и нажмите кнопку ещё раз — уже загруженные файлы повторно не отправляются.',
-          {name: item.name, why, number: state.number || ''});
-        return fail('upload_failed', message, {step: 'upload', file: item.key});
-      }
-      state.uploaded.add(item.key);
-      if (res?.request_version != null) state.version = res.request_version;
-      if (res?.status) state.status = res.status;
-      onUploaded?.(item, res);
+      const problem = await uploadOne(item, current);
+      if (problem) return problem;
     }
   }
 

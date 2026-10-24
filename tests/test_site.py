@@ -382,8 +382,10 @@ class SiteTests(unittest.TestCase):
 
     def test_21_forecast_detects_shortfall_on_individual_account(self):
         second=self.post('/api/accounts',{'name':'Empty bank','kind':'bank','currency':'UZS','opening':'0','opening_date':self.date}).json()['id']
-        r=self.request('100','Оплата с отдельного пустого счёта',account=second);self.assertEqual(r.status_code,200,r.text)
-        rid=r.json()['id'];due=self.dues['urgent']
+        # This forecast scenario intentionally has a future due date; urgent may also be due today.
+        due=str(today()+timedelta(days=1))
+        r=self.request('100','Оплата с отдельного пустого счёта',account=second,date=due);self.assertEqual(r.status_code,200,r.text)
+        rid=r.json()['id']
         denied=self.approve(rid);self.assertEqual(denied.status_code,409,denied.text)
         self.assertIn('Недостаточно доступных средств',denied.text)
         self.assertEqual(self.row(rid)['status'],'pending')
@@ -795,8 +797,9 @@ class SiteTests(unittest.TestCase):
         page=self.client.get('/api/ledger?paginated=true&page=2').json()
         self.assertEqual(page['total'],515);self.assertEqual(len(page['items']),10)
         self.assertEqual(self.client.get('/api/ledger?date_from=2026-12-01&date_to=2026-01-01').status_code,422)
-        for _ in range(6):self.assertEqual(self.request('1').status_code,200)
-        due=self.dues['urgent']
+        # Keep the pagination/filter scenario in the future; urgent itself may be today.
+        due=str(today()+timedelta(days=1))
+        for _ in range(6):self.assertEqual(self.request('1',date=due).status_code,200)
         requests=self.client.get('/api/requests',params={'paginated':True,'date_from':due,'date_to':due,'state':'pending','q':'Supplier'}).json()
         self.assertEqual(requests['total'],6)
         # Фильтр периода работает по сроку заявки: на сегодня заявок нет.

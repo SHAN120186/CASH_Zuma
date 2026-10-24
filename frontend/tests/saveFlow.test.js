@@ -334,3 +334,84 @@ test('a saved draft file is removed with DELETE; the request body keeps numbers 
   assert.equal(createSaveState({id: 5, status: 'returned', version: 2}).mode, 'draft');
   assert.equal(createSaveState({id: 5, status: 'pending', version: 2}).mode, 'sent');
 });
+
+// A pending cash request starts with just the indent. The guard models the real
+// backend PUT check: changing to bank must never precede the saved contract.
+function pendingCashBankForm() {
+  const s = fakeServer();
+  const opened = s.add({...body({...FORM,channel:'cash',account_id:2}),status:'pending',version:5});
+  s.attach(opened.id,'internal','cash-indent');
+  const state = createSaveState(opened), pending = editorFiles([file('contract','bank-contract.pdf','cash-bank-contract')]);
+  let saved = [{id:100,kind:'internal',current:true,sha256:'cash-indent'}];
+  const fields = body({...FORM,channel:'bank',account_id:1,department:'office'});
+  const api = async (url,options={}) => {
+    if (options.method==='PUT' && url===`/api/requests/${opened.id}`) {
+      const change = JSON.parse(options.body);
+      const kinds = new Set(s.docs.filter(d=>d.request_id===opened.id&&d.active).map(d=>d.kind));
+      if (change.status==='pending' && change.channel==='bank' && (!kinds.has('internal')||!kinds.has('contract')))
+        throw httpError(409,'Bank requests require a saved contract before the account update');
+    }
+    return s.api(url,options);
+  };
+  const onServer = row => {saved=(row.documents_list||[]).filter(d=>d.current);};
+  const onUploaded = (item,result) => {
+    pending.onUploaded(item);
+    if(result)saved=[...saved.filter(d=>d.kind!==result.kind),{...result,current:true}];
+  };
+  const run = () => saveRequest(api,state,{fields,files:pending.list,saved,reason:'Switch approved workflow to bank',onServer,onUploaded});
+  return {s,state,pending,run,getSaved:()=>saved};
+}
+
+test('pending cash to bank saves the missing contract before changing the real account',async()=>{
+  const f=pendingCashBankForm(),result=await f.run();
+  assert.equal(result.ok,true,result.message);
+  assert.deepEqual(f.s.trail(0),['GET /api/requests/41','POST /api/requests/41/documents?kind=contract','PUT /api/requests/41']);
+  assert.equal(f.s.calls[1].headers['X-Request-Version'],'5');
+  assert.equal(f.s.calls[2].body.version,6,'PUT uses the version returned by the successful required upload');
+  assert.equal(f.state.version,7);assert.equal(f.s.requests.get(41).status,'pending');assert.equal(f.s.requests.get(41).channel,'bank');
+  assert.equal(f.pending.list.length,0);assert.ok(f.getSaved().some(d=>d.kind==='contract'));
+  assert.equal(f.s.docs.filter(d=>d.kind==='contract').length,1);assert.equal(f.s.creates(),0);
+});
+
+test('failed required pre-upload keeps the cash account and retry advances versions once',async()=>{
+  const f=pendingCashBankForm();f.s.fail('POST',/documents\?kind=contract$/,httpError(422,'Invalid document'));
+  const first=await f.run();assert.equal(first.code,'upload_failed');assert.equal(first.step,'upload');
+  assert.equal(f.s.requests.get(41).channel,'cash');assert.equal(f.state.version,5);assert.equal(f.pending.list.length,1);
+  assert.equal(f.s.calls.filter(c=>c.method==='PUT').length,0);
+  const from=f.s.calls.length,second=await f.run();assert.equal(second.ok,true,second.message);
+  assert.deepEqual(f.s.trail(from),['GET /api/requests/41','POST /api/requests/41/documents?kind=contract','PUT /api/requests/41']);
+  assert.equal(f.s.calls[from+1].headers['X-Request-Version'],'5');assert.equal(f.s.calls[from+2].body.version,6);
+  assert.equal(f.s.docs.filter(d=>d.kind==='contract').length,1);assert.equal(f.s.creates(),0);
+});
+
+test('a failed pending PUT retries saved fields without creating a request or reuploading its contract',async()=>{
+  const f=pendingCashBankForm();f.s.fail('PUT',/^\/api\/requests\/41$/,httpError(422,'Review the changed fields'));
+  const first=await f.run();assert.equal(first.ok,false);assert.equal(first.step,'update');
+  assert.equal(f.state.version,6);assert.equal(f.s.requests.get(41).channel,'cash');assert.equal(f.pending.list.length,0);
+  assert.ok(f.getSaved().some(d=>d.kind==='contract'),'the callback keeps the saved contract in the editor');
+  const from=f.s.calls.length,second=await f.run();assert.equal(second.ok,true,second.message);
+  assert.deepEqual(f.s.trail(from),['GET /api/requests/41','PUT /api/requests/41']);assert.equal(f.s.calls[from+1].body.version,6);
+  assert.equal(f.s.calls.filter(c=>c.method==='POST'&&c.url.includes('documents?kind=contract')).length,1);
+  assert.equal(f.s.docs.filter(d=>d.kind==='contract').length,1);assert.equal(f.s.creates(),0);
+});
+
+test('stale pending requests refuse the required upload before any file or account changes',async()=>{
+  const f=pendingCashBankForm();f.s.requests.get(41).version=6;
+  const first=await f.run();assert.equal(first.code,'stale');assert.equal(first.step,'upload');
+  assert.equal(f.s.docs.filter(d=>d.kind==='contract').length,0);assert.equal(f.s.calls.filter(c=>c.method==='PUT').length,0);
+  assert.equal(f.s.requests.get(41).channel,'cash');assert.equal(f.state.version,6);
+  const second=await f.run();assert.equal(second.ok,true,second.message);assert.equal(f.state.version,8);
+  const put=f.s.calls.find(c=>c.method==='PUT');assert.equal(put.body.version,7);
+  assert.equal(f.s.docs.filter(d=>d.kind==='contract').length,1);assert.equal(f.s.creates(),0);
+});
+
+test('a lost required-upload reply remains recoverable without a second contract version',async()=>{
+  const f=pendingCashBankForm();f.s.lose('POST',/documents\?kind=contract$/);
+  const first=await f.run();assert.equal(first.code,'upload_failed');assert.equal(f.s.docs.filter(d=>d.kind==='contract').length,1);
+  // Preserve sent-mode optimistic concurrency: the unacknowledged version is
+  // refreshed before the user explicitly retries the account update.
+  const second=await f.run();assert.equal(second.code,'stale');assert.equal(f.state.version,6);
+  const third=await f.run();assert.equal(third.ok,true,third.message);
+  assert.equal(f.s.calls.filter(c=>c.method==='POST'&&c.url.includes('documents?kind=contract')).length,1);
+  assert.equal(f.pending.list.length,0);assert.equal(f.s.docs.filter(d=>d.kind==='contract').length,1);assert.equal(f.s.creates(),0);
+});
