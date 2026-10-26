@@ -1,6 +1,7 @@
 <script setup>
 import {ref,shallowRef,computed,onMounted,onUnmounted,nextTick,watch} from 'vue';
 import CashFlowReport from './CashFlowReport.vue';
+import ImportedCashFlow from './ImportedCashFlow.vue';
 import CounterpartiesPage from './CounterpartiesPage.vue';
 import MoneyInput from './MoneyInput.vue';
 import ReportArchive from './ReportArchive.vue';
@@ -47,6 +48,7 @@ const user=ref(null),csrf=ref(''),login=ref({username:'',password:''}),recentLog
 const loginSuggestions=computed(()=>matchingLogins(recentLogins.value,login.value.username));
 const page=ref(location.hash.slice(1)||'home'),currency=ref('UZS'),days=ref(30),year=ref(new Date().getFullYear()),month=ref(new Date().toLocaleDateString('en-CA',{timeZone:'Asia/Tashkent'}).slice(0,7));
 const companyId=ref(null),companyReady=ref(false),reportEditing=ref(false),reportScenario=ref('A');
+const cashFlowBasis=ref('operations');
 const reportSelection=ref(null);
 function changeReportSelection(value){
  const next=normalizeReportSelection(value,reportSelection.value||{year:year.value});
@@ -75,7 +77,7 @@ function updateInvalidFields(event){if(feedbackForm===event.target?.form)updateF
 // Field names and messages are read from the rendered form, so they are rebuilt after a language switch.
 watch(lang,()=>{if(feedbackForm)nextTick(()=>{if(feedbackForm)updateFieldFeedback(feedbackForm)})});
 function cancelPending(){companyEpoch++;for(const call of pendingCalls)call.abort();pendingCalls.clear();requestProgress.reset();clearFieldFeedback()}
-const localProgressUrl=url=>/^\/api\/(?:business-projects|report-archives|financial-statements|ifrs-rating)(?:\/|\?|$)/.test(url);
+const localProgressUrl=url=>/^\/api\/(?:business-projects|report-archives|financial-statements|ifrs-rating|cashflow-osv)(?:\/|\?|$)/.test(url);
 function requestLabel(url,method='GET'){
  if(url==='/api/login')return N_('Входим в систему…');
  if(/\/import|\/plan-import/.test(url))return /\/commit/.test(url)?N_('Сохраняем импорт…'):N_('Читаем и проверяем файл…');
@@ -236,7 +238,7 @@ async function selectCompany(id){
  cancelPending();clearTimeout(searchTimer);
  const selectionEpoch=companyEpoch;
  companyReady.value=false;companyId.value=Number(id);reportSelection.value=null;busy.value=true;error.value='';notice.value='';
- rows.value=[];dash.value=null;report.value=null;preview.value=null;expandedRequest.value=null;
+ rows.value=[];dash.value=null;report.value=null;preview.value=null;expandedRequest.value=null;cashFlowBasis.value='operations';
  search.value='';dateFrom.value='';dateTo.value='';requestStatus.value='';listPage.value=1;listTotal.value=0;showArchive.value=false;planMappings.value={};helpOpen.value=false;menuOpen.value=false;
  boot.value={...boot.value,accounts:[],categories:[],counterparties:[]};
  try{
@@ -591,8 +593,10 @@ onMounted(async()=>{try{const r=await api('/api/me');user.value=r.user;csrf.valu
     </template>
 
     <!-- Cash Flow -->
-    <CashFlowReport :key="companyId" v-if="page==='report'&&report" :report="report" :currency="currency" :year="year" :api="api" :can-plan="has('plan')" :can-download="has('download')" :selection="reportSelection" @selection-change="changeReportSelection" @editing="reportEditing=$event" :companies="boot.companies.filter(c=>c.id===companyId)" :company-id="companyId" :scenario="reportScenario" :as-of="reportAsOf" :today="boot.today" @company="selectCompany" @scenario="v=>{reportScenario=v;load()}" @year="changeReportYear" @as-of="changeReportDate" @refresh="load" />
-    <ReportLinks v-if="['report','pnl','balance'].includes(page)&&has('export')&&reportSelection" :key="companyId" :api="api" :company-id="companyId" :selection="reportSelection" :currency="currency" :as-of="reportAsOf"/>
+    <div v-if="page==='report'" class="seg" role="group" :aria-label="tx('Источник факта Cash Flow')" style="margin-bottom:16px"><button type="button" :class="{on:cashFlowBasis==='operations'}" :aria-pressed="cashFlowBasis==='operations'" @click="cashFlowBasis='operations'">{{tx('Операции сайта')}}</button><button type="button" :class="{on:cashFlowBasis==='osv'}" :aria-pressed="cashFlowBasis==='osv'" @click="cashFlowBasis='osv'">{{tx('ОСВ 5110')}}</button></div>
+    <CashFlowReport :key="companyId" v-if="page==='report'&&cashFlowBasis==='operations'&&report" :report="report" :currency="currency" :year="year" :api="api" :can-plan="has('plan')" :can-download="has('download')" :selection="reportSelection" @selection-change="changeReportSelection" @editing="reportEditing=$event" :companies="boot.companies.filter(c=>c.id===companyId)" :company-id="companyId" :scenario="reportScenario" :as-of="reportAsOf" :today="boot.today" @company="selectCompany" @scenario="v=>{reportScenario=v;load()}" @year="changeReportYear" @as-of="changeReportDate" @refresh="load" />
+    <ImportedCashFlow v-if="page==='report'&&cashFlowBasis==='osv'" :key="companyId" :api="api" :company-id="companyId" :company-name="company?.name" :currency="currency" :can-edit="has('plan')" :can-download="has('download')"/>
+    <ReportLinks v-if="['report','pnl','balance'].includes(page)&&(page!=='report'||cashFlowBasis==='operations')&&has('export')&&reportSelection" :key="companyId" :api="api" :company-id="companyId" :selection="reportSelection" :currency="currency" :as-of="reportAsOf"/>
 
     <!-- Справочники -->
     <template v-if="page==='categories'">

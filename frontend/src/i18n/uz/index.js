@@ -15,8 +15,9 @@ import financialStatements from './financial_statements.js';
 import reportLinks from './report_links.js';
 import counterparties from './counterparties.js';
 import ifrsRating from './ifrs_rating.js';
+import cashflowOsv, {patterns as cashflowOsvPatterns} from './cashflow_osv.js';
 
-export const sources = {common, app, reports, business_ui: businessUi, business_data: businessData, overview, requests, admin, server, financial_statements: financialStatements, report_links: reportLinks, counterparties, ifrs_rating: ifrsRating};
-export const entries = Object.assign({}, ifrsRating, counterparties, reportLinks, financialStatements, server, admin, requests, overview, businessData, businessUi, reports, app, common);
-export const patterns = [...commonPatterns, ...appPatterns, ...reportsPatterns, ...businessUiPatterns, ...businessDataPatterns,
+export const sources = {common, app, reports, business_ui: businessUi, business_data: businessData, overview, requests, admin, server, financial_statements: financialStatements, report_links: reportLinks, counterparties, ifrs_rating: ifrsRating, cashflow_osv: cashflowOsv};
+export const entries = Object.assign({}, cashflowOsv, ifrsRating, counterparties, reportLinks, financialStatements, server, admin, requests, overview, businessData, businessUi, reports, app, common);
+export const patterns = [...cashflowOsvPatterns, ...commonPatterns, ...appPatterns, ...reportsPatterns, ...businessUiPatterns, ...businessDataPatterns,
   ...overviewPatterns, ...requestsPatterns, ...adminPatterns, ...serverPatterns];
