@@ -1,6 +1,6 @@
 import {test} from 'node:test';
 import assert from 'node:assert/strict';
-import {compileComponent,mount,settle,all,text} from './helpers/mountVue.js';
+import {compileComponent,mount,settle,all,text,find} from './helpers/mountVue.js';
 import {fileBase64,sourceYears,periodMonths,sumAmounts,osvExportUrl} from '../src/cashflow/osvView.js';
 import {setLang,lang} from '../src/i18n/index.js';
 const component=await compileComponent(new URL('../src/ImportedCashFlow.vue',import.meta.url));
@@ -104,6 +104,24 @@ test('daily view distinguishes banks and internal transfers and paginates rather
 test('Russian and Uzbek source controls translate while imported financial names stay unchanged',async t=>{
  const previous=lang.value;t.after(()=>setLang(previous));setLang('ru');const mounted=view(t);await settle();assert.match(text(mounted.container),/Cash Flow по ОСВ 5110/);
  setLang('uz');await settle();assert.match(text(mounted.container),/5110 qaydnomasi bo‘yicha Cash Flow/);assert.match(text(mounted.container),/Synthetic expense/);
+});
+
+test('closing daily detail clears the month so the same month can be selected and loaded again',async t=>{
+ let reads=0;
+ const mounted=view(t,{api:async url=>{
+  if(url.endsWith('/sources'))return {sources:[source],can_edit:true,can_download:true};
+  if(url.includes('/daily?')){reads++;return {rows:[{source_row:12,date:'2026-01-05',code:'5',name:`Synthetic read ${reads}`,debit:'0.00',credit:'10.00',bank_label:'Bank 1'}],opening:'100.00',closing:'90.00'};}
+  return reportFor();
+ }});await settle();
+ const chooseMonth=async()=>{
+  const select=find(mounted.container,node=>node.tag==='select'&&node.children.some(child=>child.tag==='option'&&text(child)==='Выберите месяц'));
+  select.props['onUpdate:modelValue']('2026-01');await select.props.onChange();await settle();
+ };
+ await chooseMonth();assert.equal(reads,1);assert.equal(mounted.state.dailyRows[0].name,'Synthetic read 1');
+ const panel=find(mounted.container,node=>String(node.props?.class).includes('daily-panel'));
+ find(panel,node=>node.tag==='button'&&text(node)==='Закрыть').props.onClick();await settle();
+ assert.equal(mounted.state.dailyMonth,'');assert.equal(mounted.state.daily,null);
+ await chooseMonth();assert.equal(reads,2);assert.equal(mounted.state.dailyRows[0].name,'Synthetic read 2');
 });
 
 test('export is scoped to the chosen source, company, year, scenario and month range',()=>{
