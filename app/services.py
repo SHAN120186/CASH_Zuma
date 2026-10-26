@@ -389,6 +389,8 @@ def backdated_flags(s,r):
     return late_created, late_posted
 
 def request_json(s,r,accounts=None,categories=None,users=None):
+    from .department_catalog import catalog as department_catalog
+    department_items=department_catalog(s)['items']
     a=get(s,Account,r.account_id);c=get(s,Category,r.category_id)
     b=budget_state(s,c.id,str(r.due_date)[:7],a.currency,r.amount if r.status in ('pending','draft') else 0)
     docs=current_documents(s,r.id)
@@ -402,7 +404,8 @@ def request_json(s,r,accounts=None,categories=None,users=None):
             'approval_stage':approval_stage(r),'route':route_json(r,a.currency),
             'documents':{k:sum(d.kind==k for d in docs) for k in DOCUMENT_KINDS},'missing_documents':missing_documents(s,r),
             'required_documents':list(required_documents(s,r)),
-            'department':r.department or '','department_label':REQUEST_DEPARTMENTS.get(r.department or '',''),
+            'department':r.department or '','department_label':next((x['name_ru'] for x in department_items if x['code']==r.department),r.department or ''),
+            'department_name_uz':next((x['name_uz'] for x in department_items if x['code']==r.department),''),
             'project':r.project,'decision_note':r.decision_note,'overdue':r.due_date<today() and r.status in ('pending','approved'),
             'budget':budget_json(b),'budget_card':budget_card(s,c.id,str(r.due_date)[:7],a.currency,0 if r.status=='paid' else r.amount,r.id)}
 

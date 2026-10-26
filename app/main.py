@@ -160,7 +160,7 @@ class RequestIn(Input):
     date:date
     purpose:str=Field(min_length=5,max_length=3000)
     project:str=Field(default='',max_length=120)
-    department:Literal['','qc','ml','engineering','warehouse','production','office','facilities']=''
+    department:str=Field(default='',max_length=30)
     priority:Literal['normal','high','urgent']
     status:Literal['draft','pending']='draft'
 class RequestEdit(RequestIn):
@@ -285,7 +285,8 @@ def bootstrap(request:Request):
         c=[{'id':c.id,'name':c.name,'activity':c.activity,'type':c.type} for c in s.scalars(categories)]
         # Реестр и разрешённые пользователи планов получают справочник своей компании.
         cp=[{'id':x.id,'name':x.name,'inn':x.inn} for x in s.scalars(select(Counterparty).order_by(Counterparty.name).limit(1000))] if {'view','ledger','receipts','counterparties'}&perms_of(user) else []
-        return {'accounts':a,'companies':companies,'categories':c,'counterparties':cp,'roles':ROLES,'today':str(today()),
+        from .department_catalog import catalog as department_catalog
+        return {'department_catalog':department_catalog(s),'accounts':a,'companies':companies,'categories':c,'counterparties':cp,'roles':ROLES,'today':str(today()),
                 'due_minimums':due_minimums(s,today()),'user':user_json(user),'csrf':session.csrf}
 
 def remember_counterparty(s,name,inn=''):
@@ -456,6 +457,8 @@ def request_state(r):
 def add_request(data:RequestIn,request:Request):
     with unit(True) as s:
         u,_=session_user(s,request,'request');a,c=request_target(s,data);n=amount(data.amount)
+        from .department_catalog import validate as validate_department
+        validate_department(s,data.department)
         if data.status=='pending':
             message='Сначала сохраните черновик и приложите «Внутренняя заявка / Индент», затем отправьте заявку.' if a.kind=='cash' else 'Сначала сохраните черновик и приложите «Внутренняя заявка / Индент» и «Договор / Счёт на оплату», затем отправьте заявку.'
             raise HTTPException(422,message)
@@ -504,7 +507,10 @@ def edit_request(id:int,data:RequestEdit,request:Request):
         was_pending=r.status=='pending';route_changed=r.category_id!=c.id or get(s,Account,r.account_id).currency!=a.currency
         for key in ('account_id','category_id','counterparty','purpose','project','priority'):setattr(r,key,getattr(data,key))
         # Additive field: older clients that omit it must not erase an existing department.
-        if 'department' in data.model_fields_set:r.department=data.department
+        if 'department' in data.model_fields_set:
+            from .department_catalog import validate as validate_department
+            validate_department(s,data.department,r.department)
+            r.department=data.department
         r.amount=n;r.due_date=data.date;clear_approval(r);r.last_editor_id=u.id;r.decision_note=data.reason;r.status=data.status
         s.flush()
         if data.status=='pending':
@@ -1026,3 +1032,6 @@ from .business_templates import router as business_templates_router
 app.include_router(business_templates_router)
 from .counterparties_api import router as counterparties_router
 app.include_router(counterparties_router)
+
+from .department_catalog import router as department_router
+app.include_router(department_router)

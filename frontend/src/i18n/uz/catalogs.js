@@ -1,0 +1,20 @@
+export default {
+  "Отделы компании": "Kompaniya bo‘limlari",
+  "Отделы": "Bo‘limlar",
+  "Добавить отдел": "Bo‘lim qo‘shish",
+  "Название на русском": "Ruscha nomi",
+  "Название на узбекском": "O‘zbekcha nomi",
+  "Доступен для новых заявок": "Yangi arizalar uchun mavjud",
+  "Отключённый отдел остаётся в ранее созданных заявках. Его можно включить снова.": "O‘chirilgan bo‘lim oldingi arizalarda saqlanadi. Uni yana yoqish mumkin.",
+  "Отделы доступны при создании заявки. Для каждой компании ведётся отдельный список.": "Bo‘limlar ariza yaratishda tanlanadi. Har bir kompaniyaning alohida ro‘yxati bor.",
+  "Создание и изменение отделов компании на русском и узбекском.": "Kompaniya bo‘limlarini rus va o‘zbek tillarida yaratish va tahrirlash.",
+  "Выберите действующий отдел.": "Faol bo‘limni tanlang.",
+  "Справочник изменён. Обновите список отделов.": "Ma’lumotnoma o‘zgargan. Bo‘limlar ro‘yxatini yangilang.",
+  "Отдел не найден в выбранной компании.": "Tanlangan kompaniyada bo‘lim topilmadi.",
+  "Отдел с таким названием уже существует.": "Bunday nomli bo‘lim mavjud.",
+  "Управление отделами доступно администратору холдинга.": "Bo‘limlarni xolding administratori boshqaradi.",
+  "Статьи ДДС": "Pul oqimi moddalari",
+  "Обновить список": "Ro‘yxatni yangilash",
+  "Отключён": "O‘chirilgan",
+  "Доступен": "Mavjud"
+};

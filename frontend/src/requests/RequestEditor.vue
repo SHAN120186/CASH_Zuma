@@ -5,7 +5,7 @@ import {ref, computed, watch, onMounted, onUnmounted, nextTick} from 'vue';
 import {PRIORITY_TERMS, DEPARTMENTS, CHANNELS, DOC_KINDS, requiredDocs, SINGLE_DOCS, DOC_ACCEPT, accountsFor, minDue, budgetRows, budgetNote,
         periodLabel, fileProblem, fileSize} from './workflow.js';
 import {createSaveState, requestBody, saveRequest, removeSavedDocument, missingRequired} from './saveFlow.js';
-import {tx, N_} from '../i18n/index.js';
+import {tx, N_,lang} from '../i18n/index.js';
 
 const props = defineProps({
   api: {type: Function, required: true},
@@ -41,6 +41,8 @@ const files = ref([]);
 let fileKey = 0;
 // Сроки считает сервер по календарю; при открытии формы берём свежие (календарь мог измениться).
 const dues = ref(props.boot.due_minimums || {});
+const departmentCatalog=ref(props.boot.department_catalog?.items||Object.entries(DEPARTMENTS).map(([code,name])=>({code,name_ru:name,name_uz:'',active:true})));
+const departmentOptions=computed(()=>departmentCatalog.value.filter(x=>x.active||x.code===form.value.department));
 
 const accountOptions = computed(() => accountsFor(props.boot.accounts, form.value.channel, form.value.currency));
 const outcomeCategories = computed(() => props.boot.categories.filter(c => c.type === 'outcome'));
@@ -163,6 +165,7 @@ onMounted(async () => {
     const fresh = await props.api('/api/request-rules');
     const previousAutoDate = earliest.value;
     dues.value = fresh.due_minimums || dues.value;
+    if(fresh.department_catalog)departmentCatalog.value=fresh.department_catalog.items;
     if (!r && earliest.value && (!form.value.date || form.value.date === previousAutoDate || form.value.date < earliest.value)) form.value.date = earliest.value;
   } catch { /* остаются сроки из загрузки страницы; сервер всё равно проверит дату */ }
   if (r && !r.documents_list) {
@@ -185,7 +188,7 @@ onUnmounted(() => { document.removeEventListener('keydown', onKey); clearTimeout
         <label>{{ tx('Валюта') }}<select v-model="form.currency" required><option v-for="c in ['UZS','USD','EUR']" :key="c" :value="c">{{ c }}</option></select></label>
         <label>{{ tx('Счёт списания') }}<select v-model="form.account_id" required><option v-for="a in accountOptions" :key="a.id" :value="a.id">{{ a.name }}</option></select>
           <small v-if="!accountOptions.length" class="field-error">{{ tx('Нет счёта для выбранного канала и валюты.') }}</small></label>
-        <label>{{ tx('Отдел') }}<select v-model="form.department"><option value="">{{ tx('Выберите отдел') }}</option><option v-for="(label, key) in DEPARTMENTS" :key="key" :value="key">{{ tx(label) }}</option></select></label>
+        <label>{{ tx('Отдел') }}<select v-model="form.department"><option value="">{{ tx('Выберите отдел') }}</option><option v-for="item in departmentOptions" :key="item.code" :value="item.code">{{lang==='uz'&&item.name_uz?item.name_uz:tx(item.name_ru)}}</option></select></label>
         <label>{{ tx('Статья расходов') }}<select v-model="form.category_id" required><option v-for="c in outcomeCategories" :key="c.id" :value="c.id">{{ c.name }}</option></select></label>
         <label>{{ tx('Сумма') }}<input v-model="form.amount" type="text" inputmode="decimal" pattern="[0-9]+([.][0-9]{1,2})?" required autocomplete="off"></label>
         <label>{{ tx('Контрагент') }}<input v-model="form.counterparty" minlength="2" maxlength="160" required></label>

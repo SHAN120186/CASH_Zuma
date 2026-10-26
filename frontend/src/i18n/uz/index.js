@@ -1,3 +1,4 @@
+import catalogs from './catalogs.js';
 // All Uzbek dictionaries. Each section keeps its own file so that work on
 // different parts of the interface does not collide; common.js holds the
 // shared glossary. Later files never silently replace an earlier translation:
@@ -17,7 +18,7 @@ import counterparties from './counterparties.js';
 import ifrsRating from './ifrs_rating.js';
 import cashflowOsv, {patterns as cashflowOsvPatterns} from './cashflow_osv.js';
 
-export const sources = {common, app, reports, business_ui: businessUi, business_data: businessData, overview, requests, admin, server, financial_statements: financialStatements, report_links: reportLinks, counterparties, ifrs_rating: ifrsRating, cashflow_osv: cashflowOsv};
-export const entries = Object.assign({}, cashflowOsv, ifrsRating, counterparties, reportLinks, financialStatements, server, admin, requests, overview, businessData, businessUi, reports, app, common);
+export const sources = {catalogs, common, app, reports, business_ui: businessUi, business_data: businessData, overview, requests, admin, server, financial_statements: financialStatements, report_links: reportLinks, counterparties, ifrs_rating: ifrsRating, cashflow_osv: cashflowOsv};
+export const entries = Object.assign({}, catalogs, cashflowOsv, ifrsRating, counterparties, reportLinks, financialStatements, server, admin, requests, overview, businessData, businessUi, reports, app, common);
 export const patterns = [...cashflowOsvPatterns, ...commonPatterns, ...appPatterns, ...reportsPatterns, ...businessUiPatterns, ...businessDataPatterns,
   ...overviewPatterns, ...requestsPatterns, ...adminPatterns, ...serverPatterns];

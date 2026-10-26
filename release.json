@@ -1,7 +1,8 @@
 {
-  "version": "2.32.2",
-  "date": "2026-10-26",
+  "version": "2.33.0",
+  "date": "2026-10-27",
   "changes": [
+    "Администрирование содержит вложенные справочники. Администратор холдинга создаёт, переименовывает и отключает отделы каждой компании на русском и узбекском; заявки используют этот список, исторические коды сохраняются.",
     "Выбор источника, года, сценария и месяца детализации передаёт в запрос именно новое значение поля. Загрузка больше не зависит от порядка обработчиков изменения; защита от устаревших ответов сохранена.",
     "После закрытия дневной детализации Cash Flow выбранный месяц сбрасывается, поэтому тот же месяц можно сразу открыть повторно. Проверка исходной ОСВ и сохранённые отчёты не меняются.",
     "Cash Flow поддерживает отдельный источник ОСВ счёта 5110: загрузка и проверка дневных оборотов, сохранение версии и повторное открытие без загрузки. Данные источника не создают операции и не меняют банковские остатки, заявки или резервы.",
@@ -67,6 +68,7 @@
     "Длинные названия файлов и кнопки выбора шаблона переносятся на узком экране. В ТЭО дата архива отдельно обозначена и не подменяет начало финансового прогноза."
   ],
   "changes_uz": [
+    "Administratsiyada ichki ma’lumotnomalar qo‘shildi. Xolding administratori kompaniya bo‘limlarini ikki tilda boshqaradi; oldingi arizalar saqlanadi.",
     "Ariza ilovalari va oldingi versiyalarni tanlangan kompaniyada arizani koʻrishga ruxsati bor har bir foydalanuvchi yuklab olishi mumkin. Havolalar ariza kartasi va tahrirlash oynasida ishlaydi; hisobotlar, eksportlar va operatsiya hujjatlari huquqlari kengaytirilmaydi.",
     "IFRS Rating manbasi P&L va balans manbalaridan alohida saqlanadi. Reytingni yangilash boshqa hisobotlar manbasini almashtirmaydi.",
     "Zuma hisobotlariga IFRS Rating qoʻshildi: Google Drive maʼlumotlari, 21 koʻrsatkich, ochiq ballar shkalasi, xatarlar, oylik dinamika va maʼlumotlar toʻliqligi. Hisoblash va dizayn kodda; alohida reyting fayli kerak emas.",
