@@ -75,6 +75,7 @@ def modules(path):
       (r'/api/(?:receipts|sales-receipts)(?:/|$)',('calendar',)),
       (r'/api/calendar-days(?:/|$)',('calendar','approval')),
       (r'/api/financial-statements(?:/|$)',('pnl','balance')),
+      (r'/api/cashflow-osv(?:/|$)',('report',)),
       (r'/api/ifrs-rating(?:/|$)',('rating',)),
       (r'/api/business-(?:projects|templates)(?:/|$)',('business',)),
       (r'/api/report-archives(?:/|$)',('reports','business')),
