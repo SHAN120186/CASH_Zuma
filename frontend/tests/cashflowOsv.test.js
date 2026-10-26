@@ -124,6 +124,42 @@ test('closing daily detail clears the month so the same month can be selected an
  await chooseMonth();assert.equal(reads,2);assert.equal(mounted.state.dailyRows[0].name,'Synthetic read 2');
 });
 
+test('DOM select changes load the selected month even when the model callback runs after the change handler',async t=>{
+ const calls=[];
+ const mounted=view(t,{api:async url=>{calls.push(url);if(url.endsWith('/sources'))return {sources:[source],can_edit:true,can_download:true};if(url.includes('/daily?'))return {rows:[{source_row:12,date:'2026-01-05',code:'5',name:'Synthetic expense',debit:'0.00',credit:'10.00',bank_label:'Bank 1'}],opening:'100.00',closing:'90.00'};return reportFor();}});await settle();
+ const select=find(mounted.container,node=>node.tag==='select'&&node.children.some(child=>child.tag==='option'&&text(child)==='Выберите месяц'));
+ const changed=select.props.onChange({target:{value:'2026-01'}});
+ select.props['onUpdate:modelValue']('2026-01');await changed;await settle();
+ assert.equal(calls.filter(url=>url.includes('/daily?month=2026-01')).length,1);
+ assert.equal(mounted.state.dailyRows.length,1);
+});
+
+test('source, year and scenario DOM handlers use the selected value with either listener order',async t=>{
+ for(const modelFirst of [false,true]){
+ const second={...source,id:9,year_from:2025,first_date:'2025-01-05'},calls=[];
+ const mounted=view(t,{api:async url=>{
+  calls.push(url);if(url.endsWith('/sources'))return {sources:[source,second],can_edit:true,can_download:true};
+  const selected=url.includes('/9/report?')?second:source,query=new URL(url,'http://synthetic.test').searchParams;
+  return {...reportFor(selected),year:Number(query.get('year')),scenario:query.get('scenario')};
+ }});await settle();
+ const sourceSelect=find(mounted.container,node=>node.tag==='select'&&node.children.some(child=>child.tag==='option'&&child.props.value==='9'));
+ const change=async(select,value)=>{
+  let pending;
+  if(modelFirst){select.props['onUpdate:modelValue'](value);pending=select.props.onChange({target:{value:String(value)}});}
+  else {pending=select.props.onChange({target:{value:String(value)}});select.props['onUpdate:modelValue'](value);}
+  await pending;await settle();
+ };
+ await change(sourceSelect,'9');
+ assert.equal(mounted.state.report.source.id,9);
+ const yearSelect=find(mounted.container,node=>node.tag==='select'&&node.children.some(child=>child.tag==='option'&&child.props.value===2025));
+ await change(yearSelect,2025);
+ assert.equal(mounted.state.report.year,2025);assert.match(calls.at(-1),/year=2025/);
+ const scenarioSelect=find(mounted.container,node=>node.tag==='select'&&node.children.some(child=>child.tag==='option'&&child.props.value==='V'));
+ await change(scenarioSelect,'V');
+ assert.equal(mounted.state.report.scenario,'V');assert.match(calls.at(-1),/scenario=V/);
+ }
+});
+
 test('export is scoped to the chosen source, company, year, scenario and month range',()=>{
  const url=new URL(osvExportUrl(7,2026,'V',2,2,4),'http://local.test');assert.equal(url.pathname,'/api/cashflow-osv/sources/7/export.xlsx');
  assert.equal(url.searchParams.get('company_id'),'2');assert.equal(url.searchParams.get('scenario'),'V');assert.equal(url.searchParams.get('start_month'),'2');assert.equal(url.searchParams.get('end_month'),'4');
