@@ -26,6 +26,7 @@ jobs:
       - run: python tests/test_site.py
       - run: python -m unittest tests.test_request_delete -q
       - run: python -m unittest tests.test_request_form_rules -q
+      - run: python -m unittest tests.test_cashflow_osv -q
       - run: python -m unittest tests.test_section_access -q
       - run: python tests/test_access.py
       - run: python -m unittest tests.test_role_downloads -q
@@ -68,6 +69,7 @@ jobs:
       - run: python tests/test_site.py
       - run: python -m unittest tests.test_request_delete -q
       - run: python -m unittest tests.test_request_form_rules -q
+      - run: python -m unittest tests.test_cashflow_osv -q
       - run: python -m unittest tests.test_section_access -q
       - run: python tests/test_access.py
       - run: python -m unittest tests.test_role_downloads -q

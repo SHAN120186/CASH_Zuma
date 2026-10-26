@@ -473,6 +473,40 @@ class PlanImportBatch(Base):
     status = Column(String(20), default='preview', nullable=False)
     created_at = Column(DateTime, default=now, nullable=False)
 
+class CashFlowOsvSource(Base):
+    """Immutable account-5110 report source, separate from operational Ledger."""
+    __tablename__ = 'cashflow_osv_sources'
+    id = Column(Integer, primary_key=True)
+    company_id = Column(Integer, ForeignKey('companies.id'), nullable=False)
+    created_by = Column(Integer, ForeignKey('users.id'), nullable=False)
+    created_at = Column(DateTime, default=now, nullable=False)
+    fingerprint = Column(String(64), nullable=False)
+    filename = Column(String(220), nullable=False)
+    template_filename = Column(String(220), nullable=True)
+    currency = Column(String(3), nullable=False)
+    scale = Column(Integer, nullable=False)
+    summary = Column(Text, nullable=False)
+    snapshot = deferred(Column(Text, nullable=False))
+    bank_content = deferred(Column(LargeBinary, nullable=False))
+    template_content = deferred(Column(LargeBinary, nullable=True))
+    __table_args__ = (UniqueConstraint('company_id','fingerprint'),)
+
+class CashFlowOsvPreview(Base):
+    __tablename__ = 'cashflow_osv_previews'
+    id = Column(String(48), primary_key=True)
+    company_id = Column(Integer, ForeignKey('companies.id'), nullable=False)
+    user_id = Column(Integer, ForeignKey('users.id'), nullable=False)
+    created_at = Column(DateTime, default=now, nullable=False)
+    expires_at = Column(DateTime, nullable=False)
+    version = Column(Integer, nullable=False, default=1)
+    base_source_id = Column(Integer, ForeignKey('cashflow_osv_sources.id'), nullable=True)
+    source_id = Column(Integer, ForeignKey('cashflow_osv_sources.id'), nullable=True)
+    filename = Column(String(220), nullable=False)
+    template_filename = Column(String(220), nullable=True)
+    snapshot = deferred(Column(Text, nullable=False))
+    bank_content = deferred(Column(LargeBinary, nullable=False))
+    template_content = deferred(Column(LargeBinary, nullable=True))
+
 class ReportSchedule(Base):
     __tablename__ = 'report_schedules'
     company_id = Column(Integer, ForeignKey('companies.id'), nullable=True)
