@@ -1,5 +1,6 @@
 """Карточка заявки, политика директора по статьям, календарь рабочих дней и ВрИО.
 Вложения заявки — в erp.py (таблица request_documents)."""
+from .department_catalog import labels as department_labels, catalog as department_catalog
 import json
 from datetime import date
 from typing import Literal, Optional
@@ -140,7 +141,7 @@ def request_rules(request: Request):
         return {'due_minimums': due_minimums(s, today()), 'lead_days': LEAD_DAYS, 'document_kinds': DOCUMENT_KINDS,
                 'required_documents': list(REQUIRED_DOCUMENTS),
                 'required_documents_by_channel': {k:list(v) for k,v in REQUIRED_DOCUMENTS_BY_CHANNEL.items()},
-                'departments':REQUEST_DEPARTMENTS, 'max_document_mb': MAX_DOCUMENT // (1024 * 1024),
+                'departments':department_labels(s), 'department_catalog':department_catalog(s), 'max_document_mb': MAX_DOCUMENT // (1024 * 1024),
                 'document_types': ['PDF', 'PNG', 'JPEG', 'DOCX', 'XLSX'], 'open_statuses': list(OPEN_STATUSES)}
 
 

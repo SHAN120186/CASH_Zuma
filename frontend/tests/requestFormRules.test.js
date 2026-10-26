@@ -63,3 +63,12 @@ test('save flow sends a cash request with its indent and refuses a bank request 
  calls.length=0;const bank=await saveRequest(api,createSaveState({...request,status:'draft'}),{fields:{...fields,account_id:1,channel:'bank'},saved,submit:true});assert.equal(bank.code,'missing_documents');assert.equal(calls.length,0);
  assert.deepEqual(requiredDocs('cash'),['internal']);assert.deepEqual(missingRequired(saved,[],'bank'),['contract']);
 });
+
+test('custom company departments use fresh rules and retain an archived selection',async t=>{
+ const previous=lang.value;t.after(()=>setLang(previous));setLang('ru');
+ const items=[{code:'dept_custom',name_ru:'Новый отдел',name_uz:'Yangi bolim',active:true},{code:'qc',name_ru:'Old QC',name_uz:'Old QC',active:false}];
+ const view=form(t,{api:async()=>({due_minimums:dues,department_catalog:{items}})});await settle();
+ assert.deepEqual(view.state.departmentOptions.map(x=>x.code),['dept_custom']);assert.match(text(view.container),/Новый отдел/);
+ setLang('uz');await settle();assert.match(text(view.container),/Yangi bolim/);
+ view.state.form.department='qc';await settle();assert.deepEqual(view.state.departmentOptions.map(x=>x.code),['dept_custom','qc']);
+});

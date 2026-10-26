@@ -4,7 +4,7 @@ import {ref, computed, onMounted, onUnmounted, nextTick} from 'vue';
 import {PRIORITIES, CHANNELS, DEPARTMENTS, DOC_KINDS, requiredDocs, SINGLE_DOCS, DOC_ACCEPT, COMMENT_REQUIRED, stageLabel, steps, decisionOptions,
         missingDocs, budgetRows, budgetNote, periodLabel, minDue, historyLabel, historyNote, historyFile, fileProblem} from './workflow.js';
 import {RETRY_REASON} from './saveFlow.js';
-import {tx, N_, formatDate} from '../i18n/index.js';
+import {tx, N_, formatDate, lang} from '../i18n/index.js';
 
 const props = defineProps({
   api: {type: Function, required: true},
@@ -153,7 +153,7 @@ onUnmounted(() => document.removeEventListener('keydown', onKey));
         <p class="sub rq-route">{{ tx('Маршрут: проверка бухгалтера → финансовый директор → директор по политике статьи → оплата.') }} {{ tx(r.route?.reason) }}</p>
 
         <dl class="kv rq-kv">
-          <template v-if="r.department"><dt>{{ tx('Отдел') }}</dt><dd>{{ tx(DEPARTMENTS[r.department] || r.department) }}</dd></template>
+          <template v-if="r.department"><dt>{{ tx('Отдел') }}</dt><dd>{{lang==='uz'&&r.department_name_uz?r.department_name_uz:(r.department_label||tx(DEPARTMENTS[r.department]||r.department))}}</dd></template>
           <dt>{{ tx('Статья') }}</dt><dd>{{ r.category }}</dd>
           <dt>{{ tx('Канал и счёт') }}</dt><dd>{{ tx(CHANNELS[r.channel] || r.channel) }} · {{ r.account }}</dd>
           <dt>{{ tx('Плановая дата') }}</dt><dd>{{ dateRu(r.date) }} · {{ tx('{priority} приоритет', {priority: tx(PRIORITIES[r.priority])}) }}</dd>

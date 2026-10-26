@@ -2,6 +2,7 @@
 import {ref,shallowRef,computed,onMounted,onUnmounted,nextTick,watch} from 'vue';
 import CashFlowReport from './CashFlowReport.vue';
 import ImportedCashFlow from './ImportedCashFlow.vue';
+import DepartmentsPage from './DepartmentsPage.vue';
 import CounterpartiesPage from './CounterpartiesPage.vue';
 import MoneyInput from './MoneyInput.vue';
 import ReportArchive from './ReportArchive.vue';
@@ -113,11 +114,12 @@ const importMode=ref('operations'),planMonthFrom=ref(1),planMonthTo=ref(12),plan
 const defaultPlanReason=()=>tx('Загрузка планов расходов из проверенной книги Cash Flow');
 let planReasonDefault=defaultPlanReason();planReason.value=planReasonDefault;
 watch(lang,()=>{const next=defaultPlanReason();if(planReason.value===planReasonDefault)planReason.value=next;planReasonDefault=next});
-const allNav=[['home','◈',N_('Обзор'),'view'],['report','▥','Cash Flow','export'],['pnl','▥',N_('P&L'),'export'],['balance','▤',N_('Баланс'),'export'],['rating','▥','IFRS Rating','export'],['business','▤',N_('Бизнес-планы'),'export'],['reports','▤',N_('Архив отчётов'),'export'],['accounts','▣',N_('Банк и касса'),'view'],['ledger','⇄',N_('Операции'),'ledger'],['requests','✓',N_('Заявки'),'requests-view'],['calendar','▦',N_('Календарь'),'calendar-view'],['budgets','◷',N_('Бюджеты'),'view'],['import','↥',N_('Импорт'),'import'],['counterparties','≡',N_('Контрагенты'),'counterparties'],['categories','≡',N_('Справочники'),'catalog'],['approval','✓',N_('Согласование'),'approval_policy'],['users','♙',N_('Пользователи'),'users'],['audit','⊞',N_('Журнал'),'audit'],['profile','⚙',N_('Профиль'),'']];
+const allNav=[['home','◈',N_('Обзор'),'view'],['report','▥','Cash Flow','export'],['pnl','▥',N_('P&L'),'export'],['balance','▤',N_('Баланс'),'export'],['rating','▥','IFRS Rating','export'],['business','▤',N_('Бизнес-планы'),'export'],['reports','▤',N_('Архив отчётов'),'export'],['accounts','▣',N_('Банк и касса'),'view'],['ledger','⇄',N_('Операции'),'ledger'],['requests','✓',N_('Заявки'),'requests-view'],['calendar','▦',N_('Календарь'),'calendar-view'],['budgets','◷',N_('Бюджеты'),'view'],['import','↥',N_('Импорт'),'import'],['counterparties','≡',N_('Контрагенты'),'counterparties'],['categories','≡',N_('Статьи ДДС'),'catalog'],['departments','≡',N_('Отделы'),'catalog'],['approval','✓',N_('Согласование'),'approval_policy'],['users','♙',N_('Пользователи'),'users'],['audit','⊞',N_('Журнал'),'audit'],['profile','⚙',N_('Профиль'),'']];
 const sectionWrites=new Set(['write','request','request_edit','request_check','approve','pay_bank','pay_cash','budget','plan','import','schedule','receipt_edit','receipt_delete','request_delete']);
-const has=p=>user.value?.sections?.[page.value]==='view'&&sectionWrites.has(p)?false:isSales.value&&!user.value?.sections&&!['overview','receipts','receipt_edit','receipt_delete'].includes(p)?false:p==='calendar-view'?['view','overview','calendar'].some(x=>user.value?.permissions.includes(x)):p==='requests-view'?['request','view','pay_bank','pay_cash','request_check'].some(x=>user.value?.permissions.includes(x)):user.value?.permissions.includes(p);
+const sectionKey=name=>name==='departments'?'categories':name;
+const has=p=>user.value?.sections?.[sectionKey(page.value)]==='view'&&sectionWrites.has(p)?false:isSales.value&&!user.value?.sections&&!['overview','receipts','receipt_edit','receipt_delete'].includes(p)?false:p==='calendar-view'?['view','overview','calendar'].some(x=>user.value?.permissions.includes(x)):p==='requests-view'?['request','view','pay_bank','pay_cash','request_check'].some(x=>user.value?.permissions.includes(x)):user.value?.permissions.includes(p);
 const isSales=computed(()=>!user.value?.holding_role&&(user.value?.company_role||user.value?.role)==='sales');
-const nav=computed(()=>allNav.filter(n=>(n[0]!=='rating'||company.value?.code==='ZUMA')&&(user.value?.sections&&n[0]!=='profile'?['view','edit'].includes(user.value.sections[n[0]]):(!isSales.value||['home','calendar','profile'].includes(n[0]))&&(!n[3]||has(n[3])||['home','calendar'].includes(n[0])&&has('overview')))));
+const nav=computed(()=>allNav.filter(n=>(n[0]!=='rating'||company.value?.code==='ZUMA')&&(user.value?.sections&&n[0]!=='profile'?['view','edit'].includes(user.value.sections[sectionKey(n[0])]):(!isSales.value||['home','calendar','profile'].includes(n[0]))&&(!n[3]||has(n[3])||['home','calendar'].includes(n[0])&&has('overview')))));
 const canNavigate=name=>nav.value.some(n=>n[0]===name);
 const canPlanReceipt=computed(()=>has('schedule')||has('receipts'));
 const title=computed(()=>tx(allNav.find(n=>n[0]===page.value)?.[2]||N_('Казначейство')));
@@ -130,14 +132,14 @@ const costGroups={fixed:N_('Постоянные затраты'),variable:N_('�
 const auditRefresh=ref(0),homeRefresh=ref(0),reportArchiveRefresh=ref(0),businessRefresh=ref(0),statementRefresh=ref(0);
 const menuOpen=ref(false),helpOpen=ref(false);
 const initials=n=>String(n||'').split(/\s+/).filter(Boolean).map(x=>x[0]).join('').slice(0,2).toUpperCase();
-const showCurrency=computed(()=>!['approval','users','audit','categories','import','profile','reports','business','pnl','balance','rating'].includes(page.value));
+const showCurrency=computed(()=>!['approval','users','audit','categories','departments','import','profile','reports','business','pnl','balance','rating'].includes(page.value));
 // «Отчёты» is a root menu item; Cash Flow, business plans and the archive are its tabs.
 const reportPages=['report','pnl','balance','rating','business','reports'];
-const navGroups=[[N_('Работа'),['home','accounts','ledger','requests','calendar']],[N_('Отчёты'),reportPages,'tree'],[N_('Планирование'),['budgets','import','approval']],[N_('Администрирование'),['counterparties','categories','users','audit']]];
-const navSections=computed(()=>navGroups.map(([label,ids,kind])=>({label,tree:kind==='tree',items:nav.value.filter(n=>ids.includes(n[0]))})).filter(g=>g.items.length));
+const navGroups=[[N_('Работа'),['home','accounts','ledger','requests','calendar']],[N_('Отчёты'),reportPages,'tree'],[N_('Планирование'),['budgets','import','approval']],[N_('Администрирование'),['counterparties','categories','departments','accounts','users','audit'],'adminTree']];
+const navSections=computed(()=>navGroups.map(([label,ids,kind])=>({label,tree:kind==='tree',admin:kind==='adminTree',items:nav.value.filter(n=>ids.includes(n[0]))})).filter(g=>g.items.length));
 const reportTabs=computed(()=>nav.value.filter(n=>reportPages.includes(n[0])));
 const isReportPage=computed(()=>reportPages.includes(page.value));
-const reportsOpen=ref(true);
+const reportsOpen=ref(true),adminOpen=ref(true),catalogsOpen=ref(true);
 function openReports(){if(isReportPage.value){reportsOpen.value=!reportsOpen.value;return}reportsOpen.value=true;if(reportTabs.value.length)go(reportTabs.value[0][0])}
 async function setCurrency(c){if(currency.value===c)return;currency.value=c;await load()}
 const statusClass=r=>({pending:'warn',approved:'good',paid:'fact',draft:'gray',rejected:'bad',returned:'warn',cancelled:'gray'}[r.status]||'gray');
@@ -194,7 +196,7 @@ const currentAccounts=computed(()=>boot.value.accounts.filter(a=>a.currency===cu
 const modalFields=computed(()=>{const fields=modal.value?.fields||[];if(fields.some(f=>f.key==='action'))return fields.filter(f=>f.key!=='date'||form.value.action==='reschedule');if(!fields.some(f=>f.key==='to_account_id'))return fields;return fields.filter(f=>f.key==='to_account_id'?form.value.kind==='transfer':f.key==='category_id'?form.value.kind!=='transfer':true)});
 const categoryHint=computed(()=>{if(!modal.value?.fields.some(f=>f.key==='to_account_id')||form.value.kind==='transfer')return '';const c=boot.value.categories.find(c=>c.id===Number(form.value.category_id));return c&&c.type!==(form.value.kind==='in'?'income':'outcome')?tx('Проверьте статью: её тип не совпадает с направлением операции. Если это возврат, укажите пояснение в комментарии.'):''});
 async function switchCurrency(value){currency.value=value;search.value='';listPage.value=1;await load()}
-const subtitles={home:N_('Факт, план и прогноз денежных средств в одном месте.'),report:N_('Управленческая форма по прямому методу · структура IAS 7.'),accounts:N_('Счета и касса по валютам. Суммы разных валют не складываются.'),ledger:N_('Фактические поступления, расходы и переводы.'),requests:N_('Заявки на оплату и этапы согласования.'),calendar:N_('Поступления, выплаты и прогноз остатка по дням.'),budgets:N_('Лимиты расходов по статьям и контроль превышения.'),import:N_('Загрузка операций из CSV или Excel.'),categories:N_('Статьи движения денег и виды деятельности.'),approval:N_('Политика директора по статьям и календарь рабочих дней.'),users:N_('Учётные записи холдинга, назначения в компаниях, ВрИО, архив и журнал доступа.'),audit:N_('Кто, когда и что делал в системе.'),profile:N_('Ваши данные, пароль и Telegram.')};
+const subtitles={home:N_('Факт, план и прогноз денежных средств в одном месте.'),report:N_('Управленческая форма по прямому методу · структура IAS 7.'),accounts:N_('Счета и касса по валютам. Суммы разных валют не складываются.'),ledger:N_('Фактические поступления, расходы и переводы.'),requests:N_('Заявки на оплату и этапы согласования.'),calendar:N_('Поступления, выплаты и прогноз остатка по дням.'),budgets:N_('Лимиты расходов по статьям и контроль превышения.'),import:N_('Загрузка операций из CSV или Excel.'),departments:N_('Создание и изменение отделов компании на русском и узбекском.'),categories:N_('Статьи движения денег и виды деятельности.'),approval:N_('Политика директора по статьям и календарь рабочих дней.'),users:N_('Учётные записи холдинга, назначения в компаниях, ВрИО, архив и журнал доступа.'),audit:N_('Кто, когда и что делал в системе.'),profile:N_('Ваши данные, пароль и Telegram.')};
 subtitles.business=N_('Проект → Данные → Отчёт. Готовые бизнес-план PDF и расчётный Excel скачиваются прямо из списка проектов.');
 subtitles.reports=N_('Все готовые отчёты компании: рассчитанные бизнес-планы и загруженные PDF и Excel с периодами.');
 subtitles.pnl=N_('Доходы, расходы и прибыль за выбранный период.');
@@ -466,6 +468,14 @@ onMounted(async()=>{try{const r=await api('/api/me');user.value=r.user;csrf.valu
        <button v-for="n in g.items" :key="n[0]" class="nav-i nav-sub" :class="{on:page===n[0]}" :aria-current="page===n[0]?'page':undefined" @click="go(n[0])"><AppIcon :name="n[0]"/><span>{{tx(n[2])}}</span><span v-if="n[0]==='report'" class="tag">{{tx('Главный')}}</span></button>
       </div>
      </template>
+     <template v-else-if="g.admin">
+      <button class="nav-i nav-root" :aria-expanded="adminOpen" aria-controls="nav-admin" @click="adminOpen=!adminOpen"><AppIcon name="users"/><span>{{tx(g.label)}}</span><AppIcon name="chev" class="nav-chev" :class="{open:adminOpen}"/></button>
+      <div v-if="adminOpen" id="nav-admin" class="nav-tree" role="group" :aria-label="tx(g.label)">
+       <button v-if="g.items.some(n=>n[0]!=='audit')" class="nav-i nav-root" :aria-expanded="catalogsOpen" aria-controls="nav-catalogs" @click="catalogsOpen=!catalogsOpen"><AppIcon name="categories"/><span>{{tx('Справочники')}}</span><AppIcon name="chev" class="nav-chev" :class="{open:catalogsOpen}"/></button>
+       <div v-if="catalogsOpen" id="nav-catalogs" class="nav-tree" role="group" :aria-label="tx('Справочники')"><button v-for="n in g.items.filter(n=>n[0]!=='audit')" :key="n[0]" class="nav-i nav-sub" :class="{on:page===n[0]}" :aria-current="page===n[0]?'page':undefined" @click="go(n[0])"><AppIcon :name="n[0]==='departments'?'users':n[0]"/><span>{{tx(n[2])}}</span></button></div>
+       <button v-for="n in g.items.filter(n=>n[0]==='audit')" :key="n[0]" class="nav-i nav-sub" :class="{on:page===n[0]}" @click="go(n[0])"><AppIcon :name="n[0]"/><span>{{tx(n[2])}}</span></button>
+      </div>
+     </template>
      <template v-else>
       <p class="nav-l">{{tx(g.label)}}</p>
       <button v-for="n in g.items" :key="n[0]" class="nav-i" :class="{on:page===n[0]}" :aria-current="page===n[0]?'page':undefined" @click="go(n[0])"><AppIcon :name="n[0]"/><span>{{tx(n[2])}}</span></button>
@@ -599,6 +609,7 @@ onMounted(async()=>{try{const r=await api('/api/me');user.value=r.user;csrf.valu
     <ImportedCashFlow v-if="page==='report'&&cashFlowBasis==='osv'" :key="companyId" :api="api" :company-id="companyId" :company-name="company?.name" :currency="currency" :can-edit="has('plan')" :can-download="has('download')"/>
     <ReportLinks v-if="['report','pnl','balance'].includes(page)&&(page!=='report'||cashFlowBasis==='operations')&&has('export')&&reportSelection" :key="companyId" :api="api" :company-id="companyId" :selection="reportSelection" :currency="currency" :as-of="reportAsOf"/>
 
+    <DepartmentsPage v-if="page==='departments'" :key="companyId" :api="api" :company-id="companyId" :can-edit="user.holding_role==='admin'" @changed="bootstrap" @editing="reportEditing=$event"/>
     <!-- Справочники -->
     <template v-if="page==='categories'">
      <div class="tb"><span class="sub">{{tx('Статьи движения денег:')}} <b>{{rows.length}}</b></span><div class="grow"><button v-if="user.sections?.categories!=='view'" @click="category()"><AppIcon name="plus"/> {{tx('Добавить статью')}}</button></div></div>

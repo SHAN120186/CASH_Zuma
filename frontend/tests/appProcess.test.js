@@ -342,3 +342,16 @@ test('read-only section mode hides write controls without removing read access',
  assert.equal(view.state.has('ledger'),true);assert.equal(view.state.has('write'),false);assert.equal(view.state.has('import'),false);
  assert.equal(all(view.container,n=>n.tag==='button'&&text(n).includes('Новая операция')).length,0);
 });
+
+test('administration catalogs drill down and obey the existing catalog section visibility',async t=>{
+ const {view}=await fixture(t,async()=>({ok:true,status:200,json:async()=>({})}));
+ view.state.user={...user,holding_role:'admin',permissions:['view','catalog','users','audit','counterparties']};await settle();
+ const admin=find(view.container,n=>n.tag==='button'&&text(n).trim()==='Администрирование');assert.ok(admin);
+ assert.ok(find(view.container,n=>n.tag==='button'&&text(n).trim()==='Отделы'));
+ const catalogs=find(view.container,n=>n.tag==='button'&&text(n).trim()==='Справочники');catalogs.props.onClick();await settle();
+ assert.equal(find(view.container,n=>n.tag==='button'&&text(n).trim()==='Отделы'),undefined);
+ catalogs.props.onClick();await settle();
+ const sectionNames=view.state.allNav.map(n=>n[0]);view.state.user={...user,sections:Object.fromEntries(sectionNames.map(k=>[k,k==='categories'?'hidden':'view']))};await settle();
+ assert.equal(find(view.container,n=>n.tag==='button'&&text(n).trim()==='Отделы'),undefined);
+ assert.ok(find(view.container,n=>n.tag==='button'&&text(n).trim()==='Пользователи'));
+});
