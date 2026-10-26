@@ -199,6 +199,7 @@ subtitles.business=N_('Проект → Данные → Отчёт. Готов�
 subtitles.reports=N_('Все готовые отчёты компании: рассчитанные бизнес-планы и загруженные PDF и Excel с периодами.');
 subtitles.pnl=N_('Доходы, расходы и прибыль за выбранный период.');
 subtitles.balance=N_('Активы, обязательства и капитал на конец периода.');
+const pageSubtitle=computed(()=>page.value==='report'&&cashFlowBasis.value==='osv'?N_('Отчёт по банковской ОСВ 5110 и выбранному образцу.'):subtitles[page.value]);
 const priorities={normal:N_('Обычный'),high:N_('Высокий'),urgent:N_('Срочный')};
 const scenario=ref('approved');
 const forecastRows=computed(()=>(dash.value?.forecast||[]).map(d=>scenario.value==='all'?{...d,opening:d.requested_opening,outgoing:d.requested_outgoing,balance:d.requested_balance,risk:d.requested_risk,account_shortfalls:d.requested_account_shortfalls,events:[...d.events,...d.pending_events]}:d));
@@ -485,7 +486,7 @@ onMounted(async()=>{try{const r=await api('/api/me');user.value=r.user;csrf.valu
    </header>
    <main class="page" :key="page">
     <div class="pg-head">
-     <div><h1>{{title}}</h1><p v-if="subtitles[page]" class="sub">{{tx(subtitles[page])}}</p></div>
+     <div><h1>{{title}}</h1><p v-if="pageSubtitle" class="sub">{{tx(pageSubtitle)}}</p></div>
      <div class="pg-act">
       <div v-if="showCurrency" class="seg" role="group" :aria-label="tx('Валюта учёта')"><button v-for="c in ['UZS','USD','EUR']" :key="c" :class="{on:currency===c}" :aria-pressed="currency===c" @click="setCurrency(c)">{{c}}</button></div>
       <button v-if="page!=='profile'" class="icon-btn" :aria-label="tx('Обновить данные')" :title="tx('Обновить данные')" @click="load"><AppIcon name="refresh"/></button>
