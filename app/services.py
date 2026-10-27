@@ -460,9 +460,15 @@ def post_ledger(s,u,data):
             raise HTTPException(409,'Поступление уже закрыто или сумма/счёт не совпадают.')
     if kind=='out' and req:
         enforce_payment_budget(s,req,a,data.date)
-        # Исключаем текущий резерв и защищаем также все более поздние обязательства.
-        try:enforce_reserved_funds(s,a,data.date,n,req.id,(max(today(),req.due_date),))
-        except HTTPException as e:raise HTTPException(409,f'{e.detail} {RETURN_HINT}')
+        # Неоплаченные заявки — прогноз, а не запрет оплачивать выбранную заявку.
+        # Проверяем реальные деньги на её счёте, без ожидаемых поступлений.
+        for day in sorted({data.date,today()}):
+            actual=account_balance(s,a,day)
+            if actual<n:
+                raise HTTPException(409,
+                    f'Недостаточно фактических средств на счёте «{a.name}» на {day}: '
+                    f'{money(actual)} {a.currency}. Требуется {money(n)} {a.currency}. '
+                    'Оплата не проведена. Пополните счёт и повторите оплату; повторное согласование не требуется.')
     elif kind=='out':
         enforce_budget(s,data.category_id,data.date,a.currency,n,data.note)
         # Расход без заявки не забирает ни наступившие, ни будущие резервы.

@@ -850,6 +850,7 @@ const BUDGET_UZ = '$1 uchun modda byudjeti tasdiqlangan miqdordan $2 $3 ga oshib
 const anchored = source => new RegExp('^' + source + '$');
 
 export const patterns = [
+  [/^Недостаточно фактических средств на счёте «(.+)» на (\S+): (\S+) (\S+)\. Требуется (\S+) (\S+)\. Оплата не проведена\. Пополните счёт и повторите оплату; повторное согласование не требуется\.$/, '«$1» hisobida $2 holatiga haqiqiy mablagʻ yetarli emas: $3 $4. Talab qilinadi: $5 $6. Toʻlov amalga oshirilmadi. Hisobni toʻldirib, toʻlovni takrorlang; qayta tasdiqlash shart emas.'],
   [/^(.+) — базовая цена$/, '$1 — bazaviy narx'],
   [/^(.+) — базовая себестоимость$/, '$1 — bazaviy tannarx'],
   [/^(.+) — исходная стоимость$/, '$1 — boshlangʻich qiymat', [1]],
