@@ -1501,10 +1501,26 @@ class SiteTests(unittest.TestCase):
         threads=[threading.Thread(target=decide,args=(i,)) for i in range(2)]
         for t in threads:t.start()
         for t in threads:t.join()
-        self.assertEqual(codes.count(200),1,codes)
-        self.assertEqual(codes.count(409),1,codes)
+        self.assertEqual(codes.count(200),2,codes)
         approved=[x for x in self.client.get('/api/requests').json() if x['id'] in ids and x['status']=='approved']
-        self.assertEqual(len(approved),1,approved)
+        self.assertEqual(len(approved),2,approved)
+        # Approval does not spend money; concurrent payments still cannot overdraw.
+        versions={x['id']:x['version'] for x in approved}
+        gate=threading.Barrier(2);codes=[]
+        def pay_distinct(index):
+            client,headers=payers[index]
+            body={'account_id':small,'category_id':self.cat,'kind':'out','amount':'600','date':self.date,
+                  'reference':f'RACE-DISTINCT-{index}','request_id':ids[index],'request_version':versions[ids[index]]}
+            gate.wait()
+            codes.append(client.post('/api/ledger',json=body,headers=headers).status_code)
+        threads=[threading.Thread(target=pay_distinct,args=(i,)) for i in range(2)]
+        for t in threads:t.start()
+        for t in threads:t.join()
+        self.assertEqual(sorted(codes),[200,409],codes)
+        with unit() as s:
+            from app.services import account_balance
+            self.assertEqual(account_balance(s,s.get(Account,small)),40000)
+        for cl,_ in [author,*payers,*approvers]:cl.close()
 
     def test_84_accountant_cannot_pay_foreign_company_or_stale_version(self):
         book=self.make_user('accountant','scope_book')
@@ -1682,7 +1698,7 @@ class SiteTests(unittest.TestCase):
         # the current account-edit API is not allowed to create this state.
         with unit(True) as s:s.get(Account,small).opening=70000
         r=self.post('/api/ledger',self.pay_body(third,account_id=small,amount='800',note=long_note),*book)
-        self.assertEqual(r.status_code,409,r.text);self.assertIn('Недостаточно доступных средств',r.text);self.assertIn('финансовому директору',r.text)
+        self.assertEqual(r.status_code,409,r.text);self.assertIn('Недостаточно фактических средств',r.text);self.assertIn('повторное согласование не требуется',r.text)
         returned=self.post(f'/api/requests/{third}/decision',{'action':'return_finance','note':'Нехватка фактических денег после прежней корректировки'},*book)
         self.assertEqual(returned.status_code,200,returned.text)
         self.assertEqual((state(third)['status'],state(third)['approval_stage']),('pending','finance'))
