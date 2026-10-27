@@ -106,3 +106,14 @@ test('server patterns translate roles and nested messages but keep names users e
     assert.equal(tx('Финансовый директор · ВрИО Кассир'), 'Финансовый директор · ВрИО Кассир');
   } finally {setLang(previous);}
 });
+
+
+test('request payment shortage explains retry after funding in Uzbek', () => {
+  const previous=lang.value;
+  try {
+    setLang('uz');
+    const text=tx('Недостаточно фактических средств на счёте «Bank» на 2026-10-27: 0.00 UZS. Требуется 100.00 UZS. Оплата не проведена. Пополните счёт и повторите оплату; повторное согласование не требуется.');
+    assert.match(text,/qayta tasdiqlash shart emas/);
+    assert.doesNotMatch(text,/[А-Яа-яЁё]/);
+  } finally { setLang(previous); }
+});

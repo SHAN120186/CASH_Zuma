@@ -576,9 +576,8 @@ def decide(id:int,data:DecisionIn,request:Request):
             else:r.approved_by=u.id
             # Директор участвует по снимку политики статьи; последний нужный этап завершает согласование.
             if stage=='director' or not requires_director(r):
-                # Срок заявки и сегодняшний остаток проверяются вместе со всеми более
-                # поздними резервами: ранняя заявка не занимает уже обещанные деньги.
-                enforce_reserved_funds(s,a,r.due_date,r.amount,r.id)
+                # Согласование подтверждает обязательство, а не наличие денег.
+                # Фактическое покрытие проверяется атомарно при оплате.
                 r.status='approved';r.approved_at=now();r.approved_overrun=overrun(b)
         elif data.action=='return':
             if not (('approve' in perms and act_with_right(u,'approve')) or act_as(u,'accountant')):raise HTTPException(403,'Недостаточно прав для возврата.')

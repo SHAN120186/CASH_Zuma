@@ -386,14 +386,13 @@ class SiteTests(unittest.TestCase):
         due=str(today()+timedelta(days=1))
         r=self.request('100','Оплата с отдельного пустого счёта',account=second,date=due);self.assertEqual(r.status_code,200,r.text)
         rid=r.json()['id']
-        denied=self.approve(rid);self.assertEqual(denied.status_code,409,denied.text)
-        self.assertIn('Недостаточно доступных средств',denied.text)
-        self.assertEqual(self.row(rid)['status'],'pending')
+        accepted=self.approve(rid);self.assertEqual(accepted.status_code,200,accepted.text)
+        self.assertEqual(self.row(rid)['status'],'approved')
         forecast=self.client.get('/api/dashboard').json()['forecast']
-        # До срока заявки нехватки нет; в день срока её видно только в сценарии «Все заявки» и только по пустому счёту.
+        # До срока заявки нехватки нет; в день срока её видно и в утверждённом прогнозе, по пустому счёту.
         self.assertFalse(forecast[0]['requested_risk'])
         day=next(d for d in forecast if d['date']==due)
-        self.assertEqual(day['balance'],'1000000.00');self.assertFalse(day['risk'])
+        self.assertEqual(day['balance'],'999900.00');self.assertTrue(day['risk'])
         self.assertTrue(day['requested_risk']);self.assertEqual(day['requested_account_shortfalls'][0]['account_id'],second)
 
     def test_22_backdated_expense_checks_later_daily_balances(self):
@@ -935,12 +934,11 @@ class SiteTests(unittest.TestCase):
 
     def test_60_available_funds_reservations_release_and_payment_recheck(self):
         first=self.request('600000').json();self.assertEqual(self.approve(first['id']).status_code,200)
-        second=self.request('500000').json();denied=self.approve(second['id'])
-        self.assertEqual(denied.status_code,409);self.assertIn('резерв утверждённых заявок 600000.00',denied.text)
-        self.assertEqual(self.row(second['id'])['status'],'pending')
+        second=self.request('500000').json();accepted=self.approve(second['id'])
+        self.assertEqual(accepted.status_code,200,accepted.text)
+        self.assertEqual(self.row(second['id'])['status'],'approved')
         closed=self.post(f"/api/requests/{first['id']}/decision",{'action':'close','note':'Платёж отменён поставщиком'})
         self.assertEqual(closed.status_code,200,closed.text);self.assertEqual(closed.json()['status'],'cancelled')
-        self.assertEqual(self.approve(second['id']).status_code,200)
         # Наступил срок заявки: её деньги зарезервированы на день оплаты.
         with unit(True) as s:s.get(PaymentRequest,second['id']).due_date=today()
         # A manual payment cannot consume money reserved for another approved request.
@@ -955,9 +953,11 @@ class SiteTests(unittest.TestCase):
         r=self.post('/api/accounts',{'name':'Zuma rich bank','company_id':companies['ZUMA'],'kind':'bank','currency':'UZS','opening':'9000000','opening_date':self.date},headers={**self.h,'X-Company-ID':str(companies['ZUMA'])});self.assertEqual(r.status_code,200,r.text)
         empty=self.post('/api/accounts',{'name':'UZGERMED empty bank','company_id':companies['UZGERMED'],'kind':'bank','currency':'UZS','opening':'0','opening_date':self.date}).json()['id']
         r=self.request('1','Проверка изоляции денег',account=empty);self.assertEqual(r.status_code,200,r.text);r=r.json()
-        denied=self.approve(r['id']);self.assertEqual(denied.status_code,409,denied.text);self.assertIn('UZS',denied.text)
-        self.assertIn('Недостаточно доступных средств на счёте «UZGERMED empty bank»',denied.text)
-        self.assertEqual(self.row(r['id'])['status'],'pending')
+        self.assertEqual(self.approve(r['id']).status_code,200)
+        denied=self.ledger('1','out',account_id=empty,request_id=r['id'])
+        self.assertEqual(denied.status_code,409,denied.text)
+        self.assertIn('Недостаточно фактических средств',denied.text)
+        self.assertEqual(self.row(r['id'])['status'],'approved')
 
     def test_62_group_report_bank_mtd_as_of_and_no_opening_or_transfer_double_count(self):
         companies={c['code']:c['id'] for c in self.client.get('/api/bootstrap').json()['companies']}
@@ -1774,11 +1774,11 @@ class SiteTests(unittest.TestCase):
         self.assertEqual((self.row(y)['status'],self.row(y)['version']),('approved',version))
         # Explicit legacy fixture: an older version accepted this correction.
         # Current API checks must not be weakened to arrange a payment test.
-        with unit(True) as s:s.get(Account,acc).opening=60000
+        with unit(True) as s:s.get(Account,acc).opening=50000
         pay=lambda d,ref:self.post('/api/ledger',{'account_id':acc,'category_id':self.cat,'kind':'out','amount':'600','date':d,'reference':ref,'request_id':y},*book)
-        r=pay(self.date,'LATE-TODAY');self.assertEqual(r.status_code,409,r.text);self.assertIn('Недостаточно доступных средств',r.text)
-        r=pay(str(today()-timedelta(days=6)),'LATE-BACK');self.assertEqual(r.status_code,409,r.text);self.assertIn('финансовому директору',r.text)
-        self.assertIn('Недостаточно доступных средств',r.text)
+        r=pay(self.date,'LATE-TODAY');self.assertEqual(r.status_code,409,r.text);self.assertIn('Недостаточно фактических средств',r.text)
+        r=pay(str(today()-timedelta(days=6)),'LATE-BACK');self.assertEqual(r.status_code,409,r.text)
+        self.assertIn('Недостаточно фактических средств',r.text)
 
     def test_94_finance_only_approvals_from_the_old_threshold_are_not_payable(self):
         book=self.make_user('accountant','legacy_book')
@@ -1822,24 +1822,23 @@ class SiteTests(unittest.TestCase):
         self.assertEqual(self.approve(rid).status_code,200)
         self.assertEqual(self.post('/api/ledger',body('MONTH-2'),*book).status_code,200)
 
-    def test_97_early_payment_cannot_take_money_reserved_for_an_earlier_due_request(self):
+    def test_97_payment_uses_actual_balance_not_other_unpaid_requests(self):
         book=self.make_user('accountant','early_book')
         acc=self.post('/api/accounts',{'name':'Счёт очередности','kind':'bank','currency':'UZS','opening':'200','opening_date':str(today()-timedelta(days=5))}).json()['id']
         late=self.request('100','Заявка с поздним сроком',account=acc,date=str(today()+timedelta(days=10))).json()['id']
         soon=self.request('100','Заявка с ранним сроком',account=acc,date=str(today()+timedelta(days=5))).json()['id']
         for i in (late,soon):self.assertEqual(self.approve(i).status_code,200)
-        # A legacy correction could leave both approvals against only 150.
-        # The current API prevents creating this state; payment must still
-        # protect old approvals restored from an earlier database version.
+        # Both approved obligations may now exceed actual money.
+        # Payment chooses one obligation and must leave the other unpaid.
+        # Expected receipts must not fund either payment.
         with unit(True) as s:s.get(Account,acc).opening=15000
         pay=lambda rid,ref:self.post('/api/ledger',{'account_id':acc,'category_id':self.cat,'kind':'out','amount':'100','date':self.date,'reference':ref,'request_id':rid},*book)
-        r=pay(late,'EARLY-LATE');self.assertEqual(r.status_code,409,r.text);self.assertIn('финансовому директору',r.text)
-        self.assertIn('Недостаточно доступных средств',r.text)
-        self.assertEqual(pay(soon,'EARLY-SOON-BLOCKED').status_code,409)
-        # Even the earlier payment must protect the later reservation. Return
-        # that obligation explicitly before paying the fully funded request.
-        returned=self.post(f'/api/requests/{late}/decision',{'action':'return_finance','note':'Возврат поздней заявки из-за нехватки покрытия'},*book)
-        self.assertEqual(returned.status_code,200,returned.text)
+        r=pay(late,'EARLY-LATE');self.assertEqual(r.status_code,200,r.text)
+        blocked=pay(soon,'EARLY-SOON-BLOCKED')
+        self.assertEqual(blocked.status_code,409,blocked.text)
+        self.assertIn('Недостаточно фактических средств',blocked.text)
+        self.assertEqual(self.row(soon)['status'],'approved')
+        self.assertEqual(self.ledger('50','in',account_id=acc,reference='TOP-UP').status_code,200)
         self.assertEqual(pay(soon,'EARLY-SOON').status_code,200)
 
     def test_98_another_months_accepted_overrun_is_not_borrowed(self):
@@ -2914,7 +2913,7 @@ class SiteTests(unittest.TestCase):
             self.assertEqual(self.row(rid)['documents'],{'internal':1,'contract':1,'other':1})
         finally:author[0].close();stranger[0].close();buyer[0].close()
 
-    def test_141_final_approval_of_an_overdue_request_checks_todays_money_not_the_past_due_date(self):
+    def test_141_approval_without_money_payment_after_top_up(self):
         acc=self.post('/api/accounts',{'name':'Счёт просрочки','kind':'bank','currency':'UZS','opening':'1000000','opening_date':str(today()-timedelta(days=5))}).json()['id']
         rid=self.request('600000','Заявка, утверждаемая после срока',account=acc).json()['id']
         self.assertEqual(self.finance_approve(rid).status_code,200)
@@ -2923,12 +2922,14 @@ class SiteTests(unittest.TestCase):
         drained=self.post('/api/ledger',{'account_id':acc,'category_id':self.cat,'kind':'out','amount':'1000000','date':str(today()),'reference':'DRAIN-1','note':'Расход без заявки, забравший весь остаток'})
         self.assertEqual(drained.status_code,200,drained.text)
         late=self.post(f'/api/requests/{rid}/decision',{'action':'approve','note':'Утверждение после срока'},*self.stage_user('director'))
-        self.assertEqual(late.status_code,409,late.text);self.assertIn('Недостаточно доступных средств',late.text);self.assertIn(str(today()),late.text)
-        self.assertEqual((self.row(rid)['status'],self.row(rid)['approval_stage']),('pending','director'))
-        # Money back on the account: the same decision goes through, and the request never reserved money it did not have.
-        self.assertEqual(self.post('/api/ledger',{'account_id':acc,'category_id':self.cat,'kind':'in','amount':'700000','date':str(today()),'reference':'BACK-1','counterparty':'Покупатель'}).status_code,200)
-        ok=self.post(f'/api/requests/{rid}/decision',{'action':'approve','note':'Утверждение после срока'},*self.stage_user('director'))
-        self.assertEqual(ok.status_code,200,ok.text);self.assertEqual(ok.json()['status'],'approved')
+        self.assertEqual(late.status_code,200,late.text)
+        self.assertEqual(self.row(rid)['status'],'approved')
+        denied=self.ledger('600000','out',account_id=acc,request_id=rid,reference='EMPTY')
+        self.assertEqual(denied.status_code,409,denied.text)
+        self.assertIn('Недостаточно фактических средств',denied.text)
+        self.assertEqual(self.ledger('700000','in',account_id=acc,reference='BACK-1').status_code,200)
+        paid=self.ledger('600000','out',account_id=acc,request_id=rid,reference='FUNDED')
+        self.assertEqual(paid.status_code,200,paid.text)
 
     def test_counterparty_excel_preview_commit_and_scope(self):
         import io
