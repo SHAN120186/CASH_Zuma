@@ -16,5 +16,14 @@ export default {
   "Статьи ДДС": "Pul oqimi moddalari",
   "Обновить список": "Ro‘yxatni yangilash",
   "Отключён": "O‘chirilgan",
-  "Доступен": "Mavjud"
+  "Доступен": "Mavjud",
+  "Удалить операцию {reference}?": "{reference} operatsiyasi o‘chirilsinmi?",
+  "Показать удалённые операции": "O‘chirilgan operatsiyalarni ko‘rsatish",
+  "Операции удаляет администратор холдинга.": "Operatsiyalarni xolding administratori o‘chiradi.",
+  "Удалённые операции доступны администратору холдинга.": "O‘chirilgan operatsiyalar xolding administratori uchun mavjud.",
+  "Операция уже удалена.": "Operatsiya allaqachon o‘chirilgan.",
+  "Удалена операция": "Operatsiya o‘chirildi",
+  "Операция будет убрана из активного списка, её влияние на деньги отменится исходной датой. Запись и документы останутся в истории. Оплаченная заявка вернётся к оплате, подтверждённое поступление — в ожидаемые.": "Operatsiya faol ro‘yxatdan olib tashlanadi, pulga ta’siri asl sana bilan bekor qilinadi. Yozuv va hujjatlar tarixda saqlanadi. To‘langan ariza yana to‘lovga, tasdiqlangan tushum kutilayotganlarga qaytadi.",
+  "Причина удаления": "O‘chirish sababi",
+  "Удалена": "O‘chirilgan"
 };

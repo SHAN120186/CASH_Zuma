@@ -18,6 +18,13 @@ def amount(value, allow_zero=False):
     except (ValueError, InvalidOperation, TypeError):raise HTTPException(422,'Сумма должна быть положительной, не более 100 трлн, с максимум двумя знаками после запятой.')
 def money(n):return format(Decimal(n)/100,'.2f')
 
+def ledger_deletion_registry(s):
+    row=get_setting(s,'ledger_deletions')
+    return json.loads(row.value) if row else {}
+
+def deleted_ledger_ids(s):
+    return {id for item in ledger_deletion_registry(s).values() for id in item['ids']}
+
 def effective_cashflows(s):
     """Обороты без исправленных операций и компенсирующих записей сторно.
 

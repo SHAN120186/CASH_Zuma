@@ -1,7 +1,8 @@
 {
-  "version": "2.33.0",
+  "version": "2.33.1",
   "date": "2026-10-27",
   "changes": [
+    "Администратор холдинга может удалять операции своей выбранной компании: влияние отменяется сторно исходной датой, запись и документы остаются в истории. Доступен просмотр удалённых операций, журнал, проверка версии и контроль остатков.",
     "Администрирование содержит вложенные справочники. Администратор холдинга создаёт, переименовывает и отключает отделы каждой компании на русском и узбекском; заявки используют этот список, исторические коды сохраняются.",
     "Выбор источника, года, сценария и месяца детализации передаёт в запрос именно новое значение поля. Загрузка больше не зависит от порядка обработчиков изменения; защита от устаревших ответов сохранена.",
     "После закрытия дневной детализации Cash Flow выбранный месяц сбрасывается, поэтому тот же месяц можно сразу открыть повторно. Проверка исходной ОСВ и сохранённые отчёты не меняются.",
@@ -68,6 +69,7 @@
     "Длинные названия файлов и кнопки выбора шаблона переносятся на узком экране. В ТЭО дата архива отдельно обозначена и не подменяет начало финансового прогноза."
   ],
   "changes_uz": [
+    "Xolding administratori tanlangan kompaniya operatsiyalarini o‘chira oladi: pul ta’siri asl sana bilan bekor qilinadi, yozuvlar va hujjatlar tarixda qoladi.",
     "Administratsiyada ichki ma’lumotnomalar qo‘shildi. Xolding administratori kompaniya bo‘limlarini ikki tilda boshqaradi; oldingi arizalar saqlanadi.",
     "Ariza ilovalari va oldingi versiyalarni tanlangan kompaniyada arizani koʻrishga ruxsati bor har bir foydalanuvchi yuklab olishi mumkin. Havolalar ariza kartasi va tahrirlash oynasida ishlaydi; hisobotlar, eksportlar va operatsiya hujjatlari huquqlari kengaytirilmaydi.",
     "IFRS Rating manbasi P&L va balans manbalaridan alohida saqlanadi. Reytingni yangilash boshqa hisobotlar manbasini almashtirmaydi.",

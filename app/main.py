@@ -667,12 +667,16 @@ def delete_receipt(id:int,request:Request,version:int=Query(ge=1)):
         return {'id':r.id,'version':r.version,'status':r.status}
 
 @app.get('/api/ledger')
-def ledger_list(request:Request,date_from:Optional[date]=None,date_to:Optional[date]=None,currency:Optional[Literal['UZS','USD','EUR']]=None,q:str='',page:int=Query(1,ge=1),page_size:int=Query(10,ge=1,le=100),paginated:bool=False):
+def ledger_list(request:Request,include_deleted:bool=False,date_from:Optional[date]=None,date_to:Optional[date]=None,currency:Optional[Literal['UZS','USD','EUR']]=None,q:str='',page:int=Query(1,ge=1),page_size:int=Query(10,ge=1,le=100),paginated:bool=False):
     with unit() as s:
-        u,_=session_user(s,request,'ledger');acc={a.id:a for a in s.scalars(select(Account))};cats={c.id:c.name for c in s.scalars(select(Category))}
+        u,_=session_user(s,request,'ledger')
+        if include_deleted and u.role!='admin':raise HTTPException(403,'Удалённые операции доступны администратору холдинга.')
+        deleted_ids=deleted_ledger_ids(s)
+        acc={a.id:a for a in s.scalars(select(Account))};cats={c.id:c.name for c in s.scalars(select(Category))}
         reversed_ids={t.reversal_of for t in s.scalars(select(Ledger).where(Ledger.reversal_of!=None))}
         if date_from and date_to and date_from>date_to:raise HTTPException(422,'Начало периода позже окончания.')
         query=select(Ledger).join(Account,Account.id==Ledger.account_id).outerjoin(Category,Category.id==Ledger.category_id)
+        if not include_deleted:query=query.where(Ledger.id.not_in(deleted_ids))
         # Плательщик без просмотра реестра видит операции только своего канала: кассир — кассу, бухгалтер — банк.
         channels=payment_channels(perms_of(u))
         if 'view' not in perms_of(u) and channels:
@@ -692,7 +696,8 @@ def ledger_list(request:Request,date_from:Optional[date]=None,date_to:Optional[d
                  'reference':t.reference,'note':t.note,'request_id':t.request_id,'receipt_id':t.receipt_id,
                  'can_attach_document':can_attach_document(u,t),
                  'category_id':t.category_id,'to_account_id':t.to_account_id,
-                 'edit_token':ledger_edit_token(t),'can_edit':u.role=='admin' and not t.reversal_of and t.id not in reversed_ids,
+                 'edit_token':ledger_edit_token(t),'deleted':t.id in deleted_ids,'can_delete':u.role=='admin' and t.id not in deleted_ids,
+                 'can_edit':u.role=='admin' and t.id not in deleted_ids and not t.reversal_of and t.id not in reversed_ids,
                  'reversal_of':t.reversal_of,'reversed':t.id in reversed_ids} for t in s.scalars(query.offset((page-1)*page_size).limit(page_size) if paginated else query.limit(500))]
         return {'items':items,'total':total,'page':page,'page_size':page_size} if paginated else items
 @app.post('/api/ledger')
@@ -746,6 +751,32 @@ def edit_ledger(id:int,data:LedgerEditIn,request:Request):
         log(s,u,'Исправлена операция','ledger',id,json.dumps({'before':before,'replacement_id':replacement.id,'reason':data.reason},ensure_ascii=False))
         return {'id':replacement.id}
 
+def reverse_ledger_entry(s,u,t,reason,allow_archived=False):
+    id=t.id
+    if not allow_archived and any(get(s,Account,x).archived for x in (t.account_id,t.to_account_id) if x):raise HTTPException(409,'Счёт в архиве. Сначала восстановите его.')
+    if t.reversal_of or s.scalar(select(Ledger.id).where(Ledger.reversal_of==id)):raise HTTPException(409,'Сторнирование уже выполнено или это запись сторно.')
+    inverse_account=t.to_account_id if t.kind=='transfer' else t.account_id
+    inv=Ledger(account_id=inverse_account,to_account_id=t.account_id if t.kind=='transfer' else None,
+               kind={'in':'out','out':'in','transfer':'transfer'}[t.kind],amount=t.amount,date=t.date,
+               category_id=t.category_id,counterparty=t.counterparty,reference=reversal_reference(s,inverse_account,t.id),note=reason,reversal_of=t.id,creator_id=u.id)
+    s.add(inv)
+    # Освобождаем уникальную связь оплаты, но сохраняем историю в журнале.
+    if t.request_id:
+        linked=get(s,PaymentRequest,t.request_id)
+        if linked.status!='deleted':linked.status='approved'
+        log(s,u,'Отмена оплаты заявки','request',t.request_id,f'Сторно операции {id}');t.request_id=None
+    if t.receipt_id:
+        get(s,Receipt,t.receipt_id).status='expected';log(s,u,'Отмена поступления','receipt',t.receipt_id,f'Сторно операции {id}');t.receipt_id=None
+    s.flush();validate_running_balance(s,get(s,Account,t.account_id))
+    if t.to_account_id:validate_running_balance(s,get(s,Account,t.to_account_id))
+    # The inverse entry is already included in the actual balance. Check
+    # only the account losing money, with required=0, to avoid a second debit.
+    if t.kind in ('in','transfer'):
+        reduced_account=t.to_account_id if t.kind=='transfer' else t.account_id
+        enforce_reservations_after_correction(s,get(s,Account,reduced_account))
+    log(s,u,'Сторно операции (исходная дата)','ledger',id,reason)
+    return inv
+
 @app.post('/api/ledger/{id}/reverse')
 def reverse(id:int,data:ReverseIn,request:Request):
     with unit(True) as s:
@@ -754,29 +785,32 @@ def reverse(id:int,data:ReverseIn,request:Request):
         if not (act_as(u,own) if own in ('finance','director') else (act_as(u,'finance') or act_as(u,'director'))):
             raise HTTPException(403,'Сторно выполняет финансовый директор или директор компании.')
         t=get(s,Ledger,id)
-        if any(get(s,Account,x).archived for x in (t.account_id,t.to_account_id) if x):raise HTTPException(409,'Счёт в архиве. Сначала восстановите его.')
-        if t.reversal_of or s.scalar(select(Ledger.id).where(Ledger.reversal_of==id)):raise HTTPException(409,'Сторнирование уже выполнено или это запись сторно.')
-        inverse_account=t.to_account_id if t.kind=='transfer' else t.account_id
-        inv=Ledger(account_id=inverse_account,to_account_id=t.account_id if t.kind=='transfer' else None,
-                   kind={'in':'out','out':'in','transfer':'transfer'}[t.kind],amount=t.amount,date=t.date,
-                   category_id=t.category_id,counterparty=t.counterparty,reference=reversal_reference(s,inverse_account,t.id),note=data.reason,reversal_of=t.id,creator_id=u.id)
-        s.add(inv)
-        # Освобождаем уникальную связь оплаты, но сохраняем историю в журнале.
-        if t.request_id:
-            linked=get(s,PaymentRequest,t.request_id)
-            if linked.status!='deleted':linked.status='approved'
-            log(s,u,'Отмена оплаты заявки','request',t.request_id,f'Сторно операции {id}');t.request_id=None
-        if t.receipt_id:
-            get(s,Receipt,t.receipt_id).status='expected';log(s,u,'Отмена поступления','receipt',t.receipt_id,f'Сторно операции {id}');t.receipt_id=None
-        s.flush();validate_running_balance(s,get(s,Account,t.account_id))
-        if t.to_account_id:validate_running_balance(s,get(s,Account,t.to_account_id))
-        # The inverse entry is already included in the actual balance. Check
-        # only the account losing money, with required=0, to avoid a second debit.
-        if t.kind in ('in','transfer'):
-            reduced_account=t.to_account_id if t.kind=='transfer' else t.account_id
-            enforce_reservations_after_correction(s,get(s,Account,reduced_account))
-        log(s,u,'Сторно операции (исходная дата)','ledger',id,data.reason)
+        inv=reverse_ledger_entry(s,u,t,data.reason)
         return {'id':inv.id}
+
+class LedgerDeleteIn(ReverseIn):
+    expected:str=Field(min_length=64,max_length=64)
+
+@app.delete('/api/ledger/{id}')
+def delete_ledger(id:int,data:LedgerDeleteIn,request:Request):
+    with unit(True) as s:
+        u,_=session_user(s,request,'write')
+        if u.role!='admin':raise HTTPException(403,'Операции удаляет администратор холдинга.')
+        clicked=get(s,Ledger,id)
+        if ledger_edit_token(clicked)!=data.expected:raise HTTPException(409,'Операция уже изменена. Обновите данные.')
+        registry=ledger_deletion_registry(s)
+        t=get(s,Ledger,clicked.reversal_of) if clicked.reversal_of else clicked
+        if str(t.id) in registry:raise HTTPException(409,'Операция уже удалена.')
+        before={k:str(getattr(t,k)) for k in ('account_id','to_account_id','category_id','kind','amount','date','counterparty','reference','note','request_id','receipt_id')}
+        inv=s.scalar(select(Ledger).where(Ledger.reversal_of==t.id))
+        if inv is None:inv=reverse_ledger_entry(s,u,t,data.reason,allow_archived=True)
+        entry={'ids':[t.id,inv.id],'reason':data.reason,'deleted_by':u.id,'deleted_at':str(now()),'before':before}
+        registry[str(t.id)]=entry
+        row=get_setting(s,'ledger_deletions')
+        if row:row.value=json.dumps(registry,ensure_ascii=False)
+        else:s.add(Setting(key=setting_key(s,'ledger_deletions'),value=json.dumps(registry,ensure_ascii=False)))
+        log(s,u,'Удалена операция','ledger',t.id,json.dumps(entry,ensure_ascii=False))
+        return {'id':t.id,'deleted':True,'ids':entry['ids']}
 
 @app.get('/api/report')
 def operational_report(request:Request,year:int=2026,currency:Literal['UZS','USD','EUR']='UZS',company_id:int|None=None,scenario:Literal['A','B','V']='A',as_of:date|None=None):
@@ -844,7 +878,7 @@ def export_ledger(request:Request):
         u,_=session_user(s,request,'export');require_permission(u,'download');out=io.StringIO();w=csv.writer(out,delimiter=';');w.writerow(['ID','Дата','Тип','Счёт','Валюта','Сумма','Контрагент','Документ','Комментарий'])
         def safe(x):
             v=str(x or '');return "'"+v if v[:1] in ('=','+','-','@','\t','\r') else v
-        for t in s.scalars(select(Ledger).order_by(Ledger.date,Ledger.id)):
+        for t in s.scalars(select(Ledger).where(Ledger.id.not_in(deleted_ledger_ids(s))).order_by(Ledger.date,Ledger.id)):
             a=s.get(Account,t.account_id)
             w.writerow([t.id,t.date,t.kind,safe(a.name),a.currency,money(t.amount),safe(t.counterparty),safe(t.reference),safe(t.note)])
         return Response(content=('\ufeff'+out.getvalue()).encode('utf-8'),media_type='text/csv',headers={'Content-Disposition':'attachment; filename="cashflow_ledger.csv"'})
