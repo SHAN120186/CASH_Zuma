@@ -355,3 +355,21 @@ test('administration catalogs drill down and obey the existing catalog section v
  assert.equal(find(view.container,n=>n.tag==='button'&&text(n).trim()==='Отделы'),undefined);
  assert.ok(find(view.container,n=>n.tag==='button'&&text(n).trim()==='Пользователи'));
 });
+
+test('holding admin confirms a versioned operation deletion in the selected company',async t=>{
+ const calls=[];const admin={...user,holding_role:'admin',role:'admin',permissions:['view','ledger','write','download']};
+ const {view}=await fixture(t,async(url,options)=>{calls.push({url,options});return {ok:true,status:200,json:async()=>url==='/api/bootstrap'?bootstrapBody(admin):url.startsWith('/api/ledger?')?{items:[],total:0}:{id:8,deleted:true}};});
+ view.state.user=admin;view.state.page='ledger';view.state.rows=[{id:8,date:'2026-10-10',kind:'in',amount:'100',currency:'UZS',account:'Synthetic',reference:'SYNTHETIC-DELETE',edit_token:'a'.repeat(64),can_delete:true}];await settle();
+ const button=find(view.container,n=>n.tag==='button'&&text(n).trim()==='Удалить');assert.ok(button);button.props.onClick();await settle();
+ assert.equal(calls.length,0,'opening confirmation never deletes');assert.equal(view.state.modal.saveLabel,'Удалить');assert.match(text(view.container),/SYNTHETIC-DELETE/);
+ view.state.form.reason='Synthetic mistaken movement';await view.state.save();await settle();
+ const call=calls.find(c=>c.options.method==='DELETE');assert.ok(call);assert.equal(call.url,'/api/ledger/8');assert.equal(call.options.headers['X-Company-ID'],'2');assert.equal(call.options.headers['Content-Type'],'application/json');assert.equal(JSON.parse(call.options.body).expected,'a'.repeat(64));assert.equal(view.state.modal,null);
+ view.state.showDeletedOperations=true;await view.state.load();assert.ok(calls.some(c=>c.url.includes('include_deleted=true')));
+});
+test('company director has no operation delete button and a failed delete keeps its reason',async t=>{
+ const {view}=await fixture(t,async()=>({ok:false,status:409,json:async()=>({detail:'Synthetic changed operation'})}));
+ const row={id:9,date:'2026-10-10',kind:'out',amount:'1',currency:'UZS',account:'Synthetic',reference:'SYNTHETIC-CONFLICT',edit_token:'b'.repeat(64),can_delete:true};
+ view.state.user={...user,permissions:['view','ledger','write']};view.state.page='ledger';view.state.rows=[row];await settle();
+ assert.equal(find(view.container,n=>n.tag==='button'&&text(n).trim()==='Удалить'),undefined);
+ view.state.user={...user,holding_role:'admin',permissions:['view','ledger','write']};view.state.deleteOperation(row);view.state.form.reason='Keep reason on conflict';await view.state.save();await settle();assert.equal(view.state.form.reason,'Keep reason on conflict');assert.match(text(view.container),/Synthetic changed operation/);
+});
