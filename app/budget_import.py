@@ -91,7 +91,7 @@ def snapshot(s,month,currency):
     return hashlib.sha256(json.dumps(raw,ensure_ascii=False).encode()).hexdigest(),cats,budgets
 
 @router.post('/api/budgets/import/preview')
-async def preview(request:Request,month:str=Query(pattern=r'^20\d{2}-(0[1-9]|1[0-2])$'),currency:Literal['UZS','USD','EUR']='UZS',scale:Literal[1,1000,1000000]=1):
+async def preview(request:Request,month:str=Query(pattern=r'^20\d{2}-(0[1-9]|1[0-2])$'),currency:Literal['UZS','USD','EUR']='UZS',scale:Literal['1','1000','1000000']='1'):
     with unit() as s:session_user(s,request,'budget')
     name=Path(unquote(request.headers.get('X-Filename','budget.xlsx'))).name
     if not name.lower().endswith('.xlsx'):raise HTTPException(422,'Для бюджета нужен файл XLSX.')
@@ -105,7 +105,7 @@ async def preview(request:Request,month:str=Query(pattern=r'^20\d{2}-(0[1-9]|1[0
         old={b.category_id:money(b.amount) for b in budgets}
         for r in rows:
             if r['amount'] is not None:
-                r['amount']*=scale
+                r['amount']*=int(scale)
                 if r['amount']>10**16:issues.append({'line':r['line'],'error':'Сумма больше 100 трлн.'})
             matches=[c for c in cats if article_code(c)==r['code']]
             if not matches:matches=[c for c in cats if norm(c.name)==norm(r['name']) or norm(re.sub(r'^\d+\s*[·|—]\s*','',c.name))==norm(r['name'])]
@@ -113,7 +113,7 @@ async def preview(request:Request,month:str=Query(pattern=r'^20\d{2}-(0[1-9]|1[0
             r['income']=any(c.type=='income' for c in matches)
         batch=BudgetImportBatch(user_id=u.id,company_id=request.state.company_id,month=month,currency=currency,filename=name[:220],payload=json.dumps({'rows':rows,'issues':issues,'version':version},ensure_ascii=False))
         s.add(batch);s.flush()
-        return {'id':batch.id,'rows':[{**r,'amount':None if r['amount'] is None else money(r['amount'])} for r in rows], 'issues':issues,'month':month,'currency':currency,'scale':scale,'can_create':'catalog' in perms_of(u) and can_edit_section(u,'categories'),'categories':[{'id':c.id,'code':article_code(c),'name':article_name(c),'old':old.get(c.id)} for c in cats if c.type=='outcome']}
+        return {'id':batch.id,'rows':[{**r,'amount':None if r['amount'] is None else money(r['amount'])} for r in rows], 'issues':issues,'month':month,'currency':currency,'scale':int(scale),'can_create':'catalog' in perms_of(u) and can_edit_section(u,'categories'),'categories':[{'id':c.id,'code':article_code(c),'name':article_name(c),'old':old.get(c.id)} for c in cats if c.type=='outcome']}
 
 class CommitBudget(BaseModel):
     model_config=ConfigDict(extra='forbid')
