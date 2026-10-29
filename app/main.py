@@ -49,6 +49,7 @@ async def safety(request,call_next):
         business_params=bool(re.fullmatch(r'/api/business-projects/[0-9]+/(?:generate|analyse|inputs|native/(?:preview|generate))',request.url.path))
         limit=MAX_SIZE if request.url.path in ('/api/model/upload','/api/financial-statements/upload') or archive_file else 1024*1024 if business_params else 5*1024*1024 if request.url.path in ('/api/import/preview','/api/plan-import/preview') or request.url.path.endswith('/document') or '/documents' in request.url.path else 65536
         if request.url.path=='/api/cashflow-osv/preview':limit=24*1024*1024
+        if request.url.path=='/api/budgets/import/preview':limit=15*1024*1024
         if length<0 or length>limit:return JSONResponse({'detail':'Неверный размер запроса.'},status_code=413)
         origin=request.headers.get('origin')
         expected=PUBLIC_ORIGIN or str(request.base_url).rstrip('/')

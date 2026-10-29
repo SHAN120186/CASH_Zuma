@@ -1,4 +1,4 @@
-import io,unittest
+import io,unittest,zipfile
 from openpyxl import Workbook
 import tests.test_site as base
 from app.budget_import import parse_budget
@@ -67,6 +67,14 @@ class BudgetImportTests(unittest.TestCase):
             p=client.post('/api/budgets/import/preview?month='+self.month,content=book([['77','Synthetic new',10]]),headers=h)
             self.assertEqual(p.status_code,200,p.text);d=p.json();self.assertFalse(d['can_create'])
             r=client.post(f'/api/budgets/import/{d["id"]}/commit',json={'mappings':{'77':'new'}},headers=h);self.assertEqual(r.status_code,403,r.text)
+
+    def test_large_workbook_passes_http_limit_and_oversize_fails(self):
+        raw=io.BytesIO(book([['4','Synthetic large file',1]]))
+        with zipfile.ZipFile(raw,'a',compression=zipfile.ZIP_STORED) as z:z.writestr('synthetic-padding.bin',b'0'*(9*1024*1024))
+        r=self.client.post('/api/budgets/import/preview?month='+self.month,content=raw.getvalue(),headers={**self.h,'X-Filename':'large.xlsx'})
+        self.assertEqual(r.status_code,200,r.text)
+        r=self.client.post('/api/budgets/import/preview?month='+self.month,content=b'0'*(15*1024*1024+1),headers={**self.h,'X-Filename':'large.xlsx'})
+        self.assertEqual(r.status_code,413)
 
     def test_parser_formatting_formula_errors(self):
         rows,issues=parse_budget(book([['4','Synthetic',123.45],['5','Blank','\u00a0'],[None,'Жами ҳаражатлар','summary']],7));self.assertEqual(len(rows),2);self.assertFalse(issues);self.assertEqual(rows[0]['amount'],12345)
