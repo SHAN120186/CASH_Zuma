@@ -71,10 +71,15 @@ class BudgetImportTests(unittest.TestCase):
     def test_large_workbook_passes_http_limit_and_oversize_fails(self):
         raw=io.BytesIO(book([['4','Synthetic large file',1]]))
         with zipfile.ZipFile(raw,'a',compression=zipfile.ZIP_STORED) as z:z.writestr('synthetic-padding.bin',b'0'*(9*1024*1024))
-        r=self.client.post('/api/budgets/import/preview?month='+self.month,content=raw.getvalue(),headers={**self.h,'X-Filename':'large.xlsx'})
+        r=self.client.post('/api/budgets/import/preview?month='+self.month+'&currency=UZS&scale=1',content=raw.getvalue(),headers={**self.h,'X-Filename':'large.xlsx'})
         self.assertEqual(r.status_code,200,r.text)
         r=self.client.post('/api/budgets/import/preview?month='+self.month,content=b'0'*(15*1024*1024+1),headers={**self.h,'X-Filename':'large.xlsx'})
         self.assertEqual(r.status_code,413)
+
+    def test_explicit_query_scale_and_currency(self):
+        r=self.client.post('/api/budgets/import/preview?month='+self.month+'&currency=USD&scale=1000',content=book([['4','Synthetic',1.25]]),headers={**self.h,'X-Filename':'budget.xlsx'})
+        self.assertEqual(r.status_code,200,r.text);self.assertEqual(r.json()['rows'][0]['amount'],'1250.00');self.assertEqual(r.json()['currency'],'USD')
+        r=self.client.post('/api/budgets/import/preview?month='+self.month+'&scale=10',content=book([['4','Synthetic',1]]),headers={**self.h,'X-Filename':'budget.xlsx'});self.assertEqual(r.status_code,422)
 
     def test_parser_formatting_formula_errors(self):
         rows,issues=parse_budget(book([['4','Synthetic',123.45],['5','Blank','\u00a0'],[None,'Жами ҳаражатлар','summary']],7));self.assertEqual(len(rows),2);self.assertFalse(issues);self.assertEqual(rows[0]['amount'],12345)
