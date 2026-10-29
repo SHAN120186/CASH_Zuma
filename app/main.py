@@ -380,7 +380,7 @@ def budgets(request:Request,month:str='',currency:Literal['UZS','USD','EUR']='UZ
     month=month or str(today())[:7]
     with unit() as s:
         session_user(s,request,'view')
-        return [dict(category_id=c.id,category=c.name,cost_group=c.cost_group,month=month,currency=currency,**budget_json(budget_state(s,c.id,month,currency))) for c in s.scalars(select(Category).where(Category.type=='outcome').order_by(Category.id))]
+        return [dict(category_id=c.id,category=article_name(c),code=article_code(c),cost_group=c.cost_group,month=month,currency=currency,**budget_json(budget_state(s,c.id,month,currency))) for c in s.scalars(select(Category).where(Category.type=='outcome').order_by(Category.id))]
 @app.post('/api/budgets')
 def save_budget(data:BudgetIn,request:Request):
     with unit(True) as s:
@@ -1068,3 +1068,6 @@ app.include_router(counterparties_router)
 
 from .department_catalog import router as department_router
 app.include_router(department_router)
+
+from .budget_import import router as budget_import_router, article_code, article_name
+app.include_router(budget_import_router)

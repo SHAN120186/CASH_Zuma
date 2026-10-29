@@ -1,7 +1,8 @@
 {
-  "version": "2.33.2",
-  "date": "2026-10-27",
+  "version": "2.33.3",
+  "date": "2026-10-30",
   "changes": [
+    "Бюджеты загружаются из Excel по коду статьи, названию и сумме: предпросмотр, месяц, валюта и масштаб. Пустые суммы сохраняют лимит, ноль обнуляет; повторная загрузка заменяет сумму, а не удваивает её.",
     "Во всех компаниях заявки согласуются без денег на счёте. При оплате проверяется фактический остаток выбранного счёта; другие неоплаченные заявки не блокируют платёж и остаются в прогнозе.",
     "Администратор холдинга может удалять операции своей выбранной компании: влияние отменяется сторно исходной датой, запись и документы остаются в истории. Доступен просмотр удалённых операций, журнал, проверка версии и контроль остатков.",
     "Администрирование содержит вложенные справочники. Администратор холдинга создаёт, переименовывает и отключает отделы каждой компании на русском и узбекском; заявки используют этот список, исторические коды сохраняются.",
@@ -70,6 +71,7 @@
     "Длинные названия файлов и кнопки выбора шаблона переносятся на узком экране. В ТЭО дата архива отдельно обозначена и не подменяет начало финансового прогноза."
   ],
   "changes_uz": [
+    "Budjetlar Excel orqali modda kodi, nomi va summasi bo‘yicha yuklanadi: oldindan ko‘rish, oy, valyuta va masshtab. Bo‘sh summa limitni saqlaydi, nol uni nolga tushiradi; qayta yuklash summani almashtiradi.",
     "Xolding administratori tanlangan kompaniya operatsiyalarini o‘chira oladi: pul ta’siri asl sana bilan bekor qilinadi, yozuvlar va hujjatlar tarixda qoladi.",
     "Administratsiyada ichki ma’lumotnomalar qo‘shildi. Xolding administratori kompaniya bo‘limlarini ikki tilda boshqaradi; oldingi arizalar saqlanadi.",
     "Ariza ilovalari va oldingi versiyalarni tanlangan kompaniyada arizani koʻrishga ruxsati bor har bir foydalanuvchi yuklab olishi mumkin. Havolalar ariza kartasi va tahrirlash oynasida ishlaydi; hisobotlar, eksportlar va operatsiya hujjatlari huquqlari kengaytirilmaydi.",

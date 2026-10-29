@@ -76,6 +76,7 @@ class Category(Base):
     company_id = Column(Integer, ForeignKey('companies.id'), nullable=True)
     id = Column(Integer, primary_key=True)
     name = Column(String(160), nullable=False)
+    code = Column(String(40), nullable=True)
     __table_args__ = (UniqueConstraint('company_id','name'),)
     activity = Column(String(20), nullable=False, default='operating')
     type = Column(String(12), nullable=False, default='outcome')
@@ -459,6 +460,18 @@ class ImportBatch(Base):
     status = Column(String(20), default='preview', nullable=False)
     created_at = Column(DateTime, default=now, nullable=False)
 
+class BudgetImportBatch(Base):
+    __tablename__ = 'budget_import_batches'
+    id = Column(Integer, primary_key=True)
+    user_id = Column(Integer, ForeignKey('users.id'), nullable=False)
+    company_id = Column(Integer, ForeignKey('companies.id'), nullable=False)
+    month = Column(String(7), nullable=False)
+    currency = Column(String(3), nullable=False)
+    filename = Column(String(220), nullable=False)
+    payload = Column(Text, nullable=False)
+    status = Column(String(20), default='preview', nullable=False)
+    created_at = Column(DateTime, default=now, nullable=False)
+
 class PlanImportBatch(Base):
     __tablename__ = 'plan_import_batches'
     id = Column(Integer, primary_key=True)
@@ -585,6 +598,7 @@ def initialize():
         if 'inn' not in receipt_columns:conn.execute(text("ALTER TABLE expected_receipts ADD COLUMN inn VARCHAR(20) NOT NULL DEFAULT ''"))
         if 'version' not in receipt_columns:conn.execute(text('ALTER TABLE expected_receipts ADD COLUMN version INTEGER NOT NULL DEFAULT 1'))
         columns={c['name'] for c in inspect(conn).get_columns('categories')}
+        if 'code' not in columns:conn.execute(text('ALTER TABLE categories ADD COLUMN code VARCHAR(40)'))
         if 'cost_group' not in columns:conn.execute(text("ALTER TABLE categories ADD COLUMN cost_group VARCHAR(12) NOT NULL DEFAULT 'other'"))
         if 'type' not in columns:
             conn.execute(text("ALTER TABLE categories ADD COLUMN type VARCHAR(12) NOT NULL DEFAULT 'outcome'"))
@@ -632,6 +646,7 @@ def initialize():
         if 'role' not in membership_columns:conn.execute(text('ALTER TABLE company_users ADD COLUMN role VARCHAR(20)'))
     from .company_scope import migrate_columns, migrate_data
     migrate_columns(engine)
+    with engine.begin() as conn:conn.execute(text('CREATE UNIQUE INDEX IF NOT EXISTS ux_category_code ON categories(company_id,code)'))
     with Session(engine) as s:
         from .security import ROLES
         for name in ROLES:
