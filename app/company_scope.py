@@ -11,13 +11,13 @@ from sqlalchemy.orm import Session, with_loader_criteria
 from sqlalchemy.schema import CreateTable
 from .db import (Company, CompanyUser, User, Account, Category, Counterparty,
                  CashPlan, PlanNote, PaymentRequest, Receipt, Ledger, Budget,
-                 Document, ImportBatch, PlanImportBatch, Audit, ModelVersion,
+                 Document, ImportBatch, PlanImportBatch, BudgetImportBatch, Audit, ModelVersion,
                  ReportSchedule, Setting, RequestDocument, Delegation, ReportArchive, ReportArchiveFile,
                  BusinessProject, BusinessSourceFile, BusinessGeneration, FinancialStatementSource, IfrsRatingSource,
                  CashFlowOsvSource, CashFlowOsvPreview)
 
 # Вложения заявок принадлежат компании через свою заявку (criteria ниже), а не собственным полем.
-DIRECT = (Account, Category, Counterparty, CashPlan, PlanNote, PlanImportBatch,
+DIRECT = (Account, Category, Counterparty, CashPlan, PlanNote, PlanImportBatch, BudgetImportBatch,
           ImportBatch, Audit, ModelVersion, ReportSchedule, Delegation, ReportArchive, ReportArchiveFile,
           BusinessProject, BusinessSourceFile, BusinessGeneration, FinancialStatementSource, IfrsRatingSource,
           CashFlowOsvSource, CashFlowOsvPreview)
