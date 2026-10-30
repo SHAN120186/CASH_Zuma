@@ -1,4 +1,6 @@
 export default {
+  "Скачать шаблон Excel": "Excel shablonini yuklab olish",
+  "Заполните шаблон начиная со второй строки. Компанию, месяц, валюту и масштаб выберите на сайте перед загрузкой.": "Shablonni ikkinchi qatordan boshlab to‘ldiring. Yuklashdan oldin saytda kompaniya, oy, valyuta va masshtabni tanlang.",
   "Нет права создавать статьи в справочнике.": "Ma’lumotnomada modda yaratish huquqi yo‘q.",
   "Тысячи": "Minglar",
   "Миллионы": "Millionlar",
