@@ -11,6 +11,8 @@ async function commit(){if(!ready.value||busy.value)return;busy.value=true;error
 </script>
 <template>
 <section class="card budget-import"><div class="card-b">
+ <p><a class="template-link" href="/static/erp/templates/budget-template.xlsx" download="Cash-budget-template.xlsx">{{tx('Скачать шаблон Excel')}}</a></p>
+ <p>{{tx('Заполните шаблон начиная со второй строки. Компанию, месяц, валюту и масштаб выберите на сайте перед загрузкой.')}}</p>
  <div class="tb"><label class="fld">{{tx('Суммы в файле')}}<select v-model="scale" :disabled="busy||!!preview"><option :value="1">{{tx('Единицы')}}</option><option :value="1000">{{tx('Тысячи')}}</option><option :value="1000000">{{tx('Миллионы')}}</option></select></label><button class="secondary" :disabled="busy" @click="fileInput?.click()">{{tx('Загрузить бюджет Excel')}}</button><input ref="fileInput" hidden type="file" accept=".xlsx" @change="upload"></div>
  <p>{{tx('Excel: код статьи, название, сумма. До 1000 статей и 15 МБ. Пустые суммы сохраняют текущий лимит, ноль обнуляет его.')}}</p>
  <p v-if="busy" role="status">{{tx('Обработка бюджета…')}}</p><p v-if="error" class="error" role="alert">{{error}}</p><p v-if="notice" role="status">{{notice}}</p>
@@ -21,4 +23,5 @@ async function commit(){if(!ready.value||busy.value)return;busy.value=true;error
  </tbody></table></div><div class="form-actions"><button class="secondary" :disabled="busy" @click="preview=null">{{tx('Отмена')}}</button><button :disabled="busy||!ready" @click="commit">{{tx('Подтвердить загрузку бюджета')}}</button></div></div>
 </div></section>
 </template>
+<style scoped>.template-link{display:inline-flex;padding:10px 14px;border:1px solid #d9d5ea;border-radius:12px;text-decoration:none;color:inherit;font-weight:600}</style>
 <style scoped>.budget-import{margin:16px 0}td{max-width:350px;white-space:normal;overflow-wrap:anywhere}select{max-width:310px}small{display:block}.form-actions{margin-top:16px}</style>
