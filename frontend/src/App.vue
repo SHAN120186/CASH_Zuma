@@ -45,6 +45,9 @@ async function checkRelease(){
 function refreshVersion(){if(modal.value||editor.value||cardId.value){flash(N_('Сохраните или закройте текущую форму перед обновлением.'));return}location.reload()}
 onMounted(()=>{checkRelease();releaseTimer=setInterval(checkRelease,60000)});
 onUnmounted(()=>clearInterval(releaseTimer));
+let requestArchiveTimer;
+onMounted(()=>{requestArchiveTimer=setInterval(()=>{if(page.value==='requests'&&user.value&&!busy.value&&!document.hidden&&!modal.value&&!editor.value&&!cardId.value)load()},60000)});
+onUnmounted(()=>clearInterval(requestArchiveTimer));
 const vModalFocus={mounted(el){el._previousFocus=document.activeElement;el._trap=e=>{if(e.key!=='Tab')return;const controls=[...el.querySelectorAll('button:not(:disabled),input:not(:disabled),select:not(:disabled),textarea:not(:disabled),a[href]')].filter(n=>n.getClientRects().length);const first=controls[0],last=controls.at(-1);if(e.shiftKey&&document.activeElement===first){e.preventDefault();last?.focus()}else if(!e.shiftKey&&document.activeElement===last){e.preventDefault();first?.focus()}};el.addEventListener('keydown',el._trap);el.querySelector('input:not(:disabled),select:not(:disabled),button:not(:disabled)')?.focus()},unmounted(el){el.removeEventListener('keydown',el._trap);el._previousFocus?.focus()}};
 const user=ref(null),csrf=ref(''),login=ref({username:'',password:''}),recentLogins=ref(loadRecentLogins()),passwordInput=ref(null),error=ref(''),busy=ref(false),notice=ref(''),noticeParams=ref(null);
 const loginSuggestions=computed(()=>matchingLogins(recentLogins.value,login.value.username));
@@ -179,7 +182,7 @@ const budgetGroup=ref(''),calendarOrder=ref('asc');
 const budgetRows=computed(()=>rows.value.filter(r=>!budgetGroup.value||r.cost_group===budgetGroup.value));
 const sortedForecast=computed(()=>calendarOrder.value==='desc'?[...forecastRows.value].reverse():forecastRows.value);
 const amountFields=['amount','opening','limit','spent','reserved','remaining','balance'];
-const dateFrom=ref(''),dateTo=ref(''),listPage=ref(1),listTotal=ref(0),requestStatus=ref(''),showArchive=ref(false),showDeletedOperations=ref(false),expandedRequest=ref(null);
+const dateFrom=ref(''),dateTo=ref(''),listPage=ref(1),listTotal=ref(0),requestStatus=ref(''),requestArchive=ref('active'),showArchive=ref(false),showDeletedOperations=ref(false),expandedRequest=ref(null);
 const visibleRows=computed(()=>['ledger','requests'].includes(page.value)?rows.value:rows.value.filter(r=>(!r.currency||r.currency===currency.value)&&JSON.stringify(r).toLowerCase().includes(search.value.toLowerCase())));
 const listPages=computed(()=>Math.max(1,Math.ceil(listTotal.value/10)));
 const requestStatuses=computed(()=>Object.fromEntries(Object.entries(status).filter(([key])=>!['expected','received'].includes(key))));
@@ -243,7 +246,7 @@ async function selectCompany(id){
  const selectionEpoch=companyEpoch;
  companyReady.value=false;companyId.value=Number(id);reportSelection.value=null;busy.value=true;error.value='';notice.value='';
  rows.value=[];dash.value=null;report.value=null;preview.value=null;expandedRequest.value=null;cashFlowBasis.value='operations';
- search.value='';dateFrom.value='';dateTo.value='';requestStatus.value='';listPage.value=1;listTotal.value=0;showArchive.value=false;showDeletedOperations.value=false;planMappings.value={};helpOpen.value=false;menuOpen.value=false;
+ search.value='';dateFrom.value='';dateTo.value='';requestStatus.value='';requestArchive.value='active';listPage.value=1;listTotal.value=0;showArchive.value=false;showDeletedOperations.value=false;planMappings.value={};helpOpen.value=false;menuOpen.value=false;
  boot.value={...boot.value,accounts:[],categories:[],counterparties:[]};
  try{
   await bootstrap();if(selectionEpoch!==companyEpoch||companyId.value!==Number(id)||!user.value)return;
@@ -270,9 +273,9 @@ async function signIn(event){
  }catch(e){error.value=e.message}finally{busy.value=false}
 }
 async function logout(){cancelPending();busy.value=true;try{await post('/api/logout')}finally{cancelPending();user.value=null;csrf.value='';companyReady.value=false;companyId.value=null;busy.value=false}}
-async function goWith(name,opts={}){if(!canNavigate(name))return;menuOpen.value=false;helpOpen.value=false;reportEditing.value=false;page.value=name;location.hash=name;search.value='';dateFrom.value=opts.from||'';dateTo.value=opts.to||'';requestStatus.value=opts.status||'';listPage.value=1;expandedRequest.value=null;rows.value=[];await load()}
+async function goWith(name,opts={}){if(!canNavigate(name))return;menuOpen.value=false;helpOpen.value=false;reportEditing.value=false;page.value=name;location.hash=name;search.value='';dateFrom.value=opts.from||'';dateTo.value=opts.to||'';requestStatus.value=opts.status||'';requestArchive.value='active';listPage.value=1;expandedRequest.value=null;rows.value=[];await load()}
 const canDecide=r=>canDecideRequest(r);
-async function go(name){if(!canNavigate(name))return;menuOpen.value=false;helpOpen.value=false;reportEditing.value=false;page.value=name;location.hash=name;search.value='';dateFrom.value='';dateTo.value='';requestStatus.value='';listPage.value=1;expandedRequest.value=null;rows.value=[];await load()}
+async function go(name){if(!canNavigate(name))return;menuOpen.value=false;helpOpen.value=false;reportEditing.value=false;page.value=name;location.hash=name;search.value='';dateFrom.value='';dateTo.value='';requestStatus.value='';requestArchive.value='active';listPage.value=1;expandedRequest.value=null;rows.value=[];await load()}
 async function load(){if(!companyReady.value)return;const epoch=companyEpoch,id=++loadRequestId,requestedPage=page.value,requestedCurrency=currency.value;busy.value=true;error.value='';
  const current=()=>id===loadRequestId&&epoch===companyEpoch&&page.value===requestedPage&&currency.value===requestedCurrency;
  try{
@@ -283,7 +286,7 @@ async function load(){if(!companyReady.value)return;const epoch=companyEpoch,id=
  if(['pnl','balance','rating'].includes(page.value))statementRefresh.value++;
  if(requestedPage==='calendar'){const horizon=days.value,data=await api(`/api/dashboard?currency=${requestedCurrency}&days=${horizon}`);if(current()&&days.value===horizon)dash.value=data;}
  if(requestedPage==='accounts'){const archived=showArchive.value,data=await api('/api/accounts?archived='+archived);if(current()&&showArchive.value===archived)rows.value=data;}
- if(['ledger','requests'].includes(requestedPage)){const requestId=++listRequestId;const params=new URLSearchParams({paginated:'true',page:String(listPage.value),currency:requestedCurrency,q:search.value});if(dateFrom.value)params.set('date_from',dateFrom.value);if(dateTo.value)params.set('date_to',dateTo.value);if(requestedPage==='ledger'&&showDeletedOperations.value)params.set('include_deleted','true');if(requestedPage==='requests'&&requestStatus.value)params.set('state',requestStatus.value);const data=await api(`/api/${requestedPage}?${params}`);if(current()&&requestId===listRequestId){rows.value=data.items;listTotal.value=data.total;}}
+ if(['ledger','requests'].includes(requestedPage)){const requestId=++listRequestId;const params=new URLSearchParams({paginated:'true',page:String(listPage.value),currency:requestedCurrency,q:search.value});if(dateFrom.value)params.set('date_from',dateFrom.value);if(dateTo.value)params.set('date_to',dateTo.value);if(requestedPage==='ledger'&&showDeletedOperations.value)params.set('include_deleted','true');if(requestedPage==='requests')params.set('archive',dateFrom.value||dateTo.value?'all':requestArchive.value);if(requestedPage==='requests'&&requestStatus.value)params.set('state',requestStatus.value);const data=await api(`/api/${requestedPage}?${params}`);if(current()&&requestId===listRequestId){rows.value=data.items;listTotal.value=data.total;}}
  if(!current())return;
  if(requestedPage==='budgets'){const selectedMonth=month.value,data=await api(`/api/budgets?currency=${requestedCurrency}&month=${selectedMonth}`);if(current()&&month.value===selectedMonth)rows.value=data;}
  if(!current())return;
@@ -544,6 +547,8 @@ onMounted(async()=>{try{const r=await api('/api/me');user.value=r.user;csrf.valu
 
     <!-- Заявки -->
     <template v-if="page==='requests'">
+     <div v-if="!dateFrom&&!dateTo" class="seg" role="group" :aria-label="tx('Список заявок')"><button :class="{on:requestArchive==='active'}" @click="requestArchive='active';listPage=1;load()">{{tx('Основной список')}}</button><button :class="{on:requestArchive==='archived'}" @click="requestArchive='archived';listPage=1;load()">{{tx('Архив заявок')}}</button></div>
+     <p class="sub">{{dateFrom||dateTo?tx('За выбранный период показаны все заявки, включая архивные.'):tx('Через 24 часа после утверждения заявка переходит в архив. Статус и возможность оплаты сохраняются.')}}</p>
      <PeriodFilter :key="page" :date-from="dateFrom" :date-to="dateTo" @apply="applyPeriod"><select :aria-label="tx('Статус заявки')" v-model="requestStatus" @change="listPage=1;load()"><option value="">{{tx('Статус: все')}}</option><option v-for="(label,key) in requestStatuses" :key="key" :value="key">{{tx(label)}}</option></select><label class="search"><AppIcon name="search"/><input v-model="search" :placeholder="tx('Поиск заявки')" :aria-label="tx('Поиск заявки')"></label><div class="grow actions"><button v-if="has('request')" @click="requestForm()"><AppIcon name="plus"/> {{tx('Создать заявку')}}</button></div></PeriodFilter>
      <p class="sumline"><span>{{tx('Найдено')}} <b>{{listTotal}}</b></span><span>{{listTotal<=4?tx('До 4 заявок — карточки'):tx('С 5 заявок — таблица со страницами')}}</span></p>
      <div v-if="listTotal<=4&&visibleRows.length" class="rq-grid"><section v-for="r in visibleRows" :key="r.id" class="card rq-card" :class="{backdated: isBackdated(r)}" :title="isBackdated(r)?tx(BACKDATED_HINT):null">
