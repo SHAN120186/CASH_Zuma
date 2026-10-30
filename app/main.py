@@ -427,11 +427,12 @@ def requests_list(request:Request,date_from:Optional[date]=None,date_to:Optional
             cutoff=now()-timedelta(days=1)
             closed_at=select(func.max(Audit.created_at)).where(
                 Audit.entity=='request', Audit.entity_id==cast(PaymentRequest.id,String),
-                Audit.action=='Действие по заявке: cancel'
+                or_(and_(PaymentRequest.status=='cancelled',Audit.action=='Действие по заявке: cancel'),
+                    and_(PaymentRequest.status=='rejected',Audit.action=='Действие по заявке: reject'))
             ).correlate(PaymentRequest).scalar_subquery()
             archived=or_(
                 and_(PaymentRequest.status.in_(['approved','paid']),PaymentRequest.approved_at<=cutoff),
-                and_(PaymentRequest.status=='cancelled',closed_at<=cutoff))
+                and_(PaymentRequest.status.in_(['cancelled','rejected']),closed_at<=cutoff))
             query=query.where(func.coalesce(archived,False) if archive=='archived' else ~func.coalesce(archived,False))
         if date_from:query=query.where(PaymentRequest.due_date>=date_from)
         if date_to:query=query.where(PaymentRequest.due_date<=date_to)

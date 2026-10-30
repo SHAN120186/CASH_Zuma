@@ -52,6 +52,23 @@ class RequestAutoArchiveTests(base.SiteTests):
             self.assertEqual(self.listing(archive='archived'),({ids[0],ids[1]},2))
         self.assertEqual(self.row(ids[0])['status'],'cancelled')
 
+    def test_rejected_requests_use_rejection_time(self):
+        ids=[self.request('10',submit=False).json()['id'] for _ in range(3)]
+        stamp=now()
+        with unit(True) as s:
+            for rid in ids:
+                r=s.get(PaymentRequest,rid);r.status='rejected';r.created_at=stamp-timedelta(days=30)
+            for rid,age in [(ids[0],24),(ids[1],23)]:
+                s.add(Audit(company_id=self.company,entity='request',entity_id=str(rid),action='Действие по заявке: reject',created_at=stamp-timedelta(hours=age)))
+        with patch('app.main.now',return_value=stamp):
+            self.assertEqual(self.listing(archive='active'),({ids[1],ids[2]},2))
+            self.assertEqual(self.listing(archive='archived'),({ids[0]},1))
+            self.assertEqual(self.listing(archive='active',date_from=self.date),(set(ids),3))
+            self.assertEqual(self.listing(archive='archived',state='rejected'),({ids[0]},1))
+        with patch('app.main.now',return_value=stamp+timedelta(hours=1)):
+            self.assertEqual(self.listing(archive='archived'),({ids[0],ids[1]},2))
+        self.assertEqual(self.row(ids[0])['status'],'rejected')
+
     def test_archive_does_not_bypass_company_or_deletion(self):
         rid=self.request('10',submit=False).json()['id']
         with unit(True) as s:
