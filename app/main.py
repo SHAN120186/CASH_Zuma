@@ -405,7 +405,7 @@ def save_reserve(data:ReserveIn,request:Request):
         row.value=str(n);log(s,u,'Изменён минимальный резерв','setting',key,money(n));return {'ok':True}
 
 @app.get('/api/requests')
-def requests_list(request:Request,date_from:Optional[date]=None,date_to:Optional[date]=None,currency:Optional[Literal['UZS','USD','EUR']]=None,q:str='',state:str='',page:int=Query(1,ge=1),page_size:int=Query(10,ge=1,le=100),paginated:bool=False):
+def requests_list(request:Request,date_from:Optional[date]=None,date_to:Optional[date]=None,currency:Optional[Literal['UZS','USD','EUR']]=None,q:str='',state:str='',page:int=Query(1,ge=1),page_size:int=Query(10,ge=1,le=100),paginated:bool=False,archive:Literal['all','active','archived']='all'):
     with unit() as s:
         u,_=session_user(s,request)
         perms=perms_of(u);channels=payment_channels(perms);checker='request_check' in perms
@@ -421,6 +421,14 @@ def requests_list(request:Request,date_from:Optional[date]=None,date_to:Optional
             if checker:visible.append(or_(PaymentRequest.status=='pending',PaymentRequest.checked_by==u.id))
             query=query.where(or_(*visible))
         if currency:query=query.where(Account.currency==currency)
+        # Presentation archive only: payment rights, reserves and bot queues are unchanged.
+        # A selected period always includes both active and archived requests.
+        if not date_from and not date_to and archive!='all':
+            cutoff=now()-timedelta(days=1)
+            if archive=='archived':
+                query=query.where(PaymentRequest.status.in_(['approved','paid']),PaymentRequest.approved_at<=cutoff)
+            else:
+                query=query.where(or_(PaymentRequest.status.notin_(['approved','paid']),PaymentRequest.approved_at.is_(None),PaymentRequest.approved_at>cutoff))
         if date_from:query=query.where(PaymentRequest.due_date>=date_from)
         if date_to:query=query.where(PaymentRequest.due_date<=date_to)
         if state:query=query.where(PaymentRequest.status==state)
