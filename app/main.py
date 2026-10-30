@@ -12,7 +12,7 @@ from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.middleware.trustedhost import TrustedHostMiddleware
 from pydantic import BaseModel, Field, ConfigDict
-from sqlalchemy import select, delete, func, or_, and_
+from sqlalchemy import select, delete, func, or_, and_, cast, String
 from sqlalchemy.exc import IntegrityError, OperationalError
 from sqlalchemy.orm.exc import StaleDataError
 from .db import *
@@ -425,10 +425,14 @@ def requests_list(request:Request,date_from:Optional[date]=None,date_to:Optional
         # A selected period always includes both active and archived requests.
         if not date_from and not date_to and archive!='all':
             cutoff=now()-timedelta(days=1)
-            if archive=='archived':
-                query=query.where(PaymentRequest.status.in_(['approved','paid']),PaymentRequest.approved_at<=cutoff)
-            else:
-                query=query.where(or_(PaymentRequest.status.notin_(['approved','paid']),PaymentRequest.approved_at.is_(None),PaymentRequest.approved_at>cutoff))
+            closed_at=select(func.max(Audit.created_at)).where(
+                Audit.entity=='request', Audit.entity_id==cast(PaymentRequest.id,String),
+                Audit.action=='Действие по заявке: cancel'
+            ).correlate(PaymentRequest).scalar_subquery()
+            archived=or_(
+                and_(PaymentRequest.status.in_(['approved','paid']),PaymentRequest.approved_at<=cutoff),
+                and_(PaymentRequest.status=='cancelled',closed_at<=cutoff))
+            query=query.where(func.coalesce(archived,False) if archive=='archived' else ~func.coalesce(archived,False))
         if date_from:query=query.where(PaymentRequest.due_date>=date_from)
         if date_to:query=query.where(PaymentRequest.due_date<=date_to)
         if state:query=query.where(PaymentRequest.status==state)
