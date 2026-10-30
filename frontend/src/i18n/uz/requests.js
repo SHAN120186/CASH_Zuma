@@ -5,7 +5,7 @@ export default {
   "Основной список": "Asosiy ro‘yxat",
   "Архив заявок": "Arizalar arxivi",
   "За выбранный период показаны все заявки, включая архивные.": "Tanlangan davr uchun barcha arizalar, jumladan arxivdagilar ham ko‘rsatiladi.",
-  "Через 24 часа после утверждения заявка переходит в архив. Статус и возможность оплаты сохраняются.": "Tasdiqlangandan 24 soat o‘tgach ariza arxivga o‘tadi. Holati va to‘lov imkoniyati saqlanadi.",
+  "Через 24 часа после утверждения или закрытия заявка переходит в архив. Статус и возможность оплаты сохраняются.": "Tasdiqlangandan yoki yopilgandan 24 soat o‘tgach ariza arxivga o‘tadi. Holati va to‘lov imkoniyati saqlanadi.",
   "Индент обязателен всегда. Для банка нужен также договор или счёт; для кассы остальные документы — при наличии. Срок оплаты: обычная заявка — 7 рабочих дней, высокий приоритет — 3 рабочих дня, срочная — сегодня.": "Indent har doim majburiy. Bank uchun shartnoma yoki hisob-faktura ham kerak; kassa uchun qolgan hujjatlar — mavjud bo‘lsa. To‘lov muddati: oddiy ariza — 7 ish kuni, yuqori ustuvorlik — 3 ish kuni, shoshilinch — bugun.",
   "Плановая дата заявки не может быть прошедшей.": "Arizaning reja sanasi o‘tgan kun bo‘lishi mumkin emas.",
   "Для срочной заявки дата — сегодня, включая выходной.": "Shoshilinch ariza sanasi — bugun, dam olish kuni bo‘lsa ham.",
