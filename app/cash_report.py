@@ -3,7 +3,7 @@ from .category_catalog import catalog
 import json
 from datetime import date
 from sqlalchemy import select
-from .db import Account, Category, Ledger, CashPlan, PlanNote
+from .db import Account, Category, Ledger, CashPlan, PlanNote, Setting
 from .services import effective_cashflows, money
 
 ACTIVITIES = {'operating':'Операционная деятельность', 'investing':'Инвестиционная деятельность', 'financing':'Финансовая деятельность'}
@@ -65,6 +65,14 @@ def report(s, year, currency, company_id, scenario='A', as_of=None):
     net = [sum(r['values'][m] for r in rows) for m in range(12)]
     plan_net = [total([r['plan'][m] for r in rows]) for m in range(12)]
     groups = [{'activity':key,'name':name,'values':[sum(r['values'][m] for r in rows if r['activity']==key) for m in range(12)],'plan':[total([r['plan'][m] for r in rows if r['activity']==key]) for m in range(12)]} for key,name in ACTIVITIES.items()]
+    setting=s.get(Setting,f'company:{company_id}:category_catalog')
+    ordered=bool(setting and json.loads(setting.value).get('order'))
+    # Display order must not change the underlying IAS 7 classification.
+    display_groups=[{'activity':kind,'display_kind':kind,'name':name,
+        'values':[sum(r['values'][m] for r in rows if r['kind']==kind) for m in range(12)],
+        'plan':[total([r['plan'][m] for r in rows if r['kind']==kind]) for m in range(12)]}
+        for kind,name in [('in','Поступления'),('out','Выплаты')]
+        if any(r['kind']==kind for r in rows)] if ordered else []
     # Opening balances are introduced on their original dates, never as operating income.
     # An account opened after the cut-off date does not exist yet in a report on that date.
     opened=[a for a in accounts if a.opening_date<=cutoff]
@@ -82,9 +90,9 @@ def report(s, year, currency, company_id, scenario='A', as_of=None):
         plan_opening.append(po)
         plan_closing.append(po+plan_net[m-1] if po is not None and plan_net[m-1] is not None else None)
     def formatted(values):return [money(v) if v is not None else None for v in values]
-    for r in rows+groups:
+    for r in rows+groups+display_groups:
         r['values']=formatted(r['values']);r['plan']=formatted(r['plan'])
-    return {'year':year,'currency':currency,'company_id':company_id,'scenario':scenario,'as_of':str(cutoff),'notes':notes,'rows':rows,'groups':groups,'totals':formatted(net),'plan_totals':formatted(plan_net),
+    return {'year':year,'currency':currency,'company_id':company_id,'scenario':scenario,'as_of':str(cutoff),'notes':notes,'rows':rows,'groups':groups,'display_groups':display_groups,'totals':formatted(net),'plan_totals':formatted(plan_net),
             'opening':formatted(opening),'closing':formatted(closing),'opening_adjustments':formatted(adjustments),
             'plan_opening':formatted(plan_opening),'plan_closing':formatted(plan_closing),
             'plan_versions':[periods[f'{year}-{m:02}'].version if f'{year}-{m:02}' in periods else 0 for m in range(1,13)],
@@ -92,11 +100,13 @@ def report(s, year, currency, company_id, scenario='A', as_of=None):
 
 def export_rows(data):
     rows=[('Остаток на начало',data['opening'],data['plan_opening'])]
-    for group in data['groups']:
+    for group in data.get('display_groups') or data['groups']:
         rows.append((group['name'],group['values'],group['plan']))
         for r in data['rows']:
-            if r['activity']==group['activity']:
+            if (r['kind']==group['display_kind'] if 'display_kind' in group else r['activity']==group['activity']):
                 rows.append((('Поступление · ' if r['kind']=='in' else 'Выплата · ')+r['category'],r['values'],r['plan']))
+    if data.get('display_groups'):
+        rows.extend((g['name'],g['values'],g['plan']) for g in data['groups'])
     rows.append(('Чистое изменение денег',data['totals'],data['plan_totals']))
     if any(v!='0.00' for v in data['opening_adjustments']):rows.append(('Ввод начальных остатков',data['opening_adjustments'],[None]*12))
     rows.append(('Остаток на конец',data['closing'],data['plan_closing']))

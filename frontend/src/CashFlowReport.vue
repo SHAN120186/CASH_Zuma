@@ -67,7 +67,7 @@ const unitCaption=computed(()=>({m:tx('млн')+' ',k:tx('тыс.')+' ',x:''}[un
 const columns=computed(()=>mode.value==='plan'?['plan','values','delta']:['values']);
 const planStatus=computed(()=>planCompleteness(props.report.rows,indices.value));
 const label={plan:N_('План'),values:N_('Факт'),delta:N_('Откл.')};
-const groups=computed(()=>props.report.groups.map(g=>({...g,rows:props.report.rows.filter(r=>r.activity===g.activity)})));
+const groups=computed(()=>(props.report.display_groups?.length?props.report.display_groups:props.report.groups).map(g=>({...g,rows:props.report.rows.filter(r=>g.display_kind?r.kind===g.display_kind:r.activity===g.activity)})));
 const summary=computed(()=>[
  {key:'opening',category:tx('Остаток на начало периода'),values:props.report.opening,plan:props.report.plan_opening},
  {key:'net',category:tx('Чистое изменение денег'),values:props.report.totals,plan:props.report.plan_totals},
@@ -80,9 +80,10 @@ const body=computed(()=>{
   out.push({t:'sec',key:'sec-'+g.activity,label:tx(g.name),row:g,activity:g.activity});
   if(collapsed.value.includes(g.activity))continue;
   const ins=g.rows.filter(r=>r.kind==='in'),outs=g.rows.filter(r=>r.kind!=='in');
-  if(ins.length){out.push({t:'sub',key:'in-'+g.activity,label:tx('Поступления')});ins.forEach(r=>out.push({t:'line',key:r.key,label:r.category,row:r}))}
-  if(outs.length){out.push({t:'sub',key:'out-'+g.activity,label:tx('Выплаты')});outs.forEach(r=>out.push({t:'line',key:r.key,label:r.category,row:r}))}
+  if(ins.length){if(!g.display_kind)out.push({t:'sub',key:'in-'+g.activity,label:tx('Поступления')});ins.forEach(r=>out.push({t:'line',key:r.key,label:r.category,row:r}))}
+  if(outs.length){if(!g.display_kind)out.push({t:'sub',key:'out-'+g.activity,label:tx('Выплаты')});outs.forEach(r=>out.push({t:'line',key:r.key,label:r.category,row:r}))}
  }
+ if(props.report.display_groups?.length)for(const g of props.report.groups)out.push({t:'net',key:'activity-'+g.activity,label:tx(g.name),row:g});
  for(const r of summary.value.slice(1))out.push({t:r.key==='net'?'net':r.key==='closing'?'close':'adj',key:r.key,label:r.category,row:r});
  return out;
 });

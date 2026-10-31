@@ -242,3 +242,19 @@ test('date helpers enforce server day and calendar validity without shifting act
   assert.equal(validReportDate('2025-12-31',2026,'2026-10-06'), false);
   assert.equal(validReportDate('2024-02-29',2024,'2026-10-06'), true);
 });
+
+test('company catalog order survives mixed activities, collapse and plan view',async t=>{
+ const data=report();data.rows=[
+  {key:'4:out',category_id:4,category:'4 · First',kind:'out',activity:'investing',values:zero(),plan:empty()},
+  {key:'8:out',category_id:8,category:'8 · Second',kind:'out',activity:'operating',values:zero(),plan:empty()},
+  {key:'101:out',category_id:101,category:'101 · Last',kind:'out',activity:'financing',values:zero(),plan:empty()}
+ ];
+ data.display_groups=[{activity:'out',display_kind:'out',name:'Выплаты',values:zero(),plan:empty()}];
+ const view=mountReport({report:data});t.after(view.unmount);await settle();
+ const labels=()=>view.state.body.filter(r=>r.t==='line').map(r=>r.label);
+ assert.deepEqual(labels(),['4 · First','8 · Second','101 · Last']);
+ assert.ok(view.state.body.some(r=>r.key==='activity-operating'));
+ view.state.mode='plan';await settle();assert.equal(labels().length,3);
+ view.state.toggle('out');await settle();assert.deepEqual(labels(),[]);
+ view.state.toggle('out');await settle();assert.deepEqual(labels(),['4 · First','8 · Second','101 · Last']);
+});
