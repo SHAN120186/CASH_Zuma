@@ -9,6 +9,7 @@ from fastapi import APIRouter, Request, HTTPException, Query
 from starlette.concurrency import run_in_threadpool
 from pydantic import BaseModel, Field, ConfigDict
 from sqlalchemy import select
+from .category_catalog import catalog
 from .db import unit, Category, Budget, BudgetImportBatch
 from .security import session_user, require_permission, perms_of
 from .services import get, log, money
@@ -85,7 +86,7 @@ def article_name(c):
     return re.sub(r'^'+re.escape(article_code(c) or '\0')+r'\s*[·|—]\s*','',c.name)
 
 def snapshot(s,month,currency):
-    cats=list(s.scalars(select(Category).order_by(Category.id)))
+    cats=[c for c,_ in catalog(s)]
     budgets=list(s.scalars(select(Budget).where(Budget.month==month,Budget.currency==currency).order_by(Budget.id)))
     raw={'categories':[(c.id,c.name,c.code,c.type) for c in cats],'budgets':[(b.id,b.category_id,b.amount,b.mode,b.source) for b in budgets]}
     return hashlib.sha256(json.dumps(raw,ensure_ascii=False).encode()).hexdigest(),cats,budgets

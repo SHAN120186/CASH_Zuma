@@ -16,6 +16,7 @@ from fastapi import APIRouter, Request, HTTPException, Query
 from pydantic import BaseModel, Field, ConfigDict
 from sqlalchemy import select
 from openpyxl.utils.datetime import from_excel
+from .category_catalog import catalog
 from .db import unit, User, Company, Category, CashPlan, PlanImportBatch
 from .security import session_user
 from .services import get, log
@@ -118,7 +119,7 @@ def parse_plan_workbook(raw,year,month_from,month_to):
 def preview(s,u,raw,name,company_id,year,month_from,month_to):
     get(s,Company,company_id)
     rows,issues=parse_plan_workbook(raw,year,month_from,month_to)
-    categories=list(s.scalars(select(Category)))
+    categories=[c for c,_ in catalog(s,company_id)]
     by_name={norm(c.name):c.id for c in categories}
     suggestions={r['source_key']:by_name.get(norm(r['source_name'])) for r in rows}
     existing_plans=list(s.scalars(select(CashPlan).where(

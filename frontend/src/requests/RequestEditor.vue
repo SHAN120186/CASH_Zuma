@@ -29,7 +29,7 @@ const form = ref(r ? {
   amount: r.amount, counterparty: r.counterparty, purpose: r.purpose, priority: r.priority, date: r.date, project: r.project || '', department: r.department || '', reason: '',
 } : {
   channel: firstAccount?.kind || 'bank', currency: firstAccount?.currency || props.currency, account_id: firstAccount?.id ?? null,
-  category_id: props.boot.categories.find(c => c.type === 'outcome')?.id ?? null, amount: '', counterparty: '', purpose: '',
+  category_id: props.boot.categories.find(c => c.type === 'outcome' && !c.retired)?.id ?? null, amount: '', counterparty: '', purpose: '',
   priority: 'normal', date: minDue(props.boot.due_minimums, 'normal'), project: '', department: '',
 });
 const error = ref(''), notice = ref(''), saving = ref(false), step = ref(''), blocked = ref(''), card = ref(null), dialog = ref(null);
@@ -45,7 +45,7 @@ const departmentCatalog=ref(props.boot.department_catalog?.items||Object.entries
 const departmentOptions=computed(()=>departmentCatalog.value.filter(x=>x.active||x.code===form.value.department));
 
 const accountOptions = computed(() => accountsFor(props.boot.accounts, form.value.channel, form.value.currency));
-const outcomeCategories = computed(() => props.boot.categories.filter(c => c.type === 'outcome'));
+const outcomeCategories = computed(() => props.boot.categories.filter(c => c.type === 'outcome' && (!c.retired || c.id === form.value.category_id)));
 const earliest = computed(() => minDue(dues.value, form.value.priority));
 const earliestLabel = computed(() => earliest.value ? earliest.value.split('-').reverse().join('.') : '');
 const title = computed(() => r ? tx('Изменить {number}', {number: r.number}) : number.value ? tx('Черновик {number}', {number: number.value}) : tx('Новая заявка на оплату'));

@@ -1,4 +1,5 @@
 """Management cash flow, single-currency actuals and independently entered monthly plans."""
+from .category_catalog import catalog
 import json
 from datetime import date
 from sqlalchemy import select
@@ -15,8 +16,9 @@ def expense_plan_summary(s, month, currency, company_id, scenario='A', as_of=Non
     they also need an explicit monthly amount (including zero) for a full plan.
     """
     year=int(month[:4]);cutoff=as_of or date(year,12,31)
-    categories=list(s.scalars(select(Category).where(Category.company_id==company_id)))
-    category_ids={c.id for c in categories}
+    all_categories=catalog(s,company_id,include_retired=True)
+    categories=[c for c,retired in all_categories if not retired]
+    category_ids={c.id for c,_ in all_categories}
     keys={f'{c.id}:out' for c in categories if c.type!='income'}
     accounts=select(Account.id).where(Account.company_id==company_id,Account.currency==currency)
     expense_categories=s.scalars(effective_cashflows(s).where(
@@ -40,7 +42,9 @@ def expense_plan_summary(s, month, currency, company_id, scenario='A', as_of=Non
 def report(s, year, currency, company_id, scenario='A', as_of=None):
     accounts = list(s.scalars(select(Account).where(Account.currency == currency, Account.company_id == company_id)))
     aids = {a.id for a in accounts}
-    categories = list(s.scalars(select(Category).where(Category.company_id == company_id).order_by(Category.id)))
+    all_categories=catalog(s,company_id,include_retired=True)
+    categories=[c for c,_ in all_categories]
+    retired_ids={c.id for c,retired in all_categories if retired}
     cutoff=min(as_of,date(year,12,31)) if as_of else date(year,12,31)
     entries = [t for t in s.scalars(effective_cashflows(s).where(Ledger.date <= cutoff)) if t.account_id in aids and t.kind != 'transfer']
     periods = {p.month: p for p in s.scalars(select(CashPlan).where(CashPlan.company_id==company_id,CashPlan.scenario==scenario,CashPlan.currency == currency, CashPlan.month >= f'{year}-01', CashPlan.month <= f'{year}-12'))}
@@ -48,6 +52,7 @@ def report(s, year, currency, company_id, scenario='A', as_of=None):
     payloads = [json.loads(periods[f'{year}-{m:02}'].payload) if f'{year}-{m:02}' in periods else {} for m in range(1,13)]
     rows = []
     for c in categories:
+        if c.id in retired_ids and not any(t.category_id==c.id for t in entries) and not any(k.startswith(f'{c.id}:') for p in payloads for k in p):continue
         kinds = {('in' if c.type == 'income' else 'out')}
         kinds.update(t.kind for t in entries if t.category_id == c.id)
         kinds.update(k.split(':')[1] for p in payloads for k in p if k.split(':')[0] == str(c.id))
