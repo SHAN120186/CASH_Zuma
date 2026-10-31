@@ -16,6 +16,7 @@ from sqlalchemy import select, delete, func, or_, and_, cast, String
 from sqlalchemy.exc import IntegrityError, OperationalError
 from sqlalchemy.orm.exc import StaleDataError
 from .db import *
+from .category_catalog import catalog as category_catalog
 from .security import *
 from .services import *
 from .company_scope import available_companies, setting_key, get_setting, active_delegations
@@ -283,7 +284,8 @@ def bootstrap(request:Request):
         categories=select(Category).order_by(Category.id)
         if company_role(user)=='sales' and user.role not in HOLDING_ROLES:
             categories=categories.where(Category.type=='income')
-        c=[{'id':c.id,'name':c.name,'activity':c.activity,'type':c.type} for c in s.scalars(categories)]
+        allowed_category_ids={c.id for c in s.scalars(categories)}
+        c=[{'id':c.id,'name':c.name,'activity':c.activity,'type':c.type,'retired':retired} for c,retired in category_catalog(s,include_retired=True) if c.id in allowed_category_ids]
         # Реестр и разрешённые пользователи планов получают справочник своей компании.
         cp=[{'id':x.id,'name':x.name,'inn':x.inn} for x in s.scalars(select(Counterparty).order_by(Counterparty.name).limit(1000))] if {'view','ledger','receipts','counterparties'}&perms_of(user) else []
         from .department_catalog import catalog as department_catalog
@@ -381,7 +383,7 @@ def budgets(request:Request,month:str='',currency:Literal['UZS','USD','EUR']='UZ
     month=month or str(today())[:7]
     with unit() as s:
         session_user(s,request,'view')
-        return [dict(category_id=c.id,category=article_name(c),code=article_code(c),cost_group=c.cost_group,month=month,currency=currency,**budget_json(budget_state(s,c.id,month,currency))) for c in s.scalars(select(Category).where(Category.type=='outcome').order_by(Category.id))]
+        return [dict(category_id=c.id,category=article_name(c),code=article_code(c),cost_group=c.cost_group,month=month,currency=currency,**budget_json(budget_state(s,c.id,month,currency))) for c,_ in category_catalog(s) if c.type=='outcome']
 @app.post('/api/budgets')
 def save_budget(data:BudgetIn,request:Request):
     with unit(True) as s:

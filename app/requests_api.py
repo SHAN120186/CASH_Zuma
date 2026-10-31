@@ -1,6 +1,7 @@
 """Карточка заявки, политика директора по статьям, календарь рабочих дней и ВрИО.
 Вложения заявки — в erp.py (таблица request_documents)."""
 from .department_catalog import labels as department_labels, catalog as department_catalog
+from .category_catalog import catalog
 import json
 from datetime import date
 from typing import Literal, Optional
@@ -160,7 +161,7 @@ def policy_json(c, names):
 def approval_policy(request: Request):
     with unit() as s:
         u, _ = session_user(s, request, 'approval_policy')
-        cats = list(s.scalars(select(Category).where(Category.type == 'outcome').order_by(Category.id)))
+        cats = [c for c,_ in catalog(s) if c.type=='outcome']
         names = names_of(s, [c.director_policy_changed_by for c in cats])
         return {'categories': [policy_json(c, names) for c in cats],
                 'defaults': {cur: money(v) if v is not None else None for cur, v in DEFAULT_THRESHOLDS.items()},
