@@ -168,22 +168,27 @@ class FutureReservationTests(unittest.TestCase):
     def audit_count(self,action):
         with unit() as s:return s.scalar(select(func.count()).select_from(Audit).where(Audit.action==action))
 
-    def test_earlier_approval_preserves_later_reservation_across_months(self):
-        self.approved_request(due='2026-11-20')
+    def test_earlier_approval_does_not_require_cover_for_later_approval(self):
+        later=self.approved_request(due='2026-11-20')
         early=self.checked_request(due='2026-10-09')
         r=self.decision('finance',early,'approve')
-        self.assertEqual(r.status_code,409,r.text)
-        self.assertIn('2026-11-20',r.text)
-        self.assertEqual(self.row(early)['status'],'pending')
-        self.assertIsNone(self.row(early)['finance_approved_by'])
-        self.assertEqual(self.funds('2026-11-20')['available'],10000)
+        self.assertEqual(r.status_code,200,r.text)
+        self.assertEqual(self.row(early)['status'],'approved')
+        self.assertEqual(self.row(later)['status'],'approved')
+        state=self.funds('2026-11-20')
+        self.assertEqual((state['actual'],state['reserved'],state['available']),(100000,180000,-80000))
+        self.assertEqual(self.ledger_count(),0)
 
-    def test_later_approval_still_checks_earlier_reservations(self):
-        self.approved_request(due='2026-10-09')
+    def test_later_approval_does_not_require_cover_for_earlier_approval(self):
+        early=self.approved_request(due='2026-10-09')
         later=self.checked_request()
         r=self.decision('finance',later,'approve')
-        self.assertEqual(r.status_code,409,r.text)
-        self.assertEqual(self.row(later)['status'],'pending')
+        self.assertEqual(r.status_code,200,r.text)
+        self.assertEqual(self.row(early)['status'],'approved')
+        self.assertEqual(self.row(later)['status'],'approved')
+        state=self.funds()
+        self.assertEqual((state['actual'],state['reserved'],state['available']),(100000,180000,-80000))
+        self.assertEqual(self.ledger_count(),0)
 
     def test_direct_expense_cannot_take_future_reservation(self):
         self.approved_request()
@@ -200,15 +205,23 @@ class FutureReservationTests(unittest.TestCase):
         self.assertEqual(self.ledger_count(),0)
         self.assertEqual(self.funds(account=target)['actual'],0)
 
-    def test_early_payment_of_existing_approval_preserves_later_reservation(self):
+    def test_payment_checks_actual_cash_without_deducting_other_reservations(self):
         early=self.legacy_approved('900','2026-10-09')
-        self.legacy_approved('900','2026-10-20')
+        later=self.legacy_approved('900','2026-10-20')
         r=self.ledger('out','900',request=early)
+        self.assertEqual(r.status_code,200,r.text)
+        self.assertEqual(self.row(early)['status'],'paid')
+        self.assertEqual(self.row(later)['status'],'approved')
+        state=self.funds()
+        self.assertEqual((state['actual'],state['reserved'],state['available']),(10000,90000,-80000))
+        self.assertEqual(self.ledger_count(),1)
+        # A second payment fails against actual funds; its status and ledger remain unchanged.
+        r=self.ledger('out','900',request=later)
         self.assertEqual(r.status_code,409,r.text)
-        self.assertIn('2026-10-20',r.text)
-        self.assertIn('финансовому директору',r.text)
-        self.assertEqual(self.row(early)['status'],'approved')
-        self.assertEqual(self.ledger_count(),0)
+        self.assertIn('Недостаточно фактических средств',r.text)
+        self.assertEqual(self.row(later)['status'],'approved')
+        self.assertEqual(self.ledger_count(),1)
+        self.assertEqual(self.funds()['actual'],10000)
 
     def test_correct_early_payments_count_each_reservation_once(self):
         later=self.approved_request('400')

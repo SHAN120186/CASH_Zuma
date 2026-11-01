@@ -90,8 +90,8 @@ def request_actions(s, u, r):
     return actions
 
 
-def request_view(s, u, r):
-    data = request_json(s, r)
+def request_view(s, u, r, batch=None):
+    data = request_json(s, r, batch=batch)
     # Без права просмотра реестра (заявитель, закупки, кассир, плательщик) прежний блок бюджета скрыт;
     # по выбранной статье и периоду остаётся карточка budget_card (лимит, использовано, резерв, доступно, после заявки).
     if 'view' not in perms_of(u):
