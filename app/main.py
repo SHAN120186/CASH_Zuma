@@ -442,7 +442,10 @@ def requests_list(request:Request,date_from:Optional[date]=None,date_to:Optional
         if q:query=query.where(or_(PaymentRequest.counterparty.ilike('%'+q+'%'),PaymentRequest.purpose.ilike('%'+q+'%'),Account.name.ilike('%'+q+'%')))
         total=s.scalar(select(func.count()).select_from(query.subquery()))
         query=query.order_by(PaymentRequest.due_date.desc(),PaymentRequest.id.desc())
-        items=[request_view(s,u,r) for r in s.scalars(query.offset((page-1)*page_size).limit(page_size) if paginated else query.limit(500))]
+        requests=list(s.scalars(query.offset((page-1)*page_size).limit(page_size) if paginated else query.limit(500)))
+        from .services import request_batch
+        batch=request_batch(s,requests)
+        items=[request_view(s,u,r,batch=batch) for r in requests]
         return {'items':items,'total':total,'page':page,'page_size':page_size} if paginated else items
 @app.get('/api/budget-check')
 def budget_check(request:Request,account_id:int,category_id:int,value:str=Query(alias='amount'),day:date=Query(alias='date')):

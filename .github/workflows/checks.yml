@@ -27,6 +27,7 @@ jobs:
       - run: python -m unittest tests.test_request_delete tests.test_request_auto_archive -q
       - run: python -m unittest tests.test_request_form_rules -q
       - run: python -m unittest tests.test_company_category_catalog -q
+      - run: python -m unittest tests.test_request_batch_performance -q
       - run: python -m unittest tests.test_department_catalog -q
       - run: python -m unittest tests.test_budget_import -q
       - run: python -m unittest tests.test_ledger_delete -q
@@ -75,6 +76,7 @@ jobs:
       - run: python -m unittest tests.test_request_delete tests.test_request_auto_archive -q
       - run: python -m unittest tests.test_request_form_rules -q
       - run: python -m unittest tests.test_company_category_catalog -q
+      - run: python -m unittest tests.test_request_batch_performance -q
       - run: python -m unittest tests.test_department_catalog -q
       - run: python -m unittest tests.test_budget_import -q
       - run: python -m unittest tests.test_ledger_delete -q

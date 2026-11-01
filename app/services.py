@@ -245,9 +245,9 @@ def enforce_documents(s,r):
     if missing:
         raise HTTPException(409,'Перед отправкой прикрепите: '+', '.join('«'+DOCUMENT_KINDS[k]+'»' for k in missing)+'. Черновик можно сохранить без файлов.')
 
-def budget_card(s,category,month,currency,n=0,exclude_request=None):
+def budget_card(s,category,month,currency,n=0,exclude_request=None,base_state=None):
     """Бюджет выбранной статьи на период: лимит, оплачено, резерв утверждённых заявок, доступно и остаток после заявки."""
-    b=budget_state(s,category,month,currency,0,exclude_request)
+    b=base_state if base_state is not None else budget_state(s,category,month,currency,0,exclude_request)
     if b['limit'] is None:
         return {'period':month,'currency':currency,'budget_set':False,'status':'no_budget','limit':None,'used':money(b['spent']),
                 'reserved':money(b['reserved']),'available':None,'after':None,'mode':b['mode']}
@@ -395,13 +395,65 @@ def backdated_flags(s,r):
         late_posted = bool(row and entered and row.date < local_date(entered))
     return late_created, late_posted
 
-def request_json(s,r,accounts=None,categories=None,users=None):
+def request_batch(s,requests):
+    """Prefetch data used by request cards, within the current company scope."""
     from .department_catalog import catalog as department_catalog
-    department_items=department_catalog(s)['items']
+    from collections import defaultdict
+    ids=[r.id for r in requests]
+    if not ids:return None
+    category_ids={r.category_id for r in requests}
+    accounts={a.id:a for a in s.scalars(select(Account))}
+    categories={c.id:c for c in s.scalars(select(Category).where(Category.id.in_(category_ids)))}
+    for r in requests:get(s,Account,r.account_id);get(s,Category,r.category_id)
+    months={str(r.due_date)[:7] for r in requests}
+    start=min(month_bounds(m)[0] for m in months);end=max(month_bounds(m)[1] for m in months)
+    budgets={(b.category_id,b.month,b.currency):b for b in s.scalars(select(Budget).where(Budget.category_id.in_(category_ids),Budget.month.in_(months)))}
+    spent=defaultdict(int);reserved=defaultdict(int)
+    for item in s.scalars(effective_cashflows(s).where(Ledger.category_id.in_(category_ids),Ledger.kind=='out',Ledger.date>=start,Ledger.date<end)):
+        a=accounts.get(item.account_id)
+        if a:spent[(item.category_id,str(item.date)[:7],a.currency)]+=item.amount
+    for item in s.scalars(select(PaymentRequest).where(PaymentRequest.category_id.in_(category_ids),PaymentRequest.status=='approved',PaymentRequest.due_date>=start,PaymentRequest.due_date<end)):
+        a=accounts.get(item.account_id)
+        if a:reserved[(item.category_id,str(item.due_date)[:7],a.currency)]+=item.amount
+    docs=defaultdict(list)
+    for d in s.scalars(select(RequestDocument).where(RequestDocument.request_id.in_(ids),RequestDocument.active.is_(True)).order_by(RequestDocument.id)):
+        docs[d.request_id].append(d)
+    paid=[r.id for r in requests if r.status=='paid']
+    paid_dates={}
+    if paid:
+        for x in s.scalars(select(Ledger).where(Ledger.request_id.in_(paid))):
+            paid_dates.setdefault(x.request_id,x.date)
+    paid_audits={int(rid):at for rid,at in s.execute(select(Audit.entity_id,func.min(Audit.created_at)).where(Audit.entity=='request',Audit.entity_id.in_([str(i) for i in paid]),Audit.action=='Оплата заявки').group_by(Audit.entity_id))} if paid else {}
+    return {'accounts':accounts,'categories':categories,'departments':department_catalog(s)['items'],'budgets':budgets,'spent':spent,'reserved':reserved,'documents':docs,'paid_dates':paid_dates,'paid_audits':paid_audits}
+
+
+def batch_budget_state(batch,r,account,extra=0,exclude_request=None):
+    key=(r.category_id,str(r.due_date)[:7],account.currency);b=batch['budgets'].get(key)
+    spent=batch['spent'].get(key,0);reserved=batch['reserved'].get(key,0)
+    if exclude_request==r.id and r.status=='approved':reserved-=r.amount
+    used=spent+reserved
+    return {'id':b.id if b else None,'limit':b.amount if b else None,'mode':b.mode if b else 'soft',
+            'spent':spent,'reserved':reserved,'used':used,'remaining':b.amount-used if b else None,
+            'after':used+extra,'over':bool(b and used+extra>b.amount),'source':b.source if b else ''}
+
+
+def batch_backdated(batch,r):
+    created=local_date(r.created_at) if r.created_at else None
+    entered=batch['paid_audits'].get(r.id);day=batch['paid_dates'].get(r.id)
+    return bool(created and r.due_date and r.due_date<created),bool(r.status=='paid' and day and entered and day<local_date(entered))
+
+
+def request_json(s,r,accounts=None,categories=None,users=None,batch=None):
+    from .department_catalog import catalog as department_catalog
+    department_items=batch['departments'] if batch is not None else department_catalog(s)['items']
     a=get(s,Account,r.account_id);c=get(s,Category,r.category_id)
-    b=budget_state(s,c.id,str(r.due_date)[:7],a.currency,r.amount if r.status in ('pending','draft') else 0)
-    docs=current_documents(s,r.id)
-    late_created,late_posted=backdated_flags(s,r)
+    extra=r.amount if r.status in ('pending','draft') else 0
+    b=batch_budget_state(batch,r,a,extra) if batch is not None else budget_state(s,c.id,str(r.due_date)[:7],a.currency,extra)
+    docs=batch['documents'].get(r.id,[]) if batch is not None else current_documents(s,r.id)
+    late_created,late_posted=(batch_backdated(batch,r) if batch is not None else backdated_flags(s,r))
+    required=REQUIRED_DOCUMENTS_BY_CHANNEL.get(a.kind,REQUIRED_DOCUMENTS)
+    present={d.kind for d in docs}
+    card_base=batch_budget_state(batch,r,a,0,exclude_request=r.id) if batch is not None else None
     return {'id':r.id,'number':f'CF-{r.id:05d}','creator_id':r.creator_id,'category_id':c.id,'category':c.name,
             'account_id':a.id,'account':a.name,'account_kind':a.kind,'channel':a.kind,'currency':a.currency,'company_id':a.company_id,
             'counterparty':r.counterparty,'amount':money(r.amount),'date':str(r.due_date),'status':r.status,'purpose':r.purpose,
@@ -409,12 +461,12 @@ def request_json(s,r,accounts=None,categories=None,users=None):
             'created_at':str(r.created_at),'backdated_created':late_created,'backdated_posted':late_posted,'checked_by':r.checked_by,'finance_approved_by':r.finance_approved_by,'approved_by':r.approved_by,
             'approved_on':str(local_date(r.approved_at)) if r.approved_at else None,
             'approval_stage':approval_stage(r),'route':route_json(r,a.currency),
-            'documents':{k:sum(d.kind==k for d in docs) for k in DOCUMENT_KINDS},'missing_documents':missing_documents(s,r),
-            'required_documents':list(required_documents(s,r)),
+            'documents':{k:sum(d.kind==k for d in docs) for k in DOCUMENT_KINDS},'missing_documents':[k for k in required if k not in present],
+            'required_documents':list(required),
             'department':r.department or '','department_label':next((x['name_ru'] for x in department_items if x['code']==r.department),r.department or ''),
             'department_name_uz':next((x['name_uz'] for x in department_items if x['code']==r.department),''),
             'project':r.project,'decision_note':r.decision_note,'overdue':r.due_date<today() and r.status in ('pending','approved'),
-            'budget':budget_json(b),'budget_card':budget_card(s,c.id,str(r.due_date)[:7],a.currency,0 if r.status=='paid' else r.amount,r.id)}
+            'budget':budget_json(b),'budget_card':budget_card(s,c.id,str(r.due_date)[:7],a.currency,0 if r.status=='paid' else r.amount,r.id,base_state=card_base)}
 
 def post_ledger(s,u,data):
     a=get(s,Account,data.account_id)
