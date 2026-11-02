@@ -49,7 +49,7 @@ async function fixture(t,handle,component=appComponent) {
     if(originalRevoke)Object.defineProperty(URL,'revokeObjectURL',originalRevoke);else delete URL.revokeObjectURL;
   };t.after(cleanup);
   view=mount(component);await settle();
-  Object.assign(view.state,{user,csrf:'synthetic',boot:{accounts:[],categories:[],roles:{},companies:[company]},companyId:2,companyReady:true});
+  Object.assign(view.state,{user,csrf:'synthetic',boot:{accounts:[],categories:[],roles:{},companies:[company],today:'2026-10-10'},companyId:2,companyReady:true});
   await settle();
   return {view,files,listeners,unmount,cleanup};
 }
@@ -373,4 +373,39 @@ test('company director has no operation delete button and a failed delete keeps 
  view.state.user={...user,permissions:['view','ledger','write']};view.state.page='ledger';view.state.rows=[row];await settle();
  assert.equal(find(view.container,n=>n.tag==='button'&&text(n).trim()==='Удалить'),undefined);
  view.state.user={...user,holding_role:'admin',permissions:['view','ledger','write']};view.state.deleteOperation(row);view.state.form.reason='Keep reason on conflict';await view.state.save();await settle();assert.equal(view.state.form.reason,'Keep reason on conflict');assert.match(text(view.container),/Synthetic changed operation/);
+});
+
+
+const bankStatementsComponent=await compileComponent(new URL('../src/BankStatements.vue',import.meta.url));
+const bankDailyComponent=await compileComponent(new URL('../src/overview/BankStatementDaily.vue',import.meta.url));
+const bankApp=await compileComponent(new URL('../src/App.vue',import.meta.url),{'./OperationProgress.vue':progressComponent,'./PeriodFilter.vue':periodComponent,'./BankStatements.vue':bankStatementsComponent,'./overview/BankStatementDaily.vue':bankDailyComponent});
+
+test('bank reconciliation in Operations respects accountant rights, section read-only, and current company',async t=>{
+ const calls=[];const accountant={...user,role:'accountant',company_role:'accountant',permissions:['ledger','pay_bank'],sections:{ledger:'edit',home:'hidden'}};
+ const {view}=await fixture(t,async(url,options)=>{calls.push({url,company:options.headers['X-Company-ID']});return {ok:true,status:200,json:async()=>url.includes('/reviews')?{items:[{id:123,date:'2026-10-30',direction:'out',amount:'10',currency:'UZS',status:'review'}]}:url.startsWith('/api/ledger?')?{items:[],total:0}:{}}},bankApp);
+ Object.assign(view.state,{user:accountant,boot:{...bootstrapBody(accountant),accounts:[{id:21,name:'Synthetic account ZUMA',kind:'bank',currency:'UZS'}]},page:'ledger'});await settle();
+ assert.match(text(view.container),/Операции для проверки бухгалтера/);assert.ok(find(view.container,n=>n.tag==='input'&&n.props?.type==='file'));
+ assert.ok(calls.some(c=>c.url==='/api/bank-statements/reviews'&&c.company==='2'));
+ view.state.user={...accountant,sections:{ledger:'view',home:'hidden'}};await settle();
+ assert.equal(find(view.container,n=>n.tag==='input'&&n.props?.type==='file'),undefined);
+ assert.doesNotMatch(text(view.container),/Найти заявку для сопоставления/);
+ assert.match(text(view.container),/Операции для проверки бухгалтера/);
+ view.state.companyId=3;view.state.boot={...bootstrapBody(accountant),accounts:[{id:22,name:'Synthetic account UZGERMED',kind:'bank',currency:'UZS'}]};view.state.user=accountant;await settle();
+ assert.ok(calls.some(c=>c.url==='/api/bank-statements/reviews'&&c.company==='3'));
+ assert.doesNotMatch(text(view.container),/Synthetic account ZUMA/);assert.match(text(view.container),/Synthetic account UZGERMED/);
+});
+
+test('sales overview does not fetch or show bank statement totals',async t=>{
+ const calls=[];const sales={...user,role:'sales',company_role:'sales',permissions:['overview','calendar','receipts'],sections:null};
+ const {view}=await fixture(t,async(url,options)=>{calls.push(url);return {ok:true,status:200,json:async()=>({})}},bankApp);
+ calls.length=0;Object.assign(view.state,{user:sales,boot:bootstrapBody(sales),page:'home'});await settle();
+ assert.equal(calls.filter(url=>url.startsWith('/api/bank-statements')).length,0);assert.doesNotMatch(text(view.container),/Банковская выписка за день/);
+});
+
+
+test('hidden Operations rejects navigation and never loads statement reviews',async t=>{
+ const calls=[];const restricted={...user,role:'accountant',company_role:'accountant',permissions:['view','ledger','pay_bank'],sections:{ledger:'hidden',home:'view'}};
+ const {view}=await fixture(t,async(url)=>{calls.push(url);return {ok:true,status:200,json:async()=>url.includes('/daily?')?{date:'2026-10-10',currency:'UZS',accounts:[],available:false}:{items:[],total:0}}},bankApp);
+ Object.assign(view.state,{user:restricted,boot:bootstrapBody(restricted),page:'home'});await settle();
+ await view.state.go('ledger');await settle();assert.equal(view.state.page,'home');assert.ok(!calls.some(url=>url==='/api/bank-statements/reviews'));assert.doesNotMatch(text(view.container),/Операции для проверки бухгалтера/);
 });

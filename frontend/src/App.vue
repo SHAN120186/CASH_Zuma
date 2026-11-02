@@ -23,6 +23,8 @@ import {invalidFormFields,focusInvalidField} from './formFeedback.js';
 import {isAppFileLink,isRequestDocumentLink,fetchDownload} from './fileDownload.js';
 import CompanyCard from './CompanyCard.vue';
 import OverviewPage from './overview/OverviewPage.vue';
+import BankStatements from './BankStatements.vue';
+import BankStatementDaily from './overview/BankStatementDaily.vue';
 import SalesOverview from './overview/SalesOverview.vue';
 import AdminCenter from './admin/AdminCenter.vue';
 import {groupCompanyInfo} from './admin/groupRegistration.js';
@@ -534,6 +536,7 @@ onMounted(async()=>{try{const r=await api('/api/me');user.value=r.user;csrf.valu
     <!-- Обзор -->
     <SalesOverview v-if="page==='home'&&isSales&&has('overview')" :key="companyId" :api="api" :company-id="companyId" :currency="currency" :refresh="homeRefresh" :days="days" @go="goWith" @update:days="d=>days=d"/>
     <OverviewPage v-if="page==='home'&&!isSales&&has('view')" :key="companyId" :api="api" :company-id="companyId" :company="company" :currency="currency" :today="boot.today" :refresh="homeRefresh" :has="has" :can-decide="canDecide" :days="days" :track="trkSteps" :marks="MK" @update:days="d=>days=d" @go="goWith" @edit-reserve="v=>reserve(v)"/>
+    <BankStatementDaily v-if="page==='home'&&!isSales&&has('view')&&companyId" :key="`bank-daily-${companyId}`" :api="api" :company-id="companyId" :currency="currency" :today="boot.today" :refresh="homeRefresh"/>
 
     <nav v-if="isReportPage&&reportTabs.length>1" class="report-tabs" :aria-label="tx('Отчёты')"><button v-for="n in reportTabs" :key="n[0]" type="button" :class="{on:page===n[0]}" :aria-current="page===n[0]?'page':undefined" @click="go(n[0])"><AppIcon :name="n[0]"/> {{tx(n[2])}}</button></nav>
     <BusinessProjects :can-download="has('download')" v-if="page==='business'&&has('export')" :key="companyId" :api="api" :company="company" :refresh="businessRefresh" @editing="reportEditing=$event" @generated="reportArchiveRefresh++"/>
@@ -556,6 +559,7 @@ onMounted(async()=>{try{const r=await api('/api/me');user.value=r.user;csrf.valu
 
     <!-- Операции -->
     <template v-if="page==='ledger'">
+     <BankStatements v-if="has('ledger')&&companyId" :key="`bank-statements-${companyId}`" :api="api" :company-id="companyId" :accounts="boot.accounts" :can-import="has('pay_bank')||has('import')" :can-review="has('pay_bank')" @changed="load"/>
      <label v-if="user.holding_role==='admin'" class="sub"><input type="checkbox" v-model="showDeletedOperations" @change="listPage=1;load()"> {{tx('Показать удалённые операции')}}</label>
      <PeriodFilter :key="page" :date-from="dateFrom" :date-to="dateTo" @apply="applyPeriod"><label class="search"><AppIcon name="search"/><input v-model="search" :placeholder="tx('Поиск: контрагент, статья, документ')" :aria-label="tx('Поиск операции')"></label><div class="grow actions"><a v-if="has('download')" class="button secondary" :href="companyUrl('/api/export/ledger.csv')"><AppIcon name="download"/> CSV</a><button v-if="has('write')&&user.role!=='cashier'" @click="transaction()"><AppIcon name="plus"/> {{tx('Новая операция')}}</button></div></PeriodFilter>
      <div v-if="visibleRows.length" class="table-card rsp-wrap"><table class="rsp"><thead><tr><th>{{tx('Дата / документ')}}</th><th>{{tx('Операция')}}</th><th>{{tx('Контрагент / статья')}}</th><th>{{tx('Счёт')}}</th><th class="num">{{tx('Сумма')}}</th><th>{{tx('Документы')}}</th><th></th></tr></thead><tbody>

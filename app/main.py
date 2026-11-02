@@ -51,6 +51,7 @@ async def safety(request,call_next):
         limit=MAX_SIZE if request.url.path in ('/api/model/upload','/api/financial-statements/upload') or archive_file else 1024*1024 if business_params else 5*1024*1024 if request.url.path in ('/api/import/preview','/api/plan-import/preview') or request.url.path.endswith('/document') or '/documents' in request.url.path else 65536
         if request.url.path=='/api/cashflow-osv/preview':limit=24*1024*1024
         if request.url.path=='/api/budgets/import/preview':limit=15*1024*1024
+        if request.url.path=='/api/bank-statements/preview' and request.method=='POST':limit=5*1024*1024
         if request.url.path=='/api/counterparties/replace' and request.method=='POST':limit=5*1024*1024
         if request.method=='POST' and re.fullmatch(r'/api/requests/[0-9]+/documents',request.url.path):limit=MAX_DOCUMENT
         if length<0 or length>limit:return JSONResponse({'detail':'Неверный размер запроса.'},status_code=413)
@@ -1099,6 +1100,9 @@ app.include_router(counterparties_router)
 
 from .counterparty_replace_api import router as counterparty_replace_router
 app.include_router(counterparty_replace_router)
+
+from .bank_statement_api import router as bank_statement_router
+app.include_router(bank_statement_router)
 
 from .department_catalog import router as department_router
 app.include_router(department_router)

@@ -16,12 +16,13 @@ from .db import (Company, CompanyUser, User, Account, Category, Counterparty,
                  ReportSchedule, Setting, RequestDocument, Delegation, ReportArchive, ReportArchiveFile,
                  BusinessProject, BusinessSourceFile, BusinessGeneration, FinancialStatementSource, IfrsRatingSource,
                  CashFlowOsvSource, CashFlowOsvPreview)
+from .bank_statement_models import BankStatementBatch, BankStatementLine
 
 # Вложения заявок принадлежат компании через свою заявку (criteria ниже), а не собственным полем.
 DIRECT = (Account, Category, Counterparty, CashPlan, PlanNote, PlanImportBatch, BudgetImportBatch,
           ImportBatch, Audit, ModelVersion, ReportSchedule, Delegation, ReportArchive, ReportArchiveFile,
           BusinessProject, BusinessSourceFile, BusinessGeneration, FinancialStatementSource, IfrsRatingSource,
-          CashFlowOsvSource, CashFlowOsvPreview)
+          CashFlowOsvSource, CashFlowOsvPreview, BankStatementBatch, BankStatementLine)
 
 
 def active_delegations(s, user_id, company_id=None):
