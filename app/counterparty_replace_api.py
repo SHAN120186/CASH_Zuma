@@ -37,6 +37,24 @@ class Replacement(BaseModel):
         return self
 
 
+class SelectedRow(BaseModel):
+    model_config = ConfigDict(extra='forbid')
+    id: int = Field(ge=1)
+    name: str = Field(min_length=2, max_length=160)
+    inn: str = Field(min_length=1, max_length=20, pattern=r'^\d+$')
+
+
+class SelectedRemoval(BaseModel):
+    model_config = ConfigDict(extra='forbid')
+    rows: list[SelectedRow] = Field(min_length=1, max_length=100)
+
+    @model_validator(mode='after')
+    def unique_ids(self):
+        if len({row.id for row in self.rows}) != len(self.rows):
+            raise ValueError('Один и тот же контрагент указан несколько раз.')
+        return self
+
+
 def snapshot(rows):
     """Canonical hash includes identity and all mutable attributes, order-independent."""
     data = [{'id': c.id, 'name': c.name, 'inn': c.inn, 'note': c.note} for c in rows]
@@ -59,6 +77,28 @@ def replacement_snapshot(request: Request):
         rows = list(s.scalars(select(Counterparty).order_by(Counterparty.id)))
         return {'count': len(rows), 'sha256': snapshot(rows),
                 'company_id': s.info['company_id']}
+
+
+@router.post('/api/counterparties/remove-selected')
+def remove_selected(data: SelectedRemoval, request: Request):
+    """Remove only exact, company-scoped records after validating the entire selection."""
+    with unit(True) as s:
+        user = admin(s, request)
+        ids = [item.id for item in data.rows]
+        found = {c.id: c for c in s.scalars(select(Counterparty).where(Counterparty.id.in_(ids)))}
+        if len(found) != len(ids) or any(
+            found[item.id].name != item.name or found[item.id].inn != item.inn
+            for item in data.rows if item.id in found
+        ):
+            raise HTTPException(409, 'Справочник изменился. Обновите список и проверьте записи.')
+        removed = [{'id': item.id, 'name': found[item.id].name, 'inn': found[item.id].inn,
+                    'note': found[item.id].note} for item in data.rows]
+        for item in data.rows:
+            s.delete(found[item.id])
+        s.flush()
+        log(s, user, 'Удалены контрагенты', 'counterparty', 'selected',
+            json.dumps({'removed': removed}, ensure_ascii=False, separators=(',', ':')))
+        return {'company_id': s.info['company_id'], 'removed_ids': ids, 'removed': len(ids)}
 
 
 @router.post('/api/counterparties/replace')

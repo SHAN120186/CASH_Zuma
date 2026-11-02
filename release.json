@@ -1,7 +1,8 @@
 {
-  "version": "2.34.4",
+  "version": "2.34.5",
   "date": "2026-11-02",
   "changes": [
+    "Обновлена проверка адресного удаления записей справочника контрагентов с сохранением остальных записей и истории.",
     "В заявке поиск контрагента по ИНН в справочнике выбранной компании; одинаковые названия с разными ИНН сохраняются отдельно.",
     "Максимальный размер каждого вложения заявки увеличен до 10 МБ.",
     "Ускорена загрузка списка заявок: связанные бюджеты и документы загружаются вместе, права и расчёты сохранены.",
@@ -82,6 +83,7 @@
     "Длинные названия файлов и кнопки выбора шаблона переносятся на узком экране. В ТЭО дата архива отдельно обозначена и не подменяет начало финансового прогноза."
   ],
   "changes_uz": [
+    "Kontragentlar maʼlumotnomasidan tanlangan yozuvlarni o‘chirishda boshqa yozuvlar va tarix saqlanadi.",
     "Arizada STIR orqali tanlangan kompaniya kontragentini qidirish; bir xil nomli, turli STIRli kontragentlar alohida saqlanadi.",
     "Budjet summalari masshtabi shakldan to‘g‘ri qabul qilinadi: birlik, ming yoki million.",
     "Budjet yuklashda umumiy so‘rov tekshiruvi 15 MB gacha XLSX fayllarini qabul qiladi.",
