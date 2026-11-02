@@ -225,6 +225,7 @@ test('procurement edits an expected receipt with INN and note without actual-pay
   const calls=[];const {view}=await fixture(t,async(url,options)=>{
     calls.push({url,options});
     if(url==='/api/bootstrap')return {ok:true,status:200,json:async()=>boot};
+    if(url.startsWith('/api/receipt-counterparties?'))return {ok:true,status:200,json:async()=>({items:[{id:1,name:'Imported buyer',inn:'009876543'}]})};
     if(url==='/api/receipts/9')return {ok:true,status:200,json:async()=>({id:9,version:3})};
     if(url==='/api/receipts')return {ok:true,status:200,json:async()=>[planned]};
     assert.match(url,/^\/api\/dashboard\?/);return {ok:true,status:200,json:async()=>({forecast:[{date:'2026-10-12',opening:'0',incoming:'1200',outgoing:'0',balance:'1200',account_shortfalls:[],events:[{...planned,kind:'in',name:planned.counterparty,overdue:true}]}],reserve:'0'})};
@@ -237,7 +238,7 @@ test('procurement edits an expected receipt with INN and note without actual-pay
   find(view.container,n=>n.tag==='button'&&text(n).trim()==='Редактировать').props.onClick();await settle();
   const fields=view.state.modal.fields.map(f=>f.key);
   assert.ok(fields.indexOf('counterparty')<fields.indexOf('amount'));assert.ok(fields.includes('inn'));assert.ok(fields.includes('note'));
-  view.state.form.counterparty='Imported buyer';view.state.receiptPartyChanged();assert.equal(view.state.form.inn,'009876543');
+  view.state.form.counterparty='Imported buyer';view.state.receiptPartyChanged();await new Promise(resolve=>setTimeout(resolve,320));await settle();assert.equal(view.state.form.inn,'009876543');
   view.state.form.note='Updated expected date';await view.state.save();await settle();
   const writes=calls.filter(c=>c.options.method==='PUT');assert.equal(writes.length,1);assert.equal(writes[0].url,'/api/receipts/9');
   const body=JSON.parse(writes[0].options.body);assert.equal(body.version,2);assert.equal(body.inn,'009876543');assert.equal(body.note,'Updated expected date');

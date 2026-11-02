@@ -1,4 +1,6 @@
 export default {
+ 'Найдено несколько контрагентов с таким названием. Выберите ИНН или введите его вручную.':'Bunday nomdagi bir nechta kontragent topildi. STIRni tanlang yoki qo‘lda kiriting.',
+ 'Не удалось найти ИНН. Введите его вручную.':'STIRni topib bo‘lmadi. Uni qo‘lda kiriting.',
  'Действия':'Amallar',
  'Редактировать поступление · {name}':'Tushumni tahrirlash · {name}',
  'Удалить ожидаемое поступление?':'Kutilayotgan tushum oʻchirilsinmi?',

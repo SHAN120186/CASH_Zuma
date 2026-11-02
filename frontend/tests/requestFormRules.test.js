@@ -7,6 +7,7 @@ import {setLang,lang} from '../src/i18n/index.js';
 const editor=await compileComponent(new URL('../src/requests/RequestEditor.vue',import.meta.url));
 const dues={normal:'2026-11-03',high:'2026-10-28',urgent:'2026-10-24'};
 const boot={accounts:[{id:1,kind:'bank',currency:'UZS',name:'Synthetic bank'},{id:2,kind:'cash',currency:'UZS',name:'Synthetic cash'}],categories:[{id:3,type:'outcome',name:'Synthetic cost'}],due_minimums:dues};
+const delay=ms=>new Promise(resolve=>setTimeout(resolve,ms));
 function form(t,options={}){
  const previous=globalThis.document;
  globalThis.document={activeElement:null,addEventListener(){},removeEventListener(){},querySelector(){return null;}};
@@ -71,4 +72,64 @@ test('custom company departments use fresh rules and retain an archived selectio
  assert.deepEqual(view.state.departmentOptions.map(x=>x.code),['dept_custom']);assert.match(text(view.container),/Новый отдел/);
  setLang('uz');await settle();assert.match(text(view.container),/Yangi bolim/);
  view.state.form.department='qc';await settle();assert.deepEqual(view.state.departmentOptions.map(x=>x.code),['dept_custom','qc']);
+});
+
+test('ИНН accepts short identifiers, exact match fills company, edited ИНН clears selected name',async t=>{
+ const calls=[];const view=form(t,{api:async url=>{calls.push(url);return url.startsWith('/api/request-counterparties')?{items:[{id:12,name:'Example supplier',inn:'123456789'}]}:{due_minimums:dues};}});
+ await settle();view.state.partyInn='x';await settle();await delay(320);assert.equal(calls.filter(x=>x.includes('request-counterparties')).length,0);
+ view.state.partyInn='3';await settle();await delay(320);await settle();assert.equal(calls.filter(x=>x.includes('request-counterparties')).length,1);
+ view.state.partyInn='123456789';await settle();await delay(320);await settle();
+ assert.equal(view.state.form.counterparty,'Example supplier');assert.equal(view.state.partyStatus,'selected');
+ assert.equal(calls.filter(x=>x.includes('request-counterparties')).length,2);
+ assert.equal(requestBody({...view.state.form,counterparty_inn:view.state.partyInn},2).counterparty_inn,'123456789');
+ view.state.partyInn='987';await settle();assert.equal(view.state.form.counterparty,'');
+});
+
+test('ИНН partial matches require choosing and obsolete responses cannot overwrite current input',async t=>{
+ const pending=[];const view=form(t,{api:url=>url.startsWith('/api/request-counterparties')?new Promise(resolve=>pending.push({url,resolve})):Promise.resolve({due_minimums:dues})});
+ await settle();view.state.partyInn='123';await settle();await delay(320);
+ view.state.partyInn='456';await settle();await delay(320);assert.equal(pending.length,2);
+ pending[0].resolve({items:[{id:1,name:'Old supplier',inn:'123'}]});await settle();assert.equal(view.state.form.counterparty,'');
+ pending[1].resolve({items:[{id:2,name:'Supplier A',inn:'456000001'},{id:3,name:'Supplier B',inn:'456000002'}]});await settle();
+ assert.equal(view.state.partyMatches.length,2);assert.equal(view.state.form.counterparty,'');
+ view.state.chooseParty(view.state.partyMatches[1]);await settle();assert.equal(view.state.form.counterparty,'Supplier B');assert.equal(view.state.partyInn,'456000002');
+});
+
+test('existing name survives opening editor and no-match/error permits manual entry',async t=>{
+ const request={id:7,version:1,status:'draft',counterparty:'Historical supplier',priority:'normal',date:'2026-11-30',channel:'bank',currency:'UZS',account_id:1,category_id:3,documents_list:[]};
+ const view=form(t,{request,api:async url=>url.startsWith('/api/request-counterparties')?{items:[]}:{due_minimums:dues}});await settle();
+ assert.equal(view.state.form.counterparty,'Historical supplier');view.state.partyInn='999';await settle();await delay(320);await settle();
+ assert.equal(view.state.partyStatus,'empty');assert.equal(view.state.form.counterparty,'Historical supplier');assert.match(text(view.container),/контрагент не найден/i);
+});
+
+test('late exact ИНН result does not overwrite a manually edited name',async t=>{
+ let resolve;const view=form(t,{api:url=>url.startsWith('/api/request-counterparties')?new Promise(r=>resolve=r):Promise.resolve({due_minimums:dues})});
+ await settle();view.state.partyInn='123456789';await settle();await delay(320);
+ view.state.form.counterparty='Manually entered supplier';await settle();
+ resolve({items:[{id:4,name:'Supplier from directory',inn:'123456789'}]});await settle();
+ assert.equal(view.state.form.counterparty,'Manually entered supplier');assert.equal(view.state.partyMatches.length,1);
+ view.state.chooseParty(view.state.partyMatches[0]);await settle();assert.equal(view.state.form.counterparty,'Supplier from directory');
+});
+
+test('request editing retains stored ИНН and manual change of company name clears it',async t=>{
+ const request={id:7,version:1,status:'draft',counterparty:'Saved supplier',counterparty_inn:'009876543',priority:'normal',date:'2026-11-30',channel:'bank',currency:'UZS',account_id:1,category_id:3,documents_list:[]};
+ const view=form(t,{request});await settle();assert.equal(view.state.partyInn,'009876543');
+ view.state.form.counterparty='Changed supplier';view.state.manualPartyChanged();await settle();assert.equal(view.state.partyInn,'');
+});
+
+test('manual company name retains unknown ИНН after no match or search error',async t=>{
+ let fail=false;const view=form(t,{api:async url=>{if(!url.startsWith('/api/request-counterparties'))return {due_minimums:dues};if(fail)throw Error('Network error');return {items:[]};}});
+ await settle();view.state.partyInn='098765432';await settle();await delay(320);await settle();assert.equal(view.state.partyStatus,'empty');
+ view.state.form.counterparty='Manually entered supplier';view.state.manualPartyChanged();await settle();assert.equal(view.state.partyInn,'098765432');
+ assert.equal(requestBody({...view.state.form,counterparty_inn:view.state.partyInn},2).counterparty_inn,'098765432');
+ fail=true;view.state.partyInn='112233445';await settle();await delay(320);await settle();assert.equal(view.state.partyStatus,'error');
+ view.state.form.counterparty='Another manual supplier';view.state.manualPartyChanged();await settle();assert.equal(view.state.partyInn,'112233445');
+});
+
+test('manual name while lookup is pending keeps typed ИНН and discards late automatic match',async t=>{
+ let resolve;const view=form(t,{api:url=>url.startsWith('/api/request-counterparties')?new Promise(r=>resolve=r):Promise.resolve({due_minimums:dues})});
+ await settle();view.state.partyInn='123456789';await settle();await delay(320);
+ view.state.form.counterparty='Manual supplier';view.state.manualPartyChanged();await settle();
+ resolve({items:[{id:4,name:'Directory supplier',inn:'123456789'}]});await settle();
+ assert.equal(view.state.form.counterparty,'Manual supplier');assert.equal(view.state.partyInn,'123456789');assert.equal(view.state.partyMatches.length,0);
 });

@@ -7,7 +7,7 @@ import {createSaveState, requestBody, saveRequest, removeSavedDocument, missingR
 // file, approval reset after submit, and submit only with both required documents.
 const httpError = (status, message) => Object.assign(new Error(message), {status});
 const noReply = () => new TypeError('Failed to fetch');
-const FIELDS = ['company_id', 'account_id', 'channel', 'currency', 'category_id', 'amount', 'counterparty', 'purpose', 'priority', 'date', 'project'];
+const FIELDS = ['company_id', 'account_id', 'channel', 'currency', 'category_id', 'amount', 'counterparty', 'counterparty_inn', 'purpose', 'priority', 'date', 'project', 'department'];
 
 function fakeServer() {
   const calls = [], requests = new Map(), docs = [], faults = [];
@@ -205,6 +205,52 @@ test('a stale version refetches the request, explains it and creates nothing new
   assert.equal(s.creates(), 0);
 });
 
+test('draft cannot overwrite a beneficiary or INN changed by another user', async () => {
+  for (const change of [{counterparty: 'Другой поставщик'}, {counterparty_inn: '987654321'}]) {
+    const s = fakeServer();
+    const opened = s.add({...body({...FORM, counterparty_inn: '123456789'}), status: 'draft', version: 3});
+    const state = createSaveState(opened);
+    Object.assign(s.requests.get(41), change, {version: 4});
+    for (let i = 0; i < 2; i++) {
+      const start = s.calls.length;
+      const result = await saveRequest(s.api, state, {fields: body({...FORM, counterparty_inn: '123456789', amount: '150'}), reason: 'Уточнена сумма'});
+      assert.equal(result.code, 'party_changed');
+      assert.match(result.message, /Закройте форму и откройте заявку заново/);
+      assert.deepEqual(s.trail(start), ['GET /api/requests/41']);
+      assert.equal(s.requests.get(41).amount, '100');
+      for (const [key, value] of Object.entries(change)) assert.equal(s.requests.get(41)[key], value);
+    }
+  }
+});
+
+test('draft permits its own beneficiary change and a retry after a lost PUT response', async () => {
+  const s = fakeServer();
+  const opened = s.add({...body({...FORM, counterparty_inn: '123456789'}), status: 'draft', version: 3});
+  const state = createSaveState(opened);
+  const changed = {...FORM, counterparty: 'Новый поставщик', counterparty_inn: '222222222'};
+  s.lose('PUT', /^\/api\/requests\/41$/);
+  const first = await saveRequest(s.api, state, {fields: body(changed), reason: 'Уточнён поставщик'});
+  assert.equal(first.ok, false);
+  assert.equal(s.requests.get(41).counterparty_inn, '222222222', 'the server committed the first PUT');
+  const next = {...changed, amount: '200'};
+  const retry = await saveRequest(s.api, state, {fields: body(next), reason: 'Уточнён поставщик'});
+  assert.equal(retry.ok, true, retry.message);
+  assert.equal(s.requests.get(41).counterparty, 'Новый поставщик');
+  assert.equal(s.requests.get(41).counterparty_inn, '222222222');
+  assert.equal(s.requests.get(41).amount, '200');
+});
+
+test('a stale PUT followed by an external INN change cannot be retried over it', async () => {
+  const s = fakeServer();
+  const opened = s.add({...body({...FORM, counterparty_inn: '123456789'}), status: 'draft', version: 3});
+  const state = createSaveState(opened);
+  s.before('PUT', /^\/api\/requests\/41$/, () => Object.assign(s.requests.get(41), {counterparty_inn: '999999999', version: 4}));
+  const fields = body({...FORM, counterparty_inn: '123456789', amount: '150'});
+  assert.equal((await saveRequest(s.api, state, {fields, reason: 'Уточнена сумма'})).code, 'stale');
+  assert.equal((await saveRequest(s.api, state, {fields, reason: 'Уточнена сумма'})).code, 'party_changed');
+  assert.equal(s.requests.get(41).counterparty_inn, '999999999');
+});
+
 test('editing a request on approval keeps it pending and refuses a stale version', async () => {
   const s = fakeServer();
   const opened = s.add({...body(FORM), status: 'pending', version: 5});
@@ -329,7 +375,7 @@ test('a saved draft file is removed with DELETE; the request body keeps numbers 
   assert.deepEqual(s.trail(0), ['DELETE /api/request-documents/100']);
   assert.equal(s.docs[0].active, false);
   assert.deepEqual(requestBody({...FORM, account_id: '3', category_id: '9', amount: 1500.5, counterparty: '  ООО Альфа '}, 7),
-    {company_id: 7, account_id: 3, channel: 'bank', currency: 'UZS', category_id: 9, amount: '1500.5', counterparty: 'ООО Альфа',
+    {company_id: 7, account_id: 3, channel: 'bank', currency: 'UZS', category_id: 9, amount: '1500.5', counterparty: 'ООО Альфа', counterparty_inn:'',
      purpose: 'Оплата по счёту поставщика', priority: 'normal', date: '2026-10-09', project: '', department: ''});
   assert.equal(createSaveState({id: 5, status: 'returned', version: 2}).mode, 'draft');
   assert.equal(createSaveState({id: 5, status: 'pending', version: 2}).mode, 'sent');

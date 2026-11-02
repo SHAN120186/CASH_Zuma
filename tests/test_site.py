@@ -2983,9 +2983,9 @@ class SiteTests(unittest.TestCase):
         self.assertEqual(enrich_result.json(),{'added':0,'updated':1,'skipped':0})
         conflicting=excel([['Контрагент','ИНН'],['Old imported buyer','111111111']])
         conflict_preview=buyer[0].post('/api/counterparties/import/preview',content=conflicting,headers=h).json()
-        self.assertFalse(conflict_preview['can_commit']);self.assertTrue(conflict_preview['errors'])
+        self.assertTrue(conflict_preview['can_commit'])  # one name may belong to different INNs
         count_before=len(buyer[0].get('/api/counterparties',headers=buyer[1]).json())
-        rollback=self.post('/api/counterparties/import/commit',{'rows':[{'name':'Must rollback','inn':'887766554'},{'name':'Old imported buyer','inn':'111111111'}]},*buyer)
+        rollback=self.post('/api/counterparties/import/commit',{'rows':[{'name':'Must rollback','inn':'887766554'},{'name':'Other buyer','inn':'009876543'}]},*buyer)
         self.assertEqual(rollback.status_code,409)
         self.assertEqual(len(buyer[0].get('/api/counterparties',headers=buyer[1]).json()),count_before)
         self.assertEqual(self.post('/api/counterparties',{'name':'Blank old name'},*buyer).status_code,200)

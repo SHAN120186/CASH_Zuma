@@ -19,7 +19,7 @@ import {tx, N_} from '../i18n/index.js';
 export const RETRY_REASON = N_('Повторное сохранение формы после ошибки загрузки файла');
 export const KIND_ORDER = ['internal', 'contract', 'other'];
 const EDITABLE = ['draft', 'returned'];
-const FIELDS = ['company_id', 'account_id', 'channel', 'currency', 'category_id', 'amount', 'counterparty', 'purpose', 'priority', 'date', 'project', 'department'];
+const FIELDS = ['company_id', 'account_id', 'channel', 'currency', 'category_id', 'amount', 'counterparty', 'counterparty_inn', 'purpose', 'priority', 'date', 'project', 'department'];
 
 // Постоянные сообщения хранятся по-русски (N_) и переводятся формой при показе;
 // сообщения с номером, статусом или текстом сервера собираются на текущем языке (tx).
@@ -30,8 +30,12 @@ export const MESSAGES = {
   statusChanged: (n, status) => tx('Статус заявки {n} изменился: «{status}». Закройте форму и откройте карточку заявки.', {n, status: tx(STATUS[status] || status)}),
   stale: v => (v ? tx('Состояние заявки обновлено с сервера (версия {v}). Проверьте поля и нажмите кнопку ещё раз.', {v})
     : tx('Состояние заявки обновлено с сервера. Проверьте поля и нажмите кнопку ещё раз.')),
+  partyChanged: N_('Контрагент или ИНН заявки изменился. Закройте форму и откройте заявку заново.'),
   noReply: N_('Сервер не ответил. Нажмите кнопку ещё раз: форма сначала проверит состояние заявки на сервере.'),
 };
+
+const partySnapshot = fields => fields && typeof fields.counterparty === 'string'
+  ? JSON.stringify([fields.counterparty.trim(), String(fields.counterparty_inn ?? '').trim()]) : null;
 
 export function createSaveState(request = null) {
   return {
@@ -45,6 +49,8 @@ export function createSaveState(request = null) {
     created: false,
     createUnknown: false,
     lastSent: null,
+    knownParty: partySnapshot(request),
+    pendingParty: null,
     uploaded: new Set(),
   };
 }
@@ -54,7 +60,7 @@ export function requestBody(form, companyId) {
   return {
     company_id: companyId, account_id: form.account_id == null ? null : Number(form.account_id), channel: form.channel,
     currency: form.currency, category_id: form.category_id == null ? null : Number(form.category_id),
-    amount: String(form.amount ?? '').trim(), counterparty: String(form.counterparty ?? '').trim(),
+    amount: String(form.amount ?? '').trim(), counterparty: String(form.counterparty ?? '').trim(), counterparty_inn: String(form.counterparty_inn ?? '').trim(),
     purpose: String(form.purpose ?? '').trim(), priority: form.priority, date: form.date, project: String(form.project ?? '').trim(), department: String(form.department ?? '').trim(),
   };
 }
@@ -147,6 +153,7 @@ export async function saveRequest(api, state, {fields, files = [], saved = [], s
     remember(state, request);
     state.created = true;
     state.lastSent = snapshot(fields);
+    state.knownParty = partySnapshot(fields);
   } else {
     // 1б. Заявка уже есть: сначала её состояние на сервере.
     try { server = await api(`/api/requests/${state.id}`); }
@@ -160,14 +167,33 @@ export async function saveRequest(api, state, {fields, files = [], saved = [], s
         const sent = ['pending', 'approved'].includes(server.status);
         return fail(sent ? 'already_sent' : 'closed', sent ? MESSAGES.alreadySent(state.number) : MESSAGES.closed(state.number, server.status), {step: 'refresh', request: server});
       }
+      // A draft PUT uses the latest server version for safe upload retries. Do
+      // not let that overwrite a beneficiary changed since the form opened.
+      // A lost PUT response is safe to retry when the server has exactly the
+      // beneficiary this form previously submitted.
+      const actualParty = partySnapshot(server);
+      if (state.knownParty !== null && actualParty !== state.knownParty) {
+        if (state.pendingParty !== null && actualParty === state.pendingParty) {
+          state.knownParty = actualParty;
+          state.pendingParty = null;
+        } else {
+          return fail('party_changed', tx(MESSAGES.partyChanged), {step: 'refresh', request: server});
+        }
+      }
       // Черновик правит автор (или финансовый руководитель): сохраняются текущие поля формы с версией сервера.
       const unchanged = state.lastSent === snapshot(fields) && server.version === known;
       remember(state, server);
       if (!unchanged) {
         const why = String(reason || '').trim() || (state.created ? RETRY_REASON : '');
+        state.pendingParty = partySnapshot(fields);
         try { request = await api(`/api/requests/${state.id}`, json('PUT', {...fields, status: 'draft', version: state.version, reason: why})); }
-        catch (e) { return conflictOr(api, state, e, 'update', onServer); }
+        catch (e) {
+          if (!unknownOutcome(e)) state.pendingParty = null;
+          return conflictOr(api, state, e, 'update', onServer);
+        }
         remember(state, request);
+        state.knownParty = partySnapshot(fields);
+        state.pendingParty = null;
         state.lastSent = snapshot(fields);
       } else request = server;
     } else {

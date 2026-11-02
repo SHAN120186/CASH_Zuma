@@ -153,6 +153,7 @@ onUnmounted(() => document.removeEventListener('keydown', onKey));
         <p class="sub rq-route">{{ tx('Маршрут: проверка бухгалтера → финансовый директор → директор по политике статьи → оплата.') }} {{ tx(r.route?.reason) }}</p>
 
         <dl class="kv rq-kv">
+          <template v-if="r.counterparty_inn"><dt>{{ tx('ИНН контрагента') }}</dt><dd>{{ r.counterparty_inn }}</dd></template>
           <template v-if="r.department"><dt>{{ tx('Отдел') }}</dt><dd>{{lang==='uz'&&r.department_name_uz?r.department_name_uz:(r.department_label||tx(DEPARTMENTS[r.department]||r.department))}}</dd></template>
           <dt>{{ tx('Статья') }}</dt><dd>{{ r.category }}</dd>
           <dt>{{ tx('Канал и счёт') }}</dt><dd>{{ tx(CHANNELS[r.channel] || r.channel) }} · {{ r.account }}</dd>

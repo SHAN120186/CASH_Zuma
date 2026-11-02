@@ -1,6 +1,13 @@
 // Uzbek (Latin) translations: requests/*.
 // Key: the exact Russian text; value: the Uzbek text with the same {placeholders}.
 export default {
+  'Контрагент или ИНН заявки изменился. Закройте форму и откройте заявку заново.': 'Arizadagi kontragent yoki STIR o‘zgargan. Shaklni yoping va arizani qayta oching.',
+  'ИНН контрагента': 'Kontragent STIRi',
+  'Введите ИНН для поиска контрагента.': 'Kontragentni qidirish uchun STIR kiriting.',
+  'Ищем контрагента…': 'Kontragent qidirilmoqda…',
+  'По этому ИНН контрагент не найден. Название можно ввести вручную.': 'Bu STIR bo‘yicha kontragent topilmadi. Nomini qo‘lda kiritish mumkin.',
+  'Не удалось выполнить поиск. Название можно ввести вручную.': 'Qidirib bo‘lmadi. Nomini qo‘lda kiritish mumkin.',
+  'Найденные контрагенты': 'Topilgan kontragentlar',
   "Список заявок": "Arizalar ro‘yxati",
   "Основной список": "Asosiy ro‘yxat",
   "Архив заявок": "Arizalar arxivi",
