@@ -81,7 +81,7 @@ test('ИНН accepts short identifiers, exact match fills company, edited ИНН
  view.state.partyInn='123456789';await settle();await delay(320);await settle();
  assert.equal(view.state.form.counterparty,'Example supplier');assert.equal(view.state.partyStatus,'selected');
  assert.equal(calls.filter(x=>x.includes('request-counterparties')).length,2);
- assert.ok(!('inn' in requestBody(view.state.form,2)),'lookup must not change the historical request payload');
+ assert.equal(requestBody({...view.state.form,counterparty_inn:view.state.partyInn},2).counterparty_inn,'123456789');
  view.state.partyInn='987';await settle();assert.equal(view.state.form.counterparty,'');
 });
 
@@ -109,4 +109,10 @@ test('late exact ИНН result does not overwrite a manually edited name',async 
  resolve({items:[{id:4,name:'Supplier from directory',inn:'123456789'}]});await settle();
  assert.equal(view.state.form.counterparty,'Manually entered supplier');assert.equal(view.state.partyMatches.length,1);
  view.state.chooseParty(view.state.partyMatches[0]);await settle();assert.equal(view.state.form.counterparty,'Supplier from directory');
+});
+
+test('request editing retains stored ИНН and manual change of company name clears it',async t=>{
+ const request={id:7,version:1,status:'draft',counterparty:'Saved supplier',counterparty_inn:'009876543',priority:'normal',date:'2026-11-30',channel:'bank',currency:'UZS',account_id:1,category_id:3,documents_list:[]};
+ const view=form(t,{request});await settle();assert.equal(view.state.partyInn,'009876543');
+ view.state.form.counterparty='Changed supplier';view.state.manualPartyChanged();await settle();assert.equal(view.state.partyInn,'');
 });

@@ -160,6 +160,7 @@ class RequestIn(Input):
     currency:Literal['UZS','USD','EUR']
     category_id:int
     counterparty:str=Field(min_length=2,max_length=160)
+    counterparty_inn:str=Field(default='',max_length=20,pattern=r'^\d*$')
     amount:str
     date:date
     purpose:str=Field(min_length=5,max_length=3000)
@@ -483,8 +484,8 @@ def add_request(data:RequestIn,request:Request):
         if data.status=='pending':
             message='Сначала сохраните черновик и приложите «Внутренняя заявка / Индент», затем отправьте заявку.' if a.kind=='cash' else 'Сначала сохраните черновик и приложите «Внутренняя заявка / Индент» и «Договор / Счёт на оплату», затем отправьте заявку.'
             raise HTTPException(422,message)
-        r=PaymentRequest(creator_id=u.id,last_editor_id=u.id,category_id=c.id,account_id=a.id,counterparty=data.counterparty,amount=n,due_date=data.date,purpose=data.purpose,project=data.project,department=data.department,status='draft',priority=data.priority)
-        remember_counterparty(s,data.counterparty)
+        r=PaymentRequest(creator_id=u.id,last_editor_id=u.id,category_id=c.id,account_id=a.id,counterparty=data.counterparty,counterparty_inn=data.counterparty_inn,amount=n,due_date=data.date,purpose=data.purpose,project=data.project,department=data.department,status='draft',priority=data.priority)
+        remember_counterparty(s,data.counterparty,data.counterparty_inn)
         s.add(r);s.flush()
         log(s,u,'Создана заявка','request',r.id,json.dumps({'status':r.status,'version':r.version,'amount':money(n),'currency':a.currency,
             'category':c.name,'channel':a.kind,'date':str(r.due_date),'priority':r.priority,'department':r.department},ensure_ascii=False))
@@ -526,6 +527,9 @@ def edit_request(id:int,data:RequestEdit,request:Request):
         a,c=request_target(s,data);n=amount(data.amount)
         before=request_json(s,r)
         party_changed = r.counterparty.strip()!=data.counterparty.strip()
+        # Legacy clients omit INN: retain it only while the beneficiary stays the same.
+        if 'counterparty_inn' in data.model_fields_set:r.counterparty_inn=data.counterparty_inn
+        elif party_changed:r.counterparty_inn=''
         was_pending=r.status=='pending';route_changed=r.category_id!=c.id or get(s,Account,r.account_id).currency!=a.currency
         for key in ('account_id','category_id','counterparty','purpose','project','priority'):setattr(r,key,getattr(data,key))
         # Additive field: older clients that omit it must not erase an existing department.
@@ -544,7 +548,7 @@ def edit_request(id:int,data:RequestEdit,request:Request):
                 kept=(r.route_policy,r.route_threshold,r.route_at);stored=requires_director(r)
                 snapshot_route(s,r,a.currency)
                 if stored or not requires_director(r):r.route_policy,r.route_threshold,r.route_at=kept
-        if party_changed:remember_counterparty(s,data.counterparty)
+        if party_changed:remember_counterparty(s,data.counterparty,r.counterparty_inn)
         s.flush()
         log(s,u,'Изменена заявка','request',r.id,json.dumps({'before':before,'after':request_json(s,r),'reason':data.reason,'version':r.version},ensure_ascii=False))
         return request_view(s,u,r)

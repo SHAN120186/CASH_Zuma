@@ -171,6 +171,7 @@ class PaymentRequest(Base):
     category_id = Column(Integer, ForeignKey('categories.id'), nullable=False)
     account_id = Column(Integer, ForeignKey('accounts.id'), nullable=False)
     counterparty = Column(String(160), nullable=False)
+    counterparty_inn = Column(String(20), nullable=False, default='')
     purpose = Column(Text, nullable=False)
     project = Column(String(120), nullable=False, default='')
     department = Column(String(30), nullable=False, default='')
@@ -636,7 +637,7 @@ def initialize():
         for name,definition in [('version','INTEGER NOT NULL DEFAULT 1'),('last_editor_id','INTEGER REFERENCES users(id)'),('priority',"VARCHAR(12) NOT NULL DEFAULT 'normal'"),
                                 ('approved_at','TIMESTAMP'),('approved_overrun','BIGINT'),('checked_by','INTEGER REFERENCES users(id)'),
                                 ('checked_at','TIMESTAMP'),('route_policy','VARCHAR(10)'),('route_threshold','BIGINT'),('route_at','TIMESTAMP'),
-                                ('department',"VARCHAR(30) NOT NULL DEFAULT ''")]:
+                                ('department',"VARCHAR(30) NOT NULL DEFAULT ''"),('counterparty_inn',"VARCHAR(20) NOT NULL DEFAULT ''")]:
             if name not in columns:conn.execute(text(f'ALTER TABLE payment_requests ADD COLUMN {name} {definition}'))
         audit_columns={c['name'] for c in inspect(conn).get_columns('audit_log')}
         for name,definition in [('ip','VARCHAR(64)'),('forwarded_for','VARCHAR(200)'),('role','VARCHAR(20)'),('acting_for_id','INTEGER REFERENCES users(id)')]:

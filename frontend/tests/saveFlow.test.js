@@ -7,7 +7,7 @@ import {createSaveState, requestBody, saveRequest, removeSavedDocument, missingR
 // file, approval reset after submit, and submit only with both required documents.
 const httpError = (status, message) => Object.assign(new Error(message), {status});
 const noReply = () => new TypeError('Failed to fetch');
-const FIELDS = ['company_id', 'account_id', 'channel', 'currency', 'category_id', 'amount', 'counterparty', 'purpose', 'priority', 'date', 'project'];
+const FIELDS = ['company_id', 'account_id', 'channel', 'currency', 'category_id', 'amount', 'counterparty', 'counterparty_inn', 'purpose', 'priority', 'date', 'project', 'department'];
 
 function fakeServer() {
   const calls = [], requests = new Map(), docs = [], faults = [];
@@ -329,7 +329,7 @@ test('a saved draft file is removed with DELETE; the request body keeps numbers 
   assert.deepEqual(s.trail(0), ['DELETE /api/request-documents/100']);
   assert.equal(s.docs[0].active, false);
   assert.deepEqual(requestBody({...FORM, account_id: '3', category_id: '9', amount: 1500.5, counterparty: '  ООО Альфа '}, 7),
-    {company_id: 7, account_id: 3, channel: 'bank', currency: 'UZS', category_id: 9, amount: '1500.5', counterparty: 'ООО Альфа',
+    {company_id: 7, account_id: 3, channel: 'bank', currency: 'UZS', category_id: 9, amount: '1500.5', counterparty: 'ООО Альфа', counterparty_inn:'',
      purpose: 'Оплата по счёту поставщика', priority: 'normal', date: '2026-10-09', project: '', department: ''});
   assert.equal(createSaveState({id: 5, status: 'returned', version: 2}).mode, 'draft');
   assert.equal(createSaveState({id: 5, status: 'pending', version: 2}).mode, 'sent');

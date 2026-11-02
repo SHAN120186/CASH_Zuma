@@ -44,10 +44,13 @@ const dues = ref(props.boot.due_minimums || {});
 const departmentCatalog=ref(props.boot.department_catalog?.items||Object.entries(DEPARTMENTS).map(([code,name])=>({code,name_ru:name,name_uz:'',active:true})));
 const departmentOptions=computed(()=>departmentCatalog.value.filter(x=>x.active||x.code===form.value.department));
 
-// ИНН используется только для поиска в справочнике выбранной компании.
-// В исторической заявке он не хранится, поэтому при открытии не меняем контрагента.
-const partyInn = ref(''), partyMatches = ref([]), partyStatus = ref('');
-let partyTimer = null, partySequence = 0, selectedParty = null;
+// Старые заявки не содержат ИНН: в них по умолчанию останется пустое поле.
+const partyInn = ref(r?.counterparty_inn || ''), partyMatches = ref([]), partyStatus = ref('');
+let partyTimer = null, partySequence = 0, selectedParty = r?.counterparty_inn ? {inn:r.counterparty_inn,name:r.counterparty} : null;
+function manualPartyChanged() {
+  clearTimeout(partyTimer);partySequence++;selectedParty = null;partyInn.value = '';
+  partyMatches.value = [];partyStatus.value = '';
+}
 function chooseParty(party) {
   selectedParty = {inn: party.inn, name: party.name};
   partyInn.value = party.inn;
@@ -176,7 +179,7 @@ async function save(event) {
   saving.value = true; step.value = 'save';
   try {
     const result = await saveRequest(props.api, state, {
-      fields: requestBody(form.value, props.company?.id), files: files.value, saved: saved.value,
+      fields: requestBody({...form.value, counterparty_inn: partyInn.value}, props.company?.id), files: files.value, saved: saved.value,
       submit: send && !sentMode, reason: form.value.reason, onUploaded, onServer,
       onStep: s => { step.value = s; },
     });
@@ -240,7 +243,7 @@ onUnmounted(() => { document.removeEventListener('keydown', onKey); clearTimeout
             <button v-for="party in partyMatches" :key="party.id" type="button" class="secondary tiny" @click="chooseParty(party)">{{ party.name }} · {{ party.inn }}</button>
           </span>
         </label>
-        <label>{{ tx('Контрагент') }}<input v-model="form.counterparty" minlength="2" maxlength="160" required></label>
+        <label>{{ tx('Контрагент') }}<input v-model="form.counterparty" minlength="2" maxlength="160" required @input="manualPartyChanged"></label>
         <label>{{ tx('Приоритет') }}<select v-model="form.priority" required><option v-for="(label, k) in PRIORITY_TERMS" :key="k" :value="k">{{ tx(label) }}</option></select></label>
         <label>{{ tx('Плановая дата оплаты') }}<input v-model="form.date" type="date" :min="earliest" required aria-describedby="rq-date-hint">
           <small id="rq-date-hint" class="sub">{{ tx('Ближайшая дата оплаты: {date}.', {date: earliestLabel}) }} <span v-if="form.priority !== 'urgent'">{{ tx('Выходные и праздники пропускаются по рабочему календарю.') }}</span><span v-else>{{ tx('Для срочной заявки дата — сегодня, включая выходной.') }}</span></small></label>

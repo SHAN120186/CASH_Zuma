@@ -456,7 +456,7 @@ def request_json(s,r,accounts=None,categories=None,users=None,batch=None):
     card_base=batch_budget_state(batch,r,a,0,exclude_request=r.id) if batch is not None else None
     return {'id':r.id,'number':f'CF-{r.id:05d}','creator_id':r.creator_id,'category_id':c.id,'category':c.name,
             'account_id':a.id,'account':a.name,'account_kind':a.kind,'channel':a.kind,'currency':a.currency,'company_id':a.company_id,
-            'counterparty':r.counterparty,'amount':money(r.amount),'date':str(r.due_date),'status':r.status,'purpose':r.purpose,
+            'counterparty':r.counterparty,'counterparty_inn':r.counterparty_inn,'amount':money(r.amount),'date':str(r.due_date),'status':r.status,'purpose':r.purpose,
             'version':r.version,'last_editor_id':r.last_editor_id,'priority':r.priority,
             'created_at':str(r.created_at),'backdated_created':late_created,'backdated_posted':late_posted,'checked_by':r.checked_by,'finance_approved_by':r.finance_approved_by,'approved_by':r.approved_by,
             'approved_on':str(local_date(r.approved_at)) if r.approved_at else None,
