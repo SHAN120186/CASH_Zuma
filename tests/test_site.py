@@ -2409,7 +2409,7 @@ class SiteTests(unittest.TestCase):
             # Тип, размер и содержимое файла проверяются.
             self.assertEqual(self.upload(rid,'contract',cl,h,content=b'MZ fake program',name='invoice.exe').status_code,422)
             self.assertEqual(self.upload(rid,'contract',cl,h,content=b'plain text',name='invoice.pdf').status_code,422)
-            self.assertEqual(self.upload(rid,'contract',cl,h,content=b'%PDF-'+b'0'*(5*1024*1024),name='big.pdf').status_code,413)
+            self.assertEqual(self.upload(rid,'contract',cl,h,content=b'%PDF-'+b'0'*(10*1024*1024),name='big.pdf').status_code,413)
             self.assertEqual(self.upload(rid,'bogus',cl,h).status_code,422)
             self.assertEqual(self.upload(rid,'contract',cl,h,name='invoice.pdf').status_code,200)
             # Прочих документов может быть несколько; они необязательны.

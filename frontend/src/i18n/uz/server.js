@@ -492,6 +492,7 @@ export default {
   'Документ прикладывается только к собственной оплате по утверждённой заявке.': 'Hujjat faqat tasdiqlangan ariza boʻyicha oʻzingiz amalga oshirgan toʻlovga biriktiriladi.',
   'Документ: PDF, PNG или JPEG, максимум 5 МБ.': 'Hujjat: PDF, PNG yoki JPEG, koʻpi bilan 5 MB.',
   'Документ заявки: PDF, PNG, JPEG, DOCX или XLSX, не больше 5 МБ.': 'Ariza hujjati: PDF, PNG, JPEG, DOCX yoki XLSX, 5 MB dan oshmasin.',
+  'Документ заявки: PDF, PNG, JPEG, DOCX или XLSX, не больше 10 МБ.': 'Ariza hujjati: PDF, PNG, JPEG, DOCX yoki XLSX, 10 MB dan oshmasin.',
   'Документы изменяет автор или финансовый руководитель.': 'Hujjatlarni muallif yoki moliyaviy rahbar oʻzgartiradi.',
   'Документы оплаченной или закрытой заявки не меняются.': 'Toʻlangan yoki yopilgan ariza hujjatlari oʻzgartirilmaydi.',
   'Нет доступа к документам этой заявки.': 'Ushbu ariza hujjatlariga kirish huquqi yoʻq.',

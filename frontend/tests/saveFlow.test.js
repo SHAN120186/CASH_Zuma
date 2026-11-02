@@ -114,7 +114,7 @@ test('reported case: the contract upload fails, the user changes the amount and 
   const s = fakeServer(), state = createSaveState();
   const internal = file('internal', 'indent.pdf'), contract = file('contract', 'Договор №17.pdf');
   const files = editorFiles([internal, contract]);
-  s.fail('POST', /documents\?kind=contract$/, httpError(422, 'Документ заявки: PDF, PNG, JPEG, DOCX или XLSX, не больше 5 МБ.'));
+  s.fail('POST', /documents\?kind=contract$/, httpError(422, 'Документ заявки: PDF, PNG, JPEG, DOCX или XLSX, не больше 10 МБ.'));
 
   const first = await saveRequest(s.api, state, {fields: body(FORM), files: files.list, submit: true, onUploaded: files.onUploaded});
   assert.equal(first.ok, false);

@@ -14,17 +14,18 @@ from .security import session_user, PERMS, can_attach_document, payment_channels
 from sqlalchemy.orm.attributes import flag_modified
 from .services import (post_ledger, money, get, log, today, clear_approval, check_request_version,
                        DOCUMENT_KINDS, required_documents)
+from .requests_api import MAX_DOCUMENT
 
 router=APIRouter()
 MAX_IMPORT=5*1024*1024
 HEADERS=['date','kind','account_id','to_account_id','category_id','amount','counterparty','reference','note']
 FRIENDLY=['Дата','Тип','Счёт','Счёт получателя','Статья','Сумма','Контрагент','Документ','Комментарий']
 
-async def read_upload(request,limit=MAX_IMPORT):
+async def read_upload(request,limit=MAX_IMPORT,too_large='Файл больше 5 МБ.'):
     raw=bytearray()
     async for chunk in request.stream():
         raw.extend(chunk)
-        if len(raw)>limit:raise HTTPException(413,'Файл больше 5 МБ.')
+        if len(raw)>limit:raise HTTPException(413,too_large)
     if not raw:raise HTTPException(422,'Пустой файл.')
     return bytes(raw)
 
@@ -207,7 +208,7 @@ REQUEST_FILE_TYPES={'.pdf':('application/pdf',b'%PDF-'),'.png':('image/png',b'\x
                     '.jpg':('image/jpeg',b'\xff\xd8\xff'),'.jpeg':('image/jpeg',b'\xff\xd8\xff'),
                     '.docx':('application/vnd.openxmlformats-officedocument.wordprocessingml.document',b'PK\x03\x04'),
                     '.xlsx':('application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',b'PK\x03\x04')}
-REQUEST_FILE_ERROR='Документ заявки: PDF, PNG, JPEG, DOCX или XLSX, не больше 5 МБ.'
+REQUEST_FILE_ERROR='Документ заявки: PDF, PNG, JPEG, DOCX или XLSX, не больше 10 МБ.'
 
 def request_file_type(raw,suffix):
     if suffix not in REQUEST_FILE_TYPES or not raw.startswith(REQUEST_FILE_TYPES[suffix][1]):raise HTTPException(422,REQUEST_FILE_ERROR)
@@ -279,7 +280,7 @@ async def add_request_document(id:int,kind:Literal['internal','contract','other'
     with unit() as s:
         user,_=session_user(s,request);payment=get(s,PaymentRequest,id);request_document_access(s,user,payment,True)
         check_document_version(payment,request_version_of(request));uid=user.id
-    raw=await read_upload(request)
+    raw=await read_upload(request,MAX_DOCUMENT,'Файл больше 10 МБ.')
     name=Path(unquote(request.headers.get('X-Filename','document'))).name
     suffix=Path(name).suffix.lower();name=safe_filename(name,suffix);mime=request_file_type(raw,suffix)
     with unit(True) as s:

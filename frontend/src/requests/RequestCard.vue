@@ -198,7 +198,7 @@ onUnmounted(() => document.removeEventListener('keydown', onKey));
             </ul>
           </section>
         </div>
-        <p class="sub">{{ tx('PDF, PNG, JPEG, DOCX или XLSX до 5 МБ. После отправки новая версия документа или удаление прочего документа начинают проверку и согласования заново.') }}</p>
+        <p class="sub">{{ tx('PDF, PNG, JPEG, DOCX или XLSX до 10 МБ. После отправки новая версия документа или удаление прочего документа начинают проверку и согласования заново.') }}</p>
 
         <div class="form-actions rq-actions">
           <button v-if="can('delete')" type="button" class="secondary" :disabled="busy" @click="deleteRequest">{{ tx('Удалить заявку') }}</button>

@@ -17,7 +17,7 @@ from .workdays import due_minimums, LEAD_DAYS
 from .workflow_setup import DEFAULT_THRESHOLDS
 
 router = APIRouter()
-MAX_DOCUMENT = 5 * 1024 * 1024
+MAX_DOCUMENT = 10 * 1024 * 1024
 OPEN_STATUSES = ('draft', 'pending', 'returned', 'approved')
 
 

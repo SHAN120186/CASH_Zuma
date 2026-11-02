@@ -64,8 +64,10 @@ test('lead times and required documents match the server rules', () => {
 
 test('files are checked by type and size before upload', () => {
   assert.equal(fileProblem({name: 'Счёт.PDF', size: 2048}), '');
-  assert.equal(fileProblem({name: 'contract.docx', size: MAX_DOC_BYTES}), '');
-  assert.match(fileProblem({name: 'scan.xlsx', size: MAX_DOC_BYTES + 1}), /больше 5 МБ/);
+  assert.equal(MAX_DOC_BYTES, 10 * 1024 * 1024);
+  assert.equal(fileProblem({name: 'large.pdf', size: 6 * 1024 * 1024}), '');
+  assert.equal(fileProblem({name: 'contract.docx', size: 10 * 1024 * 1024}), '');
+  assert.match(fileProblem({name: 'scan.xlsx', size: 10 * 1024 * 1024 + 1}), /больше 10 МБ/);
   assert.match(fileProblem({name: 'notes.txt', size: 10}), /PDF, PNG, JPEG, DOCX или XLSX/);
   assert.match(fileProblem({name: 'empty.pdf', size: 0}), /пустой/);
   assert.equal(DOC_ACCEPT, '.pdf,.png,.jpg,.jpeg,.docx,.xlsx');
