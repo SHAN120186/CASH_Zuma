@@ -32,7 +32,7 @@ export const requiredDocs = channel => channel === 'cash' ? ['internal'] : REQUI
 export const SINGLE_DOCS = ['internal', 'contract'];
 export const DOC_EXTENSIONS = ['.pdf', '.png', '.jpg', '.jpeg', '.docx', '.xlsx'];
 export const DOC_ACCEPT = DOC_EXTENSIONS.join(',');
-export const MAX_DOC_BYTES = 5 * 1024 * 1024;
+export const MAX_DOC_BYTES = 10 * 1024 * 1024;
 
 // Проверка файла до загрузки; сервер повторяет её по содержимому (подпись файла, структура DOCX/XLSX).
 export function fileProblem(file) {
@@ -40,7 +40,7 @@ export function fileProblem(file) {
   const ext = name.includes('.') ? name.slice(name.lastIndexOf('.')).toLowerCase() : '';
   if (!DOC_EXTENSIONS.includes(ext)) return tx('«{name}»: допустимы PDF, PNG, JPEG, DOCX или XLSX.', {name});
   if (!(file.size > 0)) return tx('«{name}»: пустой файл.', {name});
-  if (file.size > MAX_DOC_BYTES) return tx('«{name}»: файл больше 5 МБ.', {name});
+  if (file.size > MAX_DOC_BYTES) return tx('«{name}»: файл больше 10 МБ.', {name});
   return '';
 }
 

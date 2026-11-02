@@ -24,7 +24,7 @@ from . import access
 from .model_import import import_snapshot, MAX_SIZE
 from .bot_api import drop_groups_of, drop_orphan_groups, drop_shadowed_groups, journal_path, revoke_telegram
 from .workdays import enforce_lead_time, due_minimums
-from .requests_api import request_view, can_view_request
+from .requests_api import request_view, can_view_request, MAX_DOCUMENT
 
 SECURE=os.getenv('COOKIE_SECURE','0')=='1'
 ALLOWED=[x.strip() for x in os.getenv('ALLOWED_HOSTS','127.0.0.1,localhost,testserver').split(',') if x.strip()]
@@ -51,6 +51,7 @@ async def safety(request,call_next):
         limit=MAX_SIZE if request.url.path in ('/api/model/upload','/api/financial-statements/upload') or archive_file else 1024*1024 if business_params else 5*1024*1024 if request.url.path in ('/api/import/preview','/api/plan-import/preview') or request.url.path.endswith('/document') or '/documents' in request.url.path else 65536
         if request.url.path=='/api/cashflow-osv/preview':limit=24*1024*1024
         if request.url.path=='/api/budgets/import/preview':limit=15*1024*1024
+        if request.method=='POST' and re.fullmatch(r'/api/requests/[0-9]+/documents',request.url.path):limit=MAX_DOCUMENT
         if length<0 or length>limit:return JSONResponse({'detail':'Неверный размер запроса.'},status_code=413)
         origin=request.headers.get('origin')
         expected=PUBLIC_ORIGIN or str(request.base_url).rstrip('/')

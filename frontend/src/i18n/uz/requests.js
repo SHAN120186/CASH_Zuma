@@ -11,7 +11,7 @@ export default {
   "Для срочной заявки дата — сегодня, включая выходной.": "Shoshilinch ariza sanasi — bugun, dam olish kuni bo‘lsa ham.",
 
   "Срочный — сегодня": "Shoshilinch — bugun",
-  "Черновик сохраняется без файлов. Индент обязателен при отправке всегда; для банка нужен также договор или счёт, для кассы остальные документы — при наличии. PDF, PNG, JPEG, DOCX или XLSX до 5 МБ. Изменение документов после отправки с причиной начинает согласование заново; прежние версии остаются в истории.": "Qoralama fayllarsiz saqlanadi. Yuborishda indent doim majburiy; bank uchun shartnoma yoki hisob-faktura ham kerak, kassa uchun boshqa hujjatlar — mavjud bo‘lsa. PDF, PNG, JPEG, DOCX yoki XLSX, 5 MB gacha. Yuborilgandan keyin sabab bilan hujjatlarni o‘zgartirish kelishishni qayta boshlaydi; oldingi versiyalar tarixda qoladi.",
+  "Черновик сохраняется без файлов. Индент обязателен при отправке всегда; для банка нужен также договор или счёт, для кассы остальные документы — при наличии. PDF, PNG, JPEG, DOCX или XLSX до 10 МБ. Изменение документов после отправки с причиной начинает согласование заново; прежние версии остаются в истории.": "Qoralama fayllarsiz saqlanadi. Yuborishda indent doim majburiy; bank uchun shartnoma yoki hisob-faktura ham kerak, kassa uchun boshqa hujjatlar — mavjud bo‘lsa. PDF, PNG, JPEG, DOCX yoki XLSX, 10 MB gacha. Yuborilgandan keyin sabab bilan hujjatlarni o‘zgartirish kelishishni qayta boshlaydi; oldingi versiyalar tarixda qoladi.",
   "Обычная заявка — через 7 рабочих дней, высокий приоритет — через 3 рабочих дня, срочная — сегодня, включая выходные. Для обычного и высокого приоритета праздники и выходные берутся из календаря холдинга.": "Oddiy ariza — 7 ish kunidan keyin, yuqori ustuvorlik — 3 ish kunidan keyin, shoshilinch — bugun, dam olish kunlari ham. Oddiy va yuqori ustuvorlik uchun bayram va dam olish kunlari xolding taqvimidan olinadi.",
   "Обычный приоритет — 7 рабочих дней, высокий — 3 рабочих дня, срочный — сегодня. При выборе приоритета плановая дата обновляется автоматически.": "Oddiy ustuvorlik — 7 ish kuni, yuqori — 3 ish kuni, shoshilinch — bugun. Ustuvorlik tanlanganda reja sanasi avtomatik yangilanadi.",
   "Срок оплаты: обычная заявка — 7 рабочих дней, высокий приоритет — 3 рабочих дня, срочная — сегодня.": "To‘lov muddati: oddiy ariza — 7 ish kuni, yuqori ustuvorlik — 3 ish kuni, shoshilinch — bugun.",
@@ -76,7 +76,7 @@ export default {
   // File checks and sizes
   '«{name}»: допустимы PDF, PNG, JPEG, DOCX или XLSX.': '«{name}»: faqat PDF, PNG, JPEG, DOCX yoki XLSX qabul qilinadi.',
   '«{name}»: пустой файл.': '«{name}»: fayl boʻsh.',
-  '«{name}»: файл больше 5 МБ.': '«{name}»: fayl 5 MB dan katta.',
+  '«{name}»: файл больше 10 МБ.': '«{name}»: fayl 10 MB dan katta.',
   '{n} МБ': '{n} MB',
   '{n} КБ': '{n} KB',
 
@@ -182,7 +182,7 @@ export default {
   'Первые два раздела обязательны.': 'Dastlabki ikki boʻlim majburiy.',
   'Черновик можно сохранить без файлов. Для отправки обязательны первые два раздела.':
     'Qoralamani fayllarsiz saqlash mumkin. Yuborish uchun dastlabki ikki boʻlim majburiy.',
-  'PDF, PNG, JPEG, DOCX или XLSX, до 5 МБ на файл.': 'PDF, PNG, JPEG, DOCX yoki XLSX, har bir fayl 5 MB gacha.',
+  'PDF, PNG, JPEG, DOCX или XLSX, до 10 МБ на файл.': 'PDF, PNG, JPEG, DOCX yoki XLSX, har bir fayl 10 MB gacha.',
   'обязательно': 'majburiy',
   'будет заменён': 'almashtiriladi',
   'Убрать': 'Olib tashlash',
@@ -225,8 +225,8 @@ export default {
   'Прежние версии: {n}': 'Avvalgi versiyalar: {n}',
   'заменена или убрана': 'almashtirilgan yoki olib tashlangan',
   'убран': 'olib tashlangan',
-  'PDF, PNG, JPEG, DOCX или XLSX до 5 МБ. После отправки новая версия документа или удаление прочего документа начинают проверку и согласования заново.':
-    'PDF, PNG, JPEG, DOCX yoki XLSX, 5 MB gacha. Yuborilgandan keyin hujjatning yangi versiyasi yoki boshqa hujjatning olib tashlanishi tekshiruv va kelishuvlarni qaytadan boshlaydi.',
+  'PDF, PNG, JPEG, DOCX или XLSX до 10 МБ. После отправки новая версия документа или удаление прочего документа начинают проверку и согласования заново.':
+    'PDF, PNG, JPEG, DOCX yoki XLSX, 10 MB gacha. Yuborilgandan keyin hujjatning yangi versiyasi yoki boshqa hujjatning olib tashlanishi tekshiruv va kelishuvlarni qaytadan boshlaydi.',
   'Факт оплаты': 'Toʻlov fakti',
   'Решение': 'Qaror',
   'Новая дата': 'Yangi sana',

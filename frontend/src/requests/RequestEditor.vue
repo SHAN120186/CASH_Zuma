@@ -210,7 +210,7 @@ onUnmounted(() => { document.removeEventListener('keydown', onKey); clearTimeout
 
       <section class="request-documents-placeholder" aria-labelledby="rq-docs-title">
         <strong id="rq-docs-title">{{ tx('Документы к заявке') }}</strong>
-        <p>{{ form.channel === 'cash' ? tx('Касса: обязателен только индент. Договор и прочие документы — при наличии.') : tx('Банк: обязательны индент и договор или счёт. Прочие документы — при наличии.') }} {{ tx('PDF, PNG, JPEG, DOCX или XLSX, до 5 МБ на файл.') }}</p>
+        <p>{{ form.channel === 'cash' ? tx('Касса: обязателен только индент. Договор и прочие документы — при наличии.') : tx('Банк: обязательны индент и договор или счёт. Прочие документы — при наличии.') }} {{ tx('PDF, PNG, JPEG, DOCX или XLSX, до 10 МБ на файл.') }}</p>
         <div class="request-document-grid">
           <div v-for="(label, kind) in DOC_KINDS" :key="kind" class="request-document-slot">
             <b>{{ tx(label) }} <span v-if="required.includes(kind)" class="required-mark" :aria-label="tx('обязательно')">*</span><small v-else class="sub"> · {{ tx('Необязательно') }}</small></b>
