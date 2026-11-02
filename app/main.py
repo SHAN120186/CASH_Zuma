@@ -299,7 +299,8 @@ def remember_counterparty(s,name,inn=''):
     """Справочник пополняется автоматически при вводе документов."""
     name=(name or '').strip()
     if len(name)<2 or len(name)>160:return
-    if not s.scalar(select(Counterparty.id).where(Counterparty.name==name)):s.add(Counterparty(name=name,inn=inn))
+    existing=select(Counterparty.id).where(or_(Counterparty.name==name, Counterparty.inn==inn) if inn else Counterparty.name==name)
+    if not s.scalar(existing):s.add(Counterparty(name=name,inn=inn))
 
 @app.get('/api/dashboard')
 def get_dashboard(request:Request,currency:Literal['UZS','USD','EUR']='UZS',days:int=30):

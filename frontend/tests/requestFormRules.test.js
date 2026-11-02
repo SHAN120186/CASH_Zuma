@@ -116,3 +116,20 @@ test('request editing retains stored ИНН and manual change of company name cl
  const view=form(t,{request});await settle();assert.equal(view.state.partyInn,'009876543');
  view.state.form.counterparty='Changed supplier';view.state.manualPartyChanged();await settle();assert.equal(view.state.partyInn,'');
 });
+
+test('manual company name retains unknown ИНН after no match or search error',async t=>{
+ let fail=false;const view=form(t,{api:async url=>{if(!url.startsWith('/api/request-counterparties'))return {due_minimums:dues};if(fail)throw Error('Network error');return {items:[]};}});
+ await settle();view.state.partyInn='098765432';await settle();await delay(320);await settle();assert.equal(view.state.partyStatus,'empty');
+ view.state.form.counterparty='Manually entered supplier';view.state.manualPartyChanged();await settle();assert.equal(view.state.partyInn,'098765432');
+ assert.equal(requestBody({...view.state.form,counterparty_inn:view.state.partyInn},2).counterparty_inn,'098765432');
+ fail=true;view.state.partyInn='112233445';await settle();await delay(320);await settle();assert.equal(view.state.partyStatus,'error');
+ view.state.form.counterparty='Another manual supplier';view.state.manualPartyChanged();await settle();assert.equal(view.state.partyInn,'112233445');
+});
+
+test('manual name while lookup is pending keeps typed ИНН and discards late automatic match',async t=>{
+ let resolve;const view=form(t,{api:url=>url.startsWith('/api/request-counterparties')?new Promise(r=>resolve=r):Promise.resolve({due_minimums:dues})});
+ await settle();view.state.partyInn='123456789';await settle();await delay(320);
+ view.state.form.counterparty='Manual supplier';view.state.manualPartyChanged();await settle();
+ resolve({items:[{id:4,name:'Directory supplier',inn:'123456789'}]});await settle();
+ assert.equal(view.state.form.counterparty,'Manual supplier');assert.equal(view.state.partyInn,'123456789');assert.equal(view.state.partyMatches.length,0);
+});

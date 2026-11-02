@@ -2,7 +2,8 @@
 import unittest
 from sqlalchemy import inspect, text
 import tests.test_site as base
-from app.db import engine, initialize
+from sqlalchemy import select
+from app.db import Counterparty, engine, initialize, unit
 
 
 class RequestInnTests(base.SiteTests):
@@ -35,9 +36,21 @@ class RequestInnTests(base.SiteTests):
         self.assertIn('counterparty_inn',{c['name'] for c in inspect(engine).get_columns('payment_requests')})
         row=self.row(rid);self.assertEqual(row['counterparty'],'Legacy supplier');self.assertEqual(row['counterparty_inn'],'')
 
+    def test_remember_does_not_duplicate_an_existing_tax_id(self):
+        with unit(True) as s:s.add(Counterparty(company_id=self.company,name='Known supplier',inn='009876543'))
+        body=self.request_body(counterparty='Alternative spelling')
+        body['counterparty_inn']='009876543'
+        result=self.post('/api/requests',body)
+        self.assertEqual(result.status_code,200,result.text)
+        with unit() as s:
+            rows=list(s.scalars(select(Counterparty).where(Counterparty.company_id==self.company,Counterparty.inn=='009876543')))
+            self.assertEqual(len(rows),1)
+            self.assertEqual(rows[0].name,'Known supplier')
+
 
 def load_tests(loader,tests,pattern):
-    return unittest.TestSuite([RequestInnTests('test_new_and_legacy_clients'),RequestInnTests('test_migration_keeps_legacy_requests')])
+    return unittest.TestSuite([RequestInnTests('test_new_and_legacy_clients'),RequestInnTests('test_migration_keeps_legacy_requests'),
+                               RequestInnTests('test_remember_does_not_duplicate_an_existing_tax_id')])
 
 
 def tearDownModule():

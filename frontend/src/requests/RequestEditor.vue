@@ -48,7 +48,11 @@ const departmentOptions=computed(()=>departmentCatalog.value.filter(x=>x.active|
 const partyInn = ref(r?.counterparty_inn || ''), partyMatches = ref([]), partyStatus = ref('');
 let partyTimer = null, partySequence = 0, selectedParty = r?.counterparty_inn ? {inn:r.counterparty_inn,name:r.counterparty} : null;
 function manualPartyChanged() {
-  clearTimeout(partyTimer);partySequence++;selectedParty = null;partyInn.value = '';
+  clearTimeout(partyTimer);partySequence++;
+  // ИНН, введённый вручную без выбранного контрагента, принадлежит текущему
+  // вводу и остаётся при заполнении имени. Ранее привязанный ИНН очищаем,
+  // когда пользователь изменяет название выбранного контрагента.
+  if(selectedParty && form.value.counterparty !== selectedParty.name){partyInn.value = '';selectedParty = null;}
   partyMatches.value = [];partyStatus.value = '';
 }
 function chooseParty(party) {
