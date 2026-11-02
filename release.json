@@ -1,7 +1,8 @@
 {
-  "version": "2.34.3",
+  "version": "2.34.4",
   "date": "2026-11-02",
   "changes": [
+    "В заявке поиск контрагента по ИНН в справочнике выбранной компании; одинаковые названия с разными ИНН сохраняются отдельно.",
     "Максимальный размер каждого вложения заявки увеличен до 10 МБ.",
     "Ускорена загрузка списка заявок: связанные бюджеты и документы загружаются вместе, права и расчёты сохранены.",
     "В Cash Flow порядок статей компании совпадает с бюджетом и новой заявкой, включая Excel и PDF. Итоги по видам деятельности сохранены отдельно, классификация и суммы не меняются.",
@@ -81,6 +82,7 @@
     "Длинные названия файлов и кнопки выбора шаблона переносятся на узком экране. В ТЭО дата архива отдельно обозначена и не подменяет начало финансового прогноза."
   ],
   "changes_uz": [
+    "Arizada STIR orqali tanlangan kompaniya kontragentini qidirish; bir xil nomli, turli STIRli kontragentlar alohida saqlanadi.",
     "Budjet summalari masshtabi shakldan to‘g‘ri qabul qilinadi: birlik, ming yoki million.",
     "Budjet yuklashda umumiy so‘rov tekshiruvi 15 MB gacha XLSX fayllarini qabul qiladi.",
     "Budjetlar Excel orqali modda kodi, nomi va summasi bo‘yicha yuklanadi: oldindan ko‘rish, oy, valyuta va masshtab. Bo‘sh summa limitni saqlaydi, nol uni nolga tushiradi; qayta yuklash summani almashtiradi.",

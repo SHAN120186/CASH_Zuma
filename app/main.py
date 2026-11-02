@@ -51,6 +51,7 @@ async def safety(request,call_next):
         limit=MAX_SIZE if request.url.path in ('/api/model/upload','/api/financial-statements/upload') or archive_file else 1024*1024 if business_params else 5*1024*1024 if request.url.path in ('/api/import/preview','/api/plan-import/preview') or request.url.path.endswith('/document') or '/documents' in request.url.path else 65536
         if request.url.path=='/api/cashflow-osv/preview':limit=24*1024*1024
         if request.url.path=='/api/budgets/import/preview':limit=15*1024*1024
+        if request.url.path=='/api/counterparties/replace' and request.method=='POST':limit=5*1024*1024
         if request.method=='POST' and re.fullmatch(r'/api/requests/[0-9]+/documents',request.url.path):limit=MAX_DOCUMENT
         if length<0 or length>limit:return JSONResponse({'detail':'Неверный размер запроса.'},status_code=413)
         origin=request.headers.get('origin')
@@ -524,6 +525,7 @@ def edit_request(id:int,data:RequestEdit,request:Request):
         if r.creator_id!=u.id:act_with_right(u,'request_edit')
         a,c=request_target(s,data);n=amount(data.amount)
         before=request_json(s,r)
+        party_changed = r.counterparty.strip()!=data.counterparty.strip()
         was_pending=r.status=='pending';route_changed=r.category_id!=c.id or get(s,Account,r.account_id).currency!=a.currency
         for key in ('account_id','category_id','counterparty','purpose','project','priority'):setattr(r,key,getattr(data,key))
         # Additive field: older clients that omit it must not erase an existing department.
@@ -542,7 +544,8 @@ def edit_request(id:int,data:RequestEdit,request:Request):
                 kept=(r.route_policy,r.route_threshold,r.route_at);stored=requires_director(r)
                 snapshot_route(s,r,a.currency)
                 if stored or not requires_director(r):r.route_policy,r.route_threshold,r.route_at=kept
-        remember_counterparty(s,data.counterparty);s.flush()
+        if party_changed:remember_counterparty(s,data.counterparty)
+        s.flush()
         log(s,u,'Изменена заявка','request',r.id,json.dumps({'before':before,'after':request_json(s,r),'reason':data.reason,'version':r.version},ensure_ascii=False))
         return request_view(s,u,r)
 
@@ -665,9 +668,10 @@ def edit_receipt(id:int,data:ReceiptIn,request:Request):
         if a.archived:raise HTTPException(409,'Счёт в архиве.')
         if data.date<a.opening_date:raise HTTPException(422,'Дата раньше начала учёта счёта.')
         before={'amount':money(r.amount),'counterparty':r.counterparty,'inn':r.inn,'date':str(r.due_date),'note':r.note}
+        party_changed=(r.counterparty.strip(),r.inn)!=(data.counterparty.strip(),data.inn)
         for key in ('account_id','category_id','counterparty','inn','note'):setattr(r,key,getattr(data,key))
         r.amount=amount(data.amount);r.due_date=data.date
-        remember_counterparty(s,data.counterparty,data.inn)
+        if party_changed:remember_counterparty(s,data.counterparty,data.inn)
         s.flush();log(s,u,'Изменён план поступления','receipt',r.id,json.dumps({'before':before,'after':data.model_dump(mode='json')},ensure_ascii=False))
         return {'id':r.id,'version':r.version}
 
@@ -726,7 +730,9 @@ def add_ledger(data:LedgerIn,request:Request):
         if not ('write' in perms_of(u) or payment_channels(perms_of(u))):raise HTTPException(403,'У вашей роли нет прав на это действие.')
         # Оплату заявки отмечает проверка плательщика; прочие операции идут по праву записи (в том числе ВрИО).
         if not data.request_id and 'write' in perms_of(u):act_with_right(u,'write')
-        t=post_ledger(s,u,data);remember_counterparty(s,data.counterparty);return {'id':t.id}
+        t=post_ledger(s,u,data)
+        if not data.request_id and not data.receipt_id:remember_counterparty(s,data.counterparty)
+        return {'id':t.id}
 def ledger_edit_token(entry):
     import hashlib
     return hashlib.sha256(json.dumps({k:str(getattr(entry,k)) for k in ('account_id','to_account_id','category_id','kind','amount','date','counterparty','reference','note','request_id','receipt_id','reversal_of')},sort_keys=True).encode()).hexdigest()
@@ -1085,6 +1091,9 @@ from .business_templates import router as business_templates_router
 app.include_router(business_templates_router)
 from .counterparties_api import router as counterparties_router
 app.include_router(counterparties_router)
+
+from .counterparty_replace_api import router as counterparty_replace_router
+app.include_router(counterparty_replace_router)
 
 from .department_catalog import router as department_router
 app.include_router(department_router)

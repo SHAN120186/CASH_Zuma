@@ -5,6 +5,7 @@ scoped by session_user after authentication; queries and object writes then shar
 the same boundary, including imports, downloads and aggregate subqueries.
 """
 import json
+import re
 from fastapi import HTTPException
 from sqlalchemy import event, select, inspect, text, or_
 from sqlalchemy.orm import Session, with_loader_criteria
@@ -200,7 +201,8 @@ def migrate_columns(engine):
                     if c['column_names'] == ['name']:
                         name = conn.dialect.identifier_preparer.quote(c['name'])
                         conn.execute(text(f'ALTER TABLE {table} DROP CONSTRAINT {name}'))
-                conn.execute(text(f'CREATE UNIQUE INDEX IF NOT EXISTS ux_{table}_company_name ON {table}(company_id,name)'))
+                if cls is not Counterparty:
+                    conn.execute(text(f'CREATE UNIQUE INDEX IF NOT EXISTS ux_{table}_company_name ON {table}(company_id,name)'))
     if engine.dialect.name == 'sqlite':
         # SQLite cannot drop an inline UNIQUE constraint. Rebuild only these
         # three small tables; IDs and all inbound foreign keys stay unchanged.
@@ -223,6 +225,67 @@ def migrate_columns(engine):
                         raise RuntimeError('Company migration: foreign key check failed')
             finally:
                 conn.exec_driver_sql('PRAGMA foreign_keys=ON'); conn.commit()
+
+
+def migrate_counterparty_names(engine):
+    """Allow the same name with distinct INNs, retaining all existing rows.
+
+    Catalog/API validation handles duplicate identifiers. This migration does
+    not impose an INN index on older databases that may have duplicate blanks.
+    """
+    target = ['company_id', 'name']
+    if engine.dialect.name != 'sqlite':
+        with engine.begin() as conn:
+            conn.execute(text('SELECT pg_advisory_xact_lock(7312801)'))
+            quote = conn.dialect.identifier_preparer.quote
+            for constraint in inspect(conn).get_unique_constraints('counterparties'):
+                if constraint['column_names'] == target and constraint.get('name'):
+                    conn.execute(text(f'ALTER TABLE counterparties DROP CONSTRAINT {quote(constraint["name"])}'))
+            for index in inspect(conn).get_indexes('counterparties'):
+                if index.get('unique') and index.get('column_names') == target:
+                    conn.execute(text(f'DROP INDEX {quote(index["name"])}'))
+        return
+
+    # SQLite cannot drop a table-level UNIQUE constraint. Reuse the original
+    # CREATE statement rather than reconstructing from ORM metadata: this keeps
+    # any newer columns and other constraints intact. Preserve explicit indexes
+    # and triggers, IDs, and all inbound references.
+    with engine.connect() as conn:
+        conn.exec_driver_sql('PRAGMA foreign_keys=OFF'); conn.commit()
+        try:
+            with conn.begin():
+                inspector = inspect(conn)
+                has_constraint = any(c['column_names'] == target for c in inspector.get_unique_constraints('counterparties'))
+                matching_indexes = {i['name'] for i in inspector.get_indexes('counterparties')
+                                    if i.get('unique') and i.get('column_names') == target}
+                if has_constraint:
+                    sql = conn.exec_driver_sql("SELECT sql FROM sqlite_master WHERE type='table' AND name='counterparties'").scalar_one()
+                    pattern = r',\s*(?:CONSTRAINT\s+(?:"[^"]+"|`[^`]+`|\[[^\]]+\]|\w+)\s+)?UNIQUE\s*\(\s*["`\[]?company_id["`\]]?\s*,\s*["`\[]?name["`\]]?\s*\)'
+                    sql, removed = re.subn(pattern, '', sql, flags=re.IGNORECASE)
+                    if removed != 1:
+                        raise RuntimeError('Cannot safely migrate counterparties name constraint')
+                    sql, renamed = re.subn(r'^CREATE\s+TABLE\s+(?:IF\s+NOT\s+EXISTS\s+)?(?:"counterparties"|`counterparties`|\[counterparties\]|counterparties)',
+                                           'CREATE TABLE counterparties_name_migration_tmp', sql, count=1, flags=re.IGNORECASE)
+                    if renamed != 1:
+                        raise RuntimeError('Cannot safely rename counterparties table for migration')
+                    objects = conn.exec_driver_sql("SELECT type,name,sql FROM sqlite_master WHERE tbl_name='counterparties' AND type IN ('index','trigger') AND sql IS NOT NULL").fetchall()
+                    quote = conn.dialect.identifier_preparer.quote
+                    columns = ','.join(quote(c['name']) for c in inspector.get_columns('counterparties'))
+                    conn.exec_driver_sql(sql)
+                    conn.exec_driver_sql(f'INSERT INTO counterparties_name_migration_tmp ({columns}) SELECT {columns} FROM counterparties')
+                    conn.exec_driver_sql('DROP TABLE counterparties')
+                    conn.exec_driver_sql('ALTER TABLE counterparties_name_migration_tmp RENAME TO counterparties')
+                    for obj_type, name, ddl in objects:
+                        if obj_type != 'index' or name not in matching_indexes:
+                            conn.exec_driver_sql(ddl)
+                else:
+                    quote = conn.dialect.identifier_preparer.quote
+                    for name in matching_indexes:
+                        conn.exec_driver_sql(f'DROP INDEX {quote(name)}')
+                if conn.exec_driver_sql('PRAGMA foreign_key_check').fetchone():
+                    raise RuntimeError('Counterparty migration: foreign key check failed')
+        finally:
+            conn.exec_driver_sql('PRAGMA foreign_keys=ON'); conn.commit()
 
 
 def migrate_data(engine):

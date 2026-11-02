@@ -30,6 +30,9 @@ jobs:
       - run: python -m unittest tests.test_company_category_catalog -q
       - run: python -m unittest tests.test_request_batch_performance -q
       - run: python -m unittest tests.test_request_document_limit -q
+      - run: python -m unittest tests.test_counterparty_name_migration -q
+      - run: python -m unittest tests.test_counterparty_replace -q
+      - run: python -m unittest tests.test_request_counterparty_lookup -q
       - run: python -m unittest tests.test_department_catalog -q
       - run: python -m unittest tests.test_budget_import -q
       - run: python -m unittest tests.test_ledger_delete -q
@@ -81,6 +84,9 @@ jobs:
       - run: python -m unittest tests.test_company_category_catalog -q
       - run: python -m unittest tests.test_request_batch_performance -q
       - run: python -m unittest tests.test_request_document_limit -q
+      - run: python -m unittest tests.test_counterparty_name_migration -q
+      - run: python -m unittest tests.test_counterparty_replace -q
+      - run: python -m unittest tests.test_request_counterparty_lookup -q
       - run: python -m unittest tests.test_department_catalog -q
       - run: python -m unittest tests.test_budget_import -q
       - run: python -m unittest tests.test_ledger_delete -q

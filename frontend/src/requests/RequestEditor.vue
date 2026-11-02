@@ -44,6 +44,46 @@ const dues = ref(props.boot.due_minimums || {});
 const departmentCatalog=ref(props.boot.department_catalog?.items||Object.entries(DEPARTMENTS).map(([code,name])=>({code,name_ru:name,name_uz:'',active:true})));
 const departmentOptions=computed(()=>departmentCatalog.value.filter(x=>x.active||x.code===form.value.department));
 
+// ИНН используется только для поиска в справочнике выбранной компании.
+// В исторической заявке он не хранится, поэтому при открытии не меняем контрагента.
+const partyInn = ref(''), partyMatches = ref([]), partyStatus = ref('');
+let partyTimer = null, partySequence = 0, selectedParty = null;
+function chooseParty(party) {
+  selectedParty = {inn: party.inn, name: party.name};
+  partyInn.value = party.inn;
+  form.value.counterparty = party.name;
+  partyMatches.value = [];
+  partyStatus.value = 'selected';
+}
+watch(() => [partyInn.value, props.company?.id], ([inn, companyId], [, previousCompanyId] = []) => {
+  clearTimeout(partyTimer);
+  const sequence = ++partySequence;
+  partyMatches.value = [];
+  if (selectedParty && (inn !== selectedParty.inn || companyId !== previousCompanyId)) {
+    if (form.value.counterparty === selectedParty.name) form.value.counterparty = '';
+    selectedParty = null;
+  }
+  if (selectedParty && inn === selectedParty.inn) { partyStatus.value = 'selected'; return; }
+  partyStatus.value = '';
+  if (!/^\d{1,20}$/.test(inn)) return;
+  partyStatus.value = 'loading';
+  const nameAtSearch = form.value.counterparty;
+  partyTimer = setTimeout(async () => {
+    try {
+      const result = await props.api('/api/request-counterparties?' + new URLSearchParams({inn}));
+      if (sequence !== partySequence) return;
+      const items = Array.isArray(result.items) ? result.items : [];
+      const exact = items.filter(p => p.inn === inn);
+      // Ручной ввод после начала поиска не должен пропасть из-за позднего ответа.
+      if (exact.length === 1 && form.value.counterparty === nameAtSearch) { chooseParty(exact[0]); return; }
+      partyMatches.value = items;
+      partyStatus.value = items.length ? 'matches' : 'empty';
+    } catch {
+      if (sequence === partySequence) partyStatus.value = 'error';
+    }
+  }, 300);
+});
+
 const accountOptions = computed(() => accountsFor(props.boot.accounts, form.value.channel, form.value.currency));
 const outcomeCategories = computed(() => props.boot.categories.filter(c => c.type === 'outcome' && (!c.retired || c.id === form.value.category_id)));
 const earliest = computed(() => minDue(dues.value, form.value.priority));
@@ -172,7 +212,7 @@ onMounted(async () => {
     try { saved.value = ((await props.api(`/api/requests/${r.id}`)).documents_list || []).filter(d => d.current); } catch { /* покажем без файлов */ }
   }
 });
-onUnmounted(() => { document.removeEventListener('keydown', onKey); clearTimeout(timer); });
+onUnmounted(() => { document.removeEventListener('keydown', onKey); clearTimeout(timer); clearTimeout(partyTimer); partySequence++; });
 </script>
 
 <template>
@@ -191,6 +231,15 @@ onUnmounted(() => { document.removeEventListener('keydown', onKey); clearTimeout
         <label>{{ tx('Отдел') }}<select v-model="form.department"><option value="">{{ tx('Выберите отдел') }}</option><option v-for="item in departmentOptions" :key="item.code" :value="item.code">{{lang==='uz'&&item.name_uz?item.name_uz:tx(item.name_ru)}}</option></select></label>
         <label>{{ tx('Статья расходов') }}<select v-model="form.category_id" required><option v-for="c in outcomeCategories" :key="c.id" :value="c.id">{{ c.name }}</option></select></label>
         <label>{{ tx('Сумма') }}<input v-model="form.amount" type="text" inputmode="decimal" pattern="[0-9]+([.][0-9]{1,2})?" required autocomplete="off"></label>
+        <label>{{ tx('ИНН контрагента') }}<input v-model.trim="partyInn" inputmode="numeric" pattern="[0-9]*" maxlength="20" autocomplete="off" aria-describedby="rq-inn-hint">
+          <small id="rq-inn-hint" class="sub">{{ tx('Введите ИНН для поиска контрагента.') }}</small>
+          <small v-if="partyStatus === 'loading'" class="sub" role="status">{{ tx('Ищем контрагента…') }}</small>
+          <small v-else-if="partyStatus === 'empty'" class="sub" role="status">{{ tx('По этому ИНН контрагент не найден. Название можно ввести вручную.') }}</small>
+          <small v-else-if="partyStatus === 'error'" class="field-error" role="status">{{ tx('Не удалось выполнить поиск. Название можно ввести вручную.') }}</small>
+          <span v-if="partyMatches.length" class="actions" role="group" :aria-label="tx('Найденные контрагенты')">
+            <button v-for="party in partyMatches" :key="party.id" type="button" class="secondary tiny" @click="chooseParty(party)">{{ party.name }} · {{ party.inn }}</button>
+          </span>
+        </label>
         <label>{{ tx('Контрагент') }}<input v-model="form.counterparty" minlength="2" maxlength="160" required></label>
         <label>{{ tx('Приоритет') }}<select v-model="form.priority" required><option v-for="(label, k) in PRIORITY_TERMS" :key="k" :value="k">{{ tx(label) }}</option></select></label>
         <label>{{ tx('Плановая дата оплаты') }}<input v-model="form.date" type="date" :min="earliest" required aria-describedby="rq-date-hint">

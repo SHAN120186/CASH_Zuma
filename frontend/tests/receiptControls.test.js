@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import {reactive} from 'vue';
 import {groupAmount,amountInput} from '../src/amountInput.js';
 import {compileComponent,mount,settle,find,all,text} from './helpers/mountVue.js';
+const delay=ms=>new Promise(resolve=>setTimeout(resolve,ms));
 const money=await compileComponent(new URL('../src/MoneyInput.vue',import.meta.url));
 const app=await compileComponent(new URL('../src/App.vue',import.meta.url),{'./MoneyInput.vue':money});
 test('money entry groups thousands without rounding, accepts pasted spaces and preserves decimal text',async t=>{
@@ -27,10 +28,18 @@ test('sales receipt form autofills INN, sends exact grouped amount and deletes o
  globalThis.window={addEventListener(){},localStorage:{getItem(){return null;}}};globalThis.location={hash:'#calendar'};
  globalThis.document={hidden:true,activeElement:null,addEventListener(){},removeEventListener(){},querySelector(){return{scrollIntoView(){}};}};
  let failRefresh=false;
- globalThis.fetch=async(url,options={})=>{if(url==='/api/me')return{ok:false,status:401,json:async()=>({detail:'Test login'})};calls.push({url,options});if(failRefresh&&(!options.method||options.method==='GET'))return{ok:false,status:503,json:async()=>({detail:'Test refresh failed'})};return{ok:true,status:200,json:async()=>url==='/api/bootstrap'?boot:url==='/api/receipts'&&(!options.method||options.method==='GET')?[]:url.startsWith('/api/dashboard')?{forecast:[],accounts:[]}:{id:21}};};
+ let delayedLookup;
+ globalThis.fetch=async(url,options={})=>{if(url==='/api/me')return{ok:false,status:401,json:async()=>({detail:'Test login'})};calls.push({url,options});if(failRefresh&&(!options.method||options.method==='GET'))return{ok:false,status:503,json:async()=>({detail:'Test refresh failed'})};
+  if(url.startsWith('/api/receipt-counterparties?')){const name=new URLSearchParams(url.split('?')[1]).get('name');if(name==='Delayed')return await new Promise(resolve=>{delayedLookup=resolve});const items=name==='Mikon synthetic'?[{id:1,name,inn:'001234567'}]:name==='Same name'?[{id:2,name,inn:'111111111'},{id:3,name,inn:'222222222'}]:[];return{ok:true,status:200,json:async()=>({items})};}
+  return{ok:true,status:200,json:async()=>url==='/api/bootstrap'?boot:url==='/api/receipts'&&(!options.method||options.method==='GET')?[]:url.startsWith('/api/dashboard')?{forecast:[],accounts:[]}:{id:21}};};
  const view=mount(app);t.after(()=>{view.unmount();for(const[k,d]of saved){if(d)Object.defineProperty(globalThis,k,d);else delete globalThis[k];}});await settle();
  Object.assign(view.state,{user,boot,companyId:1,companyReady:true,page:'calendar',currency:'UZS',bootstrapLocalDay:new Date().toLocaleDateString('en-CA',{timeZone:'Asia/Tashkent'})});await settle();
- view.state.receipt();await settle();view.state.form.counterparty='Mikon synthetic';view.state.receiptPartyChanged();assert.equal(view.state.form.inn,'001234567');
+ view.state.receipt();await settle();view.state.form.counterparty='Mikon synthetic';view.state.receiptPartyChanged();await delay(320);await settle();assert.equal(view.state.form.inn,'001234567');
+ view.state.form.counterparty='Same name';view.state.receiptPartyChanged();await delay(320);await settle();assert.equal(view.state.form.inn,'');assert.equal(view.state.receiptPartyMatches.length,2);assert.match(text(view.container),/Найдено несколько контрагентов/);
+ view.state.chooseReceiptParty(view.state.receiptPartyMatches[1]);assert.equal(view.state.form.inn,'222222222');
+ view.state.form.counterparty='Delayed';view.state.receiptPartyChanged();await delay(320);view.state.form.inn='987654321';delayedLookup({ok:true,status:200,json:async()=>({items:[{id:4,name:'Delayed',inn:'123456789'}]})});await settle();assert.equal(view.state.form.inn,'987654321','late result cannot replace manually entered INN');
+ view.state.form.counterparty='Delayed';view.state.receiptPartyChanged();await delay(320);view.state.receipt();view.state.form.counterparty='Other form';view.state.form.inn='123';delayedLookup({ok:true,status:200,json:async()=>({items:[{id:4,name:'Delayed',inn:'123456789'}]})});await settle();assert.equal(view.state.form.inn,'123','late response cannot change a different receipt form');
+ view.state.form.counterparty='Mikon synthetic';view.state.receiptPartyChanged();await delay(320);await settle();assert.equal(view.state.form.inn,'001234567');
  const input=find(view.container,n=>n.tag==='input'&&n.props.autocomplete==='off'&&n.props.inputmode==='decimal');
  input.value='1234567.50';input.selectionStart=10;input.props.onInput({target:input,inputType:'insertText'});await settle();
  assert.equal(input.value,'1 234 567.50');await view.state.save();await settle();

@@ -1,9 +1,9 @@
 """Company-scoped counterparties and validated Excel import; no ledger writes."""
 import io, re, zipfile, json
 from urllib.parse import unquote
-from fastapi import APIRouter, Request, HTTPException
+from fastapi import APIRouter, Request, HTTPException, Query
 from pydantic import BaseModel, ConfigDict, Field
-from sqlalchemy import select
+from sqlalchemy import select, func
 from .db import Counterparty, unit
 from .security import session_user
 from .services import get, log
@@ -23,18 +23,46 @@ class ImportIn(BaseModel):
 
 def row(c):return {'id':c.id,'name':c.name,'inn':c.inn,'note':c.note}
 
+@router.get('/api/request-counterparties')
+def request_search(request:Request, inn:str=Query(min_length=1,max_length=20,pattern=r'^\d+$')):
+    """Find counterparties for an authorized request editor in the selected company."""
+    with unit() as s:
+        session_user(s,request,('request','request_edit'))
+        criterion = Counterparty.inn == inn if len(inn)<3 else Counterparty.inn.startswith(inn)
+        matches=s.scalars(select(Counterparty).where(criterion)
+                          .order_by(Counterparty.inn,Counterparty.name,Counterparty.id).limit(20))
+        return {'items':[{'id':c.id,'name':c.name,'inn':c.inn} for c in matches]}
+
+@router.get('/api/receipt-counterparties')
+def receipt_search(request:Request, name:str=Query(min_length=2,max_length=160)):
+    """Look up the entire selected company's directory, including names after bootstrap's limit."""
+    with unit() as s:
+        session_user(s,request,('receipts','receipt_edit','schedule'))
+        matches=s.scalars(select(Counterparty).where(func.lower(Counterparty.name)==name.strip().lower())
+                          .order_by(Counterparty.inn,Counterparty.id).limit(21))
+        return {'items':[{'id':c.id,'name':c.name,'inn':c.inn} for c in matches]}
+
 def conflict(existing,data,exclude=None,allow_fill=False):
-    if sum(c.id!=exclude and c.name.casefold()==data.name.casefold() for c in existing)>1:
-        raise HTTPException(409,'Контрагент с таким названием уже есть. Измените его в справочнике.')
     if data.inn and any(c.id!=exclude and c.inn==data.inn and c.name.casefold()!=data.name.casefold() for c in existing):
         raise HTTPException(409,'Этот ИНН уже указан у другого контрагента. Проверьте название.')
-    for c in existing:
-        if c.id==exclude:continue
-        if c.name.casefold()==data.name.casefold():
-            if allow_fill and not (c.inn and data.inn and c.inn!=data.inn or c.note and data.note and c.note!=data.note):return c
-            if (c.inn,c.note)==(data.inn,data.note):return c
-            raise HTTPException(409,'Контрагент с таким названием уже есть. Измените его в справочнике.')
-    return None
+    matches=[c for c in existing if c.id!=exclude and c.name.casefold()==data.name.casefold()]
+    if len(matches)>1 and any(not c.inn for c in matches):
+        raise HTTPException(409,'Контрагент с таким названием уже есть. Измените его в справочнике.')
+    exact=[c for c in matches if c.inn==data.inn]
+    if len(exact)>1:
+        raise HTTPException(409,'Контрагент с таким названием уже есть. Измените его в справочнике.')
+    if exact:
+        c=exact[0]
+        if (allow_fill and not (c.note and data.note and c.note!=data.note)) or c.note==data.note:return c
+        raise HTTPException(409,'Контрагент с таким названием уже есть. Измените его в справочнике.')
+    if not matches:return None
+    if allow_fill and data.inn and len(matches)==1 and not matches[0].inn:
+        c=matches[0]
+        if not (c.note and data.note and c.note!=data.note):return c
+    # Different known tax numbers identify different counterparties, even when
+    # the company names match exactly. An empty identifier is ambiguous.
+    if data.inn and all(c.inn and c.inn!=data.inn for c in matches):return None
+    raise HTTPException(409,'Контрагент с таким названием уже есть. Измените его в справочнике.')
 
 @router.get('/api/counterparties')
 def listing(request:Request):
@@ -110,9 +138,11 @@ async def preview(request:Request):
         for line,values in source:
             try:
                 data=CounterpartyIn(**values)
-                if data.name.casefold() in names or data.inn and data.inn in inns:
+                namekey=(data.name.casefold(),data.inn)
+                if (namekey in names or data.inn and data.inn in inns
+                        or any(n==data.name.casefold() and (not data.inn or not old_inn) for n,old_inn in names)):
                     raise ValueError('Дубликат названия или ИНН в файле.')
-                names.add(data.name.casefold())
+                names.add(namekey)
                 if data.inn:inns.add(data.inn)
                 same=conflict(existing,data,allow_fill=True)
                 if same:

@@ -69,10 +69,10 @@ def can_edit_section(user,*names):
 def modules(path):
     path=path.replace('/api/bot/v1/','/api/',1)
     if path.startswith('/api/admin/') or path in ('/api/me','/api/bootstrap','/api/companies','/api/logout','/api/password'):return ()
-    routes=[(r'/api/(?:request-documents|requests|budget-check|request-rules)(?:/|$)',('requests',)),
+    routes=[(r'/api/(?:request-documents|request-counterparties|requests|budget-check|request-rules)(?:/|$)',('requests',)),
       (r'/api/(?:ledger|documents|export/ledger)(?:[/.]|$)',('ledger',)),
       (r'/api/departments(?:/|$)',('categories',)),(r'/api/accounts(?:/|$)',('accounts',)),(r'/api/(?:dashboard|reserve|sales-overview)(?:/|$)',('home','calendar')),
-      (r'/api/(?:receipts|sales-receipts)(?:/|$)',('calendar',)),
+      (r'/api/(?:receipts|sales-receipts|receipt-counterparties)(?:/|$)',('calendar',)),
       (r'/api/calendar-days(?:/|$)',('calendar','approval')),
       (r'/api/financial-statements(?:/|$)',('pnl','balance')),
       (r'/api/cashflow-osv(?:/|$)',('report',)),
