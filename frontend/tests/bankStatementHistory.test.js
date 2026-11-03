@@ -1,6 +1,6 @@
 import {test} from 'node:test';
 import assert from 'node:assert/strict';
-import {compileComponent,mount,settle,text,find} from './helpers/mountVue.js';
+import {compileComponent,mount,settle,text,find,all} from './helpers/mountVue.js';
 import {statementCashFlowContext} from '../src/cashflow/statementContext.js';
 import {lang,setLang} from '../src/i18n/index.js';
 const component=await compileComponent(new URL('../src/BankStatementHistory.vue',import.meta.url));
@@ -39,4 +39,23 @@ test('cash flow preserves statement currency and months, with explicit cross-yea
 test('statement history and state labels are available in Uzbek',async t=>{
  const prior=lang.value;setLang('uz');t.after(()=>setLang(prior));const api=async url=>url.includes('/history?')?{page:1,has_more:false,items:[item]}:detail;
  const view=mount(component,{api,companyId:1,canView:true});t.after(view.unmount);await view.state.toggle();await view.state.openDetail(item);await settle();assert.match(text(view.container),/Bank ko‘chirmalari tarixi/);assert.match(text(view.container),/Storno qilingan/);
+});
+
+test('history renders created exception facts and current reversal state while keeping the server active-created count',async t=>{
+ const summaryComponent=await compileComponent(new URL('../src/BankStatementPostingSummary.vue',import.meta.url));
+ const history=await compileComponent(new URL('../src/BankStatementHistory.vue',import.meta.url),{'./BankStatementPostingSummary.vue':summaryComponent});
+ const group=(count,credit_total,debit_total)=>({count,credit_total,debit_total});
+ const rows=[
+  {id:1,status:'historical_transfer_posted',operation_state:'active',direction:'out',amount:'50.00'},
+  {id:2,status:'historical_request_paid',operation_state:'active',direction:'out',amount:'30.00'},
+  {id:3,status:'manual_distinct_income',operation_state:'active',direction:'in',amount:'20.00'},
+  {id:4,status:'historical_transfer_posted',operation_state:'reversed',direction:'out',amount:'10.00'},
+ ].map(row=>({...row,ledger_id:80+row.id,date:'2026-06-01',correspondent_name:'Synthetic exception',document_number:`EX-${row.id}`,purpose:'Synthetic bank fact'}));
+ const saved={...detail,statement:{...detail.statement,credit_total:'20.00',debit_total:'90.00'},rows,full_reconciliation:false,posting_summary:{scope:'history',ready:group(0,'0.00','0.00'),posted:group(3,'20.00','80.00'),linked:group(3,'20.00','80.00'),pending:group(1,'0.00','10.00'),bank_closing:'1000.00',ledger_closing:'1010.00',projected_closing:'1010.00',conservative_closing:'1000.00',closing_matches:true,partial_allowed:true}};
+ const calls=[];const view=mount(history,{api:async(url,options={})=>{calls.push([url,options]);return url.includes('/history?')?{page:1,has_more:false,items:[item]}:saved;},companyId:1,canView:true});t.after(view.unmount);await view.state.toggle();await view.state.openDetail(item);await settle();
+ const source=find(view.container,node=>node.tag==='details'&&node.props.class==='statement-source');
+ const displayed=all(find(source,node=>node.tag==='tbody'),node=>node.tag==='tr').map(row=>text(row.children.at(-1)));
+ assert.deepEqual(displayed,['Проведена','Проведена','Проведена','Сторнирована']);assert.doesNotMatch(text(view.container),/Состояние не определено/);
+ const created=find(view.container,node=>node.tag==='tr'&&node.props['data-posting-state']==='posted');assert.match(text(created),/Из них создано этой выпиской320,00 USD80,00 USD/);
+ assert.ok(calls.every(([,options])=>!options.method||options.method==='GET'));
 });

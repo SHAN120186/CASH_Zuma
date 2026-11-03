@@ -33,7 +33,8 @@ from .bank_statement_existing import classify_existing, process_existing
 from .bank_statement_unallocated_out import classify_unallocated_out, process_unallocated_out
 from .bank_statement_unallocated import category_id as unallocated_category_id, ensure_category
 from .category_catalog import catalog
-from .bank_statement_guard import accounted_line_ids, set_statement_reconciliation, unreconciled_batch_ids
+from .bank_statement_guard import (accounted_line_ids, set_statement_reconciliation,
+    unreconciled_batch_ids, CREATED_BANK_STATUSES, REQUEST_PAID_BANK_STATUSES)
 from .bank_statement_interest import classify_interest, post_interest
 from .bank_statement_reprocess_payments import classify_reprocess_payments, process_reprocess_payments
 from .bank_statement_expenses import annotate_expense_rows, sanitize_request_fields
@@ -45,7 +46,8 @@ NEW_POSTING_STATUSES = {'auto_pay_candidate', 'income_candidate', 'fee_candidate
 LINK_POSTING_STATUSES = {'income_matched_candidate', 'fee_existing', 'interest_existing', 'other_matched_candidate'}
 FINAL_POSTING_STATUSES = {'paid_match', 'auto_paid', 'manual_paid', 'manual_match', 'income_matched',
     'auto_income_posted', 'fee_matched', 'auto_fee_posted', 'interest_matched', 'auto_interest_posted',
-    'duplicate', 'other_matched', 'auto_outgoing_posted', 'manual_transfer_match'}
+    'duplicate', 'other_matched', 'auto_outgoing_posted', 'manual_transfer_match',
+    'historical_transfer_posted', 'historical_request_paid', 'manual_distinct_income'}
 
 
 class Confirmation(BaseModel):
@@ -183,11 +185,11 @@ def _classify(s, lines, account, previous, user):
     old_request_ids = set(s.scalars(select(BankStatementLine.request_id).join(BankStatementBatch,
         BankStatementBatch.id == BankStatementLine.batch_id).where(BankStatementBatch.status == 'committed',
         BankStatementLine.account_id == account.id, BankStatementLine.request_id.is_not(None),
-        BankStatementLine.status.in_(('auto_paid', 'paid_match', 'manual_paid', 'manual_match')))))
+        BankStatementLine.status.in_(REQUEST_PAID_BANK_STATUSES))))
     old_ledger_ids = set(s.scalars(select(BankStatementLine.ledger_id).join(BankStatementBatch,
         BankStatementBatch.id == BankStatementLine.batch_id).where(BankStatementBatch.status == 'committed',
         BankStatementLine.account_id == account.id, BankStatementLine.ledger_id.is_not(None),
-        BankStatementLine.status.in_(('auto_paid', 'paid_match', 'manual_paid', 'manual_match')))))
+        BankStatementLine.status.in_(REQUEST_PAID_BANK_STATUSES))))
     # Count all plausible pairs before choosing any. Even an already-linked
     # request or a duplicate bank row makes an otherwise identical pair unsafe.
     pairs = {line.id: [r for r in requests.values() if matches_request(line, r)] for line in lines}
@@ -753,7 +755,7 @@ def commit(id: int, data: Confirmation, request: Request):
         set_statement_reconciliation(s, batch, fully_reconciled, user)
         log(s, user, 'Обработана банковская выписка', 'bank_statement', batch.id,
             json.dumps({'sha256': batch.sha256, 'rows': len(lines), 'statuses': dict(counts)}, ensure_ascii=False))
-        created = {line.id for line in lines if line.status in ('auto_paid', 'auto_income_posted', 'auto_fee_posted', 'auto_interest_posted', 'auto_outgoing_posted')}
+        created = {line.id for line in lines if line.status in CREATED_BANK_STATUSES}
         summary = _posting_summary(s, batch, lines, account, [_line_data(line) for line in lines], posted_ids=created, scope='result')
         return {'id': batch.id, 'status': batch.status, 'auto_paid': sum(line.status=='auto_paid' for line in lines),
                 'linked_paid': sum(line.status=='paid_match' for line in lines),
@@ -860,7 +862,7 @@ def reprocess_commit(id: int, data: ReprocessConfirm, request: Request):
         log(s, user, 'Повторно проверена банковская выписка', 'bank_statement', batch.id,
             json.dumps({'statuses': dict(counts)}, ensure_ascii=False))
         changed = [line for line in lines if before[line.id] != (line.status, line.ledger_id)]
-        created = {line.id for line in changed if line.status in ('auto_paid', 'auto_income_posted', 'auto_fee_posted', 'auto_interest_posted', 'auto_outgoing_posted')}
+        created = {line.id for line in changed if line.status in CREATED_BANK_STATUSES}
         linked = sum(line.status in ('income_matched', 'fee_matched', 'interest_matched', 'other_matched') for line in changed)
         summary = _posting_summary(s, batch, lines, account, [_line_data(line) for line in lines], posted_ids=created, scope='result')
         return {'posted': len(created), 'linked': linked,
@@ -1035,7 +1037,7 @@ def match(id: int, data: MatchInput, request: Request):
         prior = s.scalar(select(BankStatementLine.id).join(BankStatementBatch,
             BankStatementBatch.id == BankStatementLine.batch_id).where(BankStatementBatch.status == 'committed',
             BankStatementLine.id != line.id, BankStatementLine.request_id == req.id,
-            BankStatementLine.status.in_(('auto_paid', 'paid_match', 'manual_paid', 'manual_match'))))
+            BankStatementLine.status.in_(REQUEST_PAID_BANK_STATUSES)))
         if prior:
             raise HTTPException(409, 'Заявка уже связана с другой строкой выписки.')
         if req.status == 'approved':
@@ -1152,7 +1154,7 @@ def statement_history_detail(id: int, request: Request):
                 row['request_id'] = None
         lines = list(s.scalars(select(BankStatementLine).where(BankStatementLine.batch_id == batch.id)
                                .order_by(BankStatementLine.line, BankStatementLine.id)))
-        created = {line.id for line in lines if line.status in ('auto_paid', 'manual_paid', 'auto_income_posted', 'auto_fee_posted', 'auto_interest_posted', 'auto_outgoing_posted')}
+        created = {line.id for line in lines if line.status in CREATED_BANK_STATUSES}
         summary = _posting_summary(s, batch, lines, get(s, Account, batch.account_id), rows, posted_ids=created, scope='history')
         result['posting_summary'] = summary
         result['full_reconciliation'] = bool(summary['pending']['count'] == 0 and

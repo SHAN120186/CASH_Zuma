@@ -540,7 +540,10 @@ def post_ledger(s,u,data,*,bank_statement_fact=False,bank_statement_import=False
         if len(data.note.strip())<10:raise HTTPException(422,'Для расхода без заявки укажите основание не короче 10 символов.')
     elif kind=='transfer':
         # Перевод не уносит со счёта деньги, зарезервированные под утверждённые заявки.
-        enforce_reserved_funds(s,a,data.date,n)
+        # Signed historical-statement resolution accounts for this same debit;
+        # its pending hold must not be charged a second time. Public/manual
+        # routes never receive this server-only capability.
+        enforce_reserved_funds(s,a,data.date,n,include_bank_hold=not bank_statement_fact)
     t=Ledger(account_id=a.id,to_account_id=target.id if target else None,category_id=data.category_id if kind!='transfer' else None,
              kind=kind,amount=n,date=data.date,counterparty=req.counterparty if req else data.counterparty,reference=data.reference.strip(),
              note=data.note,request_id=req.id if req else None,receipt_id=rec.id if rec else None,creator_id=u.id)

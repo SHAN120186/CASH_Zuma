@@ -499,6 +499,24 @@ test('statement deletion controls are shown only to holding administrators',asyn
  view.state.user={...accountant,holding_role:'admin',role:'admin',permissions:['view','ledger','write','pay_bank']};await settle();assert.match(text(view.container),/Удаление выписки администратором/);assert.ok(calls.some(url=>url.includes('/admin/batches')));
 });
 
+test('bank exception resolution is visible only for a holding admin with editable ledger and both selected-company payment and write rights',async t=>{
+ const resolution=await compileComponent(new URL('../src/BankStatementResolution.vue',import.meta.url));
+ const statements=await compileComponent(new URL('../src/BankStatements.vue',import.meta.url),{'./BankStatementResolution.vue':resolution});
+ const app=await compileComponent(new URL('../src/App.vue',import.meta.url),{'./BankStatements.vue':statements});
+ const calls=[],row={id:31,batch_id:7,account_id:21,date:'2026-10-10',direction:'out',amount:'50.00',currency:'UZS',status:'review',document_number:'SYNTHETIC-31'};
+ const {view}=await fixture(t,async(url,options)=>{calls.push([url,options]);return {ok:true,status:200,json:async()=>url==='/api/bank-statements/reviews'?{items:[row]}:{items:[]}};},app);
+ const full={...user,role:'accountant',company_role:'accountant',permissions:['view','ledger','pay_bank','write']};
+ Object.assign(view.state,{page:'ledger',user:full,boot:bootstrapBody(full)});await settle();
+ const action=()=>find(view.container,node=>node.tag==='button'&&text(node)==='Разобрать спорную строку');
+ assert.equal(action(),undefined);assert.ok(find(view.container,node=>node.tag==='button'&&text(node)==='Найти заявку для сопоставления'));
+ view.state.user={...full,holding_role:'admin',permissions:['view','ledger','pay_bank']};await settle();assert.equal(action(),undefined);
+ view.state.user={...full,holding_role:'admin',sections:{ledger:'view'}};await settle();assert.equal(action(),undefined);
+ view.state.user={...full,holding_role:'founder'};await settle();assert.equal(action(),undefined);
+ view.state.user={...full,holding_role:'admin',sections:{ledger:'edit'}};await settle();assert.ok(action());
+ view.state.user={...full,holding_role:'admin',permissions:['view','ledger','write']};await settle();assert.equal(action(),undefined);
+ assert.ok(calls.every(([,options])=>!options.method||options.method==='GET'));assert.equal(calls.some(([url])=>url.includes('/historical-')||url.includes('/distinct-income/')),false);
+});
+
 test('statement link opens actual Cash Flow in the statement currency and month range',async t=>{
  const calls=[];const director={...user,role:'director',permissions:['view','ledger','export']};
  const {view}=await fixture(t,async(url,options)=>{calls.push({url,company:options.headers['X-Company-ID']});return {ok:true,status:200,json:async()=>url.startsWith('/api/report?')?{currency:'USD',year:2026,company_id:2,scenario:'A',as_of:'2026-06-20'}:{items:[],total:0}}},bankApp);

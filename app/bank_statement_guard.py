@@ -12,6 +12,12 @@ from sqlalchemy import select
 from .db import Account, Ledger, Setting
 from .bank_statement_models import BankStatementBatch, BankStatementLine
 
+CREATED_BANK_STATUSES = frozenset({'auto_paid', 'manual_paid', 'auto_income_posted',
+    'auto_fee_posted', 'auto_interest_posted', 'auto_outgoing_posted',
+    'historical_transfer_posted', 'historical_request_paid', 'manual_distinct_income'})
+REQUEST_PAID_BANK_STATUSES = frozenset({'auto_paid', 'paid_match', 'manual_paid',
+    'manual_match', 'historical_request_paid'})
+
 
 def _prefix(company_id, account_id):
     return f'bsu:{company_id}:{account_id}:'
@@ -91,6 +97,27 @@ def require_reconciled_for_manual_payment(s, account):
     if unreconciled_statements(s, account):
         raise HTTPException(409, 'Счёт ожидает сверки банковской выписки. '
                             'Сверьте выписку перед новой оплатой заявки.')
+
+
+def refresh_reconciliation_after_reversal(s, user, entry):
+    """A reversed bank fact is pending again, including its conservative debit hold.
+
+    Called under the same write guard after flushing the inverse. Cover both
+    transfer accounts and later statement openings, not just directly linked
+    rows. Statement deletion may clear its own marker later in that transaction.
+    """
+    from .bank_statement_api import _line_data, _posting_summary
+    from .services import get
+    affected = {entry.account_id, entry.to_account_id} - {None}
+    for batch in s.scalars(select(BankStatementBatch).where(
+            BankStatementBatch.status == 'committed', BankStatementBatch.source_ready.is_(True),
+            BankStatementBatch.account_id.in_(affected), BankStatementBatch.period_to >= entry.date)):
+        account = get(s, Account, batch.account_id)
+        lines = list(s.scalars(select(BankStatementLine).where(BankStatementLine.batch_id == batch.id)))
+        summary = _posting_summary(s, batch, lines, account, [_line_data(line) for line in lines], scope='result')
+        complete = bool(summary['partial_allowed'] and summary['pending']['count'] == 0
+            and summary['ledger_closing'] == summary['bank_closing'])
+        set_statement_reconciliation(s, batch, complete, user)
 
 
 def accounted_line_ids(s, lines, account):

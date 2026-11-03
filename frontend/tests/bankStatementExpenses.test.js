@@ -108,6 +108,17 @@ test('existing active paid requests are explanations rather than a second amount
  assert.equal(calls,0);assert.equal(view.state.summary.total,23605);
 });
 
+test('historical transfer and closed-request payment are shown as created operations while reversal keeps the raw file total',async t=>{
+ const created=[
+  debit(21,'internal_transfer','50.00',{ledger_id:121,status:'historical_transfer_posted',operation_state:'active'}),
+  debit(22,'request','30.00',{ledger_id:122,status:'historical_request_paid',operation_state:'active',expense_request_id:45,expense_category_name:'Synthetic expense'}),
+  debit(23,'internal_transfer','10.00',{ledger_id:123,status:'historical_transfer_posted',operation_state:'reversed'}),
+ ];
+ const view=mount(component,{statement:{...statement,debit_total:'90.00'},rows:created,currency:'USD'});t.after(view.unmount);await settle();
+ const displayed=bodyRows(view).map(text);assert.match(displayed[0],/Проведено по выписке/);assert.match(displayed[1],/Проведено по выписке/);assert.match(displayed[1],/Заявка №45/);assert.match(displayed[2],/Связь с операцией требует проверки/);assert.doesNotMatch(displayed[2],/Проведено по выписке/);
+ assert.equal(view.state.summary.total,9000);assert.match(text(view.container),/Списано всего по выписке90,00 USD/);assert.doesNotMatch(displayed[0]+displayed[1],/Уже учтено — повторно не добавляется/);
+});
+
 test('mismatch keeps the declared file amount and makes incomplete row totals explicit',async t=>{
  const view=mount(component,{statement:{...statement},rows:[rows[0]],currency:'USD'});t.after(view.unmount);await settle();
  assert.match(text(view.container),/Списано всего по выписке236,05 USD/);

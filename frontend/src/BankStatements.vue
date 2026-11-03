@@ -9,6 +9,7 @@ import BankStatementIncome from './BankStatementIncome.vue';
 import BankStatementExpenses from './BankStatementExpenses.vue';
 import SavedBankStatements from './SavedBankStatements.vue';
 import BankStatementPostingSummary from './BankStatementPostingSummary.vue';
+import BankStatementResolution from './BankStatementResolution.vue';
 import {statementCategoryName} from './cashflow/statementCategory.js';
 
 const props = defineProps({
@@ -22,6 +23,7 @@ const props = defineProps({
   canManageFee: {type: Boolean, default: false},
   canAllocate: {type: Boolean, default: false},
   canDeleteStatements: {type: Boolean, default: false},
+  canResolveExceptions: {type: Boolean, default: false},
   canViewCashFlow: {type: Boolean, default: false},
   canViewHistory: {type: Boolean, default: false},
 });
@@ -90,6 +92,9 @@ const labels = Object.freeze({
   interest_existing: N_('Существующие проценты по кредиту будут связаны'),
   auto_interest_posted: N_('Проценты по кредиту проведены'),
   interest_matched: N_('Проценты по кредиту связаны с операцией'),
+  historical_transfer_posted: N_('Выполненный перевод учтён'),
+  historical_request_paid: N_('Историческая оплата учтена'),
+  manual_distinct_income: N_('Отдельное поступление учтено'),
   reviewed: N_('Проверено бухгалтером'),
   review: N_('Нужна проверка бухгалтера'),
   duplicate: N_('Повтор связан с ранее проведённой операцией'),
@@ -311,6 +316,21 @@ async function loadReviews() {
   } catch (e) {
     if (current === reviewGeneration) {reviewsLoaded.value = false; reviewError.value = reviewErrorMessage(e);}
   }
+}
+function resolutionWorking(row,active){
+  if(active)reviewBusy.value=row.id;
+  else if(reviewBusy.value===row.id)reviewBusy.value=null;
+}
+async function refreshResolution(changed=false){
+  const company=props.companyId;
+  savedRefresh.value+=1;
+  if(changed){
+    invalidate();reprocessGeneration+=1;reprocessPreview.value=null;reprocessResult.value=null;reprocessNotice.value='';reprocessError.value='';reprocessBusy.value=false;
+    notice.value=tx('Учёт банковского факта сохранён. Данные выписки и отчётов обновляются.');
+    emit('changed');
+  }
+  await Promise.all([loadReviews(),loadUnallocated(),loadUnallocatedOutgoing(),loadOldBatches()]);
+  if(props.companyId!==company)return;
 }
 async function findCandidates(row) {
   if (!props.canReview || reviewBusy.value !== null || row.status !== 'review' || row.direction !== 'out') return;
@@ -661,6 +681,7 @@ async function commit() {
                 </template>
               </template>
             </div>
+            <BankStatementResolution :api="api" :company-id="companyId" :row="row" :can-resolve="canResolveExceptions" :disabled="reviewBusy!==null" @working="resolutionWorking(row,$event)" @changed="refreshResolution(true)" @refresh="refreshResolution()"/>
             <div v-if="canReview" class="review-actions">
               <label>{{tx('Классификация')}}<select :value="reviewActions[row.id]?.classification || ''" :disabled="reviewBusy !== null" @change="reviewActions[row.id] = {...reviewActions[row.id], classification: $event.target.value}"><option value="">{{tx('Выберите классификацию')}}</option><option value="bank_fee">{{tx('Банковская услуга')}}</option><option value="internal_transfer">{{tx('Перевод между своими счетами')}}</option><option value="receipt">{{tx('Поступление')}}</option><option value="other">{{tx('Другое')}}</option><option value="unresolved">{{tx('Оставить на проверке')}}</option></select></label>
               <label>{{tx('Примечание')}}<input :value="reviewActions[row.id]?.note || ''" :disabled="reviewBusy !== null" @input="reviewActions[row.id] = {...reviewActions[row.id], note: $event.target.value}"></label>

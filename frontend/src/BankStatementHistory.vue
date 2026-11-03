@@ -13,7 +13,7 @@ const open = ref(false), page = ref(1), hasMore = ref(false), items = ref([]), l
 const detail = ref(null), detailLoading = ref(false), detailError = ref('');
 let generation = 0, detailGeneration = 0;
 const states = Object.freeze({active:N_('Проведена'),reversed:N_('Сторнирована'),changed:N_('Операция изменена'),missing:N_('Операция не найдена'),unposted:N_('Не проведена')});
-const createdStatuses = new Set(['auto_paid','manual_paid','auto_income_posted','auto_fee_posted','auto_interest_posted','auto_outgoing_posted']);
+const createdStatuses = new Set(['auto_paid','manual_paid','auto_income_posted','auto_fee_posted','auto_interest_posted','auto_outgoing_posted','historical_transfer_posted','historical_request_paid','manual_distinct_income']);
 const linkedStatuses = new Set(['paid_match','manual_match','income_matched','fee_matched','interest_matched','other_matched','manual_transfer_match']);
 const stateLabel = row => {
  if(row.operation_state !== 'active')return tx(states[row.operation_state] || N_('Состояние не определено'));
