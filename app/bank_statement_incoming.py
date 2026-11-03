@@ -14,8 +14,8 @@ from .bank_statement_models import BankStatementBatch, BankStatementLine
 from .category_catalog import catalog
 from .clock import today
 from .db import Category, Ledger, Receipt
+from .bank_statement_permissions import can_post_statement
 from .security import perms_of
-from .section_access import can_edit_section
 from .services import day_start_balance, log, money, post_ledger
 
 
@@ -47,7 +47,7 @@ def classify_incoming(s, batch, lines, account, user, income_category_id=None, u
     explicit selection by this operator, never a company-wide inferred rule.
     """
     decisions = {}
-    allowed = ('write' in perms_of(user) and can_edit_section(user, 'ledger'))
+    allowed = can_post_statement(user)
     active_categories = _active_income_categories(s)
     if income_category_id is not None and income_category_id not in active_categories:
         raise HTTPException(422, 'Выберите действующую статью поступлений выбранной компании.')
@@ -210,7 +210,7 @@ def process_incoming(s, batch, lines, account, user, income_category_id=None, ap
     placeholder = s.get(Category, income_category_id) if income_category_id is not None else None
     placeholder_id = (placeholder.id if placeholder and placeholder.company_id == batch.company_id
                       and placeholder.type == 'income' and placeholder.activity == 'unclassified' else None)
-    if 'write' not in perms_of(user) or not can_edit_section(user, 'ledger'):
+    if not can_post_statement(user) or ('write' not in perms_of(user) and approved is None):
         return {'review': len(decisions)}
     counts = Counter()
     for line in sorted((l for l in lines if l.id in decisions), key=lambda l: (l.date, l.line, l.id)):
@@ -244,7 +244,7 @@ def process_incoming(s, batch, lines, account, user, income_category_id=None, ap
                         reference='BANK-' + line.fingerprint,
                         note='Банковская выписка, документ ' + line.document_number,
                         request_id=None, request_version=None, receipt_id=decision['receipt_id'])
-                    entry = post_ledger(s, user, data)
+                    entry = post_ledger(s, user, data, bank_statement_import=True)
                     line.ledger_id = entry.id
                     line.classification = 'receipt'
                     line.status = 'auto_income_posted'

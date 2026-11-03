@@ -16,8 +16,8 @@ from .bank_statement_models import BankStatementBatch, BankStatementLine
 from .category_catalog import catalog
 from .clock import today
 from .db import Ledger, PaymentRequest
+from .bank_statement_permissions import can_post_statement
 from .security import perms_of
-from .section_access import can_edit_section
 from .services import deleted_ledger_ids, money, post_ledger
 
 
@@ -58,7 +58,7 @@ def classify_unallocated_out(s, batch, lines, account, user, outgoing_category_i
     With ``unallocated=True``, candidates can be previewed without creating the
     system category; the confirmation must pass its real, company-scoped ID.
     """
-    allowed = 'write' in perms_of(user) and can_edit_section(user, 'ledger')
+    allowed = can_post_statement(user)
     categories = _active_unclassified_expense(s)
     if outgoing_category_id is not None and outgoing_category_id not in categories:
         raise HTTPException(422, 'Выберите действующую статью нераспределённых расходов этой компании.')
@@ -182,7 +182,7 @@ def classify_unallocated_out(s, batch, lines, account, user, outgoing_category_i
 def process_unallocated_out(s, batch, lines, account, user, outgoing_category_id=None, approved=None):
     """Recheck and post under the caller's write guard and outer savepoint."""
     decisions=classify_unallocated_out(s,batch,lines,account,user,outgoing_category_id)
-    if 'write' not in perms_of(user) or not can_edit_section(user,'ledger'):
+    if not can_post_statement(user) or ('write' not in perms_of(user) and approved is None):
         return {'review':len(decisions)}
     counts=Counter()
     for line in sorted((item for item in lines if item.id in decisions),key=lambda item:(item.date,item.line,item.id)):
@@ -200,7 +200,7 @@ def process_unallocated_out(s, batch, lines, account, user, outgoing_category_id
                         counterparty=line.correspondent_name[:160],reference='BANK-'+line.fingerprint,
                         note='Банковская выписка, документ '+line.document_number+'; контрагент: '+line.correspondent_name,
                         request_id=None,request_version=None,receipt_id=None)
-                    entry=post_ledger(s,user,data)
+                    entry=post_ledger(s,user,data,bank_statement_import=True)
                     line.ledger_id=entry.id;line.status='auto_outgoing_posted';line.classification='other';line.reason=''
             except HTTPException as exc:
                 line.status='review';line.reason=str(exc.detail)[:160]

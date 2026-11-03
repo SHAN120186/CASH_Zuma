@@ -1,4 +1,5 @@
 export default {
+  'Выбор статьи комиссии не меняет общую настройку компании.': 'Komissiya moddasini tanlash kompaniyaning umumiy sozlamasini o‘zgartirmaydi.',
   'Списание недоступно для распределения.': 'Chiqimni taqsimlab bo‘lmaydi.',
   'Списание изменилось. Обновите список.': 'Chiqim o‘zgardi. Ro‘yxatni yangilang.',
   'Выберите действующую расходную статью этой компании.': 'Ushbu kompaniyaning amaldagi xarajat moddasini tanlang.',

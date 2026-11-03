@@ -89,9 +89,9 @@ class OsvApiTests(base.SiteTests):
     def make_user(self,*args,**kwargs):
         cl,h=super().make_user(*args,**kwargs);h['X-Company-ID']=str(self.company);return cl,h
     def relogin(self,name,company=None):return super().relogin(name,company or self.company)
-    def upload_osv(self,raw=None,template=True,client=None,headers=None):
+    def upload_osv(self,raw=None,template=True,client=None,headers=None,template_raw=None):
         data={'bank_filename':'bank.xlsx','bank_base64':base64.b64encode(raw or bank_book()).decode()}
-        if template:data.update(template_filename='template.xlsx',template_base64=base64.b64encode(template_book()).decode())
+        if template:data.update(template_filename='template.xlsx',template_base64=base64.b64encode(template_raw or template_book()).decode())
         return (client or self.client).post('/api/cashflow-osv/preview',headers=headers or self.h,json=data)
     def commit_osv(self,p,headers=None,client=None,**changes):
         return (client or self.client).post('/api/cashflow-osv/preview/'+p['id']+'/commit',headers=headers or self.h,json={'version':p['version'],'currency':'UZS','scale':1,'reason':'Confirmed synthetic source and input units',**changes})
@@ -105,7 +105,10 @@ class OsvApiTests(base.SiteTests):
         self.assertEqual(self.client.get(f'/api/cashflow-osv/sources/{id}/export.xlsx?year=2026',headers=self.h).status_code,200)
         with unit() as s:self.assertEqual(s.scalar(select(func.count()).select_from(Ledger)),before);self.assertEqual(s.scalar(select(func.count()).select_from(Account)),accounts)
     def test_duplicate_upload_is_idempotent_and_old_versions_immutable(self):
-        p1=self.upload_osv().json();p2=self.upload_osv().json();c1=self.commit_osv(p1).json();c2=self.commit_osv(p2)
+        # XLSX ZIP members carry generation timestamps, so rebuilding identical
+        # workbooks can change their bytes. Reuse the exact files for a retry.
+        bank=bank_book();template=template_book()
+        p1=self.upload_osv(raw=bank,template_raw=template).json();p2=self.upload_osv(raw=bank,template_raw=template).json();c1=self.commit_osv(p1).json();c2=self.commit_osv(p2)
         self.assertEqual(c2.status_code,200,c2.text);self.assertTrue(c2.json()['idempotent']);self.assertEqual(c2.json()['source']['id'],c1['source']['id'])
         with unit() as s:self.assertEqual(s.get(CashFlowOsvPreview,p2['id']).source_id,c1['source']['id'])
         self.assertEqual(self.commit_osv(p1).json()['source']['id'],c1['source']['id'])

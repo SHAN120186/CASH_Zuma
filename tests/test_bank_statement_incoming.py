@@ -72,6 +72,14 @@ class IncomingTests(SiteTests):
             self.assertIsNone(s.scalar(select(Ledger.id)))
             self.assertEqual(process_incoming(s,batch,lines,account,user,cat.id)['auto_income_posted'],1)
 
+    def test_bank_payer_cannot_post_without_reviewed_decision(self):
+        with unit(True) as s:
+            batch,lines,account,user,cat=self.prepared(s)
+            user._permissions=frozenset({'ledger','pay_bank'})
+            self.assertEqual(classify_incoming(s,batch,lines,account,user,cat.id)[lines[0].id]['status'],'income_candidate')
+            self.assertEqual(process_incoming(s,batch,lines,account,user,cat.id)['review'],1)
+            self.assertIsNone(s.scalar(select(Ledger.id)))
+
     def test_existing_manual_operation_links_unique_plan_without_new_ledger(self):
         with unit(True) as s:
             batch,lines,account,user,cat=self.prepared(s)
@@ -115,7 +123,7 @@ class IncomingTests(SiteTests):
             batch.opening+=1
             self.assertTrue(all(d['status']=='review' for d in classify_incoming(s,batch,lines,account,user,cat.id).values()))
             batch.opening-=1
-            user.role='accountant'
+            user._permissions=frozenset({'ledger','pay_cash'})
             self.assertEqual(process_incoming(s,batch,lines,account,user,cat.id)['review'],2)
             self.assertIsNone(s.scalar(select(Ledger.id)))
 

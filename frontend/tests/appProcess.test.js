@@ -393,9 +393,15 @@ test('bank reconciliation in Operations respects accountant rights, section read
  const {view}=await fixture(t,async(url,options)=>{calls.push({url,company:options.headers['X-Company-ID']});return {ok:true,status:200,json:async()=>url.includes('/reviews')?{items:[{id:123,date:'2026-10-30',direction:'out',amount:'10',currency:'UZS',status:'review'}]}:url.startsWith('/api/ledger?')?{items:[],total:0}:{}}},bankApp);
  Object.assign(view.state,{user:accountant,boot:{...bootstrapBody(accountant),accounts:[{id:21,name:'Synthetic account ZUMA',kind:'bank',currency:'UZS'}]},page:'ledger'});await settle();
  assert.match(text(view.container),/Операции для проверки бухгалтера/);assert.ok(find(view.container,n=>n.tag==='input'&&n.props?.type==='file'));
+ assert.match(text(view.container),/Повторная проверка загруженной выписки/);
+ assert.match(text(view.container),/Выбор статьи комиссии не меняет общую настройку компании/);
+ assert.doesNotMatch(text(view.container),/Для проведения поступлений и комиссий требуется право записи операций/);
+ assert.equal(find(view.container,n=>n.tag==='button'&&text(n).trim()==='Новая операция'),undefined);
+ assert.ok(calls.some(c=>c.url==='/api/bank-statements/reprocess/batches'&&c.company==='2'));
  assert.ok(calls.some(c=>c.url==='/api/bank-statements/reviews'&&c.company==='2'));
  view.state.user={...accountant,sections:{ledger:'view',home:'hidden'}};await settle();
  assert.equal(find(view.container,n=>n.tag==='input'&&n.props?.type==='file'),undefined);
+ assert.doesNotMatch(text(view.container),/Повторная проверка загруженной выписки/);
  assert.doesNotMatch(text(view.container),/Найти заявку для сопоставления/);
  assert.match(text(view.container),/Операции для проверки бухгалтера/);
  view.state.companyId=3;view.state.boot={...bootstrapBody(accountant),accounts:[{id:22,name:'Synthetic account UZGERMED',kind:'bank',currency:'UZS'}]};view.state.user=accountant;await settle();

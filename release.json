@@ -1,7 +1,8 @@
 {
-  "version": "2.34.7",
+  "version": "2.34.8",
   "date": "2026-11-03",
   "changes": [
+    "Расчётный бухгалтер может проводить сверенные строки банковской выписки без общего права создавать и изменять операции.",
     "Подтверждённая банковская выписка проводит однозначные поступления, комиссии и внешние списания только при полной сверке конечного остатка; повторы и переводы проверяет бухгалтер. Неизвестные статьи временно показываются в Cash Flow как «Не распределено».",
     "При несверенной выписке новые ручные оплаты по её счёту приостанавливаются до сверки; фактические платежи, однозначно подтверждённые выпиской, и исправление журнала остаются доступны.",
     "Банковская выписка IABS: предварительная проверка и сверка с заявками по счёту, сумме, ИНН и дате; неоднозначные операции передаются бухгалтеру.",
@@ -86,6 +87,7 @@
     "Длинные названия файлов и кнопки выбора шаблона переносятся на узком экране. В ТЭО дата архива отдельно обозначена и не подменяет начало финансового прогноза."
   ],
   "changes_uz": [
+    "Hisob-kitob buxgalteri bank ko‘chirmasining tekshirilgan satrlarini o‘tkazishi mumkin; operatsiyalarni umumiy yaratish va o‘zgartirish huquqi berilmaydi.",
     "Kontragentlar maʼlumotnomasidan tanlangan yozuvlarni o‘chirishda boshqa yozuvlar va tarix saqlanadi.",
     "Arizada STIR orqali tanlangan kompaniya kontragentini qidirish; bir xil nomli, turli STIRli kontragentlar alohida saqlanadi.",
     "Budjet summalari masshtabi shakldan to‘g‘ri qabul qilinadi: birlik, ming yoki million.",
