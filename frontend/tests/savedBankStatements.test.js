@@ -186,7 +186,7 @@ test('a failed open-history refresh clears stale items and shows the read error 
   const view=mount(component,{api,companyId:1,accounts,canImport:true});t.after(view.unmount);await settle();
   await button(view,'Показать историю выписок').props.onClick();await settle();assert.match(text(view.container),/OLD-SYNTHETIC-HISTORY.xls/);
   await view.state.resumeSaved(item);view.state.confirmAccount=true;view.state.confirmCurrency=true;await settle();await view.state.commit();await settle();
-  assert.doesNotMatch(text(view.container),/OLD-SYNTHETIC-HISTORY.xls/);assert.match(text(view.container),/Synthetic history unavailable/);assert.match(text(view.container),/Выписка принята/);
+  assert.doesNotMatch(text(view.container),/OLD-SYNTHETIC-HISTORY.xls/);assert.match(text(view.container),/Synthetic history unavailable/);assert.match(text(view.container),/Подтверждение выписки завершено/);
 });
 
 test('saved preview refresh audit action is translated in the action filter and visible audit event',async t=>{

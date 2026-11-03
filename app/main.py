@@ -315,10 +315,15 @@ def get_dashboard(request:Request,currency:Literal['UZS','USD','EUR']='UZS',days
 def accounts(request:Request,archived:bool=False):
     with unit() as s:
         user,_=session_user(s,request,'view')
-        from .bank_statement_guard import unreconciled_account_counts
+        from .bank_statement_guard import unreconciled_account_counts, pending_bank_debit_hold
         pending=unreconciled_account_counts(s) if company_role(user)!='sales' else {}
-        return [{'id':a.id,'name':a.name,'kind':a.kind,'currency':a.currency,'company_id':a.company_id,'opening':money(a.opening),
-                 'balance':money(account_balance(s,a)),'opening_date':str(a.opening_date),'allow_overdraft':a.allow_overdraft,'archived':a.archived,'unreconciled_statements':pending.get(a.id,0)} for a in s.scalars(select(Account).where(Account.archived==archived).order_by(Account.id))]
+        result=[]
+        for a in s.scalars(select(Account).where(Account.archived==archived).order_by(Account.id)):
+            balance=account_balance(s,a);hold=pending_bank_debit_hold(s,a)
+            result.append({'id':a.id,'name':a.name,'kind':a.kind,'currency':a.currency,'company_id':a.company_id,'opening':money(a.opening),
+                 'balance':money(balance),'opening_date':str(a.opening_date),'allow_overdraft':a.allow_overdraft,'archived':a.archived,
+                 'unreconciled_statements':pending.get(a.id,0),'bank_pending_debits':money(hold),'spendable_balance':money(balance-hold)})
+        return result
 
 @app.post('/api/accounts/{id}/archive')
 def archive_account(id:int,data:ArchiveIn,request:Request):
@@ -863,7 +868,7 @@ class BankStatementDeleteIn(BaseModel):
 def _statement_delete_snapshot(s,batch):
     import hashlib
     from .bank_statement_models import BankStatementBatch, BankStatementLine
-    owned_statuses={'auto_paid','manual_paid','auto_income_posted','auto_fee_posted','auto_outgoing_posted'}
+    owned_statuses={'auto_paid','manual_paid','auto_income_posted','auto_fee_posted','auto_interest_posted','auto_outgoing_posted'}
     lines=list(s.scalars(select(BankStatementLine).where(BankStatementLine.batch_id==batch.id).order_by(BankStatementLine.id)))
     owned={line.ledger_id for line in lines if line.status in owned_statuses and line.ledger_id}
     ledger={entry.id:entry for entry in s.scalars(select(Ledger).where(Ledger.id.in_(owned)))} if owned else {}
@@ -905,7 +910,7 @@ def statement_admin_batches(request:Request):
         batches=list(s.execute(select(BankStatementBatch,Account).join(Account,Account.id==BankStatementBatch.account_id)
             .where(BankStatementBatch.status.in_(('preview','committed'))).order_by(BankStatementBatch.id.desc())))
         items=[]
-        owned_statuses={'auto_paid','manual_paid','auto_income_posted','auto_fee_posted','auto_outgoing_posted'}
+        owned_statuses={'auto_paid','manual_paid','auto_income_posted','auto_fee_posted','auto_interest_posted','auto_outgoing_posted'}
         # Read only the fields required for counts, in one query for the whole
         # company. The expensive signed state is built when an admin opens one row.
         grouped={}
@@ -931,7 +936,7 @@ def statement_admin_delete_preview(id:int,request:Request):
         if batch.status not in ('preview','committed'):raise HTTPException(409,'Выписка уже удалена или недоступна.')
         account=get(s,Account,batch.account_id)
         lines,ledger,registry,reversals,links,later,token=_statement_delete_snapshot(s,batch)
-        owned={line.ledger_id for line in lines if line.status in {'auto_paid','manual_paid','auto_income_posted','auto_fee_posted','auto_outgoing_posted'} and line.ledger_id}
+        owned={line.ledger_id for line in lines if line.status in {'auto_paid','manual_paid','auto_income_posted','auto_fee_posted','auto_interest_posted','auto_outgoing_posted'} and line.ledger_id}
         linked={line.ledger_id for line in lines if line.ledger_id and line.ledger_id not in owned}
         return {'id':batch.id,'filename':batch.filename,'status':batch.status,'account_name':account.name,'currency':batch.currency,
             'period_from':str(batch.period_from),'period_to':str(batch.period_to),'operation_count':len(owned),
@@ -952,7 +957,7 @@ def statement_admin_delete(id:int,data:BankStatementDeleteIn,request:Request):
         if links:raise HTTPException(409,'Операция связана с другой выпиской. Сначала проверьте эту связь.')
         account=get(s,Account,batch.account_id)
         other_balances={other.id:(day_start_balance(s,account,other.period_from),account_balance(s,account,other.period_to)) for other in later}
-        owned_lines=[line for line in lines if line.status in {'auto_paid','manual_paid','auto_income_posted','auto_fee_posted','auto_outgoing_posted'}]
+        owned_lines=[line for line in lines if line.status in {'auto_paid','manual_paid','auto_income_posted','auto_fee_posted','auto_interest_posted','auto_outgoing_posted'}]
         for line in owned_lines:
             entry=ledger.get(line.ledger_id)
             if not entry or entry.account_id!=batch.account_id or entry.date!=line.date or entry.amount!=line.amount or entry.reference!='BANK-'+line.fingerprint or entry.kind!=line.direction:
@@ -1018,8 +1023,10 @@ def group_report(request:Request,company_id:int,currency:Literal['UZS','USD','EU
         income_day=sum(t.amount for t in entries if t.kind=='in' and t.date==day)
         expense_day=sum(t.amount for t in entries if t.kind=='out' and t.date==day)
         closing=opening+income_day-expense_day
-        reserved=sum(funds_state(s,a,day)['reserved'] for a in opened)
-        available=closing-reserved
+        states=[funds_state(s,a,day) for a in opened]
+        reserved=sum(state['reserved'] for state in states)
+        bank_hold=sum(state['bank_pending_debits'] for state in states)
+        available=closing-reserved-bank_hold
         if not plan['complete']:
             if plan['defined_rows']:
                 plan_line=(f'План расходов: частично задано {money(expense_plan)} {currency}; '
@@ -1043,7 +1050,8 @@ def group_report(request:Request,company_id:int,currency:Literal['UZS','USD','EU
             'expense_plan_complete':plan['complete'],'expense_plan_defined_rows':plan['defined_rows'],'expense_plan_missing_rows':plan['missing_rows'],
             'expense_plan_total':money(plan['total']) if plan['total'] is not None else None,
             'expense_plan_remaining':money(remaining) if remaining is not None else None,'expense_plan_coverage_percent':coverage,
-            'opening':money(opening),'income_day':money(income_day),'expense_day':money(expense_day),'closing':money(closing),'reserved':money(reserved),'available':money(available)}
+            'opening':money(opening),'income_day':money(income_day),'expense_day':money(expense_day),'closing':money(closing),'reserved':money(reserved),
+            'bank_pending_debits':money(bank_hold),'available':money(available)}
 
 @app.get('/api/export/ledger.csv')
 def export_ledger(request:Request):

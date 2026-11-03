@@ -271,7 +271,10 @@ def morning_summary(request: Request, chat_id: int, report_date: date, today: da
             available[key] = available.get(key, 0) + state['available']
             if state['available'] < 0:
                 label = mask_digits(a.name, 80)
-                if state['reserved']:
+                if state.get('bank_pending_debits'):
+                    message = (f'{label}: доступно {money(state["available"])} {a.currency}; '
+                               f'непроведённые списания банка {money(state["bank_pending_debits"])} {a.currency}')
+                elif state['reserved']:
                     message = (f'{label}: не хватает {money(-state["available"])} {a.currency} '
                                f'на утверждённые платежи по {today:%d.%m.%Y}')
                 else:

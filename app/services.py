@@ -77,8 +77,8 @@ def day_start_balance(s,a,day):
     if day<a.opening_date:return 0
     return a.opening if day==a.opening_date else account_balance(s,a,day-timedelta(days=1))
 
-def funds_state(s, account, as_of, exclude_request=None):
-    """Actual account money less fully approved unpaid requests due by ``as_of``.
+def funds_state(s, account, as_of, exclude_request=None, *, include_bank_hold=True):
+    """Posted money less approved reservations and unaccounted bank debits.
 
     The caller runs inside ``unit(write=True)`` for approval/payment paths.  That
     transaction serializes writers (Guard row on PostgreSQL, BEGIN IMMEDIATE on
@@ -93,19 +93,23 @@ def funds_state(s, account, as_of, exclude_request=None):
         PaymentRequest.due_date<=as_of,
     ))
     reserved=sum(r.amount for r in approved if r.id!=exclude_request)
-    return {'actual':actual,'reserved':reserved,'available':actual-reserved,
+    from .bank_statement_guard import pending_bank_debit_hold
+    bank_hold=pending_bank_debit_hold(s,account,as_of) if include_bank_hold else 0
+    return {'actual':actual,'reserved':reserved,'bank_pending_debits':bank_hold,'available':actual-reserved-bank_hold,
             'account_id':account.id,'currency':account.currency,'as_of':str(as_of)}
 
-def enforce_available_funds(s, account, as_of, required, exclude_request=None):
-    state=funds_state(s,account,as_of,exclude_request)
+def enforce_available_funds(s, account, as_of, required, exclude_request=None, *, include_bank_hold=True):
+    state=funds_state(s,account,as_of,exclude_request,include_bank_hold=include_bank_hold)
     if state['available']<required:
+        if state['bank_pending_debits']:
+            raise HTTPException(409,'Недостаточно доступных средств с учётом непроведённых списаний банковской выписки. Сверьте спорные строки.')
         raise HTTPException(409,
             f'Недостаточно доступных средств на счёте «{account.name}» на {as_of}: '
             f'{money(state["available"])} {account.currency}. Требуется {money(required)} {account.currency}. '
             f'Фактический остаток {money(state["actual"])}; резерв утверждённых заявок {money(state["reserved"])}.')
     return state
 
-def enforce_reserved_funds(s, account, effective_on, required, exclude_request=None, check_dates=()):
+def enforce_reserved_funds(s, account, effective_on, required, exclude_request=None, check_dates=(), *, include_bank_hold=True):
     """Keep every future approved obligation funded after a new commitment/debit.
 
     Preserve the action's original date checks, then also check the dates of
@@ -127,7 +131,7 @@ def enforce_reserved_funds(s, account, effective_on, required, exclude_request=N
     if exclude_request is not None:q=q.where(PaymentRequest.id!=exclude_request)
     dates.update(s.scalars(q))
     for day in sorted(dates):
-        enforce_available_funds(s,account,day,required,exclude_request)
+        enforce_available_funds(s,account,day,required,exclude_request,include_bank_hold=include_bank_hold)
 
 def enforce_reservations_after_correction(s, account):
     """Validate reservations against already corrected balances, with no second debit.
@@ -473,7 +477,7 @@ def post_ledger(s,u,data,*,bank_statement_fact=False,bank_statement_import=False
     if a.archived:raise HTTPException(409,'Счёт в архиве. Сначала восстановите его.')
     if 'write' not in perms_of(u) and (data.kind!='out' or not data.request_id):
         # A private, server-only capability used exclusively by the confirmed,
-        # fully reconciled statement processors. It is not an API input field.
+        # signed, reconciled-subset statement processors. It is not an API input field.
         from .bank_statement_permissions import can_post_statement
         if not (bank_statement_import and 'pay_bank' in perms_of(u) and can_post_statement(u)
                 and a.kind=='bank' and data.kind in ('in','out') and not data.request_id and not data.to_account_id):
@@ -532,7 +536,7 @@ def post_ledger(s,u,data,*,bank_statement_fact=False,bank_statement_import=False
     elif kind=='out':
         enforce_budget(s,data.category_id,data.date,a.currency,n,data.note)
         # Расход без заявки не забирает ни наступившие, ни будущие резервы.
-        enforce_reserved_funds(s,a,data.date,n)
+        enforce_reserved_funds(s,a,data.date,n,include_bank_hold=not (bank_statement_import or bank_statement_fact))
         if len(data.note.strip())<10:raise HTTPException(422,'Для расхода без заявки укажите основание не короче 10 символов.')
     elif kind=='transfer':
         # Перевод не уносит со счёта деньги, зарезервированные под утверждённые заявки.
@@ -554,12 +558,16 @@ def dashboard(s,currency,horizon=30):
     ids={a.id for a in accounts};start=today()
     account_balances={a.id:account_balance(s,a) for a in accounts}
     current=sum(account_balances.values())
+    from .bank_statement_guard import pending_bank_debit_hold
+    bank_holds={a.id:pending_bank_debit_hold(s,a,start) for a in accounts}
+    bank_hold=sum(bank_holds.values())
+    account_balances={aid:value-bank_holds[aid] for aid,value in account_balances.items()}
     req=[r for r in s.scalars(select(PaymentRequest)) if r.account_id in ids]
     receipt=[r for r in s.scalars(select(Receipt)) if r.account_id in ids and r.status=='expected']
     approved=[r for r in req if r.status=='approved']
     pending=[r for r in req if r.status=='pending']
     reserve=get_setting(s,'reserve_'+currency);reserve=int(reserve.value) if reserve else 0
-    days=[];bal=current;requested_bal=current;requested_accounts=account_balances.copy()
+    days=[];bal=current-bank_hold;requested_bal=bal;requested_accounts=account_balances.copy()
     for i in range(horizon):
         day=start+timedelta(days=i)
         ins=[r for r in receipt if max(start,r.due_date)==day]
@@ -587,6 +595,7 @@ def dashboard(s,currency,horizon=30):
     period=[t for t in s.scalars(effective_cashflows(s)) if t.account_id in ids and t.date.year==start.year and t.date.month==start.month and t.date<=start]
     pending=[r for r in req if r.status=='pending']
     return {'currency':currency,'as_of':str(start),'account_count':len(accounts),'balance':money(current) if accounts else None,
+            'bank_pending_debits':money(bank_hold),'spendable_balance':money(current-bank_hold) if accounts else None,
             'reserve':money(reserve),'pending_count':len(pending),'pending_amount':money(sum(r.amount for r in pending)),
             'incoming7':money(sum(r.amount for r in receipt if max(start,r.due_date)<start+timedelta(days=7))),
             'outgoing7':money(sum(r.amount for r in approved if max(start,r.due_date)<start+timedelta(days=7))),

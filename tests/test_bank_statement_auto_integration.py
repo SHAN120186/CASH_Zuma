@@ -8,7 +8,7 @@ from tests.test_site import SiteTests
 from app.db import Account, Audit, Budget, Category, Company, Ledger, PaymentRequest, Setting, User, engine, now, unit
 from app.bank_statement_models import BankStatementBatch
 from app.bank_statement_guard import set_statement_reconciliation, unreconciled_statements
-from app.services import account_balance, budget_state
+from app.services import account_balance, budget_state, funds_state
 
 
 class AutoBankIntegrationTests(SiteTests):
@@ -151,20 +151,25 @@ class AutoBankIntegrationTests(SiteTests):
         self.assertIn(result.status_code,(200,409),result.text)
         with unit() as s:
             entries=list(s.scalars(select(Ledger)))
-            self.assertFalse(any(entry.kind=='in' for entry in entries))
-            # The statement closing is 1,000,180; a credit without the debit
-            # would incorrectly expose 1,000,200 to future payment checks.
-            self.assertLessEqual(account_balance(s,s.get(Account,self.acc)),100018000)
+            self.assertTrue(any(entry.kind=='in' for entry in entries))
+            # Verified credits post, while the unresolved debit is held back
+            # from spendable funds rather than silently treated as income.
+            state=funds_state(s,s.get(Account,self.acc),date.fromisoformat(self.date))
+            self.assertEqual(state['bank_pending_debits'],2000)
+            self.assertLessEqual(state['available'],100018000)
 
-    def test_fee_rejected_by_budget_never_leaves_credit_posted(self):
+    def test_fee_rejected_by_budget_keeps_credit_but_holds_unposted_debit(self):
         self.budget('0',mode='hard')
         response=self.preview(self.statement(False),self.cat); self.assertEqual(response.status_code,200,response.text)
         result=self.confirmed(response.json(),self.cat)
         self.assertIn(result.status_code,(200,409),result.text)
         with unit() as s:
             entries=list(s.scalars(select(Ledger)))
-            self.assertFalse(any(entry.kind=='in' for entry in entries))
-            self.assertLessEqual(account_balance(s,s.get(Account,self.acc)),100018000)
+            self.assertTrue(any(entry.kind=='in' for entry in entries))
+            self.assertFalse(any(entry.kind=='out' for entry in entries))
+            state=funds_state(s,s.get(Account,self.acc),date.fromisoformat(self.date))
+            self.assertEqual(state['bank_pending_debits'],2000)
+            self.assertLessEqual(state['available'],100018000)
 
     def test_unreconciled_closing_balance_rolls_back_the_new_batch(self):
         # An unrelated same-day expense isn't represented by the bank file.
@@ -191,37 +196,38 @@ class AutoBankIntegrationTests(SiteTests):
         self.assertIn('auto_pay_candidate',[r['status'] for r in p['rows']])
         result=self.confirmed(p,self.cat);self.assertEqual(result.status_code,200,result.text)
         self.assertFalse(result.json()['full_reconciliation'])
-        self.assertEqual((result.json()['auto_paid'],result.json()['auto_income'],result.json()['auto_fee']),(1,0,0))
+        self.assertEqual((result.json()['auto_paid'],result.json()['auto_income'],result.json()['auto_fee']),(1,1,1))
         with unit() as s:
             entries=list(s.scalars(select(Ledger)))
-            self.assertEqual(len(entries),1)
-            self.assertEqual((entries[0].kind,entries[0].amount,entries[0].request_id),('out',60000,rid))
+            self.assertEqual(len(entries),3)
+            payment=next(entry for entry in entries if entry.request_id==rid)
+            self.assertEqual((payment.kind,payment.amount),('out',60000))
             self.assertEqual(s.get(PaymentRequest,rid).status,'paid')
-            self.assertEqual(account_balance(s,s.get(Account,self.acc)),99940000)
+            self.assertEqual(account_balance(s,s.get(Account,self.acc)),99958000)
+            self.assertEqual(funds_state(s,s.get(Account,self.acc),date.fromisoformat(self.date))['available'],99950500)
         self.assertEqual(self.confirmed(p,self.cat).status_code,409)
-        with unit() as s:self.assertEqual(len(list(s.scalars(select(Ledger)))),1)
+        with unit() as s:self.assertEqual(len(list(s.scalars(select(Ledger)))),3)
 
-    def test_exact_approved_payment_posts_once_after_closing_mismatch_rolls_back_import(self):
+    def test_closing_mismatch_cannot_leak_an_exact_approved_payment(self):
         rid=self.approved()
         # An extra existing expense is not represented in this statement:
         # candidate checks pass, but the closing reconciliation must fail.
         existing=self.ledger('50','out',reference='SYN-OTHER')
         self.assertEqual(existing.status_code,200,existing.text)
         response=self.preview(self.statement(),self.cat);self.assertEqual(response.status_code,200,response.text)
-        p=response.json();self.assertTrue(p['full_reconciliation'])
+        p=response.json();self.assertFalse(p['full_reconciliation'])
         result=self.confirmed(p,self.cat);self.assertEqual(result.status_code,200,result.text)
         self.assertFalse(result.json()['full_reconciliation'])
-        self.assertEqual((result.json()['auto_paid'],result.json()['auto_income'],result.json()['auto_fee']),(1,0,0))
+        self.assertEqual((result.json()['auto_paid'],result.json()['auto_income'],result.json()['auto_fee']),(0,0,0))
         with unit() as s:
             entries=list(s.scalars(select(Ledger)))
-            self.assertEqual(len(entries),2)
+            self.assertEqual(len(entries),1)
             payments=[entry for entry in entries if entry.request_id==rid]
-            self.assertEqual(len(payments),1)
-            self.assertEqual((payments[0].kind,payments[0].amount),('out',60000))
-            self.assertEqual(s.get(PaymentRequest,rid).status,'paid')
-            self.assertEqual(account_balance(s,s.get(Account,self.acc)),99935000)
+            self.assertEqual(payments,[])
+            self.assertEqual(s.get(PaymentRequest,rid).status,'approved')
+            self.assertEqual(account_balance(s,s.get(Account,self.acc)),99995000)
         self.assertEqual(self.confirmed(p,self.cat).status_code,409)
-        with unit() as s:self.assertEqual(len(list(s.scalars(select(Ledger)))),2)
+        with unit() as s:self.assertEqual(len(list(s.scalars(select(Ledger)))),1)
 
     def test_accountant_reconciles_incoming_funded_request_without_general_write(self):
         """A bank payer can post one fully reconciled statement, never generic entries."""
@@ -254,8 +260,9 @@ class AutoBankIntegrationTests(SiteTests):
         rid=self.approved()
         raw=self.statement(False)
         p=self.preview(raw);self.assertEqual(p.status_code,200,p.text)
-        self.assertFalse(p.json()['full_reconciliation'])
-        committed=self.confirmed(p.json());self.assertEqual(committed.status_code,200,committed.text)
+        # Model an older client that confirmed without the signed posting flow.
+        self.assertTrue(p.json()['full_reconciliation'])
+        committed=self.confirmed(p.json(),token=False);self.assertEqual(committed.status_code,200,committed.text)
         self.assertFalse(committed.json()['full_reconciliation'])
         batch_id=p.json()['id']
         blocked=self.ledger('600','out',reference='SYN-BLOCKED',request_id=rid)
@@ -301,7 +308,7 @@ class AutoBankIntegrationTests(SiteTests):
         rid=self.approved()
         p=self.preview(self.statement(False))
         self.assertEqual(p.status_code,200,p.text)
-        self.assertEqual(self.confirmed(p.json()).status_code,200)
+        self.assertEqual(self.confirmed(p.json(),token=False).status_code,200)
         self.assertEqual(self.ledger('600','out',reference='SYN-MANUAL-DENY',request_id=rid).status_code,409)
         accountant,headers=self.accountant
         p2=self.preview(self.statement(),client=accountant,headers=headers)
@@ -422,7 +429,10 @@ class AutoBankIntegrationTests(SiteTests):
         self.assertFalse(p['full_reconciliation'])
         result=self.confirmed(p,self.cat); self.assertEqual(result.status_code,200,result.text)
         self.assertFalse(result.json()['full_reconciliation'])
-        with unit() as s:self.assertEqual(len(list(s.scalars(select(Ledger)))),0)
+        with unit() as s:
+            entries=list(s.scalars(select(Ledger)))
+            self.assertEqual(len(entries),2)
+            self.assertFalse(any(entry.kind=='out' and entry.amount==7500 for entry in entries))
 
     def test_accountant_posts_statement_but_cannot_change_default_fee(self):
         client,headers=self.accountant
@@ -463,7 +473,7 @@ class AutoBankIntegrationTests(SiteTests):
             self.assertEqual(len(list(s.scalars(select(Ledger)))),3)
             self.assertEqual(account_balance(s,s.get(Account,self.acc)),100010500)
 
-    def test_accountant_does_not_post_credits_if_any_transfer_is_unresolved(self):
+    def test_accountant_posts_verified_credit_and_holds_unresolved_transfer(self):
         client,headers=self.accountant
         raw=self.statement(False,external=True).replace(b'<td>300000005</td>',b'<td>300000001</td>')
         preview=self.preview(raw,self.cat,client,headers)
@@ -473,7 +483,10 @@ class AutoBankIntegrationTests(SiteTests):
         self.assertEqual(done.status_code,200,done.text)
         self.assertFalse(done.json()['full_reconciliation'])
         with unit() as s:
-            self.assertIsNone(s.scalar(select(Ledger.id)))
+            entries=list(s.scalars(select(Ledger)))
+            self.assertTrue(any(entry.kind=='in' and entry.amount==20000 for entry in entries))
+            self.assertFalse(any(entry.kind=='out' and entry.amount==7500 for entry in entries))
+            self.assertLessEqual(funds_state(s,s.get(Account,self.acc),date.fromisoformat(self.date))['available'],100010500)
             self.assertTrue(unreconciled_statements(s,s.get(Account,self.acc)))
 
     def test_accountant_fee_choice_does_not_replace_company_setting(self):
@@ -534,9 +547,9 @@ class AutoBankIntegrationTests(SiteTests):
         client,headers=self.accountant
         first=self.preview(self.statement(False),None,client,headers)
         self.assertEqual(first.status_code,200,first.text)
-        self.assertFalse(first.json()['full_reconciliation'])
+        self.assertTrue(first.json()['full_reconciliation'])
         batch_id=first.json()['id']
-        result=self.confirmed(first.json(),None,client,headers)
+        result=self.confirmed(first.json(),None,client,headers,token=False)
         self.assertEqual(result.status_code,200,result.text)
         with unit() as s:
             self.assertTrue(unreconciled_statements(s,s.get(Account,self.acc)))
@@ -563,7 +576,7 @@ class AutoBankIntegrationTests(SiteTests):
         preview=self.preview(self.statement(False),None,client,headers)
         self.assertEqual(preview.status_code,200,preview.text)
         batch_id=preview.json()['id']
-        self.assertEqual(self.confirmed(preview.json(),None,client,headers).status_code,200)
+        self.assertEqual(self.confirmed(preview.json(),None,client,headers,token=False).status_code,200)
         listing=client.get('/api/bank-statements/reprocess/batches',headers=headers)
         self.assertEqual(listing.status_code,200,listing.text)
         self.assertIn(batch_id,[row['id'] for row in listing.json()['items']])

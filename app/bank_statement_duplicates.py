@@ -20,7 +20,8 @@ from .services import deleted_ledger_ids, effective_cashflows, get, log, money
 
 router = APIRouter()
 LINKED = frozenset({'auto_paid', 'paid_match', 'manual_paid', 'manual_match',
-                    'auto_income_posted', 'income_matched', 'auto_fee_posted', 'fee_matched', 'other_matched', 'auto_outgoing_posted', 'manual_transfer_match'})
+                    'auto_income_posted', 'income_matched', 'auto_fee_posted', 'fee_matched',
+                    'auto_interest_posted', 'interest_matched', 'other_matched', 'auto_outgoing_posted', 'manual_transfer_match'})
 
 
 class DuplicateResolution(BaseModel):

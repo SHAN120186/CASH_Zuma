@@ -31,14 +31,15 @@ class ExpenseSummaryTests(BankStatementTests):
         self.assertEqual(response.status_code,200,response.text)
         return response.json()
 
-    def test_all_debits_explained_even_when_fee_category_or_reconciliation_is_missing(self):
+    def test_all_debits_explained_and_automatic_fee_article_requires_no_manual_selection(self):
         rid=self.approved()
         rows=[self.expense_row(),self.expense_row('FEE',amount='20.00',inn='300000001',
                     purpose='00011 Погаш. ком. SWIFT - synthetic',line=7),
               self.expense_row('NO-REQUEST',amount='75.00',inn='300000005',line=8)]
         p=self.preview(self.source_rows(rows));self.assertEqual(p.status_code,200,p.text)
         data=p.json();debits=data['rows']
-        self.assertFalse(data['full_reconciliation'])
+        self.assertTrue(data['full_reconciliation'])
+        self.assertEqual(debits[1]['category_source'], 'bank_fee_auto')
         self.assertEqual([r['expense_kind'] for r in debits],['request','bank_fee','no_request'])
         self.assertEqual(debits[0]['expense_request_id'],rid)
         self.assertEqual(debits[0]['expense_category_id'],self.cat)
@@ -122,7 +123,7 @@ class ExpenseSummaryTests(BankStatementTests):
         row=self.details(fee.json()['id'])['rows'][0]
         self.assertEqual((row['expense_kind'],row['expense_reason']),('unresolved','linked_operation_changed'))
 
-    def test_bank_interest_and_iabs_possible_fees_are_separate_from_proven_fees_and_transfers(self):
+    def test_bank_interest_and_exact_iabs_fees_are_separate_from_transfers(self):
         day=date.fromisoformat(self.date).strftime('%d.%m.%Y')
         rows=[self.expense_row('SWIFT','20.00','00011 Погаш. ком. SWIFT - synthetic','300000001',line=6),
               self.expense_row('INTEREST','30.00','01014кредит фоизи учун толов','300000001','16309000000000000001',line=7),
@@ -130,10 +131,10 @@ class ExpenseSummaryTests(BankStatementTests):
                        '300000001','16401000000000000001',line=8),
               self.expense_row('OWN','40.00','00634Пополнение корпоративной карты','300000001',line=9)]
         p=self.preview(self.source_rows(rows));self.assertEqual(p.status_code,200,p.text)
-        self.assertEqual([r['expense_kind'] for r in p.json()['rows']],['bank_fee','bank_interest','fee_possible','unresolved'])
-        self.assertEqual(p.json()['rows'][2]['expense_evidence'],'iabs_fee_template_unconfirmed')
+        self.assertEqual([r['expense_kind'] for r in p.json()['rows']],['bank_fee','bank_interest','bank_fee','unresolved'])
+        self.assertEqual(p.json()['rows'][2]['expense_evidence'],'explicit_iabs_fee')
         self.assertEqual(p.json()['rows'][3]['expense_reason'],'own_inn_does_not_prove_transfer')
-        self.assertEqual(p.json()['rows'][2]['status'],'review')
+        self.assertEqual(p.json()['rows'][2]['status'],'fee_candidate')
 
     def test_percent_goods_and_utility_abbreviation_are_not_bank_fees(self):
         rows=[self.expense_row('GOODS','5.00','Оплата 100% за товар'),

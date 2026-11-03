@@ -541,3 +541,12 @@ test('accepted saved statement clears cached Cash Flow before returning to the s
   cleanup();
  }
 });
+
+test('operations Cash Flow warns about an unreconciled bank in the selected currency without applying the warning to OSV',async t=>{
+ const {view}=await fixture(t,async()=>({ok:true,status:200,json:async()=>({})}));
+ Object.assign(view.state,{page:'report',cashFlowBasis:'operations',currency:'UZS',boot:{...bootstrapBody(),accounts:[{id:1,kind:'bank',currency:'UZS',unreconciled_statements:1},{id:2,kind:'cash',currency:'USD',unreconciled_statements:1}]}});await settle();
+ assert.match(text(view.container),/Факт Cash Flow включает только проведённые операции/);assert.match(text(view.container),/остаток сайта ещё не подтверждает полную сверку с банком/);
+ view.state.currency='USD';await settle();assert.doesNotMatch(text(view.container),/Часть банковских строк остаётся на проверке/);
+ view.state.currency='UZS';view.state.cashFlowBasis='osv';await settle();assert.doesNotMatch(text(view.container),/Часть банковских строк остаётся на проверке/);
+ view.state.cashFlowBasis='operations';view.state.boot.accounts[0].unreconciled_statements=0;await settle();assert.doesNotMatch(text(view.container),/Часть банковских строк остаётся на проверке/);
+});

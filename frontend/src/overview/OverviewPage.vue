@@ -193,6 +193,7 @@ const balanceState = computed(() => {
 const onAccounts = computed(() => toCents(s.value.now?.closing) ?? (s.value.accounts ? sumCents(s.value.accounts, a => a.balance) : null));
 const reserved = computed(() => toCents(s.value.now?.reserved));
 const available = computed(() => toCents(s.value.now?.available));
+const bankPendingDebits = computed(() => toCents(s.value.now?.bank_pending_debits) ?? toCents(s.value.dash?.bank_pending_debits));
 const change = computed(() => {
   const now = available.value, before = toCents(s.value.prev?.available);
   if (now == null || before == null || before === 0) return null;
@@ -349,6 +350,7 @@ const signedLedger = t => (t.kind === 'out' ? -1 : t.kind === 'in' ? 1 : 0) * (t
    <button v-if="has('ledger')" type="button" class="secondary tiny" @click="emit('go', 'ledger')">{{tx('Перейти к операциям')}}</button>
    <button v-else type="button" class="secondary tiny" @click="emit('go', 'accounts')">{{tx('Перейти к счетам')}}</button>
   </div>
+  <p v-if="bankPendingDebits!==null && bankPendingDebits>0" class="ov-reconciliation-warning" role="status">{{tx('Доступные средства уменьшены на {amount} {currency} банковских списаний на проверке. Факт отражает только проведённые операции; полная сверка с банком не завершена.',{amount:formatCents(bankPendingDebits,currency),currency})}}</p>
   <div class="ov-top">
    <BalanceCard class="ov-main" :state="balanceState" :error="s.errors.now" :company="company?.name || ''" :as-of="s.now?.day || today"
     :currency="currency" :available="available" :on-accounts="onAccounts" :reserved="reserved" :change="change"

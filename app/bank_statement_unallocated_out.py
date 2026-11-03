@@ -90,7 +90,7 @@ def classify_unallocated_out(s, batch, lines, account, user, outgoing_category_i
     known_accounts.add(batch.account_number)
     decisions = {}
     posted_statuses = {'auto_outgoing_posted','other_matched','auto_paid','paid_match','manual_paid',
-                       'manual_match','auto_fee_posted','fee_matched'}
+                       'manual_match','auto_fee_posted','fee_matched','auto_interest_posted','interest_matched'}
 
     def already_paid_by_another_bank_document(req, line):
         """Ignore a historical request only with a proved, active bank link."""

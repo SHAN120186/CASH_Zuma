@@ -30,7 +30,7 @@ test('statement expense groups keep unclassified debits, fees, transfers and unc
  assert.match(text(view.container),/1\s*000,10 UZS/);assert.match(text(view.container),/2\s*025,20 UZS/);assert.match(text(view.container),/50,05 UZS/);
  assert.match(text(view.container),/160 UZS/);assert.match(text(view.container),/3\s*315,35 UZS/);
  assert.match(text(view.container),/Synthetic supplier/);assert.match(text(view.container),/123456789/);
- assert.match(text(view.container),/Ожидает полной сверки/);assert.match(text(view.container),/Автоматическая сверка списаний/);
+ assert.match(text(view.container),/Остаётся на проверке/);assert.match(text(view.container),/Автоматическая сверка списаний/);
 });
 
 test('statement summaries keep exact cents, refuse unsafe totals, and translate labels to Uzbek',async t=>{
@@ -162,26 +162,26 @@ test('fee category is company-scoped, explicitly previewed, and opening mismatch
  assert.deepEqual(view.state.feeCategories.map(c=>c.id),[4]);assert.equal(view.state.feeCategoryId,'4');
  view.state.accountId='21';view.state.currency='UZS';await settle();await view.state.upload(event());await settle();
  assert.match(calls.find(([url])=>url.includes('/preview?'))[0],/fee_category_id=4/);
- assert.match(text(view.container),/Начальный остаток не совпадает/);assert.match(text(view.container),/Не распределено/);assert.match(text(view.container),/Synthetic fee/);assert.match(text(view.container),/Ожидает полной сверки/);assert.doesNotMatch(text(view.container),/Поступление будет проведено|Комиссия будет проведена/);
+ assert.match(text(view.container),/Начальный остаток не совпадает/);assert.match(text(view.container),/Не распределено/);assert.match(text(view.container),/Synthetic fee/);assert.match(text(view.container),/Остаётся на проверке/);assert.doesNotMatch(text(view.container),/Поступление будет проведено|Комиссия будет проведена/);
  view.state.confirmAccount=true;view.state.confirmCurrency=true;await settle();await view.state.commit();
  const body=JSON.parse(calls.find(([url])=>url.endsWith('/commit'))[1].body);
  assert.deepEqual(body,{confirm_account:true,confirm_currency:true,fee_category_id:4,preview_token:'snapshot-7'});
- assert.match(text(view.container),/Поступления, комиссии и прочие списания отложены/);
+ assert.match(text(view.container),/полная сверка счёта не завершена/);assert.doesNotMatch(text(view.container),/Поступления, комиссии и прочие списания отложены/);
 });
 
-test('final all-or-nothing failure is explained even when the preview was initially complete',async t=>{
+test('final partial result stays explicit even when the preview was initially complete',async t=>{
  const api=async(url)=>{if(url==='/api/bank-statements/reviews')return {items:[]};if(url==='/api/bank-statements/settings')return {fee_category_id:null};if(url.includes('/preview?'))return statement;if(url.endsWith('/commit'))return {auto_paid:0,linked_paid:0,review:1,auto_income:0,auto_fee:0,full_reconciliation:false};throw Error('unexpected')};
  const view=mount(component,{api,companyId:1,accounts,canImport:true});t.after(view.unmount);await settle();view.state.accountId='21';view.state.currency='UZS';await settle();await view.state.upload(event());
  assert.match(text(view.container),/Все строки готовы к полной сверке/);view.state.confirmAccount=true;view.state.confirmCurrency=true;await settle();await view.state.commit();await settle();
- assert.match(text(view.container),/Поступления, комиссии и прочие списания отложены/);assert.match(text(view.container),/Спорные строки нужно проверить бухгалтеру/i);
+ assert.match(text(view.container),/Спорные строки остаются на проверке/);assert.match(text(view.container),/полная сверка счёта не завершена/);
 });
 
-test('incomplete reconciliation defers receipts and fees but still explains exact request payments',async t=>{
+test('incomplete reconciliation keeps pending candidates honest and reports actual request payments',async t=>{
  const api=async(url)=>{if(url==='/api/bank-statements/reviews')return {items:[]};if(url==='/api/bank-statements/settings')return {fee_category_id:null};if(url.includes('/preview?'))return {...statement,full_reconciliation:false,rows:[...statement.rows,{id:2,date:'2026-10-30',direction:'in',amount:'10',status:'income_candidate'},{id:3,date:'2026-10-30',direction:'out',amount:'5',status:'other_matched_candidate'}]};if(url.endsWith('/commit'))return {auto_paid:1,linked_paid:0,review:2,auto_income:0,auto_fee:0,full_reconciliation:false};throw Error('unexpected')};
  const view=mount(component,{api,companyId:1,accounts,canImport:true});t.after(view.unmount);await settle();view.state.accountId='21';view.state.currency='UZS';await settle();await view.state.upload(event());await settle();
- assert.match(text(view.container),/Точное совпадение с заявкой/);assert.match(text(view.container),/Ожидает полной сверки/);assert.doesNotMatch(text(view.container),/Найдена существующая операция/);assert.match(text(view.container),/точно сопоставленные заявки могут быть отмечены оплаченными/);
+ assert.match(text(view.container),/Точное совпадение с заявкой/);assert.match(text(view.container),/Остаётся на проверке/);assert.doesNotMatch(text(view.container),/Найдена существующая операция/);assert.match(text(view.container),/сервер проведёт доступные проверенные строки/);
  view.state.confirmAccount=true;view.state.confirmCurrency=true;await settle();await view.state.commit();await settle();
- assert.match(text(view.container),/Автоматически оплачено: 1/);assert.match(text(view.container),/Поступления, комиссии и прочие списания отложены/);assert.match(text(view.container),/точные заявки могли быть отмечены оплаченными/);
+ assert.match(text(view.container),/Автоматически оплачено: 1/);assert.match(text(view.container),/Спорные строки остаются на проверке/);assert.doesNotMatch(text(view.container),/Поступления, комиссии и прочие списания отложены/);
 });
 
 test('existing independent bank operations show as links rather than new entries',async t=>{
@@ -229,10 +229,10 @@ test('a hard-budget rejection stays visible and does not report an expense as cl
  assert.match(text(view.container),/Жёсткий лимит превышен/);assert.equal(view.state.outgoingUnallocated.length,1);
 });
 
-test('unallocated outgoing candidates are not promised during partial reconciliation',async t=>{
+test('outgoing candidates without signed server readiness remain pending during partial reconciliation',async t=>{
  const api=async(url)=>{if(url==='/api/bank-statements/reviews')return {items:[]};if(url==='/api/bank-statements/settings')return {fee_category_id:null};if(url.includes('/preview?'))return {...statement,full_reconciliation:false,rows:[{id:3,date:'2026-10-30',direction:'out',amount:'5',status:'outgoing_candidate',category_source:'unclassified_out'}]};throw Error('unexpected')};
  const view=mount(component,{api,companyId:1,accounts,canImport:true});t.after(view.unmount);await settle();view.state.accountId='21';view.state.currency='UZS';await settle();await view.state.upload(event());await settle();
- assert.match(text(view.container),/Ожидает полной сверки/);assert.match(text(view.container),/Не распределено/);assert.doesNotMatch(text(view.container),/Списание будет проведено/);
+ assert.match(text(view.container),/Остаётся на проверке/);assert.match(text(view.container),/Не распределено/);assert.doesNotMatch(text(view.container),/Списание будет проведено/);
 });
 
 test('successful statement confirms how many unallocated external debits were posted',async t=>{
