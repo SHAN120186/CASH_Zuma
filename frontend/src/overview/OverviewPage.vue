@@ -76,8 +76,8 @@ async function load() {
   const report = day => props.api(`/api/group-report?${q({company_id: cid, currency: c, scenario: 'A', month: day.slice(0, 7), day})}`);
 
   // Request lists may take several pages; they fill in after the balance and
-  // KPIs are already on screen. The API returns the latest due dates first, so
-  // the urgent requests are at the end of the list: read it whole and sort here.
+  // KPIs are already on screen. The API returns the earliest due dates first;
+  // read the allowed page window to retain honest totals and stable previews.
   const requests = Promise.all([
     settle(allPages('/api/requests', {state: 'pending', currency: c}, MAX_REQUEST_PAGES, gen)),
     settle(allPages('/api/requests', {state: 'approved', currency: c, date_to: today}, MAX_REQUEST_PAGES, gen)),

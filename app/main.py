@@ -458,7 +458,7 @@ def requests_list(request:Request,date_from:Optional[date]=None,date_to:Optional
         if state:query=query.where(PaymentRequest.status==state)
         if q:query=query.where(or_(PaymentRequest.counterparty.ilike('%'+q+'%'),PaymentRequest.purpose.ilike('%'+q+'%'),Account.name.ilike('%'+q+'%')))
         total=s.scalar(select(func.count()).select_from(query.subquery()))
-        query=query.order_by(PaymentRequest.due_date.desc(),PaymentRequest.id.desc())
+        query=query.order_by(PaymentRequest.due_date.asc(),PaymentRequest.id.asc())
         requests=list(s.scalars(query.offset((page-1)*page_size).limit(page_size) if paginated else query.limit(500)))
         from .services import request_batch
         batch=request_batch(s,requests)

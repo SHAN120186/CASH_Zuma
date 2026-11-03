@@ -1,6 +1,7 @@
 // Uzbek (Latin) translations: requests/*.
 // Key: the exact Russian text; value: the Uzbek text with the same {placeholders}.
 export default {
+  'Сначала ранние сроки оплаты: просроченные, затем сегодняшние и ближайшие.': 'Avval eng erta to‘lov muddatlari: muddati o‘tgan, so‘ng bugungi va yaqin kunlardagi arizalar.',
   'Контрагент или ИНН заявки изменился. Закройте форму и откройте заявку заново.': 'Arizadagi kontragent yoki STIR o‘zgargan. Shaklni yoping va arizani qayta oching.',
   'ИНН контрагента': 'Kontragent STIRi',
   'ИНН контрагента (необязательно)': 'Kontragent STIRi (ixtiyoriy)',
