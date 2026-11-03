@@ -4,6 +4,8 @@ import {compileComponent,mount,settle,text,all,find} from './helpers/mountVue.js
 import {lang,setLang} from '../src/i18n/index.js';
 
 const component=await compileComponent(new URL('../src/BankStatements.vue',import.meta.url));
+const expenseComponent=await compileComponent(new URL('../src/BankStatementExpenses.vue',import.meta.url));
+const withExpenses=await compileComponent(new URL('../src/BankStatements.vue',import.meta.url),{'./BankStatementExpenses.vue':expenseComponent});
 const daily=await compileComponent(new URL('../src/overview/BankStatementDaily.vue',import.meta.url));
 const overview=await compileComponent(new URL('../src/overview/OverviewPage.vue',import.meta.url));
 const accounts=[{id:21,name:'Synthetic bank',kind:'bank',currency:'UZS'}, {id:22,name:'Synthetic cash',kind:'cash',currency:'UZS'}];
@@ -22,28 +24,25 @@ test('statement expense groups keep unclassified debits, fees, transfers and unc
   {id:7,direction:'in',amount:'600.00',status:'income_candidate'},
   {id:8,direction:'out',amount:'25.00',status:'other_matched_candidate'},
  ];
- const api=async url=>url==='/api/bank-statements/settings'?{fee_category_id:null}:url.includes('/preview?')?{...statement,full_reconciliation:false,rows:lines}:{items:[]};
- const view=mount(component,{api,companyId:1,accounts,canImport:true});t.after(view.unmount);await settle();
+ const api=async url=>url==='/api/bank-statements/settings'?{fee_category_id:null}:url.includes('/preview?')?{...statement,full_reconciliation:false,statement:{...statement.statement,debit_total:'3315.35'},rows:lines.map(r=>({...r,date:'2026-10-30',expense_kind:({1:'request',2:'no_request',3:'bank_fee',4:'unresolved',5:'internal_transfer',6:'unresolved',8:'no_request'})[r.id],expense_existing_operation:r.id===8}))}:{items:[]};
+ const view=mount(withExpenses,{api,companyId:1,accounts,canImport:true});t.after(view.unmount);await settle();
  view.state.accountId='21';view.state.currency='UZS';await settle();await view.state.upload(event());await settle();
- const groups=Object.fromEntries(view.state.expenseGroups.map(g=>[g.key,g]));
- assert.equal(groups.requests.total,100010);assert.equal(groups.noRequest.total,200020);assert.equal(groups.fees.total,5005);
- assert.equal(groups.transfer.total,8000);assert.equal(groups.review.total,16000);assert.equal(groups.existing.total,2500);
- assert.deepEqual(groups.noRequest.rows.map(r=>r.id),[2]);assert.deepEqual(groups.review.rows.map(r=>r.id),[4,6]);
+ assert.match(text(view.container),/1\s*000,10 UZS/);assert.match(text(view.container),/2\s*025,20 UZS/);assert.match(text(view.container),/50,05 UZS/);
+ assert.match(text(view.container),/160 UZS/);assert.match(text(view.container),/3\s*315,35 UZS/);
  assert.match(text(view.container),/Synthetic supplier/);assert.match(text(view.container),/123456789/);
- assert.match(text(view.container),/Ожидает полной сверки/);assert.match(text(view.container),/Это суммы по файлу/);
+ assert.match(text(view.container),/Ожидает полной сверки/);assert.match(text(view.container),/Автоматическая сверка списаний/);
 });
 
 test('statement summaries keep exact cents, refuse unsafe totals, and translate labels to Uzbek',async t=>{
  const previous=lang.value;setLang('uz');t.after(()=>setLang(previous));
  const api=async url=>url==='/api/bank-statements/settings'?{fee_category_id:null}:url.includes('/preview?')?{...statement,rows:[
-  {id:1,direction:'out',amount:'90071992547409.90',status:'outgoing_candidate'},
-  {id:2,direction:'out',amount:'0.10',status:'outgoing_candidate'},
-  {id:3,direction:'out',amount:'1.25',status:'fee_candidate'},
+  {id:1,date:'2026-10-30',direction:'out',amount:'90071992547409.90',status:'outgoing_candidate',expense_kind:'no_request'},
+  {id:2,date:'2026-10-30',direction:'out',amount:'0.10',status:'outgoing_candidate',expense_kind:'no_request'},
+  {id:3,date:'2026-10-30',direction:'out',amount:'1.25',status:'fee_candidate',expense_kind:'bank_fee'},
  ]}:{items:[]};
- const view=mount(component,{api,companyId:1,accounts,canImport:true});t.after(view.unmount);await settle();
+ const view=mount(withExpenses,{api,companyId:1,accounts,canImport:true});t.after(view.unmount);await settle();
  view.state.accountId='21';view.state.currency='UZS';await settle();await view.state.upload(event());await settle();
- const groups=Object.fromEntries(view.state.expenseGroups.map(g=>[g.key,g]));
- assert.equal(groups.noRequest.total,null);assert.equal(groups.fees.total,125);
+ assert.match(text(view.container),/— UZS/);assert.match(text(view.container),/1,25 UZS/);
  assert.match(text(view.container),/Ariza topilmagan xarajatlar/);assert.match(text(view.container),/Bank komissiyalari/);
 });
 

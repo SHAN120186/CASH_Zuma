@@ -35,6 +35,7 @@ from .bank_statement_unallocated import category_id as unallocated_category_id, 
 from .category_catalog import catalog
 from .bank_statement_guard import set_statement_reconciliation, unreconciled_batch_ids
 from .bank_statement_reprocess_payments import classify_reprocess_payments, process_reprocess_payments
+from .bank_statement_expenses import annotate_expense_rows, sanitize_request_fields
 
 router = APIRouter()
 REQUEST_ID = re.compile(r'(?<![A-Za-z0-9])CF-0*([1-9][0-9]*)(?![A-Za-z0-9])', re.I)
@@ -116,13 +117,17 @@ def _statement(batch):
             'ready': batch.source_ready}
 
 
-def _payload(s, batch):
+def _payload(s, batch, user=None):
     account = get(s, Account, batch.account_id)
     lines = list(s.scalars(select(BankStatementLine).where(BankStatementLine.batch_id == batch.id)
                            .order_by(BankStatementLine.line, BankStatementLine.id)))
+    rows = [_line_data(line) for line in lines]
+    if user is not None:
+        annotate_expense_rows(s, batch, lines, rows, user)
+        sanitize_request_fields(s, rows, user)
     return {'id': batch.id, 'status': batch.status, 'filename': batch.filename,
             'account': {'id': account.id, 'name': account.name, 'currency': account.currency},
-            'statement': _statement(batch), 'rows': [_line_data(line) for line in lines]}
+            'statement': _statement(batch), 'rows': rows}
 
 
 def _requests(s, account_id):
@@ -344,6 +349,8 @@ def _evaluated(s, batch, lines, account, user, fee_category_id, *, reprocess=Fal
             if (not entry or entry.id in deleted_ids or not same_side or entry.date != line.date or entry.amount != line.amount):
                 row['status'] = 'review'; row['reason'] = 'Связанная операция изменилась или была отменена.'
     full = bool(opening_ok and batch.source_ready and all(row['status'] in resolved for row in rows))
+    annotate_expense_rows(s, batch, lines, rows, user)
+    sanitize_request_fields(s, rows, user)
     return {'batch_id': batch.id, 'fee_category_id': fee_category_id, 'opening_matches': opening_ok,
             'full_reconciliation': full,
             'category_snapshot': category_snapshot,
@@ -955,7 +962,7 @@ def statement_history_detail(id: int, request: Request):
         batch = get(s, BankStatementBatch, id)
         if batch.status != 'committed':
             raise HTTPException(404, 'Запись не найдена.')
-        result = _payload(s, batch)
+        result = _payload(s, batch, user)
         rows = result['rows']
         ids = {row['ledger_id'] for row in rows if row['ledger_id'] is not None}
         entries = {entry.id: entry for entry in s.scalars(select(Ledger).where(Ledger.id.in_(ids)))} if ids else {}
@@ -993,4 +1000,4 @@ def details(id: int, request: Request):
         batch = get(s, BankStatementBatch, id)
         if batch.status == 'preview' and batch.created_by != user.id and user.role != 'admin':
             raise HTTPException(403, 'Предпросмотр доступен загрузившему сотруднику или администратору.')
-        return _payload(s, batch)
+        return _payload(s, batch, user)

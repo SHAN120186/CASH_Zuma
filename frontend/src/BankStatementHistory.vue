@@ -2,7 +2,7 @@
 import {ref, computed, watch, onUnmounted} from 'vue';
 import {tx, N_} from './i18n/index.js';
 import {toCents, formatCents, formatShortDate} from './overview/format.js';
-import {statementExpenseGroups} from './cashflow/statementSummary.js';
+import BankStatementExpenses from './BankStatementExpenses.vue';
 import BankStatementIncome from './BankStatementIncome.vue';
 
 const props = defineProps({api:{type:Function,required:true},companyId:{type:Number,required:true},
@@ -22,7 +22,6 @@ const stateLabel = row => {
 };
 const direction = value => tx(value === 'in' ? N_('Поступление') : value === 'out' ? N_('Списание') : N_('Не определено'));
 const money = (value,currency) => formatCents(toCents(value),currency);
-const expenseGroups = computed(() => statementExpenseGroups(detail.value?.rows));
 function invalidate(){generation++;detailGeneration++;items.value=[];detail.value=null;loaded.value=false;loading.value=false;detailLoading.value=false;error.value='';detailError.value='';hasMore.value=false;page.value=1;}
 watch(() => [props.companyId,props.canView],()=>{invalidate();open.value=false;});
 onUnmounted(invalidate);
@@ -79,8 +78,7 @@ function openCashFlow(){
     <p>{{tx('Период')}}: {{formatShortDate(detail.statement.period_from)}} – {{formatShortDate(detail.statement.period_to)}}</p>
     <p class="sub">{{tx('Суммы ниже — из файла выписки. Состояние показывает текущую операцию на сайте.')}}</p>
     <BankStatementIncome :statement="detail.statement" :rows="detail.rows" :currency="detail.account?.currency"/>
-    <h4>{{tx('Сводка списаний по выписке')}}</h4>
-    <div class="history-summary"><div v-for="group in expenseGroups" :key="group.key"><span>{{tx(group.title)}} · {{group.rows.length}}</span><b>{{formatCents(group.total,detail.account?.currency)}} {{detail.account?.currency}}</b></div></div>
+    <BankStatementExpenses :statement="detail.statement" :rows="detail.rows" :currency="detail.account?.currency"/>
     <p v-if="canViewCashFlow" class="sub">{{tx('Cash Flow показывает месяцы с первого числа начального месяца до даты окончания выписки. Если выписка охватывает разные годы, предыдущий год откройте отдельно.')}}</p>
     <button v-if="canViewCashFlow" type="button" class="secondary tiny" @click="openCashFlow">{{tx('Открыть Cash Flow за период выписки')}}</button>
     <div class="table-scroll"><table><thead><tr><th>{{tx('Дата')}}</th><th>{{tx('Контрагент / документ')}}</th><th>{{tx('Назначение')}}</th><th>{{tx('Движение')}}</th><th>{{tx('Состояние операции')}}</th></tr></thead><tbody>
