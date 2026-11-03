@@ -551,10 +551,18 @@ async function commit() {
   <section class="card bank-statements" aria-labelledby="bank-statements-title">
     <div class="card-h"><h2 id="bank-statements-title">{{tx('Банковские выписки')}}</h2></div>
     <div class="card-b">
-      <p>{{tx('Загрузите выписку и проверьте счёт. После подтверждения совпадения обрабатываются с учётом прав и проверок; спорные операции попадут бухгалтеру.')}}</p>
-      <p class="sub">{{tx('Автоматически сопоставляется только единственная заявка с теми же счётом, суммой, ИНН и плановой датой оплаты.')}}</p>
-      <p class="sub">{{tx('Внешние поступления и списания без определённой статьи относятся к «Не распределено». Возможные собственные переводы, неясные комиссии, заявки и повторы остаются на проверке.')}}</p>
-      <p class="sub">{{tx('Банковские комиссии и проценты по кредитам показаны отдельно. Неоднозначные удержания остаются на проверке.')}}</p>
+      <p class="sub">{{tx('Выберите счёт и валюту, затем загрузите выписку.')}}</p>
+      <details class="bank-help">
+        <summary>{{tx('Как работает сверка')}}</summary>
+        <p class="sub">{{tx('Загрузите выписку и проверьте счёт. После подтверждения совпадения обрабатываются с учётом прав и проверок; спорные операции попадут бухгалтеру.')}}</p>
+        <p class="sub">{{tx('Автоматически сопоставляется только единственная заявка с теми же счётом, суммой, ИНН и плановой датой оплаты.')}}</p>
+        <p class="sub">{{tx('Внешние поступления и списания без определённой статьи относятся к «Не распределено». Возможные собственные переводы, неясные комиссии, заявки и повторы остаются на проверке.')}}</p>
+        <p class="sub">{{tx('Банковские комиссии и проценты по кредитам показаны отдельно. Неоднозначные удержания остаются на проверке.')}}</p>
+        <p class="sub">{{tx('Классификация помогает проверить выписку и сама по себе не создаёт операцию. Проведённые суммы учитываются в остатке и Cash Flow.')}}</p>
+        <p v-if="canAllocate" class="sub">{{tx('Поступления уже проведены. Выберите статью и укажите основание, чтобы распределить их в Cash Flow без повторной операции.')}}</p>
+        <p v-if="canAllocate" class="sub">{{tx('Списания уже проведены. До назначения статьи они не учитываются в её бюджете. После назначения изменится фактическое использование бюджета. При превышении жёсткого лимита сначала пересмотрите бюджет; для мягкого лимита укажите обоснование. Повторной операции не будет.')}}</p>
+        <p v-if="canPost" class="sub">{{tx('Проверьте ранее загруженную выписку заново. До подтверждения операции и остатки не изменятся.')}}</p>
+      </details>
       <details v-if="canDeleteStatements" class="review-list">
         <summary>{{tx('Удаление выписки администратором')}}</summary>
         <p class="sub">{{tx('Удаление отменяет операции, созданные этой выпиской, и их влияние на остатки и отчёты. Ранее существовавшие связанные операции сохраняются.')}}</p>
@@ -632,7 +640,6 @@ async function commit() {
 
       <div class="review-list">
         <h3>{{tx('Операции для проверки бухгалтера')}}</h3>
-        <p class="sub">{{tx('Классификация помогает проверить выписку и сама по себе не создаёт операцию. Проведённые суммы учитываются в остатке и Cash Flow.')}}</p>
         <button v-if="canReview" type="button" class="secondary tiny" :disabled="reviewBusy !== null" @click="loadReviews">{{tx('Обновить список')}}</button>
         <p v-if="reviewError" class="error" role="alert">{{tx(reviewError)}}</p>
         <p v-else-if="reviewsLoaded && !reviews.length" class="sub">{{tx('Нет операций, ожидающих проверки.')}}</p>
@@ -692,7 +699,6 @@ async function commit() {
 
       <div v-if="canAllocate" class="review-list">
         <h3>{{tx('Поступления без статьи')}}</h3>
-        <p class="sub">{{tx('Поступления уже проведены. Выберите статью и укажите основание, чтобы распределить их в Cash Flow без повторной операции.')}}</p>
         <button type="button" class="secondary tiny" :disabled="allocationBusy !== null" @click="loadUnallocated">{{tx('Обновить список')}}</button>
         <p v-if="allocationError" class="error" role="alert">{{tx(allocationError)}}</p>
         <p v-else-if="allocationLoaded && !unallocated.length" class="sub">{{tx('Нераспределённых поступлений нет.')}}</p>
@@ -707,7 +713,6 @@ async function commit() {
 
       <div v-if="canAllocate" class="review-list">
         <h3>{{tx('Списания без статьи')}}</h3>
-        <p class="sub">{{tx('Списания уже проведены. До назначения статьи они не учитываются в её бюджете. После назначения изменится фактическое использование бюджета. При превышении жёсткого лимита сначала пересмотрите бюджет; для мягкого лимита укажите обоснование. Повторной операции не будет.')}}</p>
         <button type="button" class="secondary tiny" :disabled="outgoingBusy !== null" @click="loadUnallocatedOutgoing">{{tx('Обновить список')}}</button>
         <p v-if="outgoingError" class="error" role="alert">{{tx(outgoingError)}}</p>
         <p v-else-if="outgoingLoaded && !outgoingUnallocated.length" class="sub">{{tx('Нераспределённых списаний нет.')}}</p>
@@ -723,7 +728,6 @@ async function commit() {
       <BankStatementHistory :api="api" :company-id="companyId" :can-view="canViewHistory || canImport || canReview" :can-view-cash-flow="canViewCashFlow" :refresh-key="savedRefresh" @cash-flow="emit('cash-flow',$event)"/>
       <div v-if="canPost" class="review-list">
         <h3>{{tx('Повторная проверка загруженной выписки')}}</h3>
-        <p class="sub">{{tx('Проверьте ранее загруженную выписку заново. До подтверждения операции и остатки не изменятся.')}}</p>
         <p v-if="oldBatchesLoaded && !oldBatches.length" class="sub">{{tx('Выписок со строками для повторной проверки нет.')}}</p>
         <div class="bank-fields"><label>{{tx('Выберите выписку')}}<select v-model="selectedOldBatch" :disabled="busy || reprocessBusy"><option value="">{{tx('Выберите выписку')}}</option><option v-for="batch in oldBatches" :key="batch.id" :value="String(batch.id)">{{batch.account_name}} · {{batch.currency}} · {{formatShortDate(batch.period_from)}} – {{formatShortDate(batch.period_to)}} · {{batch.filename}}</option></select></label><button type="button" class="secondary" :disabled="!selectedOldBatch || busy || reprocessBusy" @click="previewOldBatch">{{tx('Проверить выписку')}}</button></div>
         <p v-if="reprocessError" class="error" role="alert">{{tx(reprocessError)}}</p><p v-if="reprocessNotice" role="status">{{reprocessNotice}}</p>
@@ -746,5 +750,6 @@ async function commit() {
 </template>
 
 <style scoped>
+.bank-help{margin:8px 0 12px}.bank-help summary{cursor:pointer;font-weight:600;font-size:13px}.bank-help p{max-width:85ch}
 .bank-statements{margin:16px 0}.bank-fields{display:flex;gap:12px;flex-wrap:wrap;align-items:end}.bank-fields label:not(.file-label),.bank-category{display:grid;gap:4px;min-width:170px}.bank-category{max-width:420px;margin-top:12px}.file-label input{display:none}.file-label.disabled{opacity:.5;pointer-events:none}.bank-preview,.review-list{margin-top:20px}.bank-summary{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:10px}.bank-summary div{display:grid;gap:4px;padding:10px;background:#f5f6fb;border-radius:8px}.bank-summary b{font-variant-numeric:tabular-nums}.good-text{color:#167145}.confirm{display:block;margin:10px 0}.table-scroll td{max-width:340px;white-space:normal;overflow-wrap:anywhere}.table-scroll small{display:block}.form-actions{margin-top:12px}.review-actions{display:grid;gap:7px;margin-top:8px;min-width:200px}.review-actions label{display:grid;gap:3px}
 </style>
