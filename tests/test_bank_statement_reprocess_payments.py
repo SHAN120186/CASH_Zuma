@@ -124,6 +124,35 @@ class ReprocessPaymentTests(AutoBankIntegrationTests):
             json={'fee_category_id':self.cat,'preview_token':p.json()['preview_token'],'confirm':True})
         self.assertEqual(again.status_code,409,again.text)
 
+    def test_accountant_reprocesses_incoming_and_request_without_general_write(self):
+        client,headers=self.accountant
+        p=client.post(f'/api/bank-statements/{self.batch_id}/reprocess/preview',headers=headers,
+                      json={'fee_category_id':self.cat})
+        self.assertEqual(p.status_code,200,p.text);self.assertTrue(p.json()['full_reconciliation'],p.text)
+        done=client.post(f'/api/bank-statements/{self.batch_id}/reprocess/commit',headers=headers,
+            json={'fee_category_id':self.cat,'preview_token':p.json()['preview_token'],'confirm':True})
+        self.assertEqual(done.status_code,200,done.text);self.assertTrue(done.json()['full_reconciliation'],done.text)
+        with unit() as s:
+            self.assertEqual(s.get(PaymentRequest,self.rid).status,'paid')
+            self.assertEqual(len(list(s.scalars(select(Ledger)))),3)
+        self.assertEqual(client.post(f'/api/bank-statements/{self.batch_id}/reprocess/commit',headers=headers,
+            json={'fee_category_id':self.cat,'preview_token':p.json()['preview_token'],'confirm':True}).status_code,409)
+
+    def test_accountant_reprocess_never_bypasses_self_approval_rule(self):
+        client,headers=self.accountant
+        with unit(True) as s:
+            accountant=s.scalar(select(User).where(User.username=='bank_synthetic_accountant'))
+            s.get(PaymentRequest,self.rid).finance_approved_by=accountant.id
+        p=client.post(f'/api/bank-statements/{self.batch_id}/reprocess/preview',headers=headers,
+                      json={'fee_category_id':self.cat})
+        self.assertEqual(p.status_code,200,p.text)
+        done=client.post(f'/api/bank-statements/{self.batch_id}/reprocess/commit',headers=headers,
+            json={'fee_category_id':self.cat,'preview_token':p.json()['preview_token'],'confirm':True})
+        self.assertEqual(done.status_code,200,done.text);self.assertFalse(done.json()['full_reconciliation'])
+        with unit() as s:
+            self.assertEqual(s.get(PaymentRequest,self.rid).status,'approved')
+            self.assertIsNone(s.scalar(select(Ledger.id)))
+
     def test_http_reprocess_rejects_changed_request_after_preview(self):
         p=self.client.post(f'/api/bank-statements/{self.batch_id}/reprocess/preview',headers=self.h,
                            json={'fee_category_id':self.cat})
