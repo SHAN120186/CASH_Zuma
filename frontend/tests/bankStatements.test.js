@@ -378,7 +378,9 @@ test('empty transfer candidates remain under review, and stale responses cannot 
 test('unreconciled bank accounts warn authorized staff, and zero or cash accounts do not',async t=>{
  const scoped=[{id:21,name:'Blocked bank',kind:'bank',currency:'UZS',unreconciled_statements:2},{id:22,name:'Cash',kind:'cash',currency:'UZS',unreconciled_statements:1},{id:23,name:'Clear bank',kind:'bank',currency:'UZS',unreconciled_statements:0}];
  const api=async()=>({items:[]});const view=mount(component,{api,companyId:1,accounts:scoped,canReview:true});t.after(view.unmount);await settle();
- assert.match(text(view.container),/Blocked bank.*Несверенных выписок: 2/);assert.match(text(view.container),/Ручная оплата заявок.*временно недоступна/);assert.doesNotMatch(text(view.container),/Cash.*Несверенных выписок/);assert.doesNotMatch(text(view.container),/Clear bank.*Несверенных выписок/);
+ const warning=find(view.container,node=>node.props?.role==='alert'&&text(node).includes('Несверенных выписок'));
+ assert.ok(warning);assert.match(text(warning),/Ручная оплата заявок.*временно недоступна/);
+ assert.deepEqual(all(warning,node=>node.tag==='li').map(text),['Blocked bank · UZS — Несверенных выписок: 2']);
  const readOnly=mount(component,{api,companyId:1,accounts:scoped});t.after(readOnly.unmount);await settle();assert.doesNotMatch(text(readOnly.container),/Несверенных выписок/);
 });
 

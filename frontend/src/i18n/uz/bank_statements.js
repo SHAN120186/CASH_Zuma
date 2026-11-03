@@ -1,4 +1,6 @@
 export default {
+  'Выберите счёт и валюту, затем загрузите выписку.': 'Hisob va valyutani tanlang, so‘ng bank ko‘chirmasini yuklang.',
+  'Как работает сверка': 'Solishtirish qanday ishlaydi',
   'Для заявки без ИНН нужно точное совпадение названия с получателем банка. Проверьте контрагента.': 'STIRsiz ariza uchun nom bankdagi oluvchi nomiga aynan mos bo‘lishi kerak. Kontragentni tekshiring.',
   'ИНН закрытой заявки не совпадает с ИНН банковской строки. Проверьте контрагента.': 'Yopiq arizadagi STIR bank satridagi STIRga mos emas. Kontragentni tekshiring.',
   'Подтвердите по договору или счёту, что получатель банка соответствует выбранной заявке без ИНН.': 'Shartnoma yoki hisob-faktura asosida bankdagi oluvchi tanlangan STIRsiz arizaga mosligini tasdiqlang.',
