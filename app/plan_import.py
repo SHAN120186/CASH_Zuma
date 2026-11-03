@@ -119,7 +119,7 @@ def parse_plan_workbook(raw,year,month_from,month_to):
 def preview(s,u,raw,name,company_id,year,month_from,month_to):
     get(s,Company,company_id)
     rows,issues=parse_plan_workbook(raw,year,month_from,month_to)
-    categories=[c for c,_ in catalog(s,company_id)]
+    categories=[c for c,_ in catalog(s,company_id) if c.activity!='unclassified']
     by_name={norm(c.name):c.id for c in categories}
     suggestions={r['source_key']:by_name.get(norm(r['source_name'])) for r in rows}
     existing_plans=list(s.scalars(select(CashPlan).where(
@@ -180,11 +180,15 @@ def commit_plan_import(id:int,data:CommitPlanImport,request:Request):
             if choice=='skip':category_cache[key]=None
             elif choice=='new':
                 existing=s.scalar(select(Category).where(Category.name==row['source_name']))
+                if existing and existing.activity=='unclassified':raise HTTPException(422,'Системную статью нельзя использовать для плана.')
                 c=existing or Category(name=row['source_name'][:160],activity='operating',type='outcome',cost_group='other')
                 if not existing:s.add(c);s.flush();created.append(c.id)
                 category_cache[key]=c.id
             else:
-                try:category_cache[key]=get(s,Category,int(choice)).id
+                try:
+                    category=get(s,Category,int(choice))
+                    if category.activity=='unclassified':raise HTTPException(422,'Системную статью нельзя использовать для плана.')
+                    category_cache[key]=category.id
                 except (ValueError,TypeError):raise HTTPException(422,'Некорректное сопоставление статьи.')
         grouped={}
         for row in rows:

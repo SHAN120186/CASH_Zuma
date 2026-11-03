@@ -468,7 +468,7 @@ def request_json(s,r,accounts=None,categories=None,users=None,batch=None):
             'project':r.project,'decision_note':r.decision_note,'overdue':r.due_date<today() and r.status in ('pending','approved'),
             'budget':budget_json(b),'budget_card':budget_card(s,c.id,str(r.due_date)[:7],a.currency,0 if r.status=='paid' else r.amount,r.id,base_state=card_base)}
 
-def post_ledger(s,u,data):
+def post_ledger(s,u,data,*,bank_statement_fact=False):
     a=get(s,Account,data.account_id)
     if a.archived:raise HTTPException(409,'Счёт в архиве. Сначала восстановите его.')
     if 'write' not in perms_of(u) and (data.kind!='out' or not data.request_id):
@@ -478,6 +478,9 @@ def post_ledger(s,u,data):
         # Право и разделение обязанностей проверяются до любых сведений о заявке.
         req=get(s,PaymentRequest,data.request_id)
         check_payer(s,u,req)
+        if not bank_statement_fact:
+            from .bank_statement_guard import require_reconciled_for_manual_payment
+            require_reconciled_for_manual_payment(s,a)
     if data.date>today():raise HTTPException(422,'Будущий платёж — это заявка или ожидаемое поступление, а не факт.')
     if data.date<a.opening_date:raise HTTPException(422,'Операция раньше даты начального остатка счёта.')
     n=amount(data.amount);kind=data.kind

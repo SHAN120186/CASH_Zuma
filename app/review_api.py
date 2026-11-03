@@ -37,7 +37,9 @@ def save_plan(data:PlanInput,request:Request):
         if data.version!=(p.version if p else 0):raise HTTPException(409,'План уже изменён. Обновите отчёт.')
         payload={};keys=set()
         for item in data.items:
-            get(s,Category,item.category_id);key=f'{item.category_id}:{item.kind}'
+            category=get(s,Category,item.category_id);key=f'{item.category_id}:{item.kind}'
+            if category.activity=='unclassified' and item.amount is not None:
+                raise HTTPException(422,'Нераспределённые банковские поступления не являются плановой статьёй.')
             if key in keys:raise HTTPException(422,'Статья и направление повторяются.')
             keys.add(key)
             if item.amount is not None:payload[key]=amount(item.amount,True)*(1 if item.kind=='in' else -1)

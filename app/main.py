@@ -284,7 +284,9 @@ def bootstrap(request:Request):
     with unit() as s:
         user,session=session_user(s,request)
         companies=[{'id':x.id,'code':x.code,'name':x.name} for x in available_companies(s,user)]
-        a=[{'id':a.id,'name':a.name,'kind':a.kind,'currency':a.currency,'company_id':a.company_id,'opening_date':str(a.opening_date)} for a in s.scalars(select(Account).where(Account.archived==False).order_by(Account.name))]
+        from .bank_statement_guard import unreconciled_account_counts
+        pending=unreconciled_account_counts(s) if company_role(user)!='sales' and {'view','ledger','pay_bank'}&perms_of(user) else {}
+        a=[{'id':a.id,'name':a.name,'kind':a.kind,'currency':a.currency,'company_id':a.company_id,'opening_date':str(a.opening_date),'unreconciled_statements':pending.get(a.id,0)} for a in s.scalars(select(Account).where(Account.archived==False).order_by(Account.name))]
         categories=select(Category).order_by(Category.id)
         if company_role(user)=='sales' and user.role not in HOLDING_ROLES:
             categories=categories.where(Category.type=='income')
@@ -312,9 +314,11 @@ def get_dashboard(request:Request,currency:Literal['UZS','USD','EUR']='UZS',days
 @app.get('/api/accounts')
 def accounts(request:Request,archived:bool=False):
     with unit() as s:
-        session_user(s,request,'view')
+        user,_=session_user(s,request,'view')
+        from .bank_statement_guard import unreconciled_account_counts
+        pending=unreconciled_account_counts(s) if company_role(user)!='sales' else {}
         return [{'id':a.id,'name':a.name,'kind':a.kind,'currency':a.currency,'company_id':a.company_id,'opening':money(a.opening),
-                 'balance':money(account_balance(s,a)),'opening_date':str(a.opening_date),'allow_overdraft':a.allow_overdraft,'archived':a.archived} for a in s.scalars(select(Account).where(Account.archived==archived).order_by(Account.id))]
+                 'balance':money(account_balance(s,a)),'opening_date':str(a.opening_date),'allow_overdraft':a.allow_overdraft,'archived':a.archived,'unreconciled_statements':pending.get(a.id,0)} for a in s.scalars(select(Account).where(Account.archived==archived).order_by(Account.id))]
 
 @app.post('/api/accounts/{id}/archive')
 def archive_account(id:int,data:ArchiveIn,request:Request):
@@ -378,6 +382,8 @@ def add_category(data:CategoryIn,request:Request):
 def edit_category(id:int,data:CategoryIn,request:Request):
     with unit(True) as s:
         u,_=session_user(s,request,'catalog');c=get(s,Category,id)
+        from .bank_statement_unallocated import category_id as unallocated_category_id
+        if id in (unallocated_category_id(s),unallocated_category_id(s,'out')):raise HTTPException(409,'Назначьте статью отдельной операции; системную статью менять нельзя.')
         old={'name':c.name,'activity':c.activity,'type':c.type}
         c.name=data.name;c.activity=data.activity;c.type=data.type
         log(s,u,'Изменена статья','category',id,json.dumps({'before':old,'after':data.model_dump()},ensure_ascii=False))
@@ -388,11 +394,12 @@ def budgets(request:Request,month:str='',currency:Literal['UZS','USD','EUR']='UZ
     month=month or str(today())[:7]
     with unit() as s:
         session_user(s,request,'view')
-        return [dict(category_id=c.id,category=article_name(c),code=article_code(c),cost_group=c.cost_group,month=month,currency=currency,**budget_json(budget_state(s,c.id,month,currency))) for c,_ in category_catalog(s) if c.type=='outcome']
+        return [dict(category_id=c.id,category=article_name(c),code=article_code(c),cost_group=c.cost_group,month=month,currency=currency,**budget_json(budget_state(s,c.id,month,currency))) for c,_ in category_catalog(s) if c.type=='outcome' and c.activity!='unclassified']
 @app.post('/api/budgets')
 def save_budget(data:BudgetIn,request:Request):
     with unit(True) as s:
         u,_=session_user(s,request,'budget');c=get(s,Category,data.category_id)
+        if c.activity=='unclassified':raise HTTPException(422,'Нераспределённые операции не являются бюджетной статьёй.')
         if data.cost_group is not None and data.cost_group!=c.cost_group:
             log(s,u,'Изменена группа затрат','category',c.id,json.dumps({'before':c.cost_group,'after':data.cost_group,'reason':data.reason},ensure_ascii=False))
             c.cost_group=data.cost_group
@@ -655,6 +662,7 @@ def get_receipts(request:Request):
 def add_receipt(data:ReceiptIn,request:Request):
     with unit(True) as s:
         u,_=session_user(s,request,('schedule','receipts'));a=get(s,Account,data.account_id);category=get(s,Category,data.category_id)
+        if category.activity=='unclassified':raise HTTPException(422,'Для плана выберите обычную статью поступлений.')
         if 'schedule' not in perms_of(u) and category.type!='income':
             raise HTTPException(422,'Для плана поступления выберите доходную статью.')
         if a.archived:raise HTTPException(409,'Счёт в архиве.')
@@ -670,6 +678,7 @@ def edit_receipt(id:int,data:ReceiptIn,request:Request):
         if r.status!='expected':raise HTTPException(409,'Полученное поступление нельзя изменить как план.')
         if data.version!=r.version:raise HTTPException(409,'План поступления изменён. Обновите данные и повторите правку.')
         a=get(s,Account,data.account_id);c=get(s,Category,data.category_id)
+        if c.activity=='unclassified':raise HTTPException(422,'Для плана выберите обычную статью поступлений.')
         if c.type!='income':raise HTTPException(422,'Для плана поступления выберите доходную статью.')
         if a.archived:raise HTTPException(409,'Счёт в архиве.')
         if data.date<a.opening_date:raise HTTPException(422,'Дата раньше начала учёта счёта.')
@@ -1103,6 +1112,10 @@ app.include_router(counterparty_replace_router)
 
 from .bank_statement_api import router as bank_statement_router
 app.include_router(bank_statement_router)
+from .bank_statement_duplicates import router as bank_statement_duplicates_router
+app.include_router(bank_statement_duplicates_router)
+from .bank_statement_transfers import router as bank_statement_transfers_router
+app.include_router(bank_statement_transfers_router)
 
 from .department_catalog import router as department_router
 app.include_router(department_router)
