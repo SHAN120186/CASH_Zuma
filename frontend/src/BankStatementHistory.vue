@@ -4,6 +4,7 @@ import {tx, N_} from './i18n/index.js';
 import {toCents, formatCents, formatShortDate} from './overview/format.js';
 import BankStatementExpenses from './BankStatementExpenses.vue';
 import BankStatementIncome from './BankStatementIncome.vue';
+import BankStatementPostingSummary from './BankStatementPostingSummary.vue';
 
 const props = defineProps({api:{type:Function,required:true},companyId:{type:Number,required:true},
   canView:{type:Boolean,default:false},canViewCashFlow:{type:Boolean,default:false},refreshKey:{type:Number,default:0}});
@@ -12,8 +13,8 @@ const open = ref(false), page = ref(1), hasMore = ref(false), items = ref([]), l
 const detail = ref(null), detailLoading = ref(false), detailError = ref('');
 let generation = 0, detailGeneration = 0;
 const states = Object.freeze({active:N_('Проведена'),reversed:N_('Сторнирована'),changed:N_('Операция изменена'),missing:N_('Операция не найдена'),unposted:N_('Не проведена')});
-const createdStatuses = new Set(['auto_paid','manual_paid','auto_income_posted','auto_fee_posted','auto_outgoing_posted']);
-const linkedStatuses = new Set(['paid_match','manual_match','income_matched','fee_matched','other_matched','manual_transfer_match']);
+const createdStatuses = new Set(['auto_paid','manual_paid','auto_income_posted','auto_fee_posted','auto_interest_posted','auto_outgoing_posted']);
+const linkedStatuses = new Set(['paid_match','manual_match','income_matched','fee_matched','interest_matched','other_matched','manual_transfer_match']);
 const stateLabel = row => {
  if(row.operation_state !== 'active')return tx(states[row.operation_state] || N_('Состояние не определено'));
  if(row.status === 'duplicate')return tx('Повтор связан с операцией');
@@ -78,6 +79,8 @@ function openCashFlow(){
     <h4>{{detail.filename}} · {{detail.account?.name}} · {{detail.account?.currency}}</h4>
     <p>{{tx('Период')}}: {{formatShortDate(detail.statement.period_from)}} – {{formatShortDate(detail.statement.period_to)}}</p>
     <p class="sub">{{tx('Суммы ниже — из файла выписки. Состояние показывает текущую операцию на сайте.')}}</p>
+    <p class="sub">{{tx('Подтверждение выписки может быть частичным. Строки без действующей операции остаются на проверке и не добавляются в факт Cash Flow.')}}</p>
+    <BankStatementPostingSummary :summary="detail.posting_summary" :currency="detail.account?.currency" :result="true" :full-reconciliation="detail.full_reconciliation"/>
     <BankStatementIncome :statement="detail.statement" :rows="detail.rows" :currency="detail.account?.currency"/>
     <BankStatementExpenses :statement="detail.statement" :rows="detail.rows" :currency="detail.account?.currency"/>
     <p v-if="canViewCashFlow" class="sub">{{tx('Cash Flow показывает месяцы с первого числа начального месяца до даты окончания выписки. Если выписка охватывает разные годы, предыдущий год откройте отдельно.')}}</p>

@@ -9,7 +9,8 @@ import json
 from fastapi import HTTPException
 from sqlalchemy import select
 
-from .db import Account, Setting
+from .db import Account, Ledger, Setting
+from .bank_statement_models import BankStatementBatch, BankStatementLine
 
 
 def _prefix(company_id, account_id):
@@ -90,3 +91,56 @@ def require_reconciled_for_manual_payment(s, account):
     if unreconciled_statements(s, account):
         raise HTTPException(409, 'Счёт ожидает сверки банковской выписки. '
                             'Сверьте выписку перед новой оплатой заявки.')
+
+
+def accounted_line_ids(s, lines, account):
+    """Bank rows backed by a unique, active ledger movement on the correct side."""
+    from collections import Counter
+    from .services import deleted_ledger_ids, effective_cashflows
+    ids = {line.ledger_id for line in lines if line.ledger_id is not None}
+    entries = {entry.id: entry for entry in s.scalars(effective_cashflows(s).where(
+        Ledger.id.in_(ids)))} if ids else {}
+    deleted = deleted_ledger_ids(s)
+    ties = Counter((line.ledger_id, line.direction) for line in lines if line.ledger_id is not None)
+    result = set()
+    for line in lines:
+        entry = entries.get(line.ledger_id)
+        if (not entry or entry.id in deleted or line.account_id != account.id
+                or line.company_id != account.company_id or entry.date != line.date or entry.amount != line.amount
+                or ties[(entry.id, line.direction)] != 1):
+            continue
+        same_side = ((entry.kind == line.direction and entry.account_id == account.id)
+            or (entry.kind == 'transfer' and ((line.direction == 'out' and entry.account_id == account.id)
+                or (line.direction == 'in' and entry.to_account_id == account.id))))
+        if same_side:
+            result.add(line.id)
+    return result
+
+
+def pending_bank_debit_hold(s, account, upto=None):
+    """Minor-unit hold for unaccounted bank debits, never credit pending income.
+
+    The raw ledger remains the financial record. Manual spending/availability
+    callers subtract this hold; signed statement processors keep their ordinary
+    raw balance checks because they are accounting for these same bank debits.
+    Overlapping unresolved statements may conservatively reserve twice.
+    """
+    from .clock import today
+    markers = unreconciled_statements(s, account)
+    if not markers:
+        return 0
+    batch_ids = []
+    for marker in markers:
+        suffix = marker.key.rsplit(':', 1)[-1]
+        if suffix.isdigit():
+            batch_ids.append(int(suffix))
+    if not batch_ids:
+        return 0
+    lines = list(s.scalars(select(BankStatementLine).join(BankStatementBatch,
+        BankStatementBatch.id == BankStatementLine.batch_id).where(
+        BankStatementBatch.id.in_(batch_ids), BankStatementBatch.status == 'committed',
+        BankStatementBatch.account_id == account.id, BankStatementBatch.company_id == account.company_id,
+        BankStatementLine.account_id == account.id, BankStatementLine.company_id == account.company_id,
+        BankStatementLine.direction == 'out', BankStatementLine.date <= (upto or today()))))
+    accounted = accounted_line_ids(s, lines, account)
+    return sum(line.amount for line in lines if line.id not in accounted)

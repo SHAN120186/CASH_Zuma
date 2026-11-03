@@ -4,12 +4,11 @@ The bank row is the amount authority. This module never creates an operation,
 changes a request, or turns a classification guess into a payment instruction.
 """
 from collections import Counter, defaultdict
-from decimal import Decimal, InvalidOperation
 import re
 
 from sqlalchemy import or_, select
 
-from .bank_statement_fees import SWIFT_COMMISSION
+from .bank_statement_fees import SWIFT_COMMISSION, exact_iabs_fee
 from .bank_statement_models import BankStatementBatch, BankStatementLine
 from .db import Account, Category, Ledger, PaymentRequest
 from .requests_api import can_view_request
@@ -21,10 +20,6 @@ EXPLICIT_BANK_FEE = re.compile(
     r'комисси\w*\s+(?:банка|банк\w*|за\s+(?:банков|расч[её]тно))|'
     r'банковск\w*\s+(?:комисси|услуг|обслуж)|'
     r'расч[её]тно[-\s]кассов\w*\s+обслуж|\bbank\s+(?:fee|charge)\b', re.I)
-IABS_FEE = re.compile(
-    r'^\s*00111\s+B[CС]\s+(\d{2}\.\d{2}\.\d{4})\s+погашение\s+'
-    r'(?:Исх\.плат\.документ|Пополнение\s+корп\.пл\.карты\s*\(КИБ\))'
-    r'\s*-\s*(\d+(?:[.,]\d{1,2})?)\s+от\s+суммы\s+\d', re.I)
 LOAN_INTEREST = re.compile(
     r'^\s*01014\s*(?:кредит\s*)?фоиз\w*(?:\s|$)|процент\w*.{0,25}(?:кредит|займ)|'
     r'(?:кредит|займ).{0,25}процент|\bloan\s+interest\b', re.I)
@@ -41,17 +36,8 @@ def _fee_evidence(batch, line):
         return 'bank_interest', 'explicit_loan_interest'
     if own_inn and EXPLICIT_BANK_FEE.search(line.purpose or ''):
         return 'bank_fee', 'explicit_bank_fee'
-    match = IABS_FEE.search(line.purpose or '')
-    if own_inn and str(line.correspondent_account or '').startswith('16401') and match:
-        # A recognised IABS-shaped description is useful evidence, but the
-        # reference file alone is not a bank-approved accounting rule.
-        try:
-            charge = Decimal(match[2].replace(',', '.')) * 100
-            day = line.date.strftime('%d.%m.%Y')
-            if match[1] == day and charge == line.amount:
-                return 'fee_possible', 'iabs_fee_template_unconfirmed'
-        except InvalidOperation:
-            pass
+    if exact_iabs_fee(batch, line) and (line.reviewed_by is None or line.classification == 'bank_fee'):
+        return 'bank_fee', 'explicit_iabs_fee'
     return None
 
 

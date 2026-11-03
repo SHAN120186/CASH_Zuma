@@ -149,9 +149,14 @@ class ReprocessPaymentTests(AutoBankIntegrationTests):
         done=client.post(f'/api/bank-statements/{self.batch_id}/reprocess/commit',headers=headers,
             json={'fee_category_id':self.cat,'preview_token':p.json()['preview_token'],'confirm':True})
         self.assertEqual(done.status_code,200,done.text);self.assertFalse(done.json()['full_reconciliation'])
+        self.assertEqual(done.json()['posted'],2)
+        self.assertEqual(done.json()['posting_summary']['pending'],
+                         {'count':1,'credit_total':'0.00','debit_total':'600.00'})
+        self.assertEqual(done.json()['posting_summary']['conservative_closing'],'80.00')
         with unit() as s:
             self.assertEqual(s.get(PaymentRequest,self.rid).status,'approved')
-            self.assertIsNone(s.scalar(select(Ledger.id)))
+            self.assertIsNone(s.scalar(select(Ledger.id).where(Ledger.request_id==self.rid)))
+            self.assertEqual(sorted(entry.kind for entry in s.scalars(select(Ledger))),['in','out'])
 
     def test_http_reprocess_rejects_changed_request_after_preview(self):
         p=self.client.post(f'/api/bank-statements/{self.batch_id}/reprocess/preview',headers=self.h,
@@ -186,9 +191,14 @@ class ReprocessPaymentTests(AutoBankIntegrationTests):
         done=self.client.post(f'/api/bank-statements/{self.batch_id}/reprocess/commit',headers=self.h,
             json={'fee_category_id':self.cat,'preview_token':p.json()['preview_token'],'confirm':True})
         self.assertEqual(done.status_code,200,done.text);self.assertFalse(done.json()['full_reconciliation'])
+        self.assertEqual(done.json()['posted'],2)
+        self.assertEqual(done.json()['posting_summary']['pending'],
+                         {'count':1,'credit_total':'0.00','debit_total':'600.00'})
+        self.assertEqual(done.json()['posting_summary']['conservative_closing'],'80.00')
         with unit() as s:
             self.assertEqual(s.get(PaymentRequest,self.rid).status,'approved')
-            self.assertEqual(len(list(s.scalars(select(Ledger)))),0)
+            self.assertIsNone(s.scalar(select(Ledger.id).where(Ledger.request_id==self.rid)))
+            self.assertEqual(sorted(entry.kind for entry in s.scalars(select(Ledger))),['in','out'])
 
 
 def load_tests(loader, tests, pattern):

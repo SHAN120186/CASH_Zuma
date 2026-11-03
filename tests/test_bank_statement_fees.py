@@ -120,7 +120,12 @@ class FeeTests(unittest.TestCase):
         self.assertIsNone(self.s.scalar(select(Ledger.id)))
 
     def test_scope_type_owner_balance_and_permissions_are_mandatory(self):
-        for kwargs in ({'category_id':None}, {'category_id':self.income.id},
+        # A missing selection now plans a dedicated automatic article without
+        # creating it during preview; explicitly invalid selections still fail.
+        planned = self.classify(category_id=None)
+        self.assertEqual((planned['status'], planned['category_id'], planned['category_source']),
+                         ('fee_candidate', None, 'bank_fee_auto'))
+        for kwargs in ({'category_id':self.income.id},
                        {'category_id':self.foreign.id}, {'opening_ok':False}):
             self.assertEqual(self.classify(**kwargs)['status'], 'review')
         self.line.correspondent_inn = '300000099'

@@ -5,6 +5,7 @@ import {scanAll, placeholders, SRC} from './helpers/i18nScan.js';
 import {entries, patterns, sources} from '../src/i18n/uz/index.js';
 import {tx, N_, lang, setLang, intlLocale, LANGUAGES, formatDate} from '../src/i18n/index.js';
 import {formatAmount, formatAxisLabels, formatCompact, formatLongDate} from '../src/overview/format.js';
+import {statementCategoryName} from '../src/cashflow/statementCategory.js';
 
 const CYRILLIC = /[А-Яа-яЁё]/;
 
@@ -71,6 +72,17 @@ test('tx falls back to Russian, fills placeholders and follows the chosen langua
     assert.equal(lang.value, 'uz');
     assert.deepEqual(LANGUAGES.map(item => item.code), ['ru', 'uz']);
   } finally {setLang(previous);}
+});
+
+test('only reserved automatic bank charge category names translate with their numeric collision suffix',()=>{
+ const prior=lang.value;
+ const reserved=[['Банковские комиссии (выписки)','Bank komissiyalari (ko‘chirmalar)'],['Проценты по кредитам (выписки)','Kreditlar bo‘yicha foizlar (ko‘chirmalar)']];
+ const ordinary=['Услуга банк (Проценты банка %)','Кредит % Зума','Банковские комиссии (выписки) — услуги','Мои Проценты по кредитам (выписки) (3)','Банковские комиссии (выписки) (черновик)','Банковские комиссии (выписки) (2) (3)'];
+ try{
+  setLang('ru');for(const [name] of reserved)for(const suffix of ['',' (2)',' (13)'])assert.equal(statementCategoryName(name+suffix),name+suffix);
+  setLang('uz');for(const [name,translated] of reserved)for(const suffix of ['',' (2)',' (13)'])assert.equal(statementCategoryName(name+suffix),translated+suffix);
+  for(const name of ordinary)assert.equal(statementCategoryName(name),name);
+ }finally{setLang(prior);}
 });
 
 test('compact amounts and dates follow the interface language', () => {

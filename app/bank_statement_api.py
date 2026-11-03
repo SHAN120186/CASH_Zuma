@@ -33,13 +33,19 @@ from .bank_statement_existing import classify_existing, process_existing
 from .bank_statement_unallocated_out import classify_unallocated_out, process_unallocated_out
 from .bank_statement_unallocated import category_id as unallocated_category_id, ensure_category
 from .category_catalog import catalog
-from .bank_statement_guard import set_statement_reconciliation, unreconciled_batch_ids
+from .bank_statement_guard import accounted_line_ids, set_statement_reconciliation, unreconciled_batch_ids
+from .bank_statement_interest import classify_interest, post_interest
 from .bank_statement_reprocess_payments import classify_reprocess_payments, process_reprocess_payments
 from .bank_statement_expenses import annotate_expense_rows, sanitize_request_fields
 
 router = APIRouter()
 REQUEST_ID = re.compile(r'(?<![A-Za-z0-9])CF-0*([1-9][0-9]*)(?![A-Za-z0-9])', re.I)
 DRAFT_REFRESH_ACTION = 'Обновлён предпросмотр банковской выписки'
+NEW_POSTING_STATUSES = {'auto_pay_candidate', 'income_candidate', 'fee_candidate', 'interest_candidate', 'outgoing_candidate'}
+LINK_POSTING_STATUSES = {'income_matched_candidate', 'fee_existing', 'interest_existing', 'other_matched_candidate'}
+FINAL_POSTING_STATUSES = {'paid_match', 'auto_paid', 'manual_paid', 'manual_match', 'income_matched',
+    'auto_income_posted', 'fee_matched', 'auto_fee_posted', 'interest_matched', 'auto_interest_posted',
+    'duplicate', 'other_matched', 'auto_outgoing_posted', 'manual_transfer_match'}
 
 
 class Confirmation(BaseModel):
@@ -287,6 +293,51 @@ def _remember_fee_category(s, category_id, user):
     log(s, user, 'Настроена статья банковских комиссий', 'setting', key, str(category_id))
 
 
+def _posting_summary(s, batch, lines, account, rows, *, posted_ids=(), scope='preview'):
+    """Account for every source movement without making disputed cash spendable."""
+    def empty():
+        return {'count': 0, 'credit_total': 0, 'debit_total': 0}
+    groups = {key: empty() for key in ('ready', 'posted', 'pending', 'linked')}
+    by_id = {line.id: line for line in lines}
+    accounted = accounted_line_ids(s, lines, account)
+    states = {}
+    for row in rows:
+        line = by_id[row['id']]
+        if row['status'] in NEW_POSTING_STATUSES:
+            state = 'ready'
+        elif row['status'] in LINK_POSTING_STATUSES or (row['status'] in FINAL_POSTING_STATUSES and line.id in accounted):
+            state = 'linked'
+        else:
+            state = 'pending'
+        states[line.id] = state
+        group = groups[state]
+        group['count'] += 1
+        group['credit_total' if line.direction == 'in' else 'debit_total'] += line.amount
+        if line.id in posted_ids and line.id in accounted:
+            groups['posted']['count'] += 1
+            groups['posted']['credit_total' if line.direction == 'in' else 'debit_total'] += line.amount
+    ledger_closing = account_balance(s, account, batch.period_to)
+    projected = ledger_closing + groups['ready']['credit_total'] - groups['ready']['debit_total']
+    expected = batch.closing - groups['pending']['credit_total'] + groups['pending']['debit_total']
+    closing_matches = projected == expected
+    allowed = bool(batch.source_ready and opening_matches(s, batch, account) and closing_matches)
+    if not allowed:
+        for key in ('count', 'credit_total', 'debit_total'):
+            groups['pending'][key] += groups['ready'][key]
+        groups['ready'] = empty()
+        states = {key: ('pending' if state == 'ready' else state) for key, state in states.items()}
+        projected = ledger_closing
+    for row in rows:
+        row['posting_state'] = states[row['id']]
+    return {'scope': scope, **{key: {'count': value['count'], 'credit_total': money(value['credit_total']),
+                    'debit_total': money(value['debit_total'])} for key, value in groups.items()},
+            'bank_closing': money(batch.closing), 'ledger_closing': money(ledger_closing),
+            'projected_closing': money(projected),
+            'conservative_closing': money(projected - groups['pending']['debit_total']),
+            'closing_matches': closing_matches, 'partial_allowed': allowed,
+            'blocking_reason': '' if closing_matches else 'Движения сайта не согласуются с учтённой частью банковской выписки.'}
+
+
 def _evaluated(s, batch, lines, account, user, fee_category_id, *, reprocess=False):
     """Read-only view; never add a category or financial operation in preview."""
     _fee_category(s, fee_category_id)
@@ -295,6 +346,7 @@ def _evaluated(s, batch, lines, account, user, fee_category_id, *, reprocess=Fal
     existing = classify_existing(s, batch, lines, account, user, opening_ok)
     outgoing = classify_unallocated_out(s, batch, lines, account, user, unallocated=True)
     fee_context = prepare_fee_context(s, batch, lines, account, fee_category_id)
+    interest_context = prepare_fee_context(s, batch, lines, account, None, charge_kind='interest')
     payment_candidates = classify_reprocess_payments(s, batch, lines, account, user) if reprocess else {}
     # Bind even initial exact matches to the approval version the operator saw.
     # The write transaction classifies and signs again; any intervening request
@@ -313,6 +365,8 @@ def _evaluated(s, batch, lines, account, user, fee_category_id, *, reprocess=Fal
             # Never replace an existing request match with a commission guess.
             if line.status in ('review', 'reviewed', 'fee_candidate', 'fee_existing'):
                 decision = classify_fee(s, batch, line, account, fee_category_id, user, opening_ok, context=fee_context)
+                if decision is None:
+                    decision = classify_interest(s, batch, line, account, user, opening_ok, context=interest_context)
         if (decision is None or decision.get('status') == 'review') and existing.get(line.id, {}).get('status') == 'other_matched_candidate':
             decision = existing[line.id]
         if (decision is None or decision.get('status') == 'review') and outgoing.get(line.id, {}).get('status') == 'outgoing_candidate':
@@ -321,7 +375,7 @@ def _evaluated(s, batch, lines, account, user, fee_category_id, *, reprocess=Fal
             decision = outgoing[line.id]
         if decision:
             row.update({key: value for key, value in decision.items()
-                        if key in ('status', 'reason', 'category_id', 'category_source', 'receipt_id', 'ledger_id', 'attach_receipt',
+                        if key in ('status', 'reason', 'category_id', 'category_source', 'category_name', 'category_code', 'receipt_id', 'ledger_id', 'attach_receipt',
                                    'request_id', 'request_version')})
         rows.append(row)
     site_opening = (money(day_start_balance(s, account, batch.period_from))
@@ -329,11 +383,6 @@ def _evaluated(s, batch, lines, account, user, fee_category_id, *, reprocess=Fal
     categories = [{'id': c.id, 'name': c.name, 'type': c.type, 'activity': c.activity, 'retired': retired}
                   for c, retired in catalog(s, include_retired=True)]
     category_snapshot = sha256(json.dumps(categories, ensure_ascii=False, sort_keys=True).encode()).hexdigest()
-    resolved = {'auto_pay_candidate', 'paid_match', 'auto_paid', 'manual_paid', 'manual_match',
-                'income_candidate', 'income_matched_candidate', 'auto_income_posted', 'income_matched',
-                'fee_candidate', 'fee_existing', 'auto_fee_posted', 'fee_matched', 'duplicate',
-                'other_matched_candidate', 'other_matched', 'outgoing_candidate', 'auto_outgoing_posted',
-                'manual_transfer_match'}
     # Previously linked operations can later be reversed or edited. Do not
     # assume that an old link still represents the bank movement.
     deleted_ids = deleted_ledger_ids(s)
@@ -341,19 +390,19 @@ def _evaluated(s, batch, lines, account, user, fee_category_id, *, reprocess=Fal
     active_entries = {entry.id: entry for entry in s.scalars(effective_cashflows(s).where(
         Ledger.id.in_(linked_ids)))} if linked_ids else {}
     for line, row in zip(lines, rows):
-        if line.status in {'auto_paid', 'paid_match', 'manual_paid', 'manual_match',
-                           'auto_income_posted', 'income_matched', 'auto_fee_posted', 'fee_matched', 'duplicate', 'other_matched', 'auto_outgoing_posted', 'manual_transfer_match'}:
+        if line.status in FINAL_POSTING_STATUSES:
             entry = active_entries.get(line.ledger_id)
             same_side = bool(entry and ((entry.kind == line.direction and entry.account_id == account.id) or
                 (entry.kind == 'transfer' and ((line.direction == 'out' and entry.account_id == account.id) or
                                                (line.direction == 'in' and entry.to_account_id == account.id)))))
             if (not entry or entry.id in deleted_ids or not same_side or entry.date != line.date or entry.amount != line.amount):
                 row['status'] = 'review'; row['reason'] = 'Связанная операция изменилась или была отменена.'
-    full = bool(opening_ok and batch.source_ready and all(row['status'] in resolved for row in rows))
+    summary = _posting_summary(s, batch, lines, account, rows)
+    full = bool(opening_ok and batch.source_ready and summary['closing_matches'] and summary['pending']['count'] == 0)
     annotate_expense_rows(s, batch, lines, rows, user)
     sanitize_request_fields(s, rows, user)
     return {'batch_id': batch.id, 'fee_category_id': fee_category_id, 'opening_matches': opening_ok,
-            'full_reconciliation': full,
+            'full_reconciliation': full, 'posting_summary': summary,
             'category_snapshot': category_snapshot,
             'statement_opening': money(batch.opening), 'site_opening': site_opening, 'rows': rows}
 
@@ -394,8 +443,7 @@ def _apply_fees(s, batch, lines, account, user, fee_category_id, evaluated):
         if line.direction != 'out' or line.id not in approved:
             continue
         verdict = classify_fee(s, batch, line, account, fee_category_id, user, evaluated['opening_matches'])
-        if (not verdict or verdict['status'] != approved[line.id]['status'] or
-                verdict.get('ledger_id') != approved[line.id].get('ledger_id')):
+        if not _same_charge_decision(approved[line.id], verdict):
             line.status = 'review'; line.reason = 'Проверенная операция изменилась; проверьте выписку снова.'
             continue
         if verdict['status'] == 'fee_existing':
@@ -416,63 +464,98 @@ def _apply_fees(s, batch, lines, account, user, fee_category_id, evaluated):
     return counts
 
 
+def _same_charge_decision(shown, fresh):
+    if not fresh or any(shown.get(key) != fresh.get(key) for key in (
+            'status', 'ledger_id', 'category_source', 'category_name', 'category_code')):
+        return False
+    return (shown.get('category_id') == fresh.get('category_id') or
+        shown.get('category_id') is None and shown.get('category_source') in ('bank_fee_auto', 'bank_interest_auto'))
+
+
+def _apply_interest(s, batch, lines, account, user, evaluated):
+    approved = {row['id']: row for row in evaluated['rows'] if row['status'] in ('interest_candidate', 'interest_existing')}
+    for line in lines:
+        if line.id not in approved:
+            continue
+        fresh = classify_interest(s, batch, line, account, user, evaluated['opening_matches'])
+        if not _same_charge_decision(approved[line.id], fresh):
+            line.status = 'review'; line.reason = 'Проверенная операция изменилась; проверьте выписку снова.'
+            continue
+        try:
+            with s.begin_nested():
+                if fresh['status'] == 'interest_existing':
+                    line.ledger_id = fresh['ledger_id']; line.status = 'interest_matched'
+                else:
+                    entry = post_interest(s, batch, line, account, user, evaluated['opening_matches'], confirmed_decision=True)
+                    line.ledger_id = entry.id; line.status = 'auto_interest_posted'
+                line.classification = 'bank_interest'; line.reason = ''
+        except HTTPException as exc:
+            line.status = 'review'; line.reason = str(exc.detail)[:160]
+
+
 class _Unreconciled(Exception):
     pass
 
 
 def _apply_reconciled(s, batch, lines, account, user, fee_category_id, evaluated, pay_requests):
-    """All bank movements and closing balance must agree before any new entries stick."""
-    final_statuses = {'paid_match', 'auto_paid', 'manual_paid', 'manual_match',
-                      'income_matched', 'auto_income_posted', 'fee_matched', 'auto_fee_posted', 'duplicate', 'other_matched', 'auto_outgoing_posted', 'manual_transfer_match'}
-    complete = False
-    if evaluated['full_reconciliation']:
-        try:
-            with s.begin_nested():
-                _apply_incoming(s, batch, lines, account, user, evaluated)
-                approved = {row['id']: row for row in evaluated['rows']}
-                process_existing(s, batch, lines, account, user, evaluated['opening_matches'], approved=approved)
-                if pay_requests:
-                    for line in lines:
-                        if line.status != 'auto_pay_candidate':
-                            continue
-                        req = get(s, PaymentRequest, line.request_id)
-                        payment_op = SimpleNamespace(account_id=account.id, to_account_id=None,
-                            category_id=req.category_id, kind='out', amount=money(line.amount), date=line.date,
-                            counterparty=req.counterparty, reference='BANK-' + line.fingerprint,
-                            note='Банковская выписка, документ ' + line.document_number,
-                            request_id=req.id, request_version=req.version, receipt_id=None)
-                        entry = post_ledger(s, user, payment_op, bank_statement_fact=True)
-                        line.ledger_id = entry.id; line.status = 'auto_paid'
-                else:
-                    process_reprocess_payments(s, batch, lines, account, user, approved)
-                _apply_fees(s, batch, lines, account, user, fee_category_id, evaluated)
-                outgoing_rows = [row for row in evaluated['rows'] if row['status'] == 'outgoing_candidate']
-                outgoing_id = ensure_category(s, 'out') if outgoing_rows else None
-                process_unallocated_out(s, batch, lines, account, user, outgoing_id, approved=approved)
-                s.flush()
-                if not all(line.status in final_statuses for line in lines):
-                    raise _Unreconciled()
-                if account_balance(s, account, batch.period_to) != batch.closing:
-                    raise _Unreconciled()
-                complete = True
-        except (HTTPException, _Unreconciled):
-            # Savepoint removes all newly created ledger entries, including the
-            # technical category and any request or receipt status changes.
-            complete = False
-    if not complete:
-        candidates = {'auto_pay_candidate', 'income_candidate', 'income_matched_candidate',
-                      'fee_candidate', 'fee_existing', 'other_matched_candidate', 'outgoing_candidate'}
-        for line, row in zip(lines, evaluated['rows']):
-            if row['status'] in candidates:
-                # Preserve the existing exact-request payment workflow. It is
-                # an outflow and still passes the ordinary balance safeguards.
-                if pay_requests and row['status'] == 'auto_pay_candidate':
+    """Post only signed verified rows; pending source debits remain a cash hold.
+
+    Partial accounting must prove L + pending credits - pending debits == bank
+    closing. A failed equation rolls back the selected subset as one unit.
+    """
+    approved = {row['id']: row for row in evaluated['rows']}
+    selected = {row['id'] for row in evaluated['rows'] if row.get('posting_state') in ('ready', 'linked')
+                and row['status'] in NEW_POSTING_STATUSES | LINK_POSTING_STATUSES}
+    if not evaluated['posting_summary']['partial_allowed']:
+        for line in lines:
+            if approved[line.id]['status'] in NEW_POSTING_STATUSES | LINK_POSTING_STATUSES:
+                line.status = 'review'; line.request_id = line.ledger_id = None
+                line.reason = (evaluated['posting_summary']['blocking_reason']
+                    or 'Начальный остаток выписки не совпадает с остатком счёта сайта.')
+        return False
+    try:
+        with s.begin_nested():
+            incoming = [line for line in lines if approved[line.id]['status'] in ('income_candidate', 'income_matched_candidate')
+                        and line.id in selected]
+            _apply_incoming(s, batch, incoming, account, user, evaluated)
+            existing = [line for line in lines if approved[line.id]['status'] == 'other_matched_candidate' and line.id in selected]
+            process_existing(s, batch, existing, account, user, evaluated['opening_matches'], approved=approved)
+            for line in sorted(lines, key=lambda row: (row.date, row.line, row.id)):
+                shown = approved[line.id]
+                if line.id not in selected or shown['status'] != 'auto_pay_candidate':
                     continue
-                if line.status != 'reviewed':
-                    line.status = 'review'
-                line.request_id = line.ledger_id = None
-                line.reason = 'Проводки отложены: требуется полная сверка выписки и конечного остатка.'
-    return complete
+                try:
+                    with s.begin_nested():
+                        if not pay_requests:
+                            process_reprocess_payments(s, batch, lines, account, user, {line.id: shown})
+                        else:
+                            req = get(s, PaymentRequest, shown['request_id'])
+                            payment_op = SimpleNamespace(account_id=account.id, to_account_id=None,
+                                category_id=req.category_id, kind='out', amount=money(line.amount), date=line.date,
+                                counterparty=req.counterparty, reference='BANK-' + line.fingerprint,
+                                note='Банковская выписка, документ ' + line.document_number,
+                                request_id=req.id, request_version=shown['request_version'], receipt_id=None)
+                            entry = post_ledger(s, user, payment_op, bank_statement_fact=True)
+                            line.request_id = req.id; line.ledger_id = entry.id; line.status = 'auto_paid'; line.reason = ''
+                except HTTPException as exc:
+                    line.status = 'review'; line.reason = str(exc.detail)[:160]
+                    line.request_id = line.ledger_id = None
+            _apply_fees(s, batch, lines, account, user, fee_category_id, evaluated)
+            _apply_interest(s, batch, lines, account, user, evaluated)
+            outgoing = [line for line in lines if approved[line.id]['status'] == 'outgoing_candidate' and line.id in selected]
+            outgoing_id = ensure_category(s, 'out') if outgoing else None
+            process_unallocated_out(s, batch, outgoing, account, user, outgoing_id, approved=approved)
+            s.flush()
+            final = _posting_summary(s, batch, lines, account, [_line_data(line) for line in lines], scope='result')
+            if not final['closing_matches']:
+                raise _Unreconciled()
+            return bool(final['pending']['count'] == 0 and account_balance(s, account, batch.period_to) == batch.closing)
+    except (HTTPException, _Unreconciled):
+        for line in lines:
+            if line.id in selected:
+                line.status = 'review'; line.request_id = line.ledger_id = None
+                line.reason = 'Движения сайта не согласуются с учтённой частью банковской выписки.'
+        return False
 
 
 def _refresh_preview(s, batch, account, user, fee_category_id):
@@ -642,7 +725,7 @@ def commit(id: int, data: Confirmation, request: Request):
         elif data.fee_category_id is not None:
             raise HTTPException(409, 'Сначала проверьте выписку с выбранной статьёй комиссии.')
         for line in lines:
-            if (evaluated is None or not fully_reconciled) and line.status == 'auto_pay_candidate':
+            if evaluated is None and line.status == 'auto_pay_candidate':
                 try:
                     with s.begin_nested():
                         req = get(s, PaymentRequest, line.request_id)
@@ -665,23 +748,26 @@ def commit(id: int, data: Confirmation, request: Request):
         # An older open client may omit the new token. It keeps its old
         # payment-only behaviour, but cannot mark an unreconciled account safe.
         if fully_reconciled is None:
-            final_statuses = {'paid_match', 'auto_paid', 'manual_paid', 'manual_match',
-                              'income_matched', 'auto_income_posted', 'fee_matched', 'auto_fee_posted',
-                              'duplicate', 'other_matched', 'auto_outgoing_posted', 'manual_transfer_match'}
-            fully_reconciled = bool(all(line.status in final_statuses for line in lines) and
+            fully_reconciled = bool(all(line.status in FINAL_POSTING_STATUSES for line in lines) and
                                     account_balance(s, account, batch.period_to) == batch.closing)
         set_statement_reconciliation(s, batch, fully_reconciled, user)
         log(s, user, 'Обработана банковская выписка', 'bank_statement', batch.id,
             json.dumps({'sha256': batch.sha256, 'rows': len(lines), 'statuses': dict(counts)}, ensure_ascii=False))
+        created = {line.id for line in lines if line.status in ('auto_paid', 'auto_income_posted', 'auto_fee_posted', 'auto_interest_posted', 'auto_outgoing_posted')}
+        summary = _posting_summary(s, batch, lines, account, [_line_data(line) for line in lines], posted_ids=created, scope='result')
         return {'id': batch.id, 'status': batch.status, 'auto_paid': sum(line.status=='auto_paid' for line in lines),
                 'linked_paid': sum(line.status=='paid_match' for line in lines),
                 'auto_income': sum(line.status=='auto_income_posted' for line in lines),
                 'income_linked': sum(line.status=='income_matched' for line in lines),
                 'auto_fee': sum(line.status=='auto_fee_posted' for line in lines),
                 'fee_linked': sum(line.status=='fee_matched' for line in lines),
+                'auto_interest': sum(line.status=='auto_interest_posted' for line in lines),
+                'interest_linked': sum(line.status=='interest_matched' for line in lines),
                 'auto_outgoing': sum(line.status=='auto_outgoing_posted' for line in lines),
                 'other_linked': sum(line.status=='other_matched' for line in lines),
-                'full_reconciliation': fully_reconciled,
+                'full_reconciliation': fully_reconciled, 'posting_summary': summary,
+                'partial_reconciliation': bool(not fully_reconciled and (created or any(line.status in
+                    ('income_matched', 'fee_matched', 'interest_matched', 'other_matched') for line in lines))),
                 'review': sum(line.status in ('review','ambiguous_duplicate') or
                               (line.status == 'reviewed' and line.classification in ('receipt', 'bank_fee')) for line in lines),
                 'duplicate': sum(1 for line in lines if not line.include_in_daily)}
@@ -774,9 +860,14 @@ def reprocess_commit(id: int, data: ReprocessConfirm, request: Request):
         log(s, user, 'Повторно проверена банковская выписка', 'bank_statement', batch.id,
             json.dumps({'statuses': dict(counts)}, ensure_ascii=False))
         changed = [line for line in lines if before[line.id] != (line.status, line.ledger_id)]
-        return {'posted': sum(line.status in ('auto_income_posted', 'auto_fee_posted', 'auto_outgoing_posted') for line in changed) if fully_reconciled else 0,
-                'linked': sum(line.status in ('income_matched', 'fee_matched', 'other_matched') for line in changed) if fully_reconciled else 0,
-                'full_reconciliation': fully_reconciled,
+        created = {line.id for line in changed if line.status in ('auto_paid', 'auto_income_posted', 'auto_fee_posted', 'auto_interest_posted', 'auto_outgoing_posted')}
+        linked = sum(line.status in ('income_matched', 'fee_matched', 'interest_matched', 'other_matched') for line in changed)
+        summary = _posting_summary(s, batch, lines, account, [_line_data(line) for line in lines], posted_ids=created, scope='result')
+        return {'posted': len(created), 'linked': linked,
+                'auto_interest': sum(line.status == 'auto_interest_posted' for line in changed),
+                'interest_linked': sum(line.status == 'interest_matched' for line in changed),
+                'full_reconciliation': fully_reconciled, 'posting_summary': summary,
+                'partial_reconciliation': bool(not fully_reconciled and (created or linked)),
                 'review': sum(line.status in ('review', 'ambiguous_duplicate') or
                               (line.status == 'reviewed' and line.classification in ('receipt', 'bank_fee')) for line in lines)}
 
@@ -1059,6 +1150,13 @@ def statement_history_detail(id: int, request: Request):
             req = requests.get(row['request_id'])
             if not req or not can_view_request(s, user, req):
                 row['request_id'] = None
+        lines = list(s.scalars(select(BankStatementLine).where(BankStatementLine.batch_id == batch.id)
+                               .order_by(BankStatementLine.line, BankStatementLine.id)))
+        created = {line.id for line in lines if line.status in ('auto_paid', 'manual_paid', 'auto_income_posted', 'auto_fee_posted', 'auto_interest_posted', 'auto_outgoing_posted')}
+        summary = _posting_summary(s, batch, lines, get(s, Account, batch.account_id), rows, posted_ids=created, scope='history')
+        result['posting_summary'] = summary
+        result['full_reconciliation'] = bool(summary['pending']['count'] == 0 and
+            summary['ledger_closing'] == summary['bank_closing'] and summary['partial_allowed'])
         return result
 
 
