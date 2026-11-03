@@ -5,6 +5,7 @@ import {ref, computed, watch, onMounted, onUnmounted} from 'vue';
 import {tx, N_} from './i18n/index.js';
 import {toCents, formatCents, formatShortDate} from './overview/format.js';
 import BankStatementHistory from './BankStatementHistory.vue';
+import BankStatementIncome from './BankStatementIncome.vue';
 import {statementExpenseGroups} from './cashflow/statementSummary.js';
 
 const props = defineProps({
@@ -489,6 +490,7 @@ async function commit() {
       <p v-if="error" class="error" role="alert">{{error}}</p><p v-if="notice" role="status">{{notice}}</p>
 
       <div v-if="preview" class="bank-preview">
+        <BankStatementIncome :statement="preview.statement" :rows="rows" :currency="currency"/>
         <h3>{{tx('Проверка выписки')}}</h3>
         <p>{{tx('Счёт в файле')}}: <b>{{preview.statement.account_number}}</b> · {{tx('Счёт на сайте')}}: <b>{{preview.account.name}} · {{preview.account.currency}}</b></p>
         <p>{{tx('Владелец счёта')}}: {{preview.statement.owner_name || '—'}} · {{tx('ИНН')}}: {{preview.statement.owner_inn || '—'}}</p>
