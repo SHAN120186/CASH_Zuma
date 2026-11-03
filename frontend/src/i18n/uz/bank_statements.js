@@ -1,4 +1,10 @@
 export default {
+  'Для заявки без ИНН нужно точное совпадение названия с получателем банка. Проверьте контрагента.': 'STIRsiz ariza uchun nom bankdagi oluvchi nomiga aynan mos bo‘lishi kerak. Kontragentni tekshiring.',
+  'ИНН закрытой заявки не совпадает с ИНН банковской строки. Проверьте контрагента.': 'Yopiq arizadagi STIR bank satridagi STIRga mos emas. Kontragentni tekshiring.',
+  'Подтвердите по договору или счёту, что получатель банка соответствует выбранной заявке без ИНН.': 'Shartnoma yoki hisob-faktura asosida bankdagi oluvchi tanlangan STIRsiz arizaga mosligini tasdiqlang.',
+  'Подтверждаю по договору или счёту: получатель в закрытой заявке — этот контрагент из выписки (ИНН {inn}).': 'Shartnoma yoki hisob-faktura asosida tasdiqlayman: yopiq arizadagi oluvchi ko‘chirmadagi ushbu kontragentdir (STIR {inn}).',
+  'Добавьте свой банковский счёт получателя в разделе «Банк и касса»: та же компания и валюта, дата начала учёта не позже даты перевода. Затем обновите варианты решения.': '«Bank va kassa» bo‘limida kompaniyaning qabul qiluvchi bank hisobini qo‘shing: shu kompaniya va valyuta, hisob boshlanish sanasi o‘tkazma sanasidan kech bo‘lmasin. So‘ng yechim variantlarini yangilang.',
+  'Обновить варианты решения': 'Yechim variantlarini yangilash',
   'Остаток счёта получателя: {before} {currency}; после учёта: {after} {currency}.': 'Qabul qiluvchi hisob qoldig‘i: {before} {currency}; hisobga olingandan keyin: {after} {currency}.',
   'У плана поступления уже есть операция. Проверьте журнал.': 'Tushum rejasida operatsiya mavjud. Jurnalni tekshiring.',
   'Оформить исторический перевод может только администратор холдинга.': 'Avvalgi o‘tkazmani faqat xolding administratori rasmiylashtirishi mumkin.',

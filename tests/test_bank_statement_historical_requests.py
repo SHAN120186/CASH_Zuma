@@ -1,5 +1,6 @@
 """Historical closed-request exceptions use synthetic, isolated bank facts only."""
 import unittest
+import json
 from datetime import date
 from sqlalchemy import select
 
@@ -8,7 +9,7 @@ from app.main import app
 from app.bank_statement_historical_requests import router, HISTORICAL_ACTION
 from app.bank_statement_models import BankStatementBatch, BankStatementLine
 from app.bank_statement_guard import set_statement_reconciliation
-from app.db import Account, Audit, Company, Ledger, PaymentRequest, User, engine, unit
+from app.db import Account, Audit, Category, Company, Ledger, PaymentRequest, RequestDocument, Setting, User, engine, unit
 from app.services import account_balance
 
 if not any(getattr(route, 'path', '') == '/api/bank-statements/lines/{id}/historical-request/options' for route in app.routes):
@@ -121,6 +122,7 @@ class HistoricalRequestTests(base.SiteTests):
             other = BankStatementLine(**{column.key: getattr(line, column.key) for column in line.__table__.columns if column.key != 'id'})
             other.line = 7; s.add(other); s.flush(); duplicate_id = other.id
         self.assertEqual(self.post(self.url('preview'), body).status_code, 409)
+
         with unit(True) as s:
             s.delete(s.get(BankStatementLine, duplicate_id))
             account = s.get(Account, self.acc)
@@ -132,6 +134,123 @@ class HistoricalRequestTests(base.SiteTests):
                 date=old.date, counterparty=old.counterparty, reference='SYN-HISTORY-REV', reversal_of=old.id,
                 note='Synthetic reversal', creator_id=old.creator_id))
         self.assertEqual(self.post(self.url('preview'), body).status_code, 409)
+
+    def test_retired_historical_article_is_preserved_and_appears_in_cashflow_fact(self):
+        body = self.prepared()
+        with unit(True) as s:
+            historical = s.get(Category, self.cat)
+            historical.name = 'Synthetic historical laboratory'; historical.code = None
+            replacement = Category(company_id=self.company, name='Synthetic current laboratory QA', code='SYN-35', type='outcome')
+            s.add(replacement); s.flush(); replacement_id = replacement.id
+            key = f'company:{self.company}:category_catalog'
+            value = json.dumps({'order': [replacement_id], 'retired': [self.cat]})
+            setting = s.get(Setting, key)
+            if setting is None:
+                s.add(Setting(key=key, value=value))
+            else:
+                setting.value = value
+        options = self.client.get(self.url('options'), headers=self.h)
+        self.assertEqual(options.status_code, 200, options.text)
+        self.assertEqual([item['request_id'] for item in options.json()['items']], [self.rid])
+        shown = self.preview_fact(body)
+        self.assertEqual(shown['category_name'], 'Synthetic historical laboratory')
+        committed = self.post(self.url('commit'), {**body, 'token': shown['token'], 'confirm': True})
+        self.assertEqual(committed.status_code, 200, committed.text)
+        with unit() as s:
+            self.assertEqual(s.get(PaymentRequest, self.rid).category_id, self.cat)
+            self.assertEqual(s.get(Ledger, committed.json()['ledger_id']).category_id, self.cat)
+            self.assertNotEqual(s.get(Ledger, committed.json()['ledger_id']).category_id, replacement_id)
+        report = self.client.get('/api/report', headers=self.h, params={
+            'company_id': self.company, 'currency': 'UZS', 'year': int(self.date[:4]), 'as_of': self.date})
+        self.assertEqual(report.status_code, 200, report.text)
+        row = next(row for row in report.json()['rows'] if row['category_id'] == self.cat and row['kind'] == 'out')
+        self.assertEqual(row['values'][int(self.date[5:7])-1], '-100.00')
+
+    def test_options_exposes_the_real_guard_for_a_matching_closed_request(self):
+        self.prepared()
+        with unit(True) as s:
+            account = s.get(Account, self.acc)
+            s.add(Ledger(account_id=self.acc, category_id=self.cat, kind='out', amount=10000,
+                date=date.fromisoformat(self.date), counterparty='Supplier', reference='SYN-EXISTING-CLOSED-PAYMENT',
+                request_id=self.rid, note='Synthetic previously recorded payment', creator_id=account.created_by))
+        options = self.client.get(self.url('options'), headers=self.h)
+        self.assertEqual(options.status_code, 200, options.text)
+        self.assertEqual(options.json()['items'], [])
+        self.assertEqual(options.json()['reason'], 'У заявки уже есть операция оплаты. Проверьте журнал.')
+
+    def test_nonempty_mismatched_inn_is_reported_and_cannot_be_overridden_by_attestation(self):
+        body = self.prepared()
+        with unit(True) as s:
+            s.get(PaymentRequest, self.rid).counterparty_inn = '300000099'
+        options = self.client.get(self.url('options'), headers=self.h)
+        self.assertEqual(options.status_code, 200, options.text)
+        self.assertEqual(options.json()['items'], [])
+        self.assertEqual(options.json()['reason'], 'ИНН закрытой заявки не совпадает с ИНН банковской строки. Проверьте контрагента.')
+        self.assertEqual(self.post(self.url('preview'), {**body, 'attest_counterparty': True}).status_code, 409)
+        with unit() as s:
+            self.assertIsNone(s.scalar(select(Ledger.id)))
+
+    def test_legacy_empty_inn_exact_legal_name_needs_extra_attestation_and_preserves_empty_inn(self):
+        body = self.prepared()
+        with unit(True) as s:
+            req = s.get(PaymentRequest, self.rid)
+            req.counterparty_inn = ''; req.counterparty = 'ООО «Synthetic supplier»,'
+            s.get(BankStatementLine, self.lid).correspondent_name = 'ООО "Synthetic supplier"'
+        options = self.client.get(self.url('options'), headers=self.h)
+        self.assertEqual(options.status_code, 200, options.text)
+        item = options.json()['items'][0]
+        self.assertTrue(item['requires_counterparty_confirmation'])
+        self.assertEqual((item['counterparty_inn'], item['bank_inn']), ('', '300000002'))
+        self.assertEqual(item['bank_counterparty'], 'ООО "Synthetic supplier"')
+        self.assertEqual(self.post(self.url('preview'), body).status_code, 422)
+        self.assertEqual(self.post(self.url('preview'), {**body, 'attest_counterparty': 'true'}).status_code, 422)
+        body['attest_counterparty'] = True
+        shown = self.preview_fact(body)
+        self.assertTrue(shown['requires_counterparty_confirmation'])
+        self.assertEqual(self.post(self.url('commit'), {**body, 'attest_counterparty': False,
+            'token': shown['token'], 'confirm': True}).status_code, 422)
+        committed = self.post(self.url('commit'), {**body, 'token': shown['token'], 'confirm': True})
+        self.assertEqual(committed.status_code, 200, committed.text)
+        with unit() as s:
+            req = s.get(PaymentRequest, self.rid)
+            self.assertEqual((req.status, req.counterparty_inn), ('paid', ''))
+            audit = s.scalar(select(Audit).where(Audit.entity == 'ledger', Audit.entity_id == str(committed.json()['ledger_id']),
+                Audit.action == HISTORICAL_ACTION))
+            detail = json.loads(audit.detail)
+            self.assertEqual(detail['request_before']['counterparty_inn'], '')
+            self.assertEqual(detail['bank_inn'], '300000002')
+            self.assertTrue(detail['attest_counterparty'])
+
+    def test_empty_inn_different_or_empty_legal_name_does_not_allow_name_guessing(self):
+        body = self.prepared()
+        for name in ('Supplier extra', 'ООО Another supplier', '«»,'):
+            with unit(True) as s:
+                req = s.get(PaymentRequest, self.rid)
+                req.counterparty_inn = ''; req.counterparty = name
+            options = self.client.get(self.url('options'), headers=self.h)
+            self.assertEqual(options.status_code, 200, options.text)
+            self.assertEqual(options.json()['items'], [])
+            self.assertIn('точное совпадение названия', options.json()['reason'])
+            self.assertEqual(self.post(self.url('preview'), {**body, 'attest_counterparty': True}).status_code, 409)
+        with unit() as s:
+            self.assertIsNone(s.scalar(select(Ledger.id)))
+
+    def test_request_document_version_change_invalidates_signed_preview(self):
+        body = self.prepared()
+        with unit(True) as s:
+            req = s.get(PaymentRequest, self.rid); req.counterparty_inn = ''
+            doc = RequestDocument(request_id=self.rid, kind='contract', filename='synthetic.pdf', mime='application/pdf',
+                storage_key='synthetic-contract-version', sha256='1'*64, content=b'%PDF-1.4 synthetic',
+                version=1, active=True, created_by=req.creator_id)
+            s.add(doc); s.flush(); doc_id = doc.id
+        body['attest_counterparty'] = True
+        shown = self.preview_fact(body)
+        with unit(True) as s:
+            doc = s.get(RequestDocument, doc_id)
+            doc.version = 2; doc.sha256 = '2'*64
+        self.assertEqual(self.post(self.url('commit'), {**body, 'token': shown['token'], 'confirm': True}).status_code, 409)
+        with unit() as s:
+            self.assertIsNone(s.scalar(select(Ledger.id)))
 
 
 def load_tests(loader, tests, pattern):

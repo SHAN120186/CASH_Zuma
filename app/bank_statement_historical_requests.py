@@ -6,6 +6,7 @@ approval, changes an approval date, or authorizes another bank payment.
 import hmac
 import json
 import re
+import unicodedata
 from hashlib import sha256
 from types import SimpleNamespace
 
@@ -18,7 +19,7 @@ from .bank_statement_incoming import opening_matches
 from .bank_statement_models import BankStatementBatch, BankStatementLine
 from .category_catalog import catalog
 from .clock import today
-from .db import Account, Audit, Category, Ledger, PaymentRequest, Receipt, now, unit
+from .db import Account, Audit, Category, Ledger, PaymentRequest, Receipt, RequestDocument, now, unit
 from .security import jwt_key, session_user
 from .section_access import can_edit_section
 from .services import account_balance, get, log, money, post_ledger
@@ -34,6 +35,7 @@ class HistoricalPreview(BaseModel):
     request_id: int = Field(ge=1)
     reason: str = Field(min_length=10, max_length=1000)
     attest_bank_fact: bool = Field(strict=True)
+    attest_counterparty: bool = Field(default=False, strict=True)
 
 
 class HistoricalCommit(HistoricalPreview):
@@ -124,11 +126,22 @@ def _exact_source_guard(s, line, batch, account):
         raise HTTPException(409, 'Похожая операция уже существует или была отменена. Сначала проверьте журнал.')
 
 
+def _legal_name(value):
+    # Normalize typography only; no fuzzy matching or legal-form substitution.
+    normalized = unicodedata.normalize('NFKC', value or '').casefold()
+    normalized = re.sub(r'["«»“”„‟]', ' ', normalized)
+    return ' '.join(normalized.strip().rstrip(',').split())
+
+
 def _request(s, line, batch, account, request_id):
     req = get(s, PaymentRequest, request_id)
-    if (req.status != 'cancelled' or req.account_id != account.id or req.amount != line.amount
-            or not req.counterparty_inn or req.counterparty_inn != line.correspondent_inn):
+    if req.status != 'cancelled' or req.account_id != account.id or req.amount != line.amount:
         raise HTTPException(409, 'Нужна закрытая без оплаты заявка с тем же счётом, суммой и ИНН.')
+    if not req.counterparty_inn and (not _legal_name(req.counterparty)
+            or _legal_name(req.counterparty) != _legal_name(line.correspondent_name)):
+        raise HTTPException(409, 'Для заявки без ИНН нужно точное совпадение названия с получателем банка. Проверьте контрагента.')
+    if req.counterparty_inn and req.counterparty_inn != line.correspondent_inn:
+        raise HTTPException(409, 'ИНН закрытой заявки не совпадает с ИНН банковской строки. Проверьте контрагента.')
     known_accounts = set(s.scalars(select(BankStatementBatch.account_number).where(
         BankStatementBatch.company_id == batch.company_id, BankStatementBatch.status == 'committed')))
     if (not batch.owner_inn or line.correspondent_inn == batch.owner_inn
@@ -139,7 +152,10 @@ def _request(s, line, batch, account, request_id):
         raise HTTPException(409, 'Номер заявки в назначении не совпадает с выбранной заявкой.')
     if s.scalar(select(Ledger.id).where(Ledger.request_id == req.id).limit(1)):
         raise HTTPException(409, 'У заявки уже есть операция оплаты. Проверьте журнал.')
-    article = next((c for c, retired in catalog(s, batch.company_id) if c.id == req.category_id and not retired and c.type == 'outcome'), None)
+    # The request owns its historical article. Retiring it from new forms does
+    # not authorize replacing its identity with a newer same-code article.
+    article = next((c for c, _ in catalog(s, batch.company_id, include_retired=True)
+                    if c.id == req.category_id and c.company_id == batch.company_id and c.type == 'outcome'), None)
     if article is None:
         raise HTTPException(409, 'Статья закрытой заявки недоступна для учёта банковского факта.')
     _exact_source_guard(s, line, batch, account)
@@ -173,28 +189,45 @@ def historical_options(id: int, request: Request):
     with unit() as s:
         _admin(s, request, requests=True)
         line, batch, account = _target(s, id, 'out')
-        items = []
-        for req in s.scalars(select(PaymentRequest).where(PaymentRequest.account_id == account.id,
-                PaymentRequest.status == 'cancelled', PaymentRequest.amount == line.amount,
-                PaymentRequest.counterparty_inn == line.correspondent_inn).order_by(PaymentRequest.id)):
+        items, blocked_reasons = [], []
+        candidates = list(s.scalars(select(PaymentRequest).where(PaymentRequest.account_id == account.id,
+                PaymentRequest.status == 'cancelled', PaymentRequest.amount == line.amount).order_by(PaymentRequest.id)))
+        markers = {int(value) for value in REQUEST_ID.findall(line.purpose or '')}
+        candidates.sort(key=lambda req: (req.id not in markers if markers else False,
+            req.counterparty_inn != line.correspondent_inn, bool(req.counterparty_inn), req.id))
+        for req in candidates:
             try:
                 _request(s, line, batch, account, req.id)
-            except HTTPException:
+            except HTTPException as exc:
+                # Only this company's same-account/amount closed candidates
+                # participate. Missing/mismatched INN remains a blocking guard.
+                blocked_reasons.append(str(exc.detail))
                 continue
             items.append({'request_id': req.id, 'number': f'CF-{req.id:05d}', 'counterparty': req.counterparty,
                 'counterparty_inn': req.counterparty_inn, 'amount': money(req.amount), 'currency': account.currency,
-                'date': str(req.due_date), 'status': req.status, 'version': req.version})
-        return {'items': items, 'available': bool(items), 'reason': '' if items else 'Подходящая закрытая заявка не найдена или требует проверки.'}
+                'date': str(req.due_date), 'status': req.status, 'version': req.version,
+                'requires_counterparty_confirmation': not bool(req.counterparty_inn),
+                'bank_inn': line.correspondent_inn, 'bank_counterparty': line.correspondent_name})
+        reason = blocked_reasons[0] if blocked_reasons else 'Подходящая закрытая заявка не найдена или требует проверки.'
+        return {'items': items, 'available': bool(items), 'reason': '' if items else reason}
 
 
 def _historical_preview(s, user, line, batch, account, data):
     if not data.attest_bank_fact:
         raise HTTPException(422, 'Подтвердите фактическое исполнение операции банком.')
     req, article = _request(s, line, batch, account, data.request_id)
+    if not req.counterparty_inn and not data.attest_counterparty:
+        raise HTTPException(422, 'Подтвердите по договору или счёту, что получатель банка соответствует выбранной заявке без ИНН.')
     state = _snapshot(s, line, batch, account)
+    metadata = ('id', 'kind', 'filename', 'mime', 'storage_key', 'sha256', 'version', 'active', 'created_by', 'created_at')
+    state['request_documents'] = [{key: str(getattr(doc, key)) for key in metadata}
+        for doc in s.scalars(select(RequestDocument).where(RequestDocument.request_id == req.id).order_by(RequestDocument.id))]
     return req, {'line_id': line.id, 'request_id': req.id, 'amount': money(line.amount), 'currency': account.currency,
         'date': str(line.date), 'counterparty': req.counterparty, 'category_name': article.name,
-        'previous_status': req.status, 'effect': 'historical_request_payment', 'token': _token(user, 'historical_request', state, data)}
+        'previous_status': req.status, 'effect': 'historical_request_payment',
+        'requires_counterparty_confirmation': not bool(req.counterparty_inn),
+        'bank_inn': line.correspondent_inn, 'bank_counterparty': line.correspondent_name,
+        'token': _token(user, 'historical_request', state, data)}
 
 
 @router.post('/api/bank-statements/lines/{id}/historical-request/preview')
@@ -228,7 +261,9 @@ def historical_commit(id: int, data: HistoricalCommit, request: Request):
         line.reviewed_by = user.id; line.reviewed_at = now()
         detail = {'ledger_id': entry.id, 'request_id': req.id, 'previous_status': before['status'],
             'request_before': before, 'line_id': line.id, 'batch_id': batch.id, 'company_id': batch.company_id,
-            'reference': entry.reference, 'attest_bank_fact': True, 'reason': data.reason}
+            'reference': entry.reference, 'attest_bank_fact': True, 'reason': data.reason,
+            'attest_counterparty': data.attest_counterparty,
+            'bank_inn': line.correspondent_inn, 'bank_counterparty': line.correspondent_name}
         log(s, user, HISTORICAL_ACTION, 'ledger', entry.id, json.dumps(detail, ensure_ascii=False))
         log(s, user, HISTORICAL_ACTION, 'request', req.id, json.dumps(detail, ensure_ascii=False))
         s.flush()

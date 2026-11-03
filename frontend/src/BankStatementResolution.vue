@@ -6,7 +6,7 @@ import {statementCategoryName} from './cashflow/statementCategory.js';
 
 const props=defineProps({api:{type:Function,required:true},companyId:{type:Number,required:true},row:{type:Object,required:true},canResolve:{type:Boolean,default:false},disabled:{type:Boolean,default:false}});
 const emit=defineEmits(['changed','refresh','working']);
-const open=ref(false),kind=ref(''),options=ref(null),target=ref(''),reason=ref(''),attest=ref(false),confirm=ref(false),preview=ref(null),busy=ref(false),error=ref(''),notice=ref(''),uncertain=ref(false);
+const open=ref(false),kind=ref(''),options=ref(null),target=ref(''),reason=ref(''),attest=ref(false),attestCounterparty=ref(false),confirm=ref(false),preview=ref(null),busy=ref(false),error=ref(''),notice=ref(''),uncertain=ref(false);
 let generation=0,updating=false;
 const definitions={
  'historical-transfer':{title:N_('Учесть уже выполненный перевод'),attestation:N_('Подтверждаю по банковским документам: перевод уже выполнен, оба счёта принадлежат этой компании.'),action:N_('Учесть выполненный перевод'),status:'historical_transfer_posted'},
@@ -19,18 +19,20 @@ const definition=computed(()=>definitions[kind.value]);
 const items=computed(()=>kind.value==='historical-transfer'?options.value?.accounts||[]:options.value?.items||[]);
 const itemId=item=>kind.value==='historical-transfer'?item.id:kind.value==='historical-request'?item.request_id:item.line_id;
 const selected=computed(()=>items.value.find(item=>String(itemId(item))===target.value));
+const needsCounterpartyConfirmation=computed(()=>kind.value==='historical-request'&&selected.value?.requires_counterparty_confirmation===true);
 const available=computed(()=>!!options.value&&options.value.available!==false&&items.value.length>0);
-const canPreview=computed(()=>props.canResolve&&eligible.value&&open.value&&!props.disabled&&!busy.value&&!uncertain.value&&available.value&&!!selected.value&&reason.value.trim().length>=10&&attest.value);
+const canPreview=computed(()=>props.canResolve&&eligible.value&&open.value&&!props.disabled&&!busy.value&&!uncertain.value&&available.value&&!!selected.value&&reason.value.trim().length>=10&&attest.value&&(!needsCounterpartyConfirmation.value||attestCounterparty.value));
 const money=(value,currency=props.row.currency)=>formatCents(toCents(value),currency||'UZS');
 const systemCategories=new Set([N_('Не распределено — поступления из банка'),N_('Не распределено — списания из банка')]);
 const categoryLabel=name=>systemCategories.has(name)?tx(name):statementCategoryName(name);
 const endpoint=()=>`/api/bank-statements/lines/${encodeURIComponent(props.row.id)}/${kind.value}`;
 const token=()=>kind.value==='historical-transfer'?preview.value?.preview_token:preview.value?.token;
 function clearPreview(){preview.value=null;confirm.value=false;error.value='';notice.value='';}
-function invalidate(){generation++;if(busy.value)finish();open.value=false;kind.value='';options.value=null;target.value='';reason.value='';attest.value=false;confirm.value=false;preview.value=null;error.value='';notice.value='';uncertain.value=false;}
+function invalidate(){generation++;if(busy.value)finish();open.value=false;kind.value='';options.value=null;target.value='';reason.value='';attest.value=false;attestCounterparty.value=false;confirm.value=false;preview.value=null;error.value='';notice.value='';uncertain.value=false;}
 watch(()=>[props.companyId,props.canResolve,JSON.stringify(props.row)],invalidate);
-watch([target,reason,attest],()=>{if(updating)return;generation++;if(busy.value)finish();clearPreview();},{flush:'sync'});
-watch(kind,()=>{generation++;if(busy.value)finish();options.value=null;target.value='';reason.value='';attest.value=false;clearPreview();if(open.value&&kind.value)loadOptions();},{flush:'sync'});
+watch([target,reason,attest,attestCounterparty],()=>{if(updating)return;generation++;if(busy.value)finish();clearPreview();},{flush:'sync'});
+watch(target,()=>{if(!updating)attestCounterparty.value=false;},{flush:'sync'});
+watch(kind,()=>{generation++;if(busy.value)finish();options.value=null;target.value='';reason.value='';attest.value=false;attestCounterparty.value=false;clearPreview();if(open.value&&kind.value)loadOptions();},{flush:'sync'});
 onUnmounted(()=>{generation++;if(busy.value)finish();});
 function inScope(current,company,line){return current===generation&&props.companyId===company&&String(props.row.id)===String(line)&&props.canResolve&&eligible.value&&open.value;}
 function start(){busy.value=true;error.value='';notice.value='';emit('working',true);}
@@ -43,13 +45,14 @@ async function toggle(){
 }
 async function loadOptions(){
  if(!props.canResolve||!eligible.value||!open.value||!kinds.value.includes(kind.value)||busy.value||props.disabled||uncertain.value)return;
+ clearPreview();options.value=null;target.value='';attest.value=false;attestCounterparty.value=false;
  const current=++generation,company=props.companyId,line=props.row.id,scenario=kind.value;start();
  try{
   const result=await props.api(`${endpoint()}/options`);
   if(!inScope(current,company,line)||scenario!==kind.value)return;
   const entries=scenario==='historical-transfer'?result?.accounts:result?.items;
   const matchingSource=scenario!=='historical-transfer'||String(result.line?.id)===String(line)&&result.source_account?.currency===props.row.currency&&(!props.row.account_id||String(result.source_account.id)===String(props.row.account_id));
-  if(!matchingSource||!Array.isArray(entries)||entries.some(item=>!Number.isInteger(itemId(item))||itemId(item)<=0||item.currency!==props.row.currency||scenario==='distinct-income'&&String(item.line_id)===String(line)||scenario==='historical-transfer'&&String(item.id)===String(result.source_account?.id)))throw new Error('invalid options');
+  if(!matchingSource||!Array.isArray(entries)||entries.some(item=>!Number.isInteger(itemId(item))||itemId(item)<=0||item.currency!==props.row.currency||scenario==='distinct-income'&&String(item.line_id)===String(line)||scenario==='historical-transfer'&&String(item.id)===String(result.source_account?.id)||scenario==='historical-request'&&item.requires_counterparty_confirmation===true&&(!item.bank_inn?.trim()||!item.bank_counterparty?.trim())))throw new Error('invalid options');
   options.value=result;
   if(result.available===false)error.value=result.reason?tx(result.reason):tx('Для этой строки нет доступного решения.');
  }catch(e){if(inScope(current,company,line))error.value=message(e,N_('Не удалось получить варианты решения. Обновите строку и повторите.'));}
@@ -58,7 +61,7 @@ async function loadOptions(){
 function input(){
  const common={reason:reason.value.trim()};
  if(kind.value==='historical-transfer')return {...common,to_account_id:Number(target.value)};
- if(kind.value==='historical-request')return {...common,request_id:Number(target.value),attest_bank_fact:true};
+ if(kind.value==='historical-request')return {...common,request_id:Number(target.value),attest_bank_fact:true,...(needsCounterpartyConfirmation.value?{attest_counterparty:attestCounterparty.value}:{})};
  return {...common,distinct_from_line_id:Number(target.value),attest_bank_fact:true};
 }
 function sameFinancialSource(result){
@@ -75,13 +78,14 @@ async function check(){
   const signature=kind.value==='historical-transfer'?result?.preview_token:result?.token;
   const matchingTarget=kind.value==='historical-transfer'?String(result.destination_account?.id)===target.value:kind.value==='historical-request'?String(result.request_id)===target.value:String(result.distinct_from_line_id)===target.value;
   const matchingEffect=kind.value==='historical-transfer'?result.operation?.kind==='transfer'&&result.destination_account?.currency===props.row.currency&&String(result.source_account?.id)===String(options.value.source_account?.id):result.effect===(kind.value==='historical-request'?'historical_request_payment':'distinct_income')&&(kind.value!=='historical-request'||result.previous_status==='cancelled');
-  if(typeof signature!=='string'||!signature.trim()||!matchingTarget||!matchingEffect||!sameFinancialSource(result))throw new Error('invalid preview');
+  const matchingCounterparty=kind.value!=='historical-request'||(result.requires_counterparty_confirmation===true)===needsCounterpartyConfirmation.value&&(!needsCounterpartyConfirmation.value||result.bank_inn===selected.value.bank_inn&&result.bank_counterparty===selected.value.bank_counterparty);
+  if(typeof signature!=='string'||!signature.trim()||!matchingTarget||!matchingEffect||!matchingCounterparty||!sameFinancialSource(result))throw new Error('invalid preview');
   preview.value=result;confirm.value=false;
  }catch(e){if(inScope(current,company,line))error.value=message(e,N_('Не удалось проверить выбранное решение. Обновите строку и проверьте заново.'));}
  finally{if(current===generation)finish();}
 }
 async function commit(){
- if(!props.canResolve||!eligible.value||props.disabled||busy.value||uncertain.value||!preview.value||!token()||!confirm.value||!attest.value||!selected.value||reason.value.trim().length<10)return;
+ if(!props.canResolve||!eligible.value||props.disabled||busy.value||uncertain.value||!preview.value||!token()||!confirm.value||!attest.value||!selected.value||(needsCounterpartyConfirmation.value&&!attestCounterparty.value)||reason.value.trim().length<10)return;
  const current=++generation,company=props.companyId,line=props.row.id,scenario=kind.value;
  const body=scenario==='historical-transfer'?{...input(),preview_token:token(),confirm_bank_fact:true,confirm_ownership:true}:{...input(),token:token(),confirm:true};
  start();
@@ -89,7 +93,7 @@ async function commit(){
   const result=await props.api(`${endpoint()}/commit`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
   if(!inScope(current,company,line))return;
   if(String(result?.line_id)!==String(line)||result.status!==definitions[scenario].status||!Number.isInteger(result.ledger_id)||result.ledger_id<=0)throw new Error('unverified result');
-  preview.value=null;confirm.value=false;updating=true;attest.value=false;updating=false;notice.value=tx('Учёт банковского факта сохранён. Данные выписки и отчётов обновляются.');emit('changed',result);
+  preview.value=null;confirm.value=false;updating=true;attest.value=false;attestCounterparty.value=false;updating=false;notice.value=tx('Учёт банковского факта сохранён. Данные выписки и отчётов обновляются.');emit('changed',result);
  }catch(e){
   if(!inScope(current,company,line))return;
   if(!e?.status||e.status>=500){uncertain.value=true;confirm.value=false;error.value=tx('Ответ об учёте не получен. Проверьте результат по сохранённой строке; повторно подтверждать сейчас нельзя.');}
@@ -104,7 +108,7 @@ async function refreshResult(){
   if(!inScope(current,company,line))return;
   const row=Array.isArray(result?.rows)?result.rows.find(item=>String(item.id)===String(line)):null;
   if(String(result?.id)!==String(props.row.batch_id)||!row)throw new Error('invalid saved row');
-  clearPreview();updating=true;attest.value=false;updating=false;uncertain.value=false;
+  clearPreview();updating=true;attest.value=false;attestCounterparty.value=false;updating=false;uncertain.value=false;
   if(row.ledger_id&&row.status===definitions[scenario].status){notice.value=tx('Учёт банковского факта подтверждён сохранённой строкой.');emit('changed',row);}
   else if(row.ledger_id){notice.value=tx('Строка уже учтена другим способом. Обновите список и проверьте историю.');emit('changed',row);}
   else{notice.value=tx('Строка остаётся на проверке. Проверьте решение заново перед подтверждением.');emit('refresh');}
@@ -125,11 +129,14 @@ async function refreshResult(){
    <label>{{tx('Какое событие подтверждают банковские документы?')}}<select v-model="kind" :disabled="disabled||busy||uncertain"><option value="">{{tx('Выберите решение')}}</option><option v-for="scenario in kinds" :key="scenario" :value="scenario">{{tx(definitions[scenario].title)}}</option></select></label>
    <template v-if="kind&&options">
     <label v-if="items.length">{{tx(kind==='historical-transfer'?N_('Свой счёт получателя'):kind==='historical-request'?N_('Закрытая заявка'):N_('Другое поступление с тем же номером'))}}<select v-model="target" :disabled="disabled||busy||uncertain"><option value="">{{tx('Выберите запись')}}</option><option v-for="item in items" :key="itemId(item)" :value="String(itemId(item))"><template v-if="kind==='historical-transfer'">{{item.name}} · {{item.currency}}</template><template v-else>{{item.number||item.document_number}} · {{item.counterparty}} · {{formatShortDate(item.date)}} · {{money(item.amount,item.currency)}} {{item.currency}}</template></option></select></label>
-    <p v-if="!items.length" class="sub">{{tx('Подходящих записей нет. Строка остаётся на проверке.')}}</p>
+    <p v-if="!items.length" class="sub">{{tx(kind==='historical-transfer'?N_('Добавьте свой банковский счёт получателя в разделе «Банк и касса»: та же компания и валюта, дата начала учёта не позже даты перевода. Затем обновите варианты решения.'):N_('Подходящих записей нет. Строка остаётся на проверке.'))}}</p>
+    <button v-if="!items.length" type="button" class="secondary tiny" :disabled="disabled||busy||uncertain" @click="loadOptions">{{tx('Обновить варианты решения')}}</button>
     <p v-if="kind==='historical-transfer'&&selected" class="sub">{{tx(selected.correspondence_confirmed?N_('Счёт получателя подтверждён реквизитами выписки.'):N_('Реквизиты счёта получателя не подтверждены автоматически. Проверьте принадлежность компании по банковским документам.'))}}</p>
     <p v-if="kind==='distinct-income'&&selected" class="sub">{{selected.purpose}}</p>
     <label>{{tx('Основание по банковским документам (не менее 10 символов)')}}<textarea v-model="reason" :disabled="disabled||busy||uncertain" minlength="10" maxlength="1000"></textarea></label>
     <label class="resolution-check"><input v-model="attest" type="checkbox" :disabled="disabled||busy||uncertain"> {{tx(definition.attestation)}}</label>
+    <p v-if="needsCounterpartyConfirmation" class="sub">{{selected.bank_counterparty}} · {{tx('ИНН')}} {{selected.bank_inn}}</p>
+    <label v-if="needsCounterpartyConfirmation" class="resolution-check"><input v-model="attestCounterparty" type="checkbox" :disabled="disabled||busy||uncertain"> {{tx('Подтверждаю по договору или счёту: получатель в закрытой заявке — этот контрагент из выписки (ИНН {inn}).',{inn:selected.bank_inn})}}</label>
     <button type="button" class="secondary" :disabled="!canPreview" @click="check">{{tx('Проверить решение')}}</button>
    </template>
    <p v-if="busy" role="status">{{tx('Проверяем данные…')}}</p><p v-if="error" class="error" role="alert">{{error}}</p><p v-if="notice" role="status">{{notice}}</p>
