@@ -1,7 +1,8 @@
 {
-  "version": "2.34.10",
+  "version": "2.34.11",
   "date": "2026-11-03",
   "changes": [
+    "Поступления по банковской выписке показаны общим итогом за весь период файла с раскрываемыми строками. Сумма не зависит от сверки расходов и не повторяет операции сайта.",
     "Выписка показывает сверенные заявки, расходы без заявки, комиссии и спорные списания; на обзоре поступления видны по отдельным валютам.",
     "Администратор холдинга может удалить выписку и отменить операции, созданные по ней; ранее существовавшие связанные операции сохраняются.",
     "Расчётный бухгалтер может проводить сверенные строки банковской выписки без общего права создавать и изменять операции.",
@@ -89,6 +90,7 @@
     "Длинные названия файлов и кнопки выбора шаблона переносятся на узком экране. В ТЭО дата архива отдельно обозначена и не подменяет начало финансового прогноза."
   ],
   "changes_uz": [
+    "Bank ko‘chirmasi tushumlari faylning butun davri uchun jami va ochiladigan satrlar bilan ko‘rsatiladi. Summa xarajatlarni solishtirishga bog‘liq emas va saytdagi operatsiyalarni takrorlamaydi.",
     "Bank ko‘chirmasida moslangan arizalar, arizasiz xarajatlar, komissiyalar va tekshiriladigan chiqimlar ajratiladi; tushumlar har bir valyuta bo‘yicha alohida ko‘rsatiladi.",
     "Holding administratori bank ko‘chirmasini va u yaratgan operatsiyalarni bekor qilishi mumkin; avval mavjud bog‘langan operatsiyalar saqlanadi.",
     "Hisob-kitob buxgalteri bank ko‘chirmasining tekshirilgan satrlarini o‘tkazishi mumkin; operatsiyalarni umumiy yaratish va o‘zgartirish huquqi berilmaydi.",
