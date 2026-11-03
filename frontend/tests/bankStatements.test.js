@@ -1,18 +1,19 @@
 import {test} from 'node:test';
 import assert from 'node:assert/strict';
-import {compileComponent,mount,settle,text,all} from './helpers/mountVue.js';
+import {compileComponent,mount,settle,text,all,find} from './helpers/mountVue.js';
 import {lang,setLang} from '../src/i18n/index.js';
 
 const component=await compileComponent(new URL('../src/BankStatements.vue',import.meta.url));
 const daily=await compileComponent(new URL('../src/overview/BankStatementDaily.vue',import.meta.url));
+const overview=await compileComponent(new URL('../src/overview/OverviewPage.vue',import.meta.url));
 const accounts=[{id:21,name:'Synthetic bank',kind:'bank',currency:'UZS'}, {id:22,name:'Synthetic cash',kind:'cash',currency:'UZS'}];
-const statement={id:7,status:'preview',account:{id:21,name:'Synthetic bank',currency:'UZS'},statement:{account_number:'TEST-BANK-21',ready:true,period_from:'2026-10-30',period_to:'2026-10-30',opening_balance:'100.00',closing_balance:'90.00',credit_total:'10.00',debit_total:'20.00',balance_matches:true,declared_totals_match:true},rows:[{id:1,date:'2026-10-30',document_number:'D1',correspondent_name:'Synthetic',correspondent_inn:'123456789',purpose:'Synthetic payment',direction:'out',amount:'20.00',status:'auto_pay_candidate',request_id:9}]};
+const statement={id:7,status:'preview',preview_token:'snapshot-7',full_reconciliation:true,account:{id:21,name:'Synthetic bank',currency:'UZS'},statement:{account_number:'TEST-BANK-21',ready:true,period_from:'2026-10-30',period_to:'2026-10-30',opening_balance:'100.00',closing_balance:'90.00',credit_total:'10.00',debit_total:'20.00',balance_matches:true,declared_totals_match:true},rows:[{id:1,date:'2026-10-30',document_number:'D1',correspondent_name:'Synthetic',correspondent_inn:'123456789',purpose:'Synthetic payment',direction:'out',amount:'20.00',status:'auto_pay_candidate',request_id:9}]};
 const file={name:'statement.xls',size:100};
 function event(f=file){return {target:{files:[f],value:'file'}}}
 
 test('select account and currency explicitly, inspect bank account then confirm each before commit',async t=>{
  const calls=[];
- const api=async(url,options={})=>{calls.push([url,options]);if(url==='/api/bank-statements/reviews')return {items:[]};if(url.includes('/preview?'))return statement;if(url.endsWith('/commit'))return {auto_paid:1,linked_paid:0,review:0};throw Error('unexpected')};
+ const api=async(url,options={})=>{calls.push([url,options]);if(url==='/api/bank-statements/reviews')return {items:[]};if(url==='/api/bank-statements/settings')return {fee_category_id:null};if(url.includes('/preview?'))return statement;if(url.endsWith('/commit'))return {auto_paid:1,linked_paid:0,review:0,full_reconciliation:true};throw Error('unexpected')};
  const view=mount(component,{api,companyId:1,accounts,canImport:true});t.after(view.unmount);await settle();
  assert.equal(view.state.validSelection,false);assert.equal(view.state.bankAccounts.length,1);
  view.state.accountId='21';view.state.currency='USD';await settle();assert.equal(view.state.validSelection,false);
@@ -23,13 +24,13 @@ test('select account and currency explicitly, inspect bank account then confirm 
  view.state.confirmAccount=true;await settle();assert.equal(view.state.ready,false);
  view.state.confirmCurrency=true;await settle();assert.equal(view.state.ready,true);
  await view.state.commit();await settle();const call=calls.find(([url])=>url.endsWith('/commit'));
- assert.deepEqual(JSON.parse(call[1].body),{confirm_account:true,confirm_currency:true});
+ assert.deepEqual(JSON.parse(call[1].body),{confirm_account:true,confirm_currency:true,fee_category_id:null,preview_token:'snapshot-7'});
  assert.match(text(view.container),/Автоматически оплачено: 1/);assert.equal(view.state.preview,null);
 });
 
 test('a failed balance or unexpected scope cannot be confirmed, and no automatic action occurs on upload',async t=>{
  let commits=0;
- const api=async(url)=>{if(url==='/api/bank-statements/reviews')return {items:[]};if(url.includes('/preview?'))return {...statement,statement:{...statement.statement,balance_matches:false}};commits++;return {}};
+ const api=async(url)=>{if(url==='/api/bank-statements/reviews')return {items:[]};if(url==='/api/bank-statements/settings')return {fee_category_id:null};if(url.includes('/preview?'))return {...statement,statement:{...statement.statement,balance_matches:false}};commits++;return {}};
  const view=mount(component,{api,companyId:1,accounts,canImport:true});t.after(view.unmount);await settle();
  view.state.accountId='21';view.state.currency='UZS';await settle();await view.state.upload(event());
  view.state.confirmAccount=true;view.state.confirmCurrency=true;await settle();assert.equal(view.state.ready,false);await view.state.commit();assert.equal(commits,0);
@@ -38,7 +39,7 @@ test('a failed balance or unexpected scope cannot be confirmed, and no automatic
 
 test('uncertain commit result blocks duplicate submission and old company replies are ignored',async t=>{
  let commits=0,resolvePreview;
- const api=async(url)=>{if(url==='/api/bank-statements/reviews')return {items:[]};if(url.includes('/preview?'))return new Promise(resolve=>resolvePreview=resolve);commits++;throw Error('network')};
+ const api=async(url)=>{if(url==='/api/bank-statements/reviews')return {items:[]};if(url==='/api/bank-statements/settings')return {fee_category_id:null};if(url.includes('/preview?'))return new Promise(resolve=>resolvePreview=resolve);commits++;throw Error('network')};
  const view=mount(component,{api,companyId:1,accounts,canImport:true});t.after(view.unmount);await settle();
  view.state.accountId='21';view.state.currency='UZS';await settle();
  const pending=view.state.upload(event());await settle();view.state.currency='USD';await settle();resolvePreview(statement);await pending;await settle();assert.equal(view.state.preview,null);
@@ -59,7 +60,7 @@ test('daily bank statement totals are separate, scoped by date and currency, and
  const calls=[];
  const view=mount(daily,{companyId:1,currency:'UZS',today:'2026-10-30',api:async url=>{calls.push(url);return {date:'2026-10-30',currency:'UZS',credit_total:'3500459877.85',debit_total:'4801316304.69',accounts:[{account_id:21,name:'Synthetic bank',credit_total:'3500459877.85',debit_total:'4801316304.69'}]}}});t.after(view.unmount);await settle();
  assert.match(calls[0],/date=2026-10-30&currency=UZS/);assert.match(text(view.container),/3\s*500\s*459\s*877,85/);
- assert.match(text(view.container),/не добавляются автоматически в остаток и Cash Flow/);
+ assert.match(text(view.container),/Проведённые поступления, комиссии и списания учитываются в остатке и Cash Flow/);
 });
 
 
@@ -107,4 +108,224 @@ test('importer without payment rights sees automatic payment depends on authoriz
  const api=async(url)=>url==='/api/bank-statements/reviews'?{items:[]}:statement;
  const view=mount(component,{api,companyId:1,accounts,canImport:true,canReview:false});t.after(view.unmount);await settle();view.state.accountId='21';view.state.currency='UZS';await settle();await view.state.upload(event());await settle();
  assert.match(text(view.container),/только при наличии права оплаты и успешном прохождении проверок/);assert.match(text(view.container),/строка останется бухгалтеру на проверку/);
+});
+
+test('fee category is company-scoped, explicitly previewed, and opening mismatch is visible',async t=>{
+ const calls=[];
+ const categories=[{id:4,name:'Synthetic fee',type:'outcome'},{id:5,name:'Old fee',type:'outcome',retired:true},{id:6,name:'Synthetic income',type:'income'},{id:7,name:'Unclassified',type:'outcome',activity:'unclassified'}];
+ const api=async(url,options={})=>{calls.push([url,options]);if(url==='/api/bank-statements/reviews'||url==='/api/bank-statements/reprocess/batches')return {items:[]};if(url==='/api/bank-statements/settings')return {fee_category_id:4};if(url.includes('/preview?'))return {...statement,full_reconciliation:false,opening_matches:false,site_opening:'99.00',rows:[{id:2,date:'2026-10-30',amount:'10',direction:'in',status:'income_candidate',category_source:'unclassified'},{id:3,date:'2026-10-30',amount:'1',direction:'out',status:'fee_candidate',category_id:4}]};if(url.endsWith('/commit'))return {auto_paid:0,linked_paid:0,review:2,full_reconciliation:false};throw Error('unexpected')};
+ const view=mount(component,{api,companyId:1,accounts,categories,canImport:true,canPost:true});t.after(view.unmount);await settle();
+ assert.deepEqual(view.state.feeCategories.map(c=>c.id),[4]);assert.equal(view.state.feeCategoryId,'4');
+ view.state.accountId='21';view.state.currency='UZS';await settle();await view.state.upload(event());await settle();
+ assert.match(calls.find(([url])=>url.includes('/preview?'))[0],/fee_category_id=4/);
+ assert.match(text(view.container),/Начальный остаток не совпадает/);assert.match(text(view.container),/Не распределено/);assert.match(text(view.container),/Synthetic fee/);assert.match(text(view.container),/Ожидает полной сверки/);assert.doesNotMatch(text(view.container),/Поступление будет проведено|Комиссия будет проведена/);
+ view.state.confirmAccount=true;view.state.confirmCurrency=true;await settle();await view.state.commit();
+ const body=JSON.parse(calls.find(([url])=>url.endsWith('/commit'))[1].body);
+ assert.deepEqual(body,{confirm_account:true,confirm_currency:true,fee_category_id:4,preview_token:'snapshot-7'});
+ assert.match(text(view.container),/Поступления, комиссии и прочие списания отложены/);
+});
+
+test('final all-or-nothing failure is explained even when the preview was initially complete',async t=>{
+ const api=async(url)=>{if(url==='/api/bank-statements/reviews')return {items:[]};if(url==='/api/bank-statements/settings')return {fee_category_id:null};if(url.includes('/preview?'))return statement;if(url.endsWith('/commit'))return {auto_paid:0,linked_paid:0,review:1,auto_income:0,auto_fee:0,full_reconciliation:false};throw Error('unexpected')};
+ const view=mount(component,{api,companyId:1,accounts,canImport:true});t.after(view.unmount);await settle();view.state.accountId='21';view.state.currency='UZS';await settle();await view.state.upload(event());
+ assert.match(text(view.container),/Все строки готовы к полной сверке/);view.state.confirmAccount=true;view.state.confirmCurrency=true;await settle();await view.state.commit();await settle();
+ assert.match(text(view.container),/Поступления, комиссии и прочие списания отложены/);assert.match(text(view.container),/Спорные строки нужно проверить бухгалтеру/i);
+});
+
+test('incomplete reconciliation defers receipts and fees but still explains exact request payments',async t=>{
+ const api=async(url)=>{if(url==='/api/bank-statements/reviews')return {items:[]};if(url==='/api/bank-statements/settings')return {fee_category_id:null};if(url.includes('/preview?'))return {...statement,full_reconciliation:false,rows:[...statement.rows,{id:2,date:'2026-10-30',direction:'in',amount:'10',status:'income_candidate'},{id:3,date:'2026-10-30',direction:'out',amount:'5',status:'other_matched_candidate'}]};if(url.endsWith('/commit'))return {auto_paid:1,linked_paid:0,review:2,auto_income:0,auto_fee:0,full_reconciliation:false};throw Error('unexpected')};
+ const view=mount(component,{api,companyId:1,accounts,canImport:true});t.after(view.unmount);await settle();view.state.accountId='21';view.state.currency='UZS';await settle();await view.state.upload(event());await settle();
+ assert.match(text(view.container),/Точное совпадение с заявкой/);assert.match(text(view.container),/Ожидает полной сверки/);assert.doesNotMatch(text(view.container),/Найдена существующая операция/);assert.match(text(view.container),/точно сопоставленные заявки могут быть отмечены оплаченными/);
+ view.state.confirmAccount=true;view.state.confirmCurrency=true;await settle();await view.state.commit();await settle();
+ assert.match(text(view.container),/Автоматически оплачено: 1/);assert.match(text(view.container),/Поступления, комиссии и прочие списания отложены/);assert.match(text(view.container),/точные заявки могли быть отмечены оплаченными/);
+});
+
+test('existing independent bank operations show as links rather than new entries',async t=>{
+ const api=async(url)=>{if(url==='/api/bank-statements/reviews')return {items:[]};if(url==='/api/bank-statements/settings')return {fee_category_id:null};if(url.includes('/preview?'))return {...statement,rows:[{id:3,date:'2026-10-30',direction:'out',amount:'5',status:'other_matched_candidate'}]};if(url.endsWith('/commit'))return {auto_paid:0,linked_paid:0,review:0,other_linked:1,full_reconciliation:true};throw Error('unexpected')};
+ const view=mount(component,{api,companyId:1,accounts,canImport:true});t.after(view.unmount);await settle();view.state.accountId='21';view.state.currency='UZS';await settle();await view.state.upload(event());
+ assert.match(text(view.container),/Найдена существующая операция/);view.state.confirmAccount=true;view.state.confirmCurrency=true;await settle();await view.state.commit();await settle();
+ assert.match(text(view.container),/Других существующих операций связано: 1/);
+});
+
+test('a response without a full-reconciliation result cannot be confirmed',async t=>{
+ let writes=0;const api=async(url,options={})=>{if(url==='/api/bank-statements/reviews')return {items:[]};if(url==='/api/bank-statements/settings')return {fee_category_id:null};if(url.includes('/preview?')){const {full_reconciliation,...old}=statement;return old}if(options.method==='POST')writes++;return {}};
+ const view=mount(component,{api,companyId:1,accounts,canImport:true});t.after(view.unmount);await settle();view.state.accountId='21';view.state.currency='UZS';await settle();await view.state.upload(event());view.state.confirmAccount=true;view.state.confirmCurrency=true;await settle();
+ assert.equal(view.state.ready,false);await view.state.commit();assert.equal(writes,0);assert.match(text(view.container),/Сервер не подтвердил полную сверку/);
+});
+
+test('allocating a posted receipt requires a current token, allowed category and explanation',async t=>{
+ const calls=[],row={id:44,date:'2026-10-30',amount:'100',currency:'UZS',account_name:'Bank',correspondent_name:'Synthetic',document_number:'1',category_id:8,edit_token:'current-snapshot'};
+ const categories=[{id:8,name:'Unallocated',type:'income',activity:'unclassified'},{id:9,name:'Sales',type:'income'},{id:10,name:'Retired',type:'income',retired:true},{id:11,name:'Expense',type:'outcome'}];
+ const api=async(url,options={})=>{calls.push([url,options]);if(url==='/api/bank-statements/reviews'||url==='/api/bank-statements/outgoing-unallocated')return {items:[]};if(url==='/api/bank-statements/income-unallocated')return {items:[row]};if(url.endsWith('/income-category'))return {};throw Error('unexpected')};
+ const view=mount(component,{api,companyId:1,accounts,categories,canAllocate:true});t.after(view.unmount);await settle();
+ assert.deepEqual(view.state.incomeCategories.map(c=>c.id),[9]);
+ view.state.allocationActions={44:{categoryId:'9',reason:'short'}};await view.state.assignIncome(row);assert.equal(calls.filter(([url])=>url.endsWith('/income-category')).length,0);
+ view.state.allocationActions={44:{categoryId:'11',reason:'Valid explanation'}};await view.state.assignIncome(row);assert.equal(calls.filter(([url])=>url.endsWith('/income-category')).length,0);
+ view.state.allocationActions={44:{categoryId:'9',reason:'Verified bank receipt'}};await view.state.assignIncome(row);
+ const call=calls.find(([url])=>url.endsWith('/income-category'));assert.deepEqual(JSON.parse(call[1].body),{category_id:9,edit_token:'current-snapshot',reason:'Verified bank receipt'});
+ assert.match(text(view.container),/Поступления без статьи/);
+});
+
+test('allocating a posted external debit requires an expense article, a current token and an explanation',async t=>{
+ const calls=[],row={id:90,date:'2026-10-30',amount:'35',currency:'UZS',account_name:'Bank',correspondent_name:'Synthetic',document_number:'3',category_id:8,edit_token:'snapshot'};
+ const categories=[{id:8,name:'Unallocated',type:'outcome',activity:'unclassified'},{id:9,name:'Expense',type:'outcome'},{id:10,name:'Retired',type:'outcome',retired:true},{id:11,name:'Income',type:'income'}];
+ const api=async(url,options={})=>{calls.push([url,options]);if(url==='/api/bank-statements/reviews'||url==='/api/bank-statements/income-unallocated')return {items:[]};if(url==='/api/bank-statements/outgoing-unallocated')return {items:[row]};if(url.endsWith('/outgoing-category'))return {};throw Error('unexpected')};
+ const view=mount(component,{api,companyId:1,accounts,categories,canAllocate:true});t.after(view.unmount);await settle();
+ assert.deepEqual(view.state.feeCategories.map(c=>c.id),[9]);assert.match(text(view.container),/изменится фактическое использование бюджета/);assert.match(text(view.container),/жёсткого лимита сначала пересмотрите бюджет/);
+ view.state.outgoingActions={90:{categoryId:'11',reason:'Correct reason'}};await view.state.assignOutgoing(row);assert.equal(calls.filter(([url])=>url.endsWith('/outgoing-category')).length,0);
+ view.state.outgoingActions={90:{categoryId:'9',reason:'short'}};await view.state.assignOutgoing(row);assert.equal(calls.filter(([url])=>url.endsWith('/outgoing-category')).length,0);
+ view.state.outgoingActions={90:{categoryId:'9',reason:'Checked bank expense'}};await view.state.assignOutgoing(row);
+ const call=calls.find(([url])=>url.endsWith('/outgoing-category'));assert.deepEqual(JSON.parse(call[1].body),{category_id:9,edit_token:'snapshot',reason:'Checked bank expense'});
+});
+
+test('a hard-budget rejection stays visible and does not report an expense as classified',async t=>{
+ const row={id:90,date:'2026-10-30',amount:'35',currency:'UZS',account_name:'Bank',correspondent_name:'Synthetic',document_number:'3',category_id:8,edit_token:'snapshot'};
+ const api=async(url)=>{if(url==='/api/bank-statements/reviews'||url==='/api/bank-statements/income-unallocated')return {items:[]};if(url==='/api/bank-statements/outgoing-unallocated')return {items:[row]};if(url.endsWith('/outgoing-category'))throw Object.assign(Error('Жёсткий лимит превышен. Сначала пересмотрите утверждённый бюджет.'),{status:409});throw Error('unexpected')};
+ const view=mount(component,{api,companyId:1,accounts,categories:[{id:9,name:'Expense',type:'outcome'}],canAllocate:true});t.after(view.unmount);await settle();view.state.outgoingActions={90:{categoryId:'9',reason:'Checked bank expense'}};await view.state.assignOutgoing(row);await settle();
+ assert.match(text(view.container),/Жёсткий лимит превышен/);assert.equal(view.state.outgoingUnallocated.length,1);
+});
+
+test('unallocated outgoing candidates are not promised during partial reconciliation',async t=>{
+ const api=async(url)=>{if(url==='/api/bank-statements/reviews')return {items:[]};if(url==='/api/bank-statements/settings')return {fee_category_id:null};if(url.includes('/preview?'))return {...statement,full_reconciliation:false,rows:[{id:3,date:'2026-10-30',direction:'out',amount:'5',status:'outgoing_candidate',category_source:'unclassified_out'}]};throw Error('unexpected')};
+ const view=mount(component,{api,companyId:1,accounts,canImport:true});t.after(view.unmount);await settle();view.state.accountId='21';view.state.currency='UZS';await settle();await view.state.upload(event());await settle();
+ assert.match(text(view.container),/Ожидает полной сверки/);assert.match(text(view.container),/Не распределено/);assert.doesNotMatch(text(view.container),/Списание будет проведено/);
+});
+
+test('successful statement confirms how many unallocated external debits were posted',async t=>{
+ const api=async(url)=>{if(url==='/api/bank-statements/reviews')return {items:[]};if(url==='/api/bank-statements/settings')return {fee_category_id:null};if(url.includes('/preview?'))return {...statement,rows:[{id:3,date:'2026-10-30',direction:'out',amount:'5',status:'outgoing_candidate',category_source:'unclassified_out'}]};if(url.endsWith('/commit'))return {auto_paid:0,linked_paid:0,review:0,auto_outgoing:1,full_reconciliation:true};throw Error('unexpected')};
+ const view=mount(component,{api,companyId:1,accounts,canImport:true});t.after(view.unmount);await settle();view.state.accountId='21';view.state.currency='UZS';await settle();await view.state.upload(event());
+ assert.match(text(view.container),/Списание будет проведено/);view.state.confirmAccount=true;view.state.confirmCurrency=true;await settle();await view.state.commit();await settle();
+ assert.match(text(view.container),/Внешних списаний проведено: 1/);
+});
+
+test('reprocessing requires a current server preview and invalidates it when article changes',async t=>{
+ const calls=[],batches=[{id:7,account_name:'Bank',currency:'UZS',period_from:'2026-10-30',period_to:'2026-10-30',filename:'synthetic.xls'}];
+ const api=async(url,options={})=>{calls.push([url,options]);if(url==='/api/bank-statements/reviews'||url==='/api/bank-statements/income-unallocated')return {items:[]};if(url==='/api/bank-statements/reprocess/batches')return {items:batches};if(url==='/api/bank-statements/settings')return {fee_category_id:null};if(url.endsWith('/reprocess/preview'))return {batch_id:7,preview_token:'snapshot-old',full_reconciliation:true,opening_matches:true,statement_opening:'100.00',site_opening:'100.00',rows:[{id:3,date:'2026-10-30',direction:'in',status:'income_candidate',amount:'10.00'},{id:4,date:'2026-10-30',direction:'out',status:'auto_paid',amount:'20.00'}]};if(url.endsWith('/reprocess/commit'))return {posted:1,linked:0,review:0,full_reconciliation:true};throw Error('unexpected')};
+ const view=mount(component,{api,companyId:1,accounts,categories:[{id:4,name:'Fee',type:'outcome'}],canPost:true});t.after(view.unmount);await settle();
+ view.state.selectedOldBatch='7';await settle();await view.state.previewOldBatch();assert.match(text(view.container),/Поступление будет проведено/);assert.match(text(view.container),/Заявка оплачена/);assert.match(text(view.container),/Остаток на начало по выписке/);
+ view.state.feeCategoryId='4';await settle();assert.equal(view.state.reprocessPreview,null);await view.state.commitOldBatch();assert.equal(calls.filter(([url])=>url.endsWith('/reprocess/commit')).length,0);
+ await view.state.previewOldBatch();await view.state.commitOldBatch();
+ assert.deepEqual(JSON.parse(calls.find(([url])=>url.endsWith('/reprocess/commit'))[1].body),{fee_category_id:4,preview_token:'snapshot-old',confirm:true});
+ assert.match(text(view.container),/Повторная проверка завершена/);
+});
+
+test('a stale preview must be reloaded before attempting another commit',async t=>{
+ let attempts=0;const api=async(url)=>{if(url==='/api/bank-statements/reviews')return {items:[]};if(url==='/api/bank-statements/settings')return {fee_category_id:null};if(url.includes('/preview?'))return statement;if(url.endsWith('/commit')){attempts++;throw Object.assign(Error('changed'),{status:409})}throw Error('unexpected')};
+ const view=mount(component,{api,companyId:1,accounts,canImport:true});t.after(view.unmount);await settle();view.state.accountId='21';view.state.currency='UZS';await settle();await view.state.upload(event());view.state.confirmAccount=true;view.state.confirmCurrency=true;await settle();await view.state.commit();await view.state.commit();
+ assert.equal(attempts,1);assert.equal(view.state.preview,null);assert.match(text(view.container),/Данные изменились/);
+});
+
+test('a delayed company setting cannot replace a category explicitly selected by the user',async t=>{
+ let resolveSetting;const api=async url=>{if(url==='/api/bank-statements/reviews')return {items:[]};if(url==='/api/bank-statements/settings')return new Promise(resolve=>{resolveSetting=resolve});throw Error('unexpected')};
+ const categories=[{id:4,name:'Fee 1',type:'outcome'},{id:5,name:'Fee 2',type:'outcome'}];
+ const view=mount(component,{api,companyId:1,accounts,categories,canImport:true});t.after(view.unmount);await settle();
+ view.state.feeCategoryId='4';view.state.feeTouched=true;resolveSetting({fee_category_id:5});await settle();
+ assert.equal(view.state.feeCategoryId,'4');
+});
+
+test('an earlier company response cannot restore its fee article after a company switch',async t=>{
+ const settings=[];const api=async url=>{if(url==='/api/bank-statements/reviews')return {items:[]};if(url==='/api/bank-statements/settings')return new Promise(resolve=>{settings.push(resolve)});throw Error('unexpected')};
+ const view=mount(component,{api,companyId:1,accounts,categories:[{id:4,name:'Fee A',type:'outcome'},{id:5,name:'Fee B',type:'outcome'}],canImport:true});t.after(view.unmount);await settle();
+ view.app._instance.props.companyId=2;await settle();assert.equal(settings.length,2);settings[1]({fee_category_id:5});await settle();settings[0]({fee_category_id:4});await settle();
+ assert.equal(view.state.feeCategoryId,'5');
+});
+
+test('accountant can assign an unallocated receipt without general ledger write, but cannot reprocess a statement',async t=>{
+ const calls=[],row={id:71,date:'2026-10-30',amount:'15',currency:'UZS',account_name:'Bank',correspondent_name:'Synthetic',document_number:'doc',category_id:8,edit_token:'token'};
+ const api=async(url,options={})=>{calls.push([url,options]);if(url==='/api/bank-statements/reviews'||url==='/api/bank-statements/outgoing-unallocated')return {items:[]};if(url==='/api/bank-statements/income-unallocated')return {items:[row]};if(url.endsWith('/income-category'))return {};throw Error('unexpected')};
+ const view=mount(component,{api,companyId:1,accounts,categories:[{id:9,name:'Income',type:'income'}],canReview:true,canAllocate:true,canPost:false,canImport:false});t.after(view.unmount);await settle();
+ assert.match(text(view.container),/Поступления без статьи/);assert.doesNotMatch(text(view.container),/Повторная проверка загруженной выписки/);
+ view.state.allocationActions={71:{categoryId:'9',reason:'Bank entry checked'}};await view.state.assignIncome(row);
+ assert.equal(calls.filter(([url])=>url.endsWith('/income-category')).length,1);assert.equal(calls.filter(([url])=>url.includes('/reprocess/')).length,0);
+});
+
+test('read-only ledger user cannot submit an income allocation even when method is called directly',async t=>{
+ let writes=0;const api=async(url,options={})=>{if(options.method==='POST')writes++;return {items:[]}};
+ const view=mount(component,{api,companyId:1,accounts,categories:[{id:9,name:'Income',type:'income'}],canReview:false,canAllocate:false,canPost:false});t.after(view.unmount);await settle();
+ view.state.allocationActions={71:{categoryId:'9',reason:'Bank entry checked'}};await view.state.assignIncome({id:71,category_id:8,edit_token:'token'});
+ assert.equal(writes,0);assert.doesNotMatch(text(view.container),/Поступления без статьи/);
+});
+
+test('duplicate resolution requires a previously posted candidate, token, reason and explicit confirmation',async t=>{
+ const calls=[],row={id:88,status:'ambiguous_duplicate',date:'2026-10-30',direction:'in',amount:'10.00',currency:'UZS'};
+ const previous={line_id:45,batch_id:3,date:'2026-10-30',document_number:'D1',account_name:'Synthetic bank',amount:'10.00',currency:'UZS',ledger_id:21,token:'candidate-token'};
+ const api=async(url,options={})=>{calls.push([url,options]);if(url==='/api/bank-statements/reviews')return {items:[row]};if(url.endsWith('/duplicate-candidates'))return {items:[previous]};if(url.endsWith('/duplicate-resolve'))return {ok:true};throw Error('unexpected')};
+ const view=mount(component,{api,companyId:1,accounts,canReview:true});t.after(view.unmount);await settle();await view.state.findDuplicateCandidates(row);
+ view.state.duplicateActions[88].selected='45';view.state.duplicateActions[88].note='short';view.state.duplicateActions[88].confirm=true;await view.state.resolveDuplicate(row);assert.equal(calls.filter(([url])=>url.endsWith('/duplicate-resolve')).length,0);
+ view.state.duplicateActions[88].note='Checked bank duplicate';view.state.duplicateActions[88].confirm=false;await view.state.resolveDuplicate(row);assert.equal(calls.filter(([url])=>url.endsWith('/duplicate-resolve')).length,0);
+ view.state.duplicateActions[88].confirm=true;view.state.duplicateActions[88].items[0].token='';await view.state.resolveDuplicate(row);assert.equal(calls.filter(([url])=>url.endsWith('/duplicate-resolve')).length,0);view.state.duplicateActions[88].items[0].token='candidate-token';
+ view.state.duplicateActions[88].confirm=true;await view.state.resolveDuplicate(row);const call=calls.find(([url])=>url.endsWith('/duplicate-resolve'));
+ assert.deepEqual(JSON.parse(call[1].body),{prior_line_id:45,token:'candidate-token',reason:'Checked bank duplicate',confirm:true});
+});
+
+test('duplicate resolution instructions are available in Uzbek',async t=>{
+ const previous=lang.value;setLang('uz');t.after(()=>setLang(previous));
+ const row={id:88,status:'ambiguous_duplicate',date:'2026-10-30',direction:'out',amount:'10.00',currency:'UZS'};
+ const api=async url=>url==='/api/bank-statements/reviews'?{items:[row]}:{items:[]};
+ const view=mount(component,{api,companyId:1,accounts,canReview:true});t.after(view.unmount);await settle();
+ assert.match(text(view.container),/Avval o‘tkazilgan operatsiyani topish/);await view.state.findDuplicateCandidates(row);await settle();
+ assert.match(text(view.container),/takror tekshiruvda qoladi/i);
+});
+
+test('duplicate tools are never shown or executed without review permission',async t=>{
+ const calls=[],row={id:88,status:'ambiguous_duplicate',date:'2026-10-30',direction:'out',amount:'10.00',currency:'UZS'};
+ const api=async(url,options={})=>{calls.push([url,options]);return {items:[row]}};
+ const view=mount(component,{api,companyId:1,accounts,canReview:false});t.after(view.unmount);await settle();
+ assert.doesNotMatch(text(view.container),/Найти ранее проведённую операцию/);await view.state.findDuplicateCandidates(row);await view.state.resolveDuplicate(row);
+ assert.deepEqual(calls.map(([url])=>url),['/api/bank-statements/reviews']);
+});
+
+test('a late duplicate-candidate response cannot leak across a company change',async t=>{
+ let finish;const row={id:88,status:'ambiguous_duplicate'};
+ const api=async(url)=>{if(url==='/api/bank-statements/reviews')return {items:[]};if(url.endsWith('/duplicate-candidates'))return new Promise(resolve=>{finish=resolve});throw Error('unexpected')};
+ const view=mount(component,{api,companyId:1,accounts,canReview:true});t.after(view.unmount);await settle();const pending=view.state.findDuplicateCandidates(row);await settle();
+ view.app._instance.props.companyId=2;await settle();finish({items:[{line_id:45,ledger_id:21,token:'token'}]});await pending;await settle();
+ assert.equal(view.state.duplicateActions[88],undefined);assert.equal(view.state.reviewBusy,null);
+});
+
+test('transfer link shows both accounts and requires the selected token, explanation and confirmation',async t=>{
+ const calls=[],row={id:91,status:'review',date:'2026-10-30',direction:'out',amount:'10',currency:'UZS'};
+ const candidate={ledger_id:51,date:'2026-10-30',amount:'10',currency:'UZS',from_account:'Bank A',to_account:'Bank B',reference:'D123',counterparty_account_confirmed:false,token:'transfer-token'};
+ const api=async(url,options={})=>{calls.push([url,options]);if(url==='/api/bank-statements/reviews')return {items:[row]};if(url.endsWith('/transfer-candidates'))return {items:[candidate]};if(url.endsWith('/transfer-link'))return {ok:true};throw Error('unexpected')};
+ const view=mount(component,{api,companyId:1,accounts,canReview:true});t.after(view.unmount);await settle();await view.state.findTransferCandidates(row);await settle();
+ assert.match(text(view.container),/Bank A.*Bank B.*D123/);let action=view.state.transferActions[91];action.selected='51';await settle();assert.match(text(view.container),/Счёт другой стороны не подтверждён/);
+ action.note='short';action.confirm=true;await view.state.linkTransfer(row);action.note='Checked bank transfer';action.confirm=false;await view.state.linkTransfer(row);action.confirm=true;action.items[0].token='';await view.state.linkTransfer(row);assert.equal(calls.filter(([url])=>url.endsWith('/transfer-link')).length,0);
+ action.items[0].token='transfer-token';await view.state.linkTransfer(row);const call=calls.find(([url])=>url.endsWith('/transfer-link'));assert.deepEqual(JSON.parse(call[1].body),{ledger_id:51,token:'transfer-token',reason:'Checked bank transfer',confirm:true});
+});
+
+test('transfer candidate selection resets confirmation and displays confirmed counterparty correctly',async t=>{
+ const row={id:92,status:'reviewed',date:'2026-10-30',direction:'in',amount:'10',currency:'UZS'};
+ const candidate={ledger_id:52,date:'2026-10-30',amount:'10',currency:'UZS',from_account:'Bank A',to_account:'Bank B',reference:'D124',counterparty_account_confirmed:true,token:'token'};
+ const api=async url=>url.endsWith('/transfer-candidates')?{items:[candidate]}:{items:[row]};
+ const view=mount(component,{api,companyId:1,accounts,canReview:true});t.after(view.unmount);await settle();await view.state.findTransferCandidates(row);view.state.transferActions[92].selected='52';await settle();
+ assert.match(text(view.container),/Счёт другой стороны подтверждён выпиской/);assert.doesNotMatch(text(view.container),/Счёт другой стороны не подтверждён/);
+ view.state.transferActions[92].note='Previously confirmed';view.state.transferActions[92].confirm=true;view.state.resetSelectionConfirmation(view.state.transferActions,row);assert.equal(view.state.transferActions[92].note,'');assert.equal(view.state.transferActions[92].confirm,false);
+});
+
+test('transfer tools require review rights and eligible status',async t=>{
+ const calls=[],row={id:93,status:'review',date:'2026-10-30',direction:'out',amount:'10',currency:'UZS'};const api=async url=>{calls.push(url);return {items:[row]}};
+ const view=mount(component,{api,companyId:1,accounts,canReview:false});t.after(view.unmount);await settle();assert.doesNotMatch(text(view.container),/Найти оформленный перевод/);await view.state.findTransferCandidates(row);await view.state.linkTransfer(row);assert.deepEqual(calls,['/api/bank-statements/reviews']);
+});
+
+test('empty transfer candidates remain under review, and stale responses cannot cross companies',async t=>{
+ let finish;const row={id:94,status:'review',date:'2026-10-30',direction:'out',amount:'10',currency:'UZS'};let delayed=false;
+ const api=async url=>{if(url==='/api/bank-statements/reviews')return {items:[row]};if(url.endsWith('/transfer-candidates'))return delayed?new Promise(resolve=>{finish=resolve}):{items:[]};throw Error('unexpected')};
+ const view=mount(component,{api,companyId:1,accounts,canReview:true});t.after(view.unmount);await settle();await view.state.findTransferCandidates(row);await settle();assert.match(text(view.container),/Подходящий оформленный перевод не найден/);
+ delayed=true;const pending=view.state.findTransferCandidates(row);await settle();view.app._instance.props.companyId=2;await settle();finish({items:[{ledger_id:52,token:'token'}]});await pending;await settle();assert.equal(view.state.transferActions[94],undefined);assert.equal(view.state.reviewBusy,null);
+});
+
+test('unreconciled bank accounts warn authorized staff, and zero or cash accounts do not',async t=>{
+ const scoped=[{id:21,name:'Blocked bank',kind:'bank',currency:'UZS',unreconciled_statements:2},{id:22,name:'Cash',kind:'cash',currency:'UZS',unreconciled_statements:1},{id:23,name:'Clear bank',kind:'bank',currency:'UZS',unreconciled_statements:0}];
+ const api=async()=>({items:[]});const view=mount(component,{api,companyId:1,accounts:scoped,canReview:true});t.after(view.unmount);await settle();
+ assert.match(text(view.container),/Blocked bank.*Несверенных выписок: 2/);assert.match(text(view.container),/Ручная оплата заявок.*временно недоступна/);assert.doesNotMatch(text(view.container),/Cash.*Несверенных выписок/);assert.doesNotMatch(text(view.container),/Clear bank.*Несверенных выписок/);
+ const readOnly=mount(component,{api,companyId:1,accounts:scoped});t.after(readOnly.unmount);await settle();assert.doesNotMatch(text(readOnly.container),/Несверенных выписок/);
+});
+
+test('overview warns on unreconciled accounts in selected currency and links to operations',async t=>{
+ const api=async url=>url.startsWith('/api/accounts')||url.startsWith('/api/budgets')?[]:url.startsWith('/api/requests')||url.startsWith('/api/ledger')?{items:[],total:0}:{};let destination;
+ const view=mount(overview,{api,companyId:1,currency:'UZS',today:'2026-10-30',has:p=>['view','ledger'].includes(p),canDecide:()=>false,onGo:value=>{destination=value}});t.after(view.unmount);await settle();
+ view.state.s.activeAccounts=[{id:1,currency:'USD',unreconciled_statements:2},{id:2,currency:'UZS',unreconciled_statements:0}];await settle();assert.doesNotMatch(text(view.container),/Остаток сайта не сверен/);
+ view.state.s.activeAccounts[1].unreconciled_statements=1;await settle();assert.match(text(view.container),/Остаток сайта не сверен с банком/);assert.match(text(view.container),/ручные оплаты.*временно заблокированы/);
+ const button=find(view.container,node=>node.tag==='button'&&text(node).includes('Перейти к операциям'));assert.ok(button);button.props.onClick();assert.equal(destination,'ledger');
+ view.state.s.activeAccounts[1].unreconciled_statements=0;await settle();assert.doesNotMatch(text(view.container),/Остаток сайта не сверен/);
 });

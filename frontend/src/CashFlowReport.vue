@@ -67,6 +67,8 @@ const unitCaption=computed(()=>({m:tx('млн')+' ',k:tx('тыс.')+' ',x:''}[un
 const columns=computed(()=>mode.value==='plan'?['plan','values','delta']:['values']);
 const planStatus=computed(()=>planCompleteness(props.report.rows,indices.value));
 const label={plan:N_('План'),values:N_('Факт'),delta:N_('Откл.')};
+const unallocatedCategories=new Set([N_('Не распределено — поступления из банка'),N_('Не распределено — списания из банка')]);
+const categoryLabel=row=>unallocatedCategories.has(row.category)?tx(row.category):row.category;
 const groups=computed(()=>(props.report.display_groups?.length?props.report.display_groups:props.report.groups).map(g=>({...g,rows:props.report.rows.filter(r=>g.display_kind?r.kind===g.display_kind:r.activity===g.activity)})));
 const summary=computed(()=>[
  {key:'opening',category:tx('Остаток на начало периода'),values:props.report.opening,plan:props.report.plan_opening},
@@ -80,8 +82,8 @@ const body=computed(()=>{
   out.push({t:'sec',key:'sec-'+g.activity,label:tx(g.name),row:g,activity:g.activity});
   if(collapsed.value.includes(g.activity))continue;
   const ins=g.rows.filter(r=>r.kind==='in'),outs=g.rows.filter(r=>r.kind!=='in');
-  if(ins.length){if(!g.display_kind)out.push({t:'sub',key:'in-'+g.activity,label:tx('Поступления')});ins.forEach(r=>out.push({t:'line',key:r.key,label:r.category,row:r}))}
-  if(outs.length){if(!g.display_kind)out.push({t:'sub',key:'out-'+g.activity,label:tx('Выплаты')});outs.forEach(r=>out.push({t:'line',key:r.key,label:r.category,row:r}))}
+  if(ins.length){if(!g.display_kind)out.push({t:'sub',key:'in-'+g.activity,label:tx('Поступления')});ins.forEach(r=>out.push({t:'line',key:r.key,label:categoryLabel(r),row:r}))}
+  if(outs.length){if(!g.display_kind)out.push({t:'sub',key:'out-'+g.activity,label:tx('Выплаты')});outs.forEach(r=>out.push({t:'line',key:r.key,label:categoryLabel(r),row:r}))}
  }
  if(props.report.display_groups?.length)for(const g of props.report.groups)out.push({t:'net',key:'activity-'+g.activity,label:tx(g.name),row:g});
  for(const r of summary.value.slice(1))out.push({t:r.key==='net'?'net':r.key==='closing'?'close':'adj',key:r.key,label:r.category,row:r});
@@ -108,7 +110,7 @@ const periodLabel=computed(()=>per.value==='year'?tx('{year} год',{year:props
 const planAmount=v=>v==null?tx('не заданы'):display(v)+' '+unitCaption.value;
 const exportUrl=ext=>`/api/export/report.${ext}?year=${props.year}&currency=${props.currency}&mode=${mode.value}&start_month=${start.value}&end_month=${end.value}&company_id=${props.companyId}&scenario=${props.scenario}&as_of=${props.asOf}`;
 async function edit(){editMonth.value=editorMonth(props.asOf,props.year,start.value,end.value);editor.value=true;saved.value=false;resetDraft();await nextTick();document.querySelector('.plan-editor')?.scrollIntoView({block:'start'})}
-function resetDraft(){const m=Number(editMonth.value)-1;draft.value=props.report.rows.map(r=>({category:r.category,category_id:r.category_id,kind:r.kind,amount:r.plan[m]==null?'':r.plan[m].replace('-','')}));opening.value=props.report.plan_opening_input[m]??'';reason.value='';error.value=''}
+function resetDraft(){const m=Number(editMonth.value)-1;draft.value=props.report.rows.filter(r=>r.activity!=='unclassified').map(r=>({category:r.category,category_id:r.category_id,kind:r.kind,amount:r.plan[m]==null?'':r.plan[m].replace('-','')}));opening.value=props.report.plan_opening_input[m]??'';reason.value='';error.value=''}
 async function save(){saving.value=true;error.value='';const month=Number(editMonth.value);try{await props.api('/api/cash-plan',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({company_id:props.companyId,scenario:props.scenario,month:`${props.year}-${String(month).padStart(2,'0')}`,currency:props.currency,version:props.report.plan_versions[month-1],opening:opening.value===''?null:String(opening.value),reason:reason.value,items:draft.value.map(({category,...r})=>({...r,amount:r.amount===''?null:String(r.amount)}))})});editor.value=false;saved.value=true;savedMonth.value=month;mode.value='plan';per.value='custom';start.value=month;end.value=month;emit('refresh');await nextTick();wrap.value?.scrollIntoView?.({block:'nearest'})}catch(e){error.value=e.message}finally{saving.value=false}}
 function loadNote(){note.value=props.report.notes?.[`${props.year}-${String(noteMonth.value).padStart(2,'0')}:net`]||''}
 async function saveNote(){saving.value=true;error.value='';try{await props.api('/api/plan-note',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({company_id:props.companyId,scenario:props.scenario,month:`${props.year}-${String(noteMonth.value).padStart(2,'0')}`,currency:props.currency,indicator:'net',note:note.value})});saved.value=true;emit('refresh')}catch(e){error.value=e.message}finally{saving.value=false}}

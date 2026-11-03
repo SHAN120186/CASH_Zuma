@@ -17,8 +17,8 @@ def expense_plan_summary(s, month, currency, company_id, scenario='A', as_of=Non
     """
     year=int(month[:4]);cutoff=as_of or date(year,12,31)
     all_categories=catalog(s,company_id,include_retired=True)
-    categories=[c for c,retired in all_categories if not retired]
-    category_ids={c.id for c,_ in all_categories}
+    categories=[c for c,retired in all_categories if not retired and c.activity!='unclassified']
+    category_ids={c.id for c,_ in all_categories if c.activity!='unclassified'}
     keys={f'{c.id}:out' for c in categories if c.type!='income'}
     accounts=select(Account.id).where(Account.company_id==company_id,Account.currency==currency)
     expense_categories=s.scalars(effective_cashflows(s).where(
@@ -63,14 +63,20 @@ def report(s, year, currency, company_id, scenario='A', as_of=None):
             rows.append({'key':key,'category_id':c.id,'category':c.name,'kind':kind,'activity':c.activity,'values':actual,'plan':plan})
     def total(values): return None if not values or any(v is None for v in values) else sum(values)
     net = [sum(r['values'][m] for r in rows) for m in range(12)]
-    plan_net = [total([r['plan'][m] for r in rows]) for m in range(12)]
-    groups = [{'activity':key,'name':name,'values':[sum(r['values'][m] for r in rows if r['activity']==key) for m in range(12)],'plan':[total([r['plan'][m] for r in rows if r['activity']==key]) for m in range(12)]} for key,name in ACTIVITIES.items()]
+    # The technical, fact-only unallocated category is not a missing budget.
+    plan_net = [total([r['plan'][m] for r in rows if r['activity'] != 'unclassified']) for m in range(12)]
+    # A bank receipt of unknown purpose changes cash, but must not be attributed
+    # to operating, investing or financing activity until someone classifies it.
+    activities = dict(ACTIVITIES)
+    if any(r['activity']=='unclassified' for r in rows):
+        activities['unclassified'] = 'Не распределено'
+    groups = [{'activity':key,'name':name,'values':[sum(r['values'][m] for r in rows if r['activity']==key) for m in range(12)],'plan':[total([r['plan'][m] for r in rows if r['activity']==key]) for m in range(12)]} for key,name in activities.items()]
     setting=s.get(Setting,f'company:{company_id}:category_catalog')
     ordered=bool(setting and json.loads(setting.value).get('order'))
     # Display order must not change the underlying IAS 7 classification.
     display_groups=[{'activity':kind,'display_kind':kind,'name':name,
         'values':[sum(r['values'][m] for r in rows if r['kind']==kind) for m in range(12)],
-        'plan':[total([r['plan'][m] for r in rows if r['kind']==kind]) for m in range(12)]}
+        'plan':[total([r['plan'][m] for r in rows if r['kind']==kind and r['activity']!='unclassified']) for m in range(12)]}
         for kind,name in [('in','Поступления'),('out','Выплаты')]
         if any(r['kind']==kind for r in rows)] if ordered else []
     # Opening balances are introduced on their original dates, never as operating income.

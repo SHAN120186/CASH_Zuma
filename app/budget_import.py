@@ -110,11 +110,11 @@ async def preview(request:Request,month:str=Query(pattern=r'^20\d{2}-(0[1-9]|1[0
                 if r['amount']>10**16:issues.append({'line':r['line'],'error':'Сумма больше 100 трлн.'})
             matches=[c for c in cats if article_code(c)==r['code']]
             if not matches:matches=[c for c in cats if norm(c.name)==norm(r['name']) or norm(re.sub(r'^\d+\s*[·|—]\s*','',c.name))==norm(r['name'])]
-            r['suggestion']=str(matches[0].id) if len(matches)==1 and matches[0].type=='outcome' else ''
+            r['suggestion']=str(matches[0].id) if len(matches)==1 and matches[0].type=='outcome' and matches[0].activity!='unclassified' else ''
             r['income']=any(c.type=='income' for c in matches)
         batch=BudgetImportBatch(user_id=u.id,company_id=request.state.company_id,month=month,currency=currency,filename=name[:220],payload=json.dumps({'rows':rows,'issues':issues,'version':version},ensure_ascii=False))
         s.add(batch);s.flush()
-        return {'id':batch.id,'rows':[{**r,'amount':None if r['amount'] is None else money(r['amount'])} for r in rows], 'issues':issues,'month':month,'currency':currency,'scale':int(scale),'can_create':'catalog' in perms_of(u) and can_edit_section(u,'categories'),'categories':[{'id':c.id,'code':article_code(c),'name':article_name(c),'old':old.get(c.id)} for c in cats if c.type=='outcome']}
+        return {'id':batch.id,'rows':[{**r,'amount':None if r['amount'] is None else money(r['amount'])} for r in rows], 'issues':issues,'month':month,'currency':currency,'scale':int(scale),'can_create':'catalog' in perms_of(u) and can_edit_section(u,'categories'),'categories':[{'id':c.id,'code':article_code(c),'name':article_name(c),'old':old.get(c.id)} for c in cats if c.type=='outcome' and c.activity!='unclassified']}
 
 class CommitBudget(BaseModel):
     model_config=ConfigDict(extra='forbid')
@@ -143,6 +143,7 @@ def commit(id:int,data:CommitBudget,request:Request):
             else:
                 try:c=by_id[int(choice)]
                 except (ValueError,KeyError):raise HTTPException(422,'Выберите расходную статью или пропуск для каждой суммы.')
+                if c.activity=='unclassified':raise HTTPException(422,'Нераспределённые операции не являются бюджетной статьёй.')
                 if c.type!='outcome':raise HTTPException(422,'Поступление нельзя загрузить как расходный бюджет.')
                 if article_code(c) and article_code(c)!=r['code']:raise HTTPException(409,'Код выбранной статьи отличается от Excel.')
                 if any(x.id!=c.id and article_code(x)==r['code'] for x in cats):raise HTTPException(409,'Код статьи уже занят.')

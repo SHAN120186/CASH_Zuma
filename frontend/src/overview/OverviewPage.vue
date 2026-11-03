@@ -235,6 +235,7 @@ const upcoming = computed(() => {
   return out.slice(0, 5);
 });
 const accountList = computed(() => s.value.activeAccounts || []);
+const hasUnreconciledBalance = computed(() => accountList.value.some(a => a.currency === props.currency && Number(a.unreconciled_statements || 0) > 0));
 // Requests at every stage, nearest due date first (the old home list).
 const pendingPreview = computed(() => [...(s.value.pendingAll || [])].sort(byDue).slice(0, PENDING_PREVIEW));
 
@@ -343,6 +344,11 @@ const signedLedger = t => (t.kind === 'out' ? -1 : t.kind === 'in' ? 1 : 0) * (t
    </template>
   </section>
 
+  <div v-if="hasUnreconciledBalance" class="ov-reconciliation-warning" role="alert">
+   <span>{{tx('Остаток сайта не сверен с банком; ручные оплаты по этому счёту временно заблокированы до сверки выписки.')}}</span>
+   <button v-if="has('ledger')" type="button" class="secondary tiny" @click="emit('go', 'ledger')">{{tx('Перейти к операциям')}}</button>
+   <button v-else type="button" class="secondary tiny" @click="emit('go', 'accounts')">{{tx('Перейти к счетам')}}</button>
+  </div>
   <div class="ov-top">
    <BalanceCard class="ov-main" :state="balanceState" :error="s.errors.now" :company="company?.name || ''" :as-of="s.now?.day || today"
     :currency="currency" :available="available" :on-accounts="onAccounts" :reserved="reserved" :change="change"
@@ -542,6 +548,7 @@ const signedLedger = t => (t.kind === 'out' ? -1 : t.kind === 'in' ? 1 : 0) * (t
 .ov-chip:hover:not(:disabled){border-color:var(--primary);color:var(--primary-hover);background:var(--surface)}
 .sk-chip{width:180px;background:linear-gradient(90deg,var(--surface-muted),var(--bg),var(--surface-muted));background-size:200% 100%;animation:shimmer 1.3s linear infinite;border:0}
 
+.ov-reconciliation-warning{display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap;background:var(--expense-soft);color:var(--expense-ink);padding:14px 16px;border-radius:12px;font-weight:600}
 .ov-top{position:relative;display:grid;grid-template-columns:repeat(12,minmax(0,1fr));gap:18px;align-items:stretch}
 .ov-top::before{content:"";position:absolute;inset:-40px 20% -30px -40px;background:radial-gradient(closest-side,rgba(91,77,242,.10),transparent 70%);pointer-events:none;z-index:0}
 .ov-main{grid-column:span 8;z-index:1}

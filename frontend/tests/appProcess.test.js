@@ -54,6 +54,14 @@ async function fixture(t,handle,component=appComponent) {
   return {view,files,listeners,unmount,cleanup};
 }
 
+test('account card warns finance about un reconciled statements but never the sales role',async t=>{
+ const {view}=await fixture(t,async()=>({ok:true,status:200,json:async()=>([])}));
+ const account={id:21,name:'Synthetic bank',kind:'bank',currency:'UZS',opening:'0',balance:'10',opening_date:'2026-10-01',unreconciled_statements:2};
+ view.state.user={...user,role:'finance',permissions:['view','ledger','pay_bank']};view.state.boot={...view.state.boot,accounts:[account]};view.state.rows=[account];view.state.currency='UZS';view.state.page='accounts';await settle();
+ assert.match(text(view.container),/Есть несверенные выписки: 2/);assert.match(text(view.container),/Ручная оплата заявок с этого счёта временно недоступна/);
+ view.state.user={...user,role:'sales',permissions:['view','ledger','pay_bank']};await settle();assert.doesNotMatch(text(view.container),/Есть несверенные выписки/);
+});
+
 for(const [page,label,endpoint] of [['business','Бизнес-планы','/api/business-projects?'],['reports','Архив отчётов','/api/report-archives?'],['pnl','P&L','/api/financial-statements?'],['balance','Баланс','/api/financial-statements?']]){
   test(`ZUMA opens ${page} from its internal menu after ordinary scoped company selection`,async t=>{
     const calls=[];const {view}=await fixture(t,async(url,options)=>{
@@ -398,8 +406,29 @@ test('bank reconciliation in Operations respects accountant rights, section read
 test('sales overview does not fetch or show bank statement totals',async t=>{
  const calls=[];const sales={...user,role:'sales',company_role:'sales',permissions:['overview','calendar','receipts'],sections:null};
  const {view}=await fixture(t,async(url,options)=>{calls.push(url);return {ok:true,status:200,json:async()=>({})}},bankApp);
- calls.length=0;Object.assign(view.state,{user:sales,boot:bootstrapBody(sales),page:'home'});await settle();
- assert.equal(calls.filter(url=>url.startsWith('/api/bank-statements')).length,0);assert.doesNotMatch(text(view.container),/Банковская выписка за день/);
+ calls.length=0;Object.assign(view.state,{user:sales,boot:{...bootstrapBody(sales),accounts:[{id:1,currency:'UZS',kind:'bank',unreconciled_statements:1}]},page:'home'});await settle();
+ assert.equal(calls.filter(url=>url.startsWith('/api/bank-statements')).length,0);assert.doesNotMatch(text(view.container),/Банковская выписка за день|Остаток сайта не сверен/);
+});
+
+test('accepted bank statement refreshes ledger independently after bootstrap fails and removes stale balances',async t=>{
+ const calls=[],accountant={...user,role:'accountant',permissions:['view','ledger','pay_bank']};
+ const {view}=await fixture(t,async url=>{calls.push(url);if(url==='/api/bootstrap')return {ok:false,status:503,json:async()=>({detail:'offline'})};if(url.startsWith('/api/ledger?'))return {ok:true,status:200,json:async()=>({items:[{id:999,kind:'in',date:'2026-10-10',currency:'UZS',amount:'42',reference:'NEW'}],total:1})};return {ok:true,status:200,json:async()=>({items:[]})}},bankApp);
+ Object.assign(view.state,{user:accountant,boot:{...bootstrapBody(accountant),accounts:[{id:21,name:'Old balance',kind:'bank',currency:'UZS'}]},page:'ledger',rows:[{id:2,reference:'STALE'}]});await settle();await view.state.bankStatementsChanged();await settle();
+ assert.ok(calls.includes('/api/bootstrap'));assert.ok(calls.some(url=>url.startsWith('/api/ledger?')));assert.equal(view.state.boot.accounts.length,0);assert.equal(view.state.rows[0].reference,'NEW');assert.match(text(view.container),/Изменения выписки сохранены/);assert.match(text(view.container),/повторно подтверждать выписку не нужно/);
+});
+
+test('a failed statement ledger refresh clears stale operations while retaining refreshed accounts',async t=>{
+ const accountant={...user,role:'accountant',permissions:['view','ledger','pay_bank']};
+ const {view}=await fixture(t,async url=>url==='/api/bootstrap'?{ok:true,status:200,json:async()=>({...bootstrapBody(accountant),accounts:[{id:21,name:'Fresh bank',kind:'bank',currency:'UZS'}]})}:url.startsWith('/api/ledger?')?{ok:false,status:503,json:async()=>({detail:'offline'})}:{ok:true,status:200,json:async()=>({items:[]})},bankApp);
+ Object.assign(view.state,{user:accountant,page:'ledger',rows:[{id:2,reference:'STALE'}]});await settle();await view.state.bankStatementsChanged();await settle();assert.equal(view.state.rows.length,0);assert.equal(view.state.boot.accounts[0].name,'Fresh bank');assert.match(text(view.container),/Изменения выписки сохранены/);
+});
+
+test('late statement refresh does not overwrite a different company',async t=>{
+ const waiting=deferred(),accountant={...user,role:'accountant',permissions:['view','ledger','pay_bank']},calls=[];
+ const {view}=await fixture(t,async url=>{calls.push(url);if(url==='/api/bootstrap')return waiting.promise;return {ok:true,status:200,json:async()=>({items:[],total:0})}},bankApp);
+ Object.assign(view.state,{user:accountant,page:'ledger',boot:{...bootstrapBody(accountant),accounts:[{id:21,name:'Old company bank',kind:'bank',currency:'UZS'}]}});await settle();const pending=view.state.bankStatementsChanged();await settle();view.state.companyId=3;view.state.boot={...bootstrapBody(accountant),accounts:[{id:22,name:'New company bank',kind:'bank',currency:'UZS'}]};view.state.rows=[{id:12,reference:'NEW COMPANY'}];
+ waiting.resolve({ok:true,status:200,json:async()=>({...bootstrapBody(accountant),accounts:[{id:21,name:'Wrong company bank',kind:'bank',currency:'UZS'}]})});await pending;await settle();
+ assert.equal(view.state.boot.accounts[0].name,'New company bank');assert.equal(view.state.rows[0].reference,'NEW COMPANY');assert.doesNotMatch(text(view.container),/Изменения выписки сохранены/);
 });
 
 

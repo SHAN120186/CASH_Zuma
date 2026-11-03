@@ -2,6 +2,7 @@ import {test} from 'node:test';
 import assert from 'node:assert/strict';
 import {compileComponent, mount, settle, text, find, all} from './helpers/mountVue.js';
 import {planCompleteness, reportDateForYear, validReportDate} from '../src/cashflow/planView.js';
+import {lang,setLang} from '../src/i18n/index.js';
 
 const reportComponent = await compileComponent(new URL('../src/CashFlowReport.vue', import.meta.url));
 const appComponent = await compileComponent(new URL('../src/App.vue', import.meta.url), {'./CashFlowReport.vue': reportComponent});
@@ -23,6 +24,23 @@ function mountReport(extra = {}) {
     companies:[{id:2, name:'Zuma'}], companyId:2, scenario:'A', asOf:'2026-10-06', today:'2026-10-06', ...extra});
 }
 const button = (root, label) => find(root, node => node.tag === 'button' && text(node) === label);
+
+test('the system unallocated group and article appear in Uzbek while ordinary article names remain unchanged',async t=>{
+ const previous=lang.value;setLang('uz');t.after(()=>setLang(previous));
+ const data=report();data.rows.push({key:'30:in',category_id:30,category:'Не распределено — поступления из банка',kind:'in',activity:'unclassified',values:zero(),plan:empty()});
+ data.rows.push({key:'31:out',category_id:31,category:'Не распределено — списания из банка',kind:'out',activity:'unclassified',values:zero(),plan:empty()});
+ data.groups.push({activity:'unclassified',name:'Не распределено',values:zero(),plan:empty()});
+ const view=mountReport({report:data});t.after(view.unmount);await settle();
+ assert.match(text(view.container),/Taqsimlanmagan/);assert.match(text(view.container),/Taqsimlanmagan — bankdan tushumlar/);assert.match(text(view.container),/Taqsimlanmagan — bankdan chiqimlar/);assert.match(text(view.container),/Упаковка и материалы/);
+});
+
+test('unallocated bank income and actual debit do not create a false missing-plan warning',async t=>{
+ const data=report({completeZero:true});data.rows.push({key:'30:in',category_id:30,category:'Не распределено — поступления из банка',kind:'in',activity:'unclassified',values:zero(),plan:empty()});
+ const actualDebit=zero();actualDebit[0]='-35000000.00';data.rows.push({key:'31:out',category_id:31,category:'Не распределено — списания из банка',kind:'out',activity:'unclassified',values:actualDebit,plan:empty()});data.groups.push({activity:'unclassified',name:'Не распределено',values:actualDebit,plan:empty()});
+ const summary=planCompleteness(data.rows,[0]);assert.equal(summary.missingRows,0);assert.equal(summary.missingCells,0);assert.equal(summary.knownCells,3);
+ const view=mountReport({report:data});t.after(view.unmount);await settle();assert.equal(view.state.planStatus.missingRows,0);assert.match(text(view.container),/Не распределено — списания из банка/);await button(view.container,'Задать план').props.onClick();await settle();
+ assert.equal(view.state.draft.some(row=>row.category_id===30 || row.category_id===31),false);
+});
 
 test('Cash Flow restores a shared quarter and emits presentation changes without resetting the source',async t=>{
   const events=[];

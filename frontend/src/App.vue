@@ -199,6 +199,7 @@ let listRequestId=0,reportRequestId=0,loadRequestId=0;
 const stageLabel=r=>requestStage(r);
 const otherCurrencies=computed(()=>[...new Set(boot.value.accounts.map(a=>a.currency))].filter(c=>c!==currency.value));
 const currentAccounts=computed(()=>boot.value.accounts.filter(a=>a.currency===currency.value));
+const unreconciledAccountCount=a=>Number(boot.value.accounts.find(item=>String(item.id)===String(a.id))?.unreconciled_statements || 0);
 const modalFields=computed(()=>{const fields=modal.value?.fields||[];if(fields.some(f=>f.key==='action'))return fields.filter(f=>f.key!=='date'||form.value.action==='reschedule');if(!fields.some(f=>f.key==='to_account_id'))return fields;return fields.filter(f=>f.key==='to_account_id'?form.value.kind==='transfer':f.key==='category_id'?form.value.kind!=='transfer':true)});
 const categoryHint=computed(()=>{if(!modal.value?.fields.some(f=>f.key==='to_account_id')||form.value.kind==='transfer')return '';const c=boot.value.categories.find(c=>c.id===Number(form.value.category_id));return c&&c.type!==(form.value.kind==='in'?'income':'outcome')?tx('Проверьте статью: её тип не совпадает с направлением операции. Если это возврат, укажите пояснение в комментарии.'):''});
 async function switchCurrency(value){currency.value=value;search.value='';listPage.value=1;await load()}
@@ -238,7 +239,7 @@ async function api(url,opts={}){
 }
 const post=(url,data={})=>api(url,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(data)});
 function flash(text,params=null){notice.value=text;noticeParams.value=params;setTimeout(()=>notice.value='',5500)}
-async function bootstrap(){boot.value=await api('/api/bootstrap');bootstrapLocalDay.value=localBusinessDay();user.value=boot.value.user;csrf.value=boot.value.csrf;month.value=month.value.match(/^\d{4}-\d{2}$/)?month.value:boot.value.today.slice(0,7);if(!validReportDate(reportAsOf.value,year.value,boot.value.today)){const cutOff=reportDateForYear(year.value,boot.value.today);if(!cutOff)year.value=Number(boot.value.today.slice(0,4));reportAsOf.value=cutOff||boot.value.today}}
+async function bootstrap(){const epoch=companyEpoch,company=companyId.value,data=await api('/api/bootstrap');if(epoch!==companyEpoch||company!==companyId.value)throw new DOMException(N_('Компания изменена'),'AbortError');boot.value=data;bootstrapLocalDay.value=localBusinessDay();user.value=boot.value.user;csrf.value=boot.value.csrf;month.value=month.value.match(/^\d{4}-\d{2}$/)?month.value:boot.value.today.slice(0,7);if(!validReportDate(reportAsOf.value,year.value,boot.value.today)){const cutOff=reportDateForYear(year.value,boot.value.today);if(!cutOff)year.value=Number(boot.value.today.slice(0,4));reportAsOf.value=cutOff||boot.value.today}}
 async function changeReportYear(value){const cutOff=reportDateForYear(value,boot.value.today);if(!cutOff){flash(N_('Будущий год недоступен: дата факта не может быть позже сегодня.'));return}year.value=Number(value);reportAsOf.value=cutOff;reportSelection.value=normalizeReportSelection({...reportSelection.value,year:year.value});await load()}
 async function changeReportDate(value){if(!validReportDate(value,year.value,boot.value.today)){flash(N_('Дата отчёта должна быть в выбранном году и не позже сегодня.'));return}reportAsOf.value=value;await load()}
 async function enter(){companyId.value=null;companyReady.value=false;if(user.value?.must_change_password)return;const data=await api('/api/companies');boot.value={accounts:[],categories:[],...data};user.value=data.user;csrf.value=data.csrf;}
@@ -278,10 +279,10 @@ async function logout(){cancelPending();busy.value=true;try{await post('/api/log
 async function goWith(name,opts={}){if(!canNavigate(name))return;menuOpen.value=false;helpOpen.value=false;reportEditing.value=false;page.value=name;location.hash=name;search.value='';dateFrom.value=opts.from||'';dateTo.value=opts.to||'';requestStatus.value=opts.status||'';requestArchive.value='active';listPage.value=1;expandedRequest.value=null;rows.value=[];await load()}
 const canDecide=r=>canDecideRequest(r);
 async function go(name){if(!canNavigate(name))return;menuOpen.value=false;helpOpen.value=false;reportEditing.value=false;page.value=name;location.hash=name;search.value='';dateFrom.value='';dateTo.value='';requestStatus.value='';requestArchive.value='active';listPage.value=1;expandedRequest.value=null;rows.value=[];await load()}
-async function load(){if(!companyReady.value)return;const epoch=companyEpoch,id=++loadRequestId,requestedPage=page.value,requestedCurrency=currency.value;busy.value=true;error.value='';
+async function load(options={}){if(!companyReady.value)return;const epoch=companyEpoch,id=++loadRequestId,requestedPage=page.value,requestedCurrency=currency.value;busy.value=true;error.value='';
  const current=()=>id===loadRequestId&&epoch===companyEpoch&&page.value===requestedPage&&currency.value===requestedCurrency;
  try{
- if(bootstrapLocalDay.value&&bootstrapLocalDay.value!==localBusinessDay()){await bootstrap();if(!current()||!companyReady.value)return;}
+ if(!options.skipBootstrap&&bootstrapLocalDay.value&&bootstrapLocalDay.value!==localBusinessDay()){await bootstrap();if(!current()||!companyReady.value)return;}
  if(page.value==='home')homeRefresh.value++;
  if(page.value==='reports')reportArchiveRefresh.value++;
  if(page.value==='business')businessRefresh.value++;
@@ -302,9 +303,22 @@ async function load(){if(!companyReady.value)return;const epoch=companyEpoch,id=
 
 
  }catch(e){if(current()&&e.name!=='AbortError')error.value=e.message}finally{if(current())busy.value=false}}
+async function bankStatementsChanged(){
+ const epoch=companyEpoch,company=companyId.value;
+ const current=()=>epoch===companyEpoch&&companyId.value===company&&companyReady.value&&!!user.value;
+ if(!current())return;
+ // Accepted server writes are distinct from subsequent reads. Invalidate old
+ // accounts and list responses immediately so stale balances are never shown.
+ loadRequestId++;listRequestId++;boot.value={...boot.value,accounts:[]};rows.value=[];listTotal.value=0;dash.value=null;
+ let failed=false;
+ try{await bootstrap();}catch(e){if(!current())return;failed=true;}
+ if(!current())return;
+ await load({skipBootstrap:true});
+ if(current()&&(failed||error.value))error.value=N_('Изменения выписки сохранены. Не удалось обновить данные. Обновите страницу; повторно подтверждать выписку не нужно.');
+}
 const field=(key,label,type='text',extra={})=>({key,label,type,required:true,...extra});
 const accounts=()=>boot.value.accounts.map(a=>[a.id,`${a.name} · ${a.currency}`]);
-const categories=(currentId=null)=>boot.value.categories.filter(c=>!c.retired||c.id===currentId).map(c=>[c.id,`${c.name} · ${c.type==='income'?tx('приход'):tx('расход')}`]);
+const categories=(currentId=null)=>boot.value.categories.filter(c=>(!c.retired&&c.activity!=='unclassified')||c.id===currentId).map(c=>[c.id,`${c.name} · ${c.type==='income'?tx('приход'):tx('расход')}`]);
 // Titles, labels and notes are Russian source text (N_) translated in the template; option labels are translated here because they mix in user data.
 function open(title,fields,values,submit,note='',titleParams=null,paymentRequestId=null){clearTimeout(receiptPartyTimer);receiptPartySequence++;receiptPartyMatches.value=[];receiptPartyStatus.value='';form.value={...values};formError.value='';modal.value={title,titleParams,fields,submit,note,paymentRequestId}}
 function requestPaid(id){
@@ -387,7 +401,7 @@ const tgGroups=ref(null);
 const tgGroupRows=computed(()=>tgGroups.value?.map(g=>({...g,companyInfo:groupCompanyInfo(g)})));
 const tgGroupName=g=>g.title||tx('Группа {id}',{id:g.chat_id});
 function removeTelegramGroup(g){open(N_('Отключить группу · {name}'),[],{},()=>api(`/api/telegram-groups/${g.chat_id}`,{method:'DELETE'}),N_('Бот перестанет присылать утреннюю сводку в эту группу. Подключить её снова можно новым кодом в форме подключения Telegram-группы на этой странице.'),{name:tgGroupName(g)});modal.value.saveLabel=N_('Отключить')}
-function receipt(row=null,inlineDay=null){if(saving.value)return;const r=row?.id?row:null;if(r?!has('receipt_edit'):!canPlanReceipt.value)return;open(r?N_('Редактировать план поступления'):N_('Ожидаемое поступление'),[field('account_id',N_('Счёт'),'select',{options:accounts()}),field('category_id',N_('Статья'),'select',{options:boot.value.categories.filter(c=>c.type==='income').map(c=>[c.id,c.name])}),field('counterparty',N_('Контрагент')),field('inn',N_('ИНН'),'text',{required:false,maxlength:20,pattern:'[0-9]*',inputmode:'numeric'}),field('amount',N_('Сумма'),'number',{min:.01}),field('date',N_('Ожидаемая дата'),'date'),field('note',N_('Примечание'),'textarea',{required:false,maxlength:2000})],{account_id:r?.account_id||boot.value.accounts[0]?.id,category_id:r?.category_id||boot.value.categories.find(c=>c.type==='income')?.id,counterparty:r?.counterparty||'',inn:r?.inn||'',amount:r?.amount||'',date:r?.date||boot.value.today,note:r?.note||'',version:r?.version??null},d=>r?api('/api/receipts/'+r.id,{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify({...d,amount:String(d.amount)})}):post('/api/receipts',{...d,amount:String(d.amount)}));modal.value.receipt=true;modal.value.inlineDay=inlineDay;modal.value.receiptId=r?.id;if(inlineDay)focusCalendarEditor()}
+function receipt(row=null,inlineDay=null){if(saving.value)return;const r=row?.id?row:null;if(r?!has('receipt_edit'):!canPlanReceipt.value)return;open(r?N_('Редактировать план поступления'):N_('Ожидаемое поступление'),[field('account_id',N_('Счёт'),'select',{options:accounts()}),field('category_id',N_('Статья'),'select',{options:boot.value.categories.filter(c=>c.type==='income'&&c.activity!=='unclassified').map(c=>[c.id,c.name])}),field('counterparty',N_('Контрагент')),field('inn',N_('ИНН'),'text',{required:false,maxlength:20,pattern:'[0-9]*',inputmode:'numeric'}),field('amount',N_('Сумма'),'number',{min:.01}),field('date',N_('Ожидаемая дата'),'date'),field('note',N_('Примечание'),'textarea',{required:false,maxlength:2000})],{account_id:r?.account_id||boot.value.accounts[0]?.id,category_id:r?.category_id||boot.value.categories.find(c=>c.type==='income'&&c.activity!=='unclassified')?.id,counterparty:r?.counterparty||'',inn:r?.inn||'',amount:r?.amount||'',date:r?.date||boot.value.today,note:r?.note||'',version:r?.version??null},d=>r?api('/api/receipts/'+r.id,{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify({...d,amount:String(d.amount)})}):post('/api/receipts',{...d,amount:String(d.amount)}));modal.value.receipt=true;modal.value.inlineDay=inlineDay;modal.value.receiptId=r?.id;if(inlineDay)focusCalendarEditor()}
 const receiptPartyMatches=ref([]),receiptPartyStatus=ref('');
 let receiptPartyTimer=null,receiptPartySequence=0;
 function receiptPartyChanged(){
@@ -550,6 +564,7 @@ onMounted(async()=>{try{const r=await api('/api/me');user.value=r.user;csrf.valu
      <div class="acc-grid"><section v-for="a in visibleRows" :key="a.id" class="card ac-card" :class="{arch:a.archived}">
       <div class="ac-top"><span class="ic"><AppIcon :name="a.kind==='bank'?'accounts':'cash'"/></span><div><b>{{a.name}}</b><small>{{a.kind==='bank'?tx('Банковский счёт'):tx('Касса')}}{{a.allow_overdraft?' · '+tx('овердрафт разрешён'):''}}</small></div><span class="pill" :class="a.archived?'warn':'fact'">{{a.archived?tx('Архив')+' · ':''}}{{a.currency}}</span></div>
       <div class="ac-l">{{tx('Текущий остаток')}}</div><div class="ac-v num" :title="moneyTitle(a.balance,a.currency)">{{moneyShort(a.balance,a.currency)}}<small>{{a.currency}}</small></div><div class="ac-x num">{{money(a.balance)}} {{a.currency}}</div>
+      <div v-if="!isSales && has('ledger') && (has('pay_bank') || has('write') || has('import')) && unreconciledAccountCount(a)>0" class="error" role="alert">{{tx('Есть несверенные выписки: {n}. Ручная оплата заявок с этого счёта временно недоступна до сверки.',{n:unreconciledAccountCount(a)})}}</div>
       <div class="ac-o"><span>{{tx('Начальный остаток на {date}',{date:a.opening_date})}}</span><b class="num">{{money(a.opening)}} {{a.currency}}</b></div>
       <div class="ac-b"><button v-if="has('write')&&!a.archived" class="secondary tiny" @click="account(a)"><AppIcon name="edit"/> {{tx('Изменить')}}</button><button v-if="has('users')&&has('write')" class="secondary tiny" @click="archiveAccount(a)"><AppIcon :name="a.archived?'restore':'archive'"/> {{a.archived?tx('Восстановить'):tx('В архив')}}</button></div>
      </section></div>
@@ -559,7 +574,7 @@ onMounted(async()=>{try{const r=await api('/api/me');user.value=r.user;csrf.valu
 
     <!-- Операции -->
     <template v-if="page==='ledger'">
-     <BankStatements v-if="has('ledger')&&companyId" :key="`bank-statements-${companyId}`" :api="api" :company-id="companyId" :accounts="boot.accounts" :can-import="has('pay_bank')||has('import')" :can-review="has('pay_bank')" @changed="load"/>
+     <BankStatements v-if="has('ledger')&&companyId" :key="`bank-statements-${companyId}`" :api="api" :company-id="companyId" :accounts="boot.accounts" :categories="boot.categories" :can-import="has('pay_bank')||has('import')" :can-review="has('pay_bank')" :can-allocate="has('pay_bank')||has('write')" :can-post="has('write')" @changed="bankStatementsChanged"/>
      <label v-if="user.holding_role==='admin'" class="sub"><input type="checkbox" v-model="showDeletedOperations" @change="listPage=1;load()"> {{tx('Показать удалённые операции')}}</label>
      <PeriodFilter :key="page" :date-from="dateFrom" :date-to="dateTo" @apply="applyPeriod"><label class="search"><AppIcon name="search"/><input v-model="search" :placeholder="tx('Поиск: контрагент, статья, документ')" :aria-label="tx('Поиск операции')"></label><div class="grow actions"><a v-if="has('download')" class="button secondary" :href="companyUrl('/api/export/ledger.csv')"><AppIcon name="download"/> CSV</a><button v-if="has('write')&&user.role!=='cashier'" @click="transaction()"><AppIcon name="plus"/> {{tx('Новая операция')}}</button></div></PeriodFilter>
      <div v-if="visibleRows.length" class="table-card rsp-wrap"><table class="rsp"><thead><tr><th>{{tx('Дата / документ')}}</th><th>{{tx('Операция')}}</th><th>{{tx('Контрагент / статья')}}</th><th>{{tx('Счёт')}}</th><th class="num">{{tx('Сумма')}}</th><th>{{tx('Документы')}}</th><th></th></tr></thead><tbody>
@@ -645,7 +660,7 @@ onMounted(async()=>{try{const r=await api('/api/me');user.value=r.user;csrf.valu
     <!-- Справочники -->
     <template v-if="page==='categories'">
      <div class="tb"><span class="sub">{{tx('Статьи движения денег:')}} <b>{{rows.length}}</b></span><div class="grow"><button v-if="user.sections?.categories!=='view'" @click="category()"><AppIcon name="plus"/> {{tx('Добавить статью')}}</button></div></div>
-     <div class="table-card rsp-wrap"><table class="rsp"><thead><tr><th>{{tx('Название статьи')}}</th><th>{{tx('Направление')}}</th><th>{{tx('Вид деятельности')}}</th><th></th></tr></thead><tbody><tr v-for="r in rows" :key="r.id"><td :data-l="tx('Статья')"><b>{{r.name}}</b></td><td :data-l="tx('Направление')"><span class="pill" :class="r.type==='income'?'good':'plan'">{{r.type==='income'?tx('Поступление'):tx('Выплата')}}</span></td><td :data-l="tx('Вид деятельности')">{{{operating:tx('Операционная'),investing:tx('Инвестиционная'),financing:tx('Финансовая')}[r.activity]}}</td><td data-l=""><button v-if="user.sections?.categories!=='view'" class="secondary tiny" @click="category(r)"><AppIcon name="edit"/> {{tx('Изменить')}}</button></td></tr></tbody></table></div>
+     <div class="table-card rsp-wrap"><table class="rsp"><thead><tr><th>{{tx('Название статьи')}}</th><th>{{tx('Направление')}}</th><th>{{tx('Вид деятельности')}}</th><th></th></tr></thead><tbody><tr v-for="r in rows" :key="r.id"><td :data-l="tx('Статья')"><b>{{r.name}}</b></td><td :data-l="tx('Направление')"><span class="pill" :class="r.type==='income'?'good':'plan'">{{r.type==='income'?tx('Поступление'):tx('Выплата')}}</span></td><td :data-l="tx('Вид деятельности')">{{{operating:tx('Операционная'),investing:tx('Инвестиционная'),financing:tx('Финансовая'),unclassified:tx('Не распределено')}[r.activity]}}</td><td data-l=""><button v-if="user.sections?.categories!=='view'&&r.activity!=='unclassified'" class="secondary tiny" @click="category(r)"><AppIcon name="edit"/> {{tx('Изменить')}}</button></td></tr></tbody></table></div>
     </template>
 
     <!-- Согласование и пользователи -->

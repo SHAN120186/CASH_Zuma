@@ -29,7 +29,7 @@ const money = value => formatCents(toCents(value),props.currency);
   <section class="card daily-statements" aria-labelledby="daily-statements-title">
     <div class="card-h"><h2 id="daily-statements-title">{{tx('Банковская выписка за день')}}</h2><label>{{tx('Дата')}} <input v-model="date" type="date"></label></div>
     <div class="card-b">
-      <p class="sub">{{tx('Данные выписки показаны отдельно. Поступления и комиссии из выписки не добавляются автоматически в остаток и Cash Flow.')}}</p>
+      <p class="sub">{{tx('Данные выписки показаны отдельно. Проведённые поступления, комиссии и списания учитываются в остатке и Cash Flow; строки на проверке пока не проведены.')}}</p>
       <p v-if="loading" role="status">{{tx('Загружаем данные…')}}</p>
       <p v-else-if="error" class="error" role="alert">{{tx('Не удалось загрузить данные выписки.')}}</p>
       <p v-else-if="data && data.available === false" class="sub">{{tx('За выбранный день выписка не загружена.')}}</p>
