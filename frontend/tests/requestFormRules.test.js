@@ -133,3 +133,71 @@ test('manual name while lookup is pending keeps typed ИНН and discards late a
  resolve({items:[{id:4,name:'Directory supplier',inn:'123456789'}]});await settle();
  assert.equal(view.state.form.counterparty,'Manual supplier');assert.equal(view.state.partyInn,'123456789');assert.equal(view.state.partyMatches.length,0);
 });
+
+const fxBoot={...boot,accounts:[...boot.accounts,
+ {id:4,kind:'bank',currency:'USD',name:'Synthetic USD bank'},
+ {id:5,kind:'bank',currency:'EUR',name:'Synthetic EUR bank'}]};
+
+test('foreign-bank ИНН is explicitly optional in RU/UZ and follows the account while preserving input',async t=>{
+ const previous=lang.value;t.after(()=>setLang(previous));setLang('ru');
+ const view=form(t,{boot:fxBoot,currency:'USD'});await settle();
+ const inn=()=>all(view.container,n=>n.tag==='input'&&n.props['aria-describedby']==='rq-inn-hint')[0];
+ assert.equal(view.state.form.account_id,4);assert.match(text(view.container),/ИНН контрагента \(необязательно\)/);
+ assert.match(text(view.container),/иностранного контрагента без ИНН/);assert.ok(!inn().props.required);assert.equal(inn().props.pattern,'[0-9]*');
+ view.state.partyInn='009876543';view.state.form.counterparty='Synthetic foreign supplier';
+ view.state.form.currency='EUR';await settle();assert.equal(view.state.form.account_id,5);
+ assert.equal(view.state.partyInn,'009876543');assert.equal(view.state.form.counterparty,'Synthetic foreign supplier');
+ setLang('uz');await settle();assert.match(text(view.container),/Kontragent STIRi \(ixtiyoriy\)/);assert.match(text(view.container),/xorijiy kontragent nomini qo‘lda kiriting/);
+ setLang('ru');view.state.form.account_id=1;await settle();
+ assert.equal(view.state.foreignBank,false,'a client currency field cannot turn a UZS account into a foreign bank account');
+ assert.match(text(view.container),/Введите ИНН для поиска контрагента/);assert.doesNotMatch(text(view.container),/ИНН контрагента \(необязательно\)/);
+ assert.equal(view.state.partyInn,'009876543');
+ view.state.form.currency='UZS';view.state.form.channel='cash';await settle();
+ assert.equal(view.state.form.account_id,2);assert.equal(view.state.foreignBank,false);assert.ok(!inn().props.required);
+ assert.equal(view.state.partyInn,'009876543');
+});
+
+test('opening foreign bank drafts and submitted requests keeps the manual beneficiary with blank ИНН',async t=>{
+ for(const currency of ['USD','EUR'])for(const status of ['draft','pending'])await t.test(`${currency} ${status}`,async t=>{
+  const calls=[];const request={id:7,version:1,status,counterparty:'Synthetic foreign supplier',counterparty_inn:'',priority:'normal',date:'2026-11-30',channel:'bank',currency,account_id:currency==='USD'?4:5,category_id:3,documents_list:[]};
+  const view=form(t,{boot:fxBoot,request,api:async url=>{calls.push(url);return {due_minimums:dues};}});await settle();
+  assert.equal(view.state.form.counterparty,request.counterparty);assert.equal(view.state.partyInn,'');assert.equal(view.state.foreignBank,true);
+  assert.equal(calls.filter(url=>url.includes('request-counterparties')).length,0);
+  assert.equal(requestBody({...view.state.form,counterparty_inn:view.state.partyInn},2).counterparty_inn,'');
+ });
+});
+
+test('save flow creates and submits USD/EUR bank requests with blank ИНН and both documents',async()=>{
+ for(const currency of ['USD','EUR']){
+  const calls=[];let version=1;
+  const fields=requestBody({account_id:currency==='USD'?4:5,channel:'bank',currency,category_id:3,amount:'100',counterparty:'Synthetic foreign supplier',counterparty_inn:'',purpose:'Synthetic import expense',priority:'urgent',date:dues.urgent},2);
+  const api=async(url,options={})=>{
+   calls.push([url,options]);
+   if(url==='/api/requests')return {...JSON.parse(options.body),id:7,version,number:'Synthetic',status:'draft'};
+   if(url.includes('/documents?'))return {id:version,kind:url.split('kind=')[1],request_version:++version,status:'draft'};
+   if(url.endsWith('/decision'))return {...fields,id:7,version:++version,number:'Synthetic',status:'pending'};
+   throw Error('Unexpected '+url);
+  };
+  const files=['internal','contract'].map(kind=>({key:kind,kind,name:'synthetic.pdf',file:new Uint8Array([1])}));
+  const result=await saveRequest(api,createSaveState(),{fields,files,submit:true});
+  assert.equal(result.ok,true);assert.equal(result.submitted,true);assert.equal(result.request.counterparty,fields.counterparty);assert.equal(result.request.counterparty_inn,'');
+  assert.equal(JSON.parse(calls[0][1].body).counterparty_inn,'');assert.equal(calls.filter(([url])=>url.includes('/documents?')).length,2);
+  assert.ok(calls.at(-1)[0].endsWith('/decision'));
+ }
+});
+
+test('save flow retains blank ИНН and a manual foreign name when editing a draft or submitted request',async()=>{
+ for(const currency of ['USD','EUR'])for(const status of ['draft','pending']){
+  const saved=['internal','contract'].map((kind,id)=>({id,kind,current:true}));
+  const original={id:7,version:1,number:'Synthetic',status,counterparty:'Old synthetic foreign supplier',counterparty_inn:'',documents_list:saved};
+  const fields=requestBody({account_id:currency==='USD'?4:5,channel:'bank',currency,category_id:3,amount:'100',counterparty:'Edited synthetic foreign supplier',counterparty_inn:'',purpose:'Synthetic import expense',priority:'urgent',date:dues.urgent},2);
+  let edited;
+  const api=async(url,options={})=>{
+   if(!options.method)return original;
+   if(options.method==='PUT'){edited=JSON.parse(options.body);return {...original,...edited,version:2};}
+   throw Error('Unexpected '+url);
+  };
+  const result=await saveRequest(api,createSaveState(original),{fields,saved,reason:'Correct foreign beneficiary name'});
+  assert.equal(result.ok,true);assert.equal(edited.counterparty_inn,'');assert.equal(edited.counterparty,fields.counterparty);assert.equal(edited.status,status);
+ }
+});

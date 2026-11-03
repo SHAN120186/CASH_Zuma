@@ -21,7 +21,7 @@ from sqlalchemy import or_, select
 
 from .bank_statement_models import BankStatementBatch, BankStatementLine
 from .bank_statement_parser import MAX_BYTES, StatementParseError, parse_bank_statement
-from .db import Account, Category, Ledger, PaymentRequest, Setting, now, unit
+from .db import Account, Audit, Category, Ledger, PaymentRequest, Setting, now, unit
 from .erp import read_upload
 from .security import session_user, perms_of, company_role, HOLDING_ROLES, jwt_key
 from .requests_api import can_view_request
@@ -39,6 +39,7 @@ from .bank_statement_expenses import annotate_expense_rows, sanitize_request_fie
 
 router = APIRouter()
 REQUEST_ID = re.compile(r'(?<![A-Za-z0-9])CF-0*([1-9][0-9]*)(?![A-Za-z0-9])', re.I)
+DRAFT_REFRESH_ACTION = 'Обновлён предпросмотр банковской выписки'
 
 
 class Confirmation(BaseModel):
@@ -357,11 +358,21 @@ def _evaluated(s, batch, lines, account, user, fee_category_id, *, reprocess=Fal
             'statement_opening': money(batch.opening), 'site_opening': site_opening, 'rows': rows}
 
 
-def _preview_token(batch, account, user, evaluated, mode):
+def _draft_revision(s, batch):
+    # The immutable refresh audit event doubles as the draft generation. This
+    # rotates confirmations across reloads without touching source/finance data.
+    return s.scalar(select(Audit.id).where(Audit.entity == 'bank_statement',
+        Audit.entity_id == str(batch.id), Audit.action == DRAFT_REFRESH_ACTION)
+        .order_by(Audit.id.desc()).limit(1))
+
+
+def _preview_token(batch, account, user, evaluated, mode, *, revision=None):
     # The confirmation is tied to the exact reviewed results and user. No bank
     # data needs to be kept in a browser token; the write transaction recomputes.
     contents = {'mode': mode, 'batch': batch.id, 'account': account.id, 'currency': batch.currency,
                 'user': user.id, 'sha256': batch.sha256, 'result': evaluated}
+    if revision is not None:
+        contents['draft_revision'] = revision
     payload = json.dumps(contents, ensure_ascii=False, sort_keys=True, separators=(',', ':')).encode()
     return hmac.new(jwt_key().encode(), payload, sha256).hexdigest()
 
@@ -464,6 +475,67 @@ def _apply_reconciled(s, batch, lines, account, user, fee_category_id, evaluated
     return complete
 
 
+def _refresh_preview(s, batch, account, user, fee_category_id):
+    """Refresh only the existing draft; the caller holds the shared write guard."""
+    lines = list(s.scalars(select(BankStatementLine).where(BankStatementLine.batch_id == batch.id)
+                           .order_by(BankStatementLine.line, BankStatementLine.id)))
+    if not lines:
+        raise HTTPException(409, 'В сохранённой выписке нет строк. Проверьте исходный файл.')
+    _classify(s, lines, account, _previous_fingerprints(s, batch), user)
+    s.flush()
+    evaluated = _evaluated(s, batch, lines, account, user, fee_category_id)
+    log(s, user, DRAFT_REFRESH_ACTION, 'bank_statement', batch.id,
+        json.dumps({'rows': len(lines), 'ready': batch.source_ready}, ensure_ascii=False))
+    s.flush()
+    return {**_payload(s, batch), **evaluated,
+            'preview_token': _preview_token(batch, account, user, evaluated, 'import',
+                                             revision=_draft_revision(s, batch))}
+
+
+@router.get('/api/bank-statements/previews')
+def saved_previews(request: Request, page: int = Query(default=1, ge=1),
+                   page_size: int = Query(default=30, ge=1, le=50)):
+    """Read-only saved drafts in the selected company; never classify on GET."""
+    with unit() as s:
+        user, _ = session_user(s, request, ('pay_bank', 'import'))
+        query = select(BankStatementBatch, Account).join(
+            Account, Account.id == BankStatementBatch.account_id).where(BankStatementBatch.status == 'preview')
+        if user.role != 'admin':
+            query = query.where(BankStatementBatch.created_by == user.id)
+        pairs = list(s.execute(query.order_by(BankStatementBatch.created_at.desc(), BankStatementBatch.id.desc())
+            .offset((page - 1) * page_size).limit(page_size + 1)))
+        return {'page': page, 'has_more': len(pairs) > page_size,
+                'items': [{'id': batch.id, 'status': batch.status, 'filename': batch.filename,
+                    'account': {'id': account.id, 'name': account.name, 'currency': batch.currency},
+                    'period_from': str(batch.period_from), 'period_to': str(batch.period_to),
+                    'credit_total': money(batch.credit_total), 'debit_total': money(batch.debit_total),
+                    'created_at': batch.created_at.isoformat()}
+                    for batch, account in pairs[:page_size]]}
+
+
+@router.post('/api/bank-statements/{id}/resume')
+def resume_preview(id: int, data: ReprocessInput, request: Request):
+    with unit(True) as s:
+        user, _ = session_user(s, request, ('pay_bank', 'import'))
+        batch = get(s, BankStatementBatch, id)
+        if batch.status == 'deleted':
+            raise HTTPException(404, 'Запись не найдена.')
+        if batch.created_by != user.id and user.role != 'admin':
+            raise HTTPException(403, 'Предпросмотр доступен загрузившему сотруднику или администратору.')
+        if batch.status != 'preview':
+            raise HTTPException(409, 'Эта выписка уже обработана. Откройте её в истории выписок.')
+        account = get(s, Account, batch.account_id)
+        if account.archived or account.kind != 'bank' or account.currency != batch.currency:
+            raise HTTPException(409, 'Счёт или валюта изменились. Проверьте настройки банковского счёта.')
+        _validate_bank_binding(s, account, batch.account_number)
+        if s.scalar(select(BankStatementBatch.id).where(BankStatementBatch.account_id == account.id,
+                BankStatementBatch.sha256 == batch.sha256, BankStatementBatch.status == 'committed')):
+            raise HTTPException(409, 'Эта выписка уже обработана. Откройте её в истории выписок.')
+        # Unready source totals stay visible for inspection. The commit route
+        # keeps its existing mandatory source_ready check.
+        return _refresh_preview(s, batch, account, user, data.fee_category_id)
+
+
 @router.post('/api/bank-statements/preview')
 async def preview(request: Request, account_id: int, currency: str = Query(pattern=r'^(UZS|USD|EUR)$'),
                   fee_category_id: int | None = Query(default=None, ge=1)):
@@ -501,12 +573,7 @@ async def preview(request: Request, account_id: int, currency: str = Query(patte
             BankStatementBatch.currency == currency, BankStatementBatch.created_by == user.id)
             .order_by(BankStatementBatch.id.desc()).limit(1))
         if prior:
-            lines = list(s.scalars(select(BankStatementLine).where(BankStatementLine.batch_id == prior.id)
-                                   .order_by(BankStatementLine.line, BankStatementLine.id)))
-            _classify(s, lines, account, _previous_fingerprints(s, prior), user); s.flush()
-            evaluated = _evaluated(s, prior, lines, account, user, fee_category_id)
-            return {**_payload(s, prior), **evaluated,
-                    'preview_token': _preview_token(prior, account, user, evaluated, 'import')}
+            return _refresh_preview(s, prior, account, user, fee_category_id)
         batch = BankStatementBatch(company_id=s.info['company_id'], account_id=account.id, created_by=user.id,
             filename=filename, sha256=digest, account_number=source['account_number'], owner_name=source['owner_name'],
             owner_inn=source['owner_inn'], currency=currency, period_from=date.fromisoformat(source['period_from']),
@@ -548,7 +615,7 @@ def commit(id: int, data: Confirmation, request: Request):
             raise HTTPException(403, 'Подтвердить выписку может загрузивший её сотрудник или администратор.')
         account = get(s, Account, batch.account_id)
         if account.archived or account.kind != 'bank' or account.currency != batch.currency:
-            raise HTTPException(409, 'Счёт или валюта изменились. Загрузите выписку заново.')
+            raise HTTPException(409, 'Счёт или валюта изменились. Проверьте настройки банковского счёта.')
         _validate_bank_binding(s, account, batch.account_number)
         if not batch.source_ready:
             raise HTTPException(409, 'Остатки или обороты выписки не подтверждены. Обработка заблокирована.')
@@ -562,11 +629,14 @@ def commit(id: int, data: Confirmation, request: Request):
         counts = Counter()
         evaluated = None
         fully_reconciled = None
+        revision = _draft_revision(s, batch)
+        if revision is not None and data.preview_token is None:
+            raise HTTPException(409, 'Сначала откройте сохранённую выписку и проверьте её снова.')
         if data.preview_token:
             evaluated = _evaluated(s, batch, lines, account, user, data.fee_category_id)
-            expected = _preview_token(batch, account, user, evaluated, 'import')
+            expected = _preview_token(batch, account, user, evaluated, 'import', revision=revision)
             if not hmac.compare_digest(data.preview_token, expected):
-                raise HTTPException(409, 'Данные изменились. Загрузите выписку и проверьте её снова.')
+                raise HTTPException(409, 'Данные изменились. Откройте сохранённую выписку и проверьте её снова.')
             fully_reconciled = _apply_reconciled(s, batch, lines, account, user, data.fee_category_id,
                                                   evaluated, pay_requests=True)
         elif data.fee_category_id is not None:

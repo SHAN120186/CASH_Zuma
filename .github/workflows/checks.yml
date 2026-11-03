@@ -35,6 +35,7 @@ jobs:
       - run: python -m unittest tests.test_counterparty_remove_selected -q
       - run: python -m unittest tests.test_request_counterparty_lookup -q
       - run: python -m unittest tests.test_request_counterparty_inn -q
+      - run: python -m unittest tests.test_request_foreign_inn -q
       - run: python -m unittest tests.test_department_catalog -q
       - run: python -m unittest tests.test_budget_import -q
       - run: python -m unittest tests.test_ledger_delete -q
@@ -42,6 +43,8 @@ jobs:
       - run: python -m unittest tests.test_cashflow_osv -q
       - run: python -m unittest tests.test_bank_statement_parser -q
       - run: python -m unittest tests.test_bank_statement_api -q
+      - run: python -m unittest tests.test_bank_statement_resume -q
+      - run: python -m unittest tests.test_bank_statement_fact_bridge -q
       - run: |
           for suite in test_bank_statement_actual_payments test_bank_statement_approved_preview test_bank_statement_auto_integration test_bank_statement_delete test_bank_statement_duplicates test_bank_statement_existing test_bank_statement_expenses test_bank_statement_fees test_bank_statement_guard test_bank_statement_history test_bank_statement_incoming test_bank_statement_reprocess_payments test_bank_statement_transfers test_bank_statement_unallocated_out test_unallocated_cashflow test_unallocated_expense_plan; do
             python -m unittest "tests.$suite" -q || exit $?
@@ -97,6 +100,7 @@ jobs:
       - run: python -m unittest tests.test_counterparty_remove_selected -q
       - run: python -m unittest tests.test_request_counterparty_lookup -q
       - run: python -m unittest tests.test_request_counterparty_inn -q
+      - run: python -m unittest tests.test_request_foreign_inn -q
       - run: python -m unittest tests.test_department_catalog -q
       - run: python -m unittest tests.test_budget_import -q
       - run: python -m unittest tests.test_ledger_delete -q
@@ -104,6 +108,8 @@ jobs:
       - run: python -m unittest tests.test_cashflow_osv -q
       - run: python -m unittest tests.test_bank_statement_parser -q
       - run: python -m unittest tests.test_bank_statement_api -q
+      - run: python -m unittest tests.test_bank_statement_resume -q
+      - run: python -m unittest tests.test_bank_statement_fact_bridge -q
       - run: |
           for suite in test_bank_statement_actual_payments test_bank_statement_approved_preview test_bank_statement_auto_integration test_bank_statement_delete test_bank_statement_duplicates test_bank_statement_existing test_bank_statement_expenses test_bank_statement_fees test_bank_statement_guard test_bank_statement_history test_bank_statement_incoming test_bank_statement_reprocess_payments test_bank_statement_transfers test_bank_statement_unallocated_out test_unallocated_cashflow test_unallocated_expense_plan; do
             python -m unittest "tests.$suite" -q || exit $?

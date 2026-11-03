@@ -504,3 +504,40 @@ test('accountant with read-only ledger can view history but cannot upload or pos
  Object.assign(view.state,{user:accountant,page:'ledger',boot:bootstrapBody(accountant)});await settle();const child=mountedComponent(view.app._instance.subTree,history);assert.ok(child);assert.match(text(view.container),/История банковских выписок/);assert.equal(find(view.container,n=>n.tag==='input'&&n.props?.type==='file'),undefined);
  await child.setupState.toggle();await settle();assert.ok(calls.some(c=>c.url.includes('/history?')));assert.equal(calls.some(c=>c.method!=='GET'),false);
 });
+
+test('accepted saved statement clears cached Cash Flow before returning to the same report, including delayed and failed reads',async t=>{
+ const reportComponent=await compileComponent(new URL('../src/CashFlowReport.vue',import.meta.url));
+ const app=await compileComponent(new URL('../src/App.vue',import.meta.url),{'./OperationProgress.vue':progressComponent,'./PeriodFilter.vue':periodComponent,'./BankStatements.vue':bankStatementsComponent,'./CashFlowReport.vue':reportComponent});
+ const accountant={...user,role:'accountant',company_role:'accountant',permissions:['view','ledger','pay_bank','export']};
+ const account={id:21,name:'Synthetic bank',kind:'bank',currency:'UZS'};
+ const preview={id:7,status:'preview',preview_token:'saved-synthetic',full_reconciliation:true,account,
+  statement:{account_number:'SYNTHETIC',ready:true,balance_matches:true,declared_totals_match:true,credit_total:'30.00',debit_total:'0.00',opening_balance:'100.00',closing_balance:'130.00',period_from:'2026-10-10',period_to:'2026-10-10'},rows:[]};
+ const report=(label,amount)=>{const zero=()=>Array(12).fill('0.00'),empty=()=>Array(12).fill(null),values=zero();values[9]=amount;return {
+  company_id:2,currency:'UZS',year:2026,scenario:'A',as_of:'2026-10-10',notes:{},
+  rows:[{key:'9:in',category_id:9,category:label,kind:'in',activity:'operating',values,plan:empty()}],groups:[{activity:'operating',name:'Операционная деятельность',values,plan:empty()}],
+  totals:values,plan_totals:empty(),opening:zero(),closing:values,opening_adjustments:zero(),plan_opening:empty(),plan_closing:empty(),plan_versions:Array(12).fill(1),plan_opening_input:empty()};};
+ for(const fail of [false,true]){
+  const waiting=deferred(),calls=[];
+  const {view,cleanup}=await fixture(t,async(url,options)=>{calls.push({url,method:options.method||'GET'});
+   if(url==='/api/bootstrap')return {ok:true,status:200,json:async()=>({...bootstrapBody(accountant),accounts:[account]})};
+   if(url==='/api/bank-statements/settings')return {ok:true,status:200,json:async()=>({fee_category_id:null})};
+   if(url.endsWith('/resume'))return {ok:true,status:200,json:async()=>preview};
+   if(url.endsWith('/commit'))return {ok:true,status:200,json:async()=>({auto_paid:0,linked_paid:0,review:0,auto_income:1,full_reconciliation:true})};
+   if(url.startsWith('/api/report?'))return waiting.promise;
+   return {ok:true,status:200,json:async()=>({items:[],total:0})};
+  },app);
+  Object.assign(view.state,{user:accountant,boot:{...bootstrapBody(accountant),accounts:[account]},page:'report',currency:'UZS',year:2026,reportAsOf:'2026-10-10',cashFlowBasis:'operations',report:report('STALE-SYNTHETIC-FACT','10.00')});await settle();
+  assert.match(text(view.container),/STALE-SYNTHETIC-FACT/);
+  await view.state.go('ledger');await settle();
+  const child=mountedComponent(view.app._instance.subTree,bankStatementsComponent);assert.ok(child);
+  await child.setupState.resumeSaved({id:7,status:'preview',account});child.setupState.confirmAccount=true;child.setupState.confirmCurrency=true;await settle();await child.setupState.commit();await settle();
+  const opening=view.state.go('report');await settle();
+  assert.equal(mountedComponent(view.app._instance.subTree,reportComponent),null);assert.doesNotMatch(text(view.container),/STALE-SYNTHETIC-FACT/);
+  waiting.resolve(fail?{ok:false,status:503,json:async()=>({detail:'Synthetic report unavailable'})}:{ok:true,status:200,json:async()=>report('FRESH-SYNTHETIC-FACT','40.00')});
+  await opening;await settle();
+  assert.doesNotMatch(text(view.container),/STALE-SYNTHETIC-FACT/);assert.equal(calls.filter(call=>call.url.endsWith('/commit')).length,1);
+  if(fail){assert.equal(mountedComponent(view.app._instance.subTree,reportComponent),null);assert.match(text(view.container),/Synthetic report unavailable/);}
+  else assert.match(text(view.container),/FRESH-SYNTHETIC-FACT/);
+  cleanup();
+ }
+});

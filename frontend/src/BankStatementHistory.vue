@@ -6,7 +6,7 @@ import BankStatementExpenses from './BankStatementExpenses.vue';
 import BankStatementIncome from './BankStatementIncome.vue';
 
 const props = defineProps({api:{type:Function,required:true},companyId:{type:Number,required:true},
-  canView:{type:Boolean,default:false},canViewCashFlow:{type:Boolean,default:false}});
+  canView:{type:Boolean,default:false},canViewCashFlow:{type:Boolean,default:false},refreshKey:{type:Number,default:0}});
 const emit = defineEmits(['cash-flow']);
 const open = ref(false), page = ref(1), hasMore = ref(false), items = ref([]), loaded = ref(false), loading = ref(false), error = ref('');
 const detail = ref(null), detailLoading = ref(false), detailError = ref('');
@@ -24,6 +24,7 @@ const direction = value => tx(value === 'in' ? N_('Поступление') : va
 const money = (value,currency) => formatCents(toCents(value),currency);
 function invalidate(){generation++;detailGeneration++;items.value=[];detail.value=null;loaded.value=false;loading.value=false;detailLoading.value=false;error.value='';detailError.value='';hasMore.value=false;page.value=1;}
 watch(() => [props.companyId,props.canView],()=>{invalidate();open.value=false;});
+watch(() => props.refreshKey,()=>{if(open.value)loadPage(1);else invalidate();});
 onUnmounted(invalidate);
 async function loadPage(number){
  if(!open.value||!props.canView||!Number.isInteger(number)||number<1)return;

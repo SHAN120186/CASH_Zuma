@@ -1,7 +1,8 @@
 {
-  "version": "2.34.13",
+  "version": "2.34.14",
   "date": "2026-11-03",
   "changes": [
+    "Сохранённые проверки выписок открываются без повторной загрузки файла с новой сверкой перед подтверждением. Проведённые операции обновляют Cash Flow, движение и факт без повторного учёта; история и старые суммы отчёта обновляются. В банковских заявках USD/EUR ИНН явно необязателен.",
     "Сводка расходов переоформлена: общий итог сверху, группы компактным списком и отдельная таблица выбранной группы. На телефоне выбор группы заменяет карточки; повторяющиеся статусы убраны из каждой строки. Расчёты не изменены.",
     "Списания выписки автоматически сверяются с заявками: статья из заявки, отдельные комиссии и расходы без заявки с фирмой, ИНН и суммой. Проценты, возможные удержания и неоднозначные движения выделены отдельно; повторного учёта нет.",
     "Поступления по банковской выписке показаны общим итогом за весь период файла с раскрываемыми строками. Сумма не зависит от сверки расходов и не повторяет операции сайта.",
@@ -92,6 +93,7 @@
     "Длинные названия файлов и кнопки выбора шаблона переносятся на узком экране. В ТЭО дата архива отдельно обозначена и не подменяет начало финансового прогноза."
   ],
   "changes_uz": [
+    "Saqlangan bank ko‘chirmasi tekshiruvlari faylni qayta yuklamasdan ochiladi va tasdiqlashdan oldin qayta solishtiriladi. O‘tkazilgan operatsiyalar Cash Flow, pul harakati va haqiqiy ko‘rsatkichlarni takrorsiz yangilaydi; tarix va eski hisobot summalari yangilanadi. USD/EUR bank arizalarida STIR ixtiyoriy ekani aniq ko‘rsatilgan.",
     "Xarajatlar jamlanmasi yangilandi: umumiy jami yuqorida, guruhlar ixcham ro‘yxatda va tanlangan guruh alohida jadvalda. Telefonda kartalar o‘rniga guruh tanlanadi; har bir satrdagi takroriy holatlar olib tashlandi. Hisob-kitoblar o‘zgarmadi.",
     "Ko‘chirma chiqimlari arizalar bilan avtomatik solishtiriladi: ariza moddasi, alohida komissiyalar va kompaniya, STIR hamda summali arizasiz xarajatlar. Foizlar, ehtimoliy ushlanmalar va noaniq harakatlar ajratiladi; takror hisoblanmaydi.",
     "Bank ko‘chirmasi tushumlari faylning butun davri uchun jami va ochiladigan satrlar bilan ko‘rsatiladi. Summa xarajatlarni solishtirishga bog‘liq emas va saytdagi operatsiyalarni takrorlamaydi.",

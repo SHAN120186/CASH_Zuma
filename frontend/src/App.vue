@@ -319,7 +319,7 @@ async function bankStatementsChanged(){
  if(!current())return;
  // Accepted server writes are distinct from subsequent reads. Invalidate old
  // accounts and list responses immediately so stale balances are never shown.
- loadRequestId++;listRequestId++;boot.value={...boot.value,accounts:[]};rows.value=[];listTotal.value=0;dash.value=null;
+ loadRequestId++;listRequestId++;reportRequestId++;boot.value={...boot.value,accounts:[]};rows.value=[];listTotal.value=0;dash.value=null;report.value=null;
  let failed=false;
  try{await bootstrap();}catch(e){if(!current())return;failed=true;}
  if(!current())return;
