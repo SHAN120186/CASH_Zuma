@@ -1,4 +1,7 @@
 export default {
+  'Связать проверенные строки ({count})': 'Tekshirilgan satrlarni bog‘lash ({count})',
+  'Завершить сверку': 'Solishtirishni yakunlash',
+  'Провести проверенные строки ({count})': 'Tekshirilgan satrlarni o‘tkazish ({count})',
   'После проведения из доступных средств будет удерживаться {amount} {currency} спорных списаний. Поступления на проверке не дают денег для оплаты.': 'O‘tkazilgandan keyin mavjud mablag‘dan {amount} {currency} bahsli chiqimlar ushlab qolinadi. Tekshiruvdagi tushumlar to‘lov uchun mablag‘ bermaydi.',
   'Компания банковской статьи изменилась. Проверьте выписку.': 'Bank moddasining kompaniyasi o‘zgardi. Ko‘chirmani tekshiring.',
   'Техническая банковская статья требует проверки администратора.': 'Texnik bank moddasini administrator tekshirishi kerak.',
