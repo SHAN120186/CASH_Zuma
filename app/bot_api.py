@@ -318,6 +318,47 @@ def begin_report_snapshot(s):
         s.connection().exec_driver_sql('BEGIN')
 
 
+def statement_report_warnings(s, companies, accounts, report_date):
+    """Latest confirmed file per account; bank totals never augment ledger totals."""
+    from .bank_statement_models import BankStatementBatch, BankStatementLine
+    from .bank_statement_guard import accounted_line_ids
+    from .bank_statement_incoming import opening_matches
+    result, seen = [], set()
+    batches = s.scalars(select(BankStatementBatch).where(
+        BankStatementBatch.company_id.in_(list(companies)),
+        BankStatementBatch.account_id.in_(list(accounts)),
+        BankStatementBatch.status == 'committed',
+        BankStatementBatch.period_to <= report_date,
+    ).order_by(BankStatementBatch.period_to.desc(), BankStatementBatch.id.desc()))
+    for batch in batches:
+        account = accounts[batch.account_id]
+        if account.id in seen or account.archived or account.company_id != batch.company_id or account.currency != batch.currency:
+            continue
+        seen.add(account.id)
+        lines = list(s.scalars(select(BankStatementLine).where(
+            BankStatementLine.batch_id == batch.id,
+            BankStatementLine.company_id == batch.company_id,
+            BankStatementLine.account_id == account.id)))
+        accounted = accounted_line_ids(s, lines, account)
+        pending = [line for line in lines if line.id not in accounted]
+        credit = sum(line.amount for line in pending if line.direction == 'in')
+        debit = sum(line.amount for line in pending if line.direction == 'out')
+        closing = account_balance(s, account, batch.period_to)
+        totals_match = (sum(line.amount for line in lines if line.direction == 'in') == batch.credit_total
+                        and sum(line.amount for line in lines if line.direction == 'out') == batch.debit_total)
+        full = (totals_match and batch.source_ready and opening_matches(s, batch, account) and not pending and closing == batch.closing)
+        common = {'company': mask_digits(companies[batch.company_id].name, 80),
+                  'company_code': companies[batch.company_id].code}
+        messages = [
+            f'Сверка выписки №{batch.id} · {mask_digits(account.name, 80)} · {batch.currency} · период с {batch.period_from:%d.%m.%Y} по {batch.period_to:%d.%m.%Y}',
+            f'Итоги файла за весь период: начало {money(batch.opening)}; приход {money(batch.credit_total)}; расход {money(batch.debit_total)}; конец {money(batch.closing)} {batch.currency}.',
+            f'Состояние: {"сверено" if full else "требует проверки"}. Учтено строк: {len(accounted)} из {len(lines)}. Остаток сайта на конец периода: {money(closing)} {batch.currency}.',
+            f'Не учтено / на проверке: приход {money(credit)}; расход {money(debit)} {batch.currency}. Итоги выписки не прибавляются к операциям сайта.',
+        ]
+        result.extend({**common, 'message': message} for message in messages)
+    return result
+
+
 def daily_summary_payload(s, chat_id, report_date, companies, codes, scope_id, current_day, user_id=None):
     """Posted figures for one date and an explicitly current open request list."""
     names = {cid: mask_digits(c.name, 80) for cid, c in companies.items()}
@@ -377,7 +418,8 @@ def daily_summary_payload(s, chat_id, report_date, companies, codes, scope_id, c
     result = {'chat_id': chat_id, 'report_date': str(report_date), 'generated_at': utc_iso(now()),
               'companies': codes, 'scope_id': scope_id, 'balances': balances, 'opening_balances': opening_balances,
               'income': movements('in'), 'expense': movements('out'), 'operations': operations,
-              'open_requests': open_requests, 'open_requests_as_of': str(current_day), 'warnings': []}
+              'open_requests': open_requests, 'open_requests_as_of': str(current_day),
+              'warnings': statement_report_warnings(s, companies, accounts, report_date)}
     if user_id is not None:
         result['user_id'] = user_id
     # Recipient routing and access have their own scope checks. A group upgrade

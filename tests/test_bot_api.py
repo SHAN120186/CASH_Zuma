@@ -25,7 +25,7 @@ os.environ['BOT_CLIENT_SECRET']=BOT[1]
 os.environ['BOT_REPORT_GROUPS']=f'{GROUP}:UZGERMED; {GROUP_BOTH}:uzgermed, ZUMA ;{GROUP_ZUMA}:ZUMA; broken-entry'
 os.environ['TELEGRAM_BOT_USERNAME']='ZumaTestBot'
 from fastapi.testclient import TestClient
-from sqlalchemy import select
+from sqlalchemy import select, func
 from app.main import app
 from app.db import *
 from app.services import today
@@ -1121,6 +1121,51 @@ class BotApiTests(unittest.TestCase):
                          sorted((r,u['id']) for r in (rid,other) for u in (first,second,payer)))
         self.assertEqual(self.pay(first,rid,'600','PAY-EARLIER').status_code,200)
         self.assertEqual(self.pay(payer,rid,'600','PAY-OUTSIDER').status_code,409)
+
+    def test_statement_report_reads_latest_confirmed_company_file_without_writes(self):
+        from app.bank_statement_models import BankStatementBatch, BankStatementLine
+        from app.bot_api import statement_report_warnings
+        with unit(True) as s:
+            account = s.get(Account, self.acc)
+            company = s.get(Company, account.company_id)
+            user = s.scalar(select(User).where(User.username == 'admin'))
+            def batch(status, closing, end=None):
+                item = BankStatementBatch(company_id=company.id, account_id=account.id,
+                    created_by=user.id, filename='private.xlsx', sha256='a'*64,
+                    account_number='SECRET_ACCOUNT', owner_name='private', owner_inn='SECRET_INN',
+                    currency='UZS', period_from=self.yesterday, period_to=end or self.today,
+                    opening=100000000, closing=closing, debit_total=0, credit_total=10000,
+                    balance_matches=True, declared_totals_match=True, source_ready=True, status=status)
+                s.add(item); s.flush(); return item
+            old = batch('committed', 100010000, self.yesterday)
+            latest = batch('committed', 100010000)
+            batch('preview', 999999999)
+            batch('deleted', 999999999)
+            line = BankStatementLine(company_id=company.id, account_id=account.id, batch_id=latest.id,
+                line=1, date=self.today, direction='in', amount=10000, document_number='private',
+                correspondent_mfo='', correspondent_account='SECRET_ACCOUNT', correspondent_name='private',
+                correspondent_inn='SECRET_INN', purpose='SECRET_PURPOSE', fingerprint='b'*64,
+                status='review')
+            s.add(line); s.flush()
+            before = s.scalar(select(func.count()).select_from(Ledger))
+            rows = statement_report_warnings(s, {company.id:company}, {account.id:account}, self.today)
+            text = ' '.join(row['message'] for row in rows)
+            self.assertIn(f'№{latest.id}', text)
+            self.assertNotIn(f'№{old.id} ', text)
+            self.assertIn('требует проверки', text)
+            self.assertIn('приход 100.00', text)
+            self.assertNotIn('SECRET', text)
+            self.assertEqual({r['company_code'] for r in rows}, {company.code})
+            self.assertEqual(before, s.scalar(select(func.count()).select_from(Ledger)))
+            self.assertFalse(statement_report_warnings(s, {}, {}, self.today))
+        response = self.client.get('/api/bot/v1/group-daily-summary',
+            params={'chat_id':GROUP, 'report_date':str(self.today)}, auth=BOT)
+        self.assertEqual(response.status_code, 200, response.text)
+        self.assertTrue(response.json()['warnings'])
+        other = self.client.get('/api/bot/v1/group-daily-summary',
+            params={'chat_id':GROUP_ZUMA, 'report_date':str(self.today)}, auth=BOT)
+        self.assertEqual(other.status_code, 200, other.text)
+        self.assertFalse(other.json()['warnings'])
 
     def me(self):
         return {'client':self.client,'h':self.h}
