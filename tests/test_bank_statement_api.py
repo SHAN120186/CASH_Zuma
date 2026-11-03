@@ -154,7 +154,13 @@ class BankStatementTests(SiteTests):
         rid=self.approved()
         paid=self.ledger('600','out',request_id=rid); self.assertEqual(paid.status_code,200,paid.text)
         with unit(True) as s:
-            s.get(PaymentRequest,rid).due_date += timedelta(days=1)
+            req=s.get(PaymentRequest,rid); req.due_date += timedelta(days=1)
+            # Another plausible request makes the automatic result ambiguous;
+            # a person can still select the proven existing payment.
+            s.add(PaymentRequest(creator_id=req.creator_id,category_id=req.category_id,
+                account_id=req.account_id,counterparty=req.counterparty,counterparty_inn=req.counterparty_inn,
+                purpose='Synthetic ambiguous request',amount=req.amount,
+                due_date=req.due_date-timedelta(days=1),status='draft'))
         preview=self.preview(self.source()); self.assertEqual(preview.status_code,200,preview.text)
         self.assertEqual(self.commit(preview.json()['id']).status_code,200)
         cl,h=self.payer; line_id=preview.json()['rows'][0]['id']

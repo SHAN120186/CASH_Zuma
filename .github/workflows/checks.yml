@@ -43,7 +43,7 @@ jobs:
       - run: python -m unittest tests.test_bank_statement_parser -q
       - run: python -m unittest tests.test_bank_statement_api -q
       - run: |
-          for suite in test_bank_statement_approved_preview test_bank_statement_auto_integration test_bank_statement_delete test_bank_statement_duplicates test_bank_statement_existing test_bank_statement_fees test_bank_statement_guard test_bank_statement_incoming test_bank_statement_reprocess_payments test_bank_statement_transfers test_bank_statement_unallocated_out test_unallocated_cashflow test_unallocated_expense_plan; do
+          for suite in test_bank_statement_actual_payments test_bank_statement_approved_preview test_bank_statement_auto_integration test_bank_statement_delete test_bank_statement_duplicates test_bank_statement_existing test_bank_statement_fees test_bank_statement_guard test_bank_statement_history test_bank_statement_incoming test_bank_statement_reprocess_payments test_bank_statement_transfers test_bank_statement_unallocated_out test_unallocated_cashflow test_unallocated_expense_plan; do
             python -m unittest "tests.$suite" -q || exit $?
           done
       - run: python -m unittest tests.test_section_access -q
@@ -105,7 +105,7 @@ jobs:
       - run: python -m unittest tests.test_bank_statement_parser -q
       - run: python -m unittest tests.test_bank_statement_api -q
       - run: |
-          for suite in test_bank_statement_approved_preview test_bank_statement_auto_integration test_bank_statement_delete test_bank_statement_duplicates test_bank_statement_existing test_bank_statement_fees test_bank_statement_guard test_bank_statement_incoming test_bank_statement_reprocess_payments test_bank_statement_transfers test_bank_statement_unallocated_out test_unallocated_cashflow test_unallocated_expense_plan; do
+          for suite in test_bank_statement_actual_payments test_bank_statement_approved_preview test_bank_statement_auto_integration test_bank_statement_delete test_bank_statement_duplicates test_bank_statement_existing test_bank_statement_fees test_bank_statement_guard test_bank_statement_history test_bank_statement_incoming test_bank_statement_reprocess_payments test_bank_statement_transfers test_bank_statement_unallocated_out test_unallocated_cashflow test_unallocated_expense_plan; do
             python -m unittest "tests.$suite" -q || exit $?
           done
       - run: python -m unittest tests.test_section_access -q
