@@ -1,12 +1,13 @@
 <script setup>
 // Bank statement data stays separate from the existing cash ledger until the
 // server has validated the source and the operator confirms the account.
-import {ref, computed, watch, onMounted, onUnmounted} from 'vue';
+import {ref, computed, watch, nextTick, onMounted, onUnmounted} from 'vue';
 import {tx, N_} from './i18n/index.js';
 import {toCents, formatCents, formatShortDate} from './overview/format.js';
 import BankStatementHistory from './BankStatementHistory.vue';
 import BankStatementIncome from './BankStatementIncome.vue';
 import BankStatementExpenses from './BankStatementExpenses.vue';
+import SavedBankStatements from './SavedBankStatements.vue';
 
 const props = defineProps({
   api: {type: Function, required: true},
@@ -33,6 +34,7 @@ const adminBatches = ref([]), adminLoaded = ref(false), adminBusy = ref(false), 
 const deleteBatchId = ref(null), deletePreview = ref(null), deleteReason = ref(''), deleteConfirmed = ref(false), deleteUncertain = ref(false);
 const feeSettingsError = ref('');
 const reviewsLoaded = ref(false), uncertain = ref(false), fileInput = ref(null);
+const savedRefresh = ref(0);
 const bankAccounts = computed(() => props.accounts.filter(a => a.kind === 'bank' && !a.archived));
 const unreconciledAccounts = computed(() => bankAccounts.value.filter(a => Number(a.unreconciled_statements || 0) > 0));
 const account = computed(() => bankAccounts.value.find(a => String(a.id) === String(accountId.value)));
@@ -83,18 +85,25 @@ const unallocatedNames = new Set([N_('Не распределено — пост
 const categoryName = row => {const name = row.category_name || props.categories.find(c => c.id === row.category_id)?.name || ''; return unallocatedNames.has(name) ? tx(name) : name || (['unclassified','unclassified_out'].includes(row.category_source) ? tx('Не распределено') : '');};
 const reviewErrorMessage = e => e?.status && e.message ? e.message : N_('Не удалось выполнить проверку. Обновите список и повторите.');
 let generation = 0, reviewGeneration = 0, reviewOperation = 0, allocationGeneration = 0, allocationOperation = 0, outgoingGeneration = 0, outgoingOperation = 0, batchGeneration = 0, settingsGeneration = 0, reprocessGeneration = 0, feeTouched = false;
-let adminGeneration = 0;
+let adminGeneration = 0, resumeGeneration = 0, applyingResumeSelection = false, feeSettingsPending = Promise.resolve();
 
 function invalidate() {
   generation += 1;
   preview.value = null; confirmAccount.value = false; confirmCurrency.value = false;
   error.value = ''; notice.value = ''; uncertain.value = false; busy.value = false;
 }
-watch(() => [accountId.value, currency.value, feeCategoryId.value], () => { invalidate(); reprocessGeneration += 1; reprocessBusy.value = false; reprocessPreview.value = null; reprocessError.value = ''; reprocessNotice.value = ''; });
-watch(() => props.companyId, () => { invalidate(); reviewGeneration += 1; reviewOperation += 1; allocationGeneration += 1; allocationOperation += 1; outgoingGeneration += 1; outgoingOperation += 1; batchGeneration += 1; settingsGeneration += 1; reprocessGeneration += 1; feeTouched = false; feeSettingsError.value = ''; reviewBusy.value = allocationBusy.value = outgoingBusy.value = null; reprocessBusy.value = false; reviewActions.value = {}; matchActions.value = {}; duplicateActions.value = {}; transferActions.value = {}; allocationActions.value = {}; outgoingActions.value = {}; accountId.value = currency.value = feeCategoryId.value = selectedOldBatch.value = ''; reviews.value = []; unallocated.value = []; outgoingUnallocated.value = []; oldBatches.value = []; reprocessPreview.value = null; reviewsLoaded.value = allocationLoaded.value = outgoingLoaded.value = oldBatchesLoaded.value = false; loadReviews(); loadUnallocated(); loadUnallocatedOutgoing(); loadOldBatches(); loadFeeSettings(); });
+watch(() => [accountId.value, currency.value, feeCategoryId.value], () => { if (!applyingResumeSelection) invalidate(); reprocessGeneration += 1; reprocessBusy.value = false; reprocessPreview.value = null; reprocessError.value = ''; reprocessNotice.value = ''; });
+watch(() => props.companyId, () => { resumeGeneration += 1; invalidate(); reviewGeneration += 1; reviewOperation += 1; allocationGeneration += 1; allocationOperation += 1; outgoingGeneration += 1; outgoingOperation += 1; batchGeneration += 1; settingsGeneration += 1; reprocessGeneration += 1; feeTouched = false; feeSettingsError.value = ''; reviewBusy.value = allocationBusy.value = outgoingBusy.value = null; reprocessBusy.value = false; reviewActions.value = {}; matchActions.value = {}; duplicateActions.value = {}; transferActions.value = {}; allocationActions.value = {}; outgoingActions.value = {}; accountId.value = currency.value = feeCategoryId.value = selectedOldBatch.value = ''; reviews.value = []; unallocated.value = []; outgoingUnallocated.value = []; oldBatches.value = []; reprocessPreview.value = null; reviewsLoaded.value = allocationLoaded.value = outgoingLoaded.value = oldBatchesLoaded.value = false; loadReviews(); loadUnallocated(); loadUnallocatedOutgoing(); loadOldBatches(); feeSettingsPending = loadFeeSettings(); });
+watch(() => props.canImport, () => {resumeGeneration += 1; invalidate();});
+watch(() => [account.value?.id, account.value?.currency], () => {
+  if (preview.value && (!validSelection.value || String(preview.value.account?.id)!==String(accountId.value) || preview.value.account?.currency!==currency.value)) {
+    resumeGeneration += 1; invalidate(); error.value = tx('Счёт сохранённой выписки недоступен. Обновите список счетов и проверьте доступ.');
+  }
+});
 // Permissions may change without remounting the component. Discard any signed
 // preview as soon as access changes, and reload eligible batches when restored.
 watch(() => props.canPost, allowed => {
+  resumeGeneration += 1; invalidate();
   batchGeneration += 1; reprocessGeneration += 1; reprocessBusy.value = false;
   oldBatches.value = []; oldBatchesLoaded.value = false; selectedOldBatch.value = '';
   reprocessPreview.value = null; reprocessError.value = ''; reprocessNotice.value = '';
@@ -146,6 +155,8 @@ async function deleteStatement() {
     });
     if (current !== adminGeneration || props.companyId !== company) return;
     adminBusy.value = false; adminNotice.value = tx('Выписка удалена, её операции отменены.');
+    savedRefresh.value += 1;
+    if (preview.value?.id === batch.id) invalidate();
     await Promise.all([loadAdminBatches(), loadReviews(), loadUnallocated(), loadUnallocatedOutgoing(), loadOldBatches()]);
     if (props.companyId === company && props.canDeleteStatements) emit('changed');
   } catch (e) {
@@ -377,9 +388,54 @@ async function saveReview(row) {
   } catch (e) { if (current === reviewGeneration) reviewError.value = reviewErrorMessage(e); }
   finally { if (operation === reviewOperation) reviewBusy.value = null; }
 }
-onMounted(() => {loadReviews(); loadUnallocated(); loadUnallocatedOutgoing(); loadOldBatches(); loadFeeSettings(); if (props.canDeleteStatements) loadAdminBatches();});
-onUnmounted(() => {generation += 1; reviewGeneration += 1; reviewOperation += 1; allocationGeneration += 1; allocationOperation += 1; outgoingGeneration += 1; outgoingOperation += 1; batchGeneration += 1; settingsGeneration += 1; reprocessGeneration += 1; adminGeneration += 1;});
+onMounted(() => {loadReviews(); loadUnallocated(); loadUnallocatedOutgoing(); loadOldBatches(); feeSettingsPending = loadFeeSettings(); if (props.canDeleteStatements) loadAdminBatches();});
+onUnmounted(() => {generation += 1; resumeGeneration += 1; reviewGeneration += 1; reviewOperation += 1; allocationGeneration += 1; allocationOperation += 1; outgoingGeneration += 1; outgoingOperation += 1; batchGeneration += 1; settingsGeneration += 1; reprocessGeneration += 1; adminGeneration += 1;});
 watch(selectedOldBatch, () => {reprocessGeneration += 1; reprocessBusy.value = false; reprocessPreview.value = null; reprocessError.value = ''; reprocessNotice.value = '';});
+
+async function resumeSaved(item) {
+  if (!props.canImport || !props.companyId || busy.value || reprocessBusy.value || !item?.id || item.status !== 'preview') return;
+  const company = props.companyId, operation = ++resumeGeneration;
+  const inScope = () => operation === resumeGeneration && props.companyId === company && props.canImport;
+  invalidate(); busy.value = true;
+  let current;
+  try {
+    // Wait for the company's fee setting before signing the refreshed preview.
+    // The account/currency watcher must finish before the preview is assigned.
+    await feeSettingsPending;
+    if (!inScope()) return;
+    const selected = bankAccounts.value.find(a => String(a.id) === String(item.account?.id));
+    if (!selected || selected.currency !== item.account?.currency) throw Object.assign(new Error(tx('Счёт сохранённой выписки недоступен. Обновите список счетов и проверьте доступ.')), {safeMessage:true});
+    feeTouched = true; settingsGeneration += 1;
+    invalidate(); applyingResumeSelection = true;
+    accountId.value = String(selected.id); currency.value = selected.currency;
+    await nextTick();
+    applyingResumeSelection = false;
+    if (!inScope()) return;
+    current = generation; busy.value = true;
+    const result = await props.api(`/api/bank-statements/${encodeURIComponent(item.id)}/resume`, {
+      method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({fee_category_id: feeId()}),
+    });
+    if (!inScope() || current !== generation) return;
+    if (result?.id !== item.id || result.status !== 'preview' || !result.preview_token || !Array.isArray(result.rows) || !result.statement || typeof result.full_reconciliation !== 'boolean' || String(result.account?.id) !== String(accountId.value) || result.account?.currency !== currency.value || !validSelection.value) throw Object.assign(new Error(tx('Не удалось проверить сохранённую выписку. Обновите список и откройте проверку снова.')), {safeMessage:true});
+    preview.value = result; confirmAccount.value = false; confirmCurrency.value = false; uncertain.value = false;
+    notice.value = tx('Сохранённая проверка открыта. Сверка обновлена; проверьте счёт и валюту перед подтверждением.');
+  } catch (e) {
+    if (!inScope() || (current !== undefined && current !== generation)) return;
+    preview.value = null; confirmAccount.value = false; confirmCurrency.value = false;
+    savedRefresh.value += 1;
+    if ([403,404,409].includes(e.status)) {
+      error.value = e.message ? tx(e.message) : tx('Сохранённая проверка недоступна. Обновите список; подтверждённую выписку откройте в истории.');
+      // A previous confirmation may have succeeded despite a lost reply.
+      // Refresh displayed facts without sending another financial command.
+      if ([404,409].includes(e.status)) emit('changed');
+    } else error.value = (e.status || e.safeMessage) && e.message ? tx(e.message) : tx('Не удалось открыть сохранённую проверку. Повторите открытие: новая выписка и операции не создаются.');
+  } finally {applyingResumeSelection = false; if (inScope() && (current === undefined || current === generation)) busy.value = false;}
+}
+
+async function refreshUncertain() {
+  if (!uncertain.value || !preview.value) return;
+  await resumeSaved({id: preview.value.id, status: 'preview', account: preview.value.account});
+}
 
 async function upload(event) {
   const file = event.target.files?.[0];
@@ -404,6 +460,7 @@ async function upload(event) {
       throw new Error(N_('Выбранный счёт или валюта изменились. Загрузите выписку снова.'));
     }
     preview.value = result;
+    savedRefresh.value += 1;
   } catch (e) {if (current === generation) error.value = tx(e.message);}
   finally {if (current === generation) busy.value = false;}
 }
@@ -419,6 +476,7 @@ async function commit() {
     });
     if (current !== generation) return;
     preview.value = null; confirmAccount.value = false; confirmCurrency.value = false;
+    savedRefresh.value += 1;
     notice.value = tx('Выписка принята. Автоматически оплачено: {paid}; связано с оплатой: {linked}; требуется проверка: {review}.',
       {paid: result.auto_paid, linked: result.linked_paid, review: result.review});
     notice.value += ' ' + tx('Поступлений проведено: {income}, связано: {incomeLinked}; комиссий проведено: {fee}, связано: {feeLinked}.',
@@ -434,8 +492,9 @@ async function commit() {
       // A lost response may hide a successful commit. Do not post it twice.
       if (e.status == null || e.status >= 500) {
         uncertain.value = true;
+        savedRefresh.value += 1;
         error.value = tx('Ответ о загрузке не получен. Обновите данные и проверьте результат перед повторной загрузкой.');
-      } else if (e.status === 409) {preview.value = null; confirmAccount.value = false; confirmCurrency.value = false; error.value = tx('Данные изменились. Загрузите выписку и проверьте её заново.');}
+      } else if (e.status === 409) {preview.value = null; confirmAccount.value = false; confirmCurrency.value = false; savedRefresh.value += 1; error.value = tx('Данные изменились. Откройте сохранённую выписку и проверьте её снова.');}
       else error.value = tx(e.message);
     }
   } finally {if (current === generation) busy.value = false;}
@@ -481,10 +540,12 @@ async function commit() {
       <label v-if="canImport || canPost" class="bank-category">{{tx('Статья банковских комиссий')}}<select v-model="feeCategoryId" :disabled="busy || reprocessBusy" @change="feeTouched = true; feeSettingsError = ''"><option value="">{{tx('Не выбрана — комиссии на проверку')}}</option><option v-for="c in feeCategories" :key="c.id" :value="String(c.id)">{{c.name}}</option></select></label>
       <p v-if="canPost && !canManageFee" class="sub">{{tx('Выбор статьи комиссии не меняет общую настройку компании.')}}</p>
       <p v-if="feeSettingsError" class="error" role="alert">{{feeSettingsError}}</p>
+      <SavedBankStatements :api="api" :company-id="companyId" :can-resume="canImport" :busy="busy || reprocessBusy" :refresh-key="savedRefresh" @resume="resumeSaved"/>
       <p v-if="canImport && !canPost" class="sub">{{tx('Для проведения поступлений и комиссий требуется право записи операций.')}}</p>
       <p v-if="account && currency && !validSelection" class="error" role="alert">{{tx('Валюта выписки должна совпадать с валютой выбранного счёта.')}}</p>
       <p v-if="busy" role="status">{{tx('Обрабатываем выписку…')}}</p>
       <p v-if="error" class="error" role="alert">{{error}}</p><p v-if="notice" role="status">{{notice}}</p>
+      <button v-if="uncertain && canImport" type="button" class="secondary tiny" :disabled="busy || reprocessBusy" @click="refreshUncertain">{{tx('Обновить состояние выписки')}}</button>
 
       <div v-if="preview" class="bank-preview">
         <BankStatementIncome :statement="preview.statement" :rows="rows" :currency="currency"/>
@@ -610,7 +671,7 @@ async function commit() {
         </tbody></table></div>
       </div>
 
-      <BankStatementHistory :api="api" :company-id="companyId" :can-view="canViewHistory || canImport || canReview" :can-view-cash-flow="canViewCashFlow" @cash-flow="emit('cash-flow',$event)"/>
+      <BankStatementHistory :api="api" :company-id="companyId" :can-view="canViewHistory || canImport || canReview" :can-view-cash-flow="canViewCashFlow" :refresh-key="savedRefresh" @cash-flow="emit('cash-flow',$event)"/>
       <div v-if="canPost" class="review-list">
         <h3>{{tx('Повторная проверка загруженной выписки')}}</h3>
         <p class="sub">{{tx('Проверьте ранее загруженную выписку заново. До подтверждения операции и остатки не изменятся.')}}</p>

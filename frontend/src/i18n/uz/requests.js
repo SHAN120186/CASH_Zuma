@@ -3,6 +3,8 @@
 export default {
   'Контрагент или ИНН заявки изменился. Закройте форму и откройте заявку заново.': 'Arizadagi kontragent yoki STIR o‘zgargan. Shaklni yoping va arizani qayta oching.',
   'ИНН контрагента': 'Kontragent STIRi',
+  'ИНН контрагента (необязательно)': 'Kontragent STIRi (ixtiyoriy)',
+  'ИНН необязателен для USD и EUR. Для иностранного контрагента без ИНН введите название вручную.': 'USD va EUR uchun STIR ixtiyoriy. STIRi yo‘q xorijiy kontragent nomini qo‘lda kiriting.',
   'Введите ИНН для поиска контрагента.': 'Kontragentni qidirish uchun STIR kiriting.',
   'Ищем контрагента…': 'Kontragent qidirilmoqda…',
   'По этому ИНН контрагент не найден. Название можно ввести вручную.': 'Bu STIR bo‘yicha kontragent topilmadi. Nomini qo‘lda kiritish mumkin.',

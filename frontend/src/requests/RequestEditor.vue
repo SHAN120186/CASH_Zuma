@@ -92,6 +92,12 @@ watch(() => [partyInn.value, props.company?.id], ([inn, companyId], [, previousC
 });
 
 const accountOptions = computed(() => accountsFor(props.boot.accounts, form.value.channel, form.value.currency));
+// Подсказка следует реальному счёту, как и серверная проверка валюты/канала.
+// ИНН уже необязателен; смена счёта не должна стирать введённые реквизиты.
+const foreignBank = computed(() => {
+  const account = props.boot.accounts.find(a => a.id === form.value.account_id);
+  return account?.kind === 'bank' && ['USD', 'EUR'].includes(account.currency);
+});
 const outcomeCategories = computed(() => props.boot.categories.filter(c => c.type === 'outcome' && (!c.retired || c.id === form.value.category_id)));
 const earliest = computed(() => minDue(dues.value, form.value.priority));
 const earliestLabel = computed(() => earliest.value ? earliest.value.split('-').reverse().join('.') : '');
@@ -238,8 +244,8 @@ onUnmounted(() => { document.removeEventListener('keydown', onKey); clearTimeout
         <label>{{ tx('Отдел') }}<select v-model="form.department"><option value="">{{ tx('Выберите отдел') }}</option><option v-for="item in departmentOptions" :key="item.code" :value="item.code">{{lang==='uz'&&item.name_uz?item.name_uz:tx(item.name_ru)}}</option></select></label>
         <label>{{ tx('Статья расходов') }}<select v-model="form.category_id" required><option v-for="c in outcomeCategories" :key="c.id" :value="c.id">{{ c.name }}</option></select></label>
         <label>{{ tx('Сумма') }}<input v-model="form.amount" type="text" inputmode="decimal" pattern="[0-9]+([.][0-9]{1,2})?" required autocomplete="off"></label>
-        <label>{{ tx('ИНН контрагента') }}<input v-model.trim="partyInn" inputmode="numeric" pattern="[0-9]*" maxlength="20" autocomplete="off" aria-describedby="rq-inn-hint">
-          <small id="rq-inn-hint" class="sub">{{ tx('Введите ИНН для поиска контрагента.') }}</small>
+        <label>{{ foreignBank ? tx('ИНН контрагента (необязательно)') : tx('ИНН контрагента') }}<input v-model.trim="partyInn" inputmode="numeric" pattern="[0-9]*" maxlength="20" autocomplete="off" aria-describedby="rq-inn-hint">
+          <small id="rq-inn-hint" class="sub">{{ foreignBank ? tx('ИНН необязателен для USD и EUR. Для иностранного контрагента без ИНН введите название вручную.') : tx('Введите ИНН для поиска контрагента.') }}</small>
           <small v-if="partyStatus === 'loading'" class="sub" role="status">{{ tx('Ищем контрагента…') }}</small>
           <small v-else-if="partyStatus === 'empty'" class="sub" role="status">{{ tx('По этому ИНН контрагент не найден. Название можно ввести вручную.') }}</small>
           <small v-else-if="partyStatus === 'error'" class="field-error" role="status">{{ tx('Не удалось выполнить поиск. Название можно ввести вручную.') }}</small>
