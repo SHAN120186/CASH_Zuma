@@ -1,7 +1,8 @@
 {
-  "version": "2.34.11",
+  "version": "2.34.12",
   "date": "2026-11-03",
   "changes": [
+    "Списания выписки автоматически сверяются с заявками: статья из заявки, отдельные комиссии и расходы без заявки с фирмой, ИНН и суммой. Проценты, возможные удержания и неоднозначные движения выделены отдельно; повторного учёта нет.",
     "Поступления по банковской выписке показаны общим итогом за весь период файла с раскрываемыми строками. Сумма не зависит от сверки расходов и не повторяет операции сайта.",
     "Выписка показывает сверенные заявки, расходы без заявки, комиссии и спорные списания; на обзоре поступления видны по отдельным валютам.",
     "Администратор холдинга может удалить выписку и отменить операции, созданные по ней; ранее существовавшие связанные операции сохраняются.",
@@ -90,6 +91,7 @@
     "Длинные названия файлов и кнопки выбора шаблона переносятся на узком экране. В ТЭО дата архива отдельно обозначена и не подменяет начало финансового прогноза."
   ],
   "changes_uz": [
+    "Ko‘chirma chiqimlari arizalar bilan avtomatik solishtiriladi: ariza moddasi, alohida komissiyalar va kompaniya, STIR hamda summali arizasiz xarajatlar. Foizlar, ehtimoliy ushlanmalar va noaniq harakatlar ajratiladi; takror hisoblanmaydi.",
     "Bank ko‘chirmasi tushumlari faylning butun davri uchun jami va ochiladigan satrlar bilan ko‘rsatiladi. Summa xarajatlarni solishtirishga bog‘liq emas va saytdagi operatsiyalarni takrorlamaydi.",
     "Bank ko‘chirmasida moslangan arizalar, arizasiz xarajatlar, komissiyalar va tekshiriladigan chiqimlar ajratiladi; tushumlar har bir valyuta bo‘yicha alohida ko‘rsatiladi.",
     "Holding administratori bank ko‘chirmasini va u yaratgan operatsiyalarni bekor qilishi mumkin; avval mavjud bog‘langan operatsiyalar saqlanadi.",

@@ -26,7 +26,7 @@ REQUEST_NUMBER = re.compile(r'(?<![A-Za-z0-9])CF-0*[1-9][0-9]*(?![A-Za-z0-9])', 
 # turning a bank charge, loan interest or corporate-card transfer into an
 # ordinary external expense.  The statement's full text is preserved.
 POSSIBLE_FEE = re.compile(
-    r'комис|комисс|ком\.\s|\bswift\b|процент|%|банковск\w*\s+(?:услуг|обслуж)|'
+    r'комис|\bswift\b|процент|начисленн\w*\s*%+|банковск\w*\s+(?:услуг|обслуж)|'
     r'хизмат\w*\s*(?:банк|банка)|банк\w*\s*(?:хизмат|услуг)|'
     r'расч[её]тно[-\s]кассов\w*|обслуживан\w*\s+(?:сч[её]т|банк)|'
     r'удержан\w*\s+(?:банком|за\s+услуг)|\bbank\s+(?:fee|charge|service)', re.I)
