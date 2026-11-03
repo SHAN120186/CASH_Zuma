@@ -136,21 +136,38 @@ def _can_read_requests(user):
 
 
 def _classify(s, lines, account, previous, user):
-    """Match only mutually unique account, amount, INN and planned date.
+    """Match unique requests using planned or proven actual payment dates.
 
-    A request number in the purpose must agree too, when present. A paid
-    request is linked to an existing payment; it is never paid twice.
+    Approved requests still require the planned date. Paid requests can also
+    match the date of their active ledger payment; they are only linked, never
+    paid again. A request number in the purpose must agree when present.
     """
     counts = Counter(line.fingerprint for line in lines)
     # Include even hidden requests in uniqueness checks, then apply visibility
     # before exposing or linking a candidate. Otherwise hidden rows can cause a
     # false "unique" match for another user.
     requests = _requests(s, account.id)
-    ledger = list(s.scalars(select(Ledger).where(Ledger.account_id == account.id,
-                                                 Ledger.kind == 'out', Ledger.request_id.is_not(None),
-                                                 Ledger.reversal_of.is_(None))))
-    reversed_ids = set(s.scalars(select(Ledger.reversal_of).where(Ledger.reversal_of.is_not(None))))
+    line_dates = {line.date for line in lines if line.direction == 'out'}
+    ledger = (list(s.scalars(select(Ledger).where(Ledger.account_id == account.id,
+                                                 Ledger.kind == 'out', Ledger.request_id.in_(requests),
+                                                 Ledger.date.in_(line_dates), Ledger.reversal_of.is_(None))))
+              if line_dates and requests else [])
+    ledger_ids = [entry.id for entry in ledger]
+    reversed_ids = (set(s.scalars(select(Ledger.reversal_of).where(Ledger.reversal_of.in_(ledger_ids))))
+                    if ledger_ids else set())
     ledger = [entry for entry in ledger if entry.id not in reversed_ids]
+    actual_dates = {}
+    for entry in ledger:
+        req = requests.get(entry.request_id)
+        if req is not None and req.status == 'paid' and req.amount == entry.amount:
+            actual_dates.setdefault(req.id, set()).add(entry.date)
+
+    def matches_request(line, req):
+        return (line.direction == 'out' and line.correspondent_inn
+                and req.counterparty_inn == line.correspondent_inn
+                and req.amount == line.amount
+                and (req.due_date == line.date
+                     or (req.status == 'paid' and line.date in actual_dates.get(req.id, set()))))
     old_request_ids = set(s.scalars(select(BankStatementLine.request_id).join(BankStatementBatch,
         BankStatementBatch.id == BankStatementLine.batch_id).where(BankStatementBatch.status == 'committed',
         BankStatementLine.account_id == account.id, BankStatementLine.request_id.is_not(None),
@@ -161,17 +178,14 @@ def _classify(s, lines, account, previous, user):
         BankStatementLine.status.in_(('auto_paid', 'paid_match', 'manual_paid', 'manual_match')))))
     # Count all plausible pairs before choosing any. Even an already-linked
     # request or a duplicate bank row makes an otherwise identical pair unsafe.
-    pairs = {line.id: [r for r in requests.values() if line.direction == 'out'
-             and line.correspondent_inn and r.counterparty_inn == line.correspondent_inn
-             and r.amount == line.amount and r.due_date == line.date] for line in lines}
+    pairs = {line.id: [r for r in requests.values() if matches_request(line, r)] for line in lines}
     reverse = Counter(r.id for matches in pairs.values() for r in matches)
     past_lines = s.scalars(select(BankStatementLine).join(BankStatementBatch,
         BankStatementBatch.id == BankStatementLine.batch_id).where(BankStatementBatch.status == 'committed',
         BankStatementLine.account_id == account.id, BankStatementLine.direction == 'out'))
     for past in past_lines:
         for req in requests.values():
-            if (past.correspondent_inn and past.correspondent_inn == req.counterparty_inn
-                    and past.amount == req.amount and past.date == req.due_date):
+            if matches_request(past, req):
                 reverse[req.id] += 1
     for line in lines:
         line.request_id = line.ledger_id = None
@@ -911,6 +925,64 @@ def daily(request: Request, date: date, currency: str = Query(pattern=r'^(UZS|US
                               'credit_total': money(v['credit']), 'debit_total': money(v['debit'])}
                              for v in totals.values()], 'source': 'bank_statements', 'available': True,
                 'uncertain': uncertain}
+
+
+@router.get('/api/bank-statements/history')
+def statement_history(request: Request, page: int = Query(default=1, ge=1),
+                      page_size: int = Query(default=30, ge=1, le=50)):
+    """Read-only history: same statement access as the original detail route."""
+    with unit() as s:
+        session_user(s, request, ('pay_bank', 'import'))
+        pairs = list(s.execute(select(BankStatementBatch, Account).join(
+            Account, Account.id == BankStatementBatch.account_id).where(
+            BankStatementBatch.status == 'committed').order_by(
+            BankStatementBatch.period_to.desc(), BankStatementBatch.id.desc())
+            .offset((page - 1) * page_size).limit(page_size + 1)))
+        return {'page': page, 'has_more': len(pairs) > page_size,
+                'items': [{'id': batch.id, 'filename': batch.filename,
+                    'account': {'id': account.id, 'name': account.name, 'currency': account.currency},
+                    'period_from': str(batch.period_from), 'period_to': str(batch.period_to),
+                    'credit_total': money(batch.credit_total), 'debit_total': money(batch.debit_total),
+                    'committed_at': batch.committed_at.isoformat() if batch.committed_at else None}
+                    for batch, account in pairs[:page_size]]}
+
+
+@router.get('/api/bank-statements/history/{id}')
+def statement_history_detail(id: int, request: Request):
+    """Current read-only result; no preview, deleted batch, token, or write."""
+    with unit() as s:
+        user, _ = session_user(s, request, ('pay_bank', 'import'))
+        batch = get(s, BankStatementBatch, id)
+        if batch.status != 'committed':
+            raise HTTPException(404, 'Запись не найдена.')
+        result = _payload(s, batch)
+        rows = result['rows']
+        ids = {row['ledger_id'] for row in rows if row['ledger_id'] is not None}
+        entries = {entry.id: entry for entry in s.scalars(select(Ledger).where(Ledger.id.in_(ids)))} if ids else {}
+        reversed_ids = set(s.scalars(select(Ledger.reversal_of).where(Ledger.reversal_of.in_(ids)))) if ids else set()
+        deleted_ids = deleted_ledger_ids(s)
+        request_ids = {row['request_id'] for row in rows if row['request_id'] is not None}
+        requests = {item.id: item for item in s.scalars(select(PaymentRequest).where(PaymentRequest.id.in_(request_ids)))} if request_ids and _can_read_requests(user) else {}
+        for row in rows:
+            entry = entries.get(row['ledger_id'])
+            if row['ledger_id'] is None:
+                state = 'unposted'
+            elif not entry:
+                state = 'missing'
+            elif entry.id in deleted_ids or entry.id in reversed_ids or entry.reversal_of is not None:
+                state = 'reversed'
+            else:
+                direction = row['direction']
+                account_id = batch.account_id
+                matches_side = ((direction == 'out' and entry.account_id == account_id and entry.kind in ('out', 'transfer')) or
+                                (direction == 'in' and ((entry.kind == 'in' and entry.account_id == account_id) or
+                                                       (entry.kind == 'transfer' and entry.to_account_id == account_id))))
+                state = 'active' if matches_side and entry.amount == _minor(row['amount']) and str(entry.date) == row['date'] else 'changed'
+            row['operation_state'] = state
+            req = requests.get(row['request_id'])
+            if not req or not can_view_request(s, user, req):
+                row['request_id'] = None
+        return result
 
 
 @router.get('/api/bank-statements/{id}')

@@ -31,6 +31,7 @@ import {groupCompanyInfo} from './admin/groupRegistration.js';
 import {loadRecentLogins,rememberLogin,matchingLogins,offerPasswordSave} from './loginPreferences.js';
 import {canPayRequest as canPayFor} from './overview/rights.js';
 import {reportDateForYear,validReportDate} from './cashflow/planView.js';
+import {statementCashFlowContext} from './cashflow/statementContext.js';
 import {toCents,formatAmount,amountTitle} from './overview/format.js';
 import RequestEditor from './requests/RequestEditor.vue';
 import RequestCard from './requests/RequestCard.vue';
@@ -279,6 +280,15 @@ async function logout(){cancelPending();busy.value=true;try{await post('/api/log
 async function goWith(name,opts={}){if(!canNavigate(name))return;menuOpen.value=false;helpOpen.value=false;reportEditing.value=false;page.value=name;location.hash=name;search.value='';dateFrom.value=opts.from||'';dateTo.value=opts.to||'';requestStatus.value=opts.status||'';requestArchive.value='active';listPage.value=1;expandedRequest.value=null;rows.value=[];await load()}
 const canDecide=r=>canDecideRequest(r);
 async function go(name){if(!canNavigate(name))return;menuOpen.value=false;helpOpen.value=false;reportEditing.value=false;page.value=name;location.hash=name;search.value='';dateFrom.value='';dateTo.value='';requestStatus.value='';requestArchive.value='active';listPage.value=1;expandedRequest.value=null;rows.value=[];await load()}
+async function openStatementCashFlow(data){
+ if(!canNavigate('report'))return;
+ const context=statementCashFlowContext(data,boot.value.today);
+ if(!context){flash(N_('Не удалось выбрать период Cash Flow. Проверьте дату и валюту выписки.'));return;}
+ currency.value=context.currency;year.value=context.year;reportAsOf.value=context.asOf;cashFlowBasis.value='operations';
+ reportSelection.value=normalizeReportSelection({...reportSelection.value,year:context.year,period:'custom',start:context.start,end:context.end,mode:'actual'});
+ await go('report');
+ if(context.crossYear)flash(N_('Cash Flow открыт за год окончания выписки. Предыдущий год откройте отдельно.'));
+}
 async function load(options={}){if(!companyReady.value)return;const epoch=companyEpoch,id=++loadRequestId,requestedPage=page.value,requestedCurrency=currency.value;busy.value=true;error.value='';
  const current=()=>id===loadRequestId&&epoch===companyEpoch&&page.value===requestedPage&&currency.value===requestedCurrency;
  try{
@@ -574,7 +584,7 @@ onMounted(async()=>{try{const r=await api('/api/me');user.value=r.user;csrf.valu
 
     <!-- Операции -->
     <template v-if="page==='ledger'">
-     <BankStatements v-if="has('ledger')&&companyId" :key="`bank-statements-${companyId}`" :api="api" :company-id="companyId" :accounts="boot.accounts" :categories="boot.categories" :can-import="has('pay_bank')||has('import')" :can-review="has('pay_bank')" :can-allocate="has('pay_bank')||has('write')" :can-post="has('write')||has('pay_bank')" :can-manage-fee="has('write')" :can-delete-statements="user.holding_role==='admin'" @changed="bankStatementsChanged"/>
+     <BankStatements v-if="has('ledger')&&companyId" :key="`bank-statements-${companyId}`" :api="api" :company-id="companyId" :accounts="boot.accounts" :categories="boot.categories" :can-import="has('pay_bank')||has('import')" :can-review="has('pay_bank')" :can-allocate="has('pay_bank')||has('write')" :can-post="has('write')||has('pay_bank')" :can-manage-fee="has('write')" :can-delete-statements="user.holding_role==='admin'" :can-view-cash-flow="canNavigate('report')" :can-view-history="!!user.permissions?.some(p => p === 'pay_bank' || p === 'import')" @cash-flow="openStatementCashFlow" @changed="bankStatementsChanged"/>
      <label v-if="user.holding_role==='admin'" class="sub"><input type="checkbox" v-model="showDeletedOperations" @change="listPage=1;load()"> {{tx('Показать удалённые операции')}}</label>
      <PeriodFilter :key="page" :date-from="dateFrom" :date-to="dateTo" @apply="applyPeriod"><label class="search"><AppIcon name="search"/><input v-model="search" :placeholder="tx('Поиск: контрагент, статья, документ')" :aria-label="tx('Поиск операции')"></label><div class="grow actions"><a v-if="has('download')" class="button secondary" :href="companyUrl('/api/export/ledger.csv')"><AppIcon name="download"/> CSV</a><button v-if="has('write')&&user.role!=='cashier'" @click="transaction()"><AppIcon name="plus"/> {{tx('Новая операция')}}</button></div></PeriodFilter>
      <div v-if="visibleRows.length" class="table-card rsp-wrap"><table class="rsp"><thead><tr><th>{{tx('Дата / документ')}}</th><th>{{tx('Операция')}}</th><th>{{tx('Контрагент / статья')}}</th><th>{{tx('Счёт')}}</th><th class="num">{{tx('Сумма')}}</th><th>{{tx('Документы')}}</th><th></th></tr></thead><tbody>

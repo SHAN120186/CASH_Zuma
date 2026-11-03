@@ -4,6 +4,8 @@
 import {ref, computed, watch, onMounted, onUnmounted} from 'vue';
 import {tx, N_} from './i18n/index.js';
 import {toCents, formatCents, formatShortDate} from './overview/format.js';
+import BankStatementHistory from './BankStatementHistory.vue';
+import {statementExpenseGroups} from './cashflow/statementSummary.js';
 
 const props = defineProps({
   api: {type: Function, required: true},
@@ -16,8 +18,10 @@ const props = defineProps({
   canManageFee: {type: Boolean, default: false},
   canAllocate: {type: Boolean, default: false},
   canDeleteStatements: {type: Boolean, default: false},
+  canViewCashFlow: {type: Boolean, default: false},
+  canViewHistory: {type: Boolean, default: false},
 });
-const emit = defineEmits(['changed']);
+const emit = defineEmits(['changed','cash-flow']);
 const accountId = ref(''), currency = ref(''), preview = ref(null), busy = ref(false), error = ref(''), notice = ref('');
 const confirmAccount = ref(false), confirmCurrency = ref(false), reviews = ref([]), reviewError = ref('');
 const reviewActions = ref({}), matchActions = ref({}), duplicateActions = ref({}), transferActions = ref({}), reviewBusy = ref(null);
@@ -70,6 +74,9 @@ const label = value => tx(labels[value] || N_('Нужна проверка бу�
 const pendingFullReconciliation = new Set(['income_candidate','income_matched_candidate','outgoing_candidate','fee_candidate','fee_existing','other_matched_candidate']);
 const rowLabel = (row, fullReconciliation) => fullReconciliation !== true && pendingFullReconciliation.has(row.status) ? tx('Ожидает полной сверки') : label(row.status);
 const reviewCount = (items, fullReconciliation) => items.filter(row => ['review', 'ambiguous_duplicate'].includes(row.status) || (fullReconciliation !== true && pendingFullReconciliation.has(row.status))).length;
+// Statement totals are separate from ledger facts.
+const expenseGroups = computed(() => statementExpenseGroups(rows.value));
+const noRequestRows = computed(() => expenseGroups.value.find(group => group.key === 'noRequest')?.rows || []);
 const selectedTransfer = row => {const action = transferActions.value[row.id]; return action?.items.find(item => String(item.ledger_id) === String(action.selected));};
 const resetSelectionConfirmation = (actions, row) => {const action = actions[row.id]; if (action) {action.confirm = false; action.note = '';}};
 const candidateStatus = value => tx(value === 'approved' ? N_('Утверждена') : value === 'paid' ? N_('Оплачена') : N_('Не определено'));
@@ -500,6 +507,19 @@ async function commit() {
         <p v-else-if="preview.full_reconciliation === false" class="error" role="alert">{{tx('Не все строки выписки сверены. После подтверждения поступления, комиссии и прочие списания будут отложены, но точно сопоставленные заявки могут быть отмечены оплаченными. Спорные строки нужно проверить бухгалтеру.')}}</p>
         <p v-else class="error" role="alert">{{tx('Сервер не подтвердил полную сверку. Загрузите выписку заново.')}}</p>
         <p>{{tx('Точных совпадений с заявками: {n}',{n:count('auto_pay_candidate')})}} · {{tx('Уже оплачено на сайте: {n}',{n:count('paid_match')})}} · {{tx('На проверку: {n}',{n:reviewCount(rows,preview.full_reconciliation)})}}</p>
+        <section class="statement-expense-summary" :aria-label="tx('Сводка списаний по выписке')">
+          <h4>{{tx('Сводка списаний по выписке')}}</h4>
+          <p class="sub">{{tx('Это суммы по файлу. Статус каждой строки показывает, проведена ли операция или ещё ожидает сверки.')}}</p>
+          <p class="sub">{{tx('В Cash Flow попадают только проведённые операции. Выберите источник «Операции сайта».')}}</p>
+          <p v-if="canViewCashFlow" class="sub">{{tx('Cash Flow показывает месяцы с первого числа начального месяца до даты окончания выписки. Если выписка охватывает разные годы, предыдущий год откройте отдельно.')}}</p>
+          <button v-if="canViewCashFlow" type="button" class="secondary tiny" @click="emit('cash-flow',{currency,period_from:preview.statement.period_from,period_to:preview.statement.period_to})">{{tx('Открыть Cash Flow')}}</button>
+          <div class="bank-summary">
+            <div v-for="group in expenseGroups" :key="group.key"><span>{{tx(group.title)}} · {{group.rows.length}}</span><b>{{formatCents(group.total,currency)}} {{currency}}</b></div>
+          </div>
+          <div v-if="noRequestRows.length" class="table-scroll"><table><thead><tr><th>{{tx('Дата')}}</th><th>{{tx('Контрагент / ИНН')}}</th><th>{{tx('Сумма')}}</th><th>{{tx('Статус')}}</th></tr></thead><tbody>
+            <tr v-for="row in noRequestRows" :key="row.id"><td>{{formatShortDate(row.date)}}</td><td>{{row.correspondent_name || '—'}}<small>{{row.correspondent_inn || '—'}}</small></td><td>{{money(row.amount)}} {{currency}}</td><td>{{rowLabel(row,preview.full_reconciliation)}}</td></tr>
+          </tbody></table></div>
+        </section>
         <div class="table-scroll"><table><thead><tr><th>{{tx('Дата')}}</th><th>{{tx('Контрагент / документ')}}</th><th>{{tx('Назначение')}}</th><th>{{tx('Движение')}}</th><th>{{tx('Результат сверки')}}</th></tr></thead><tbody>
           <tr v-for="row in rows" :key="row.id"><td>{{formatShortDate(row.date)}}</td><td>{{row.correspondent_name}}<small>{{row.correspondent_inn || '—'}} · {{row.document_number}}</small></td><td>{{row.purpose}}</td><td>{{directionLabel(row.direction)}}<small>{{money(row.amount)}} {{currency}}</small></td><td>{{rowLabel(row,preview.full_reconciliation)}}<small v-if="categoryName(row)">{{tx('Статья')}}: {{categoryName(row)}}</small><small v-if="row.reason">{{tx(row.reason)}}</small><small v-if="row.request_id">{{tx('Заявка №{id}',{id:row.request_id})}}</small></td></tr>
         </tbody></table></div>
@@ -599,6 +619,7 @@ async function commit() {
         </tbody></table></div>
       </div>
 
+      <BankStatementHistory :api="api" :company-id="companyId" :can-view="canViewHistory || canImport || canReview" :can-view-cash-flow="canViewCashFlow" @cash-flow="emit('cash-flow',$event)"/>
       <div v-if="canPost" class="review-list">
         <h3>{{tx('Повторная проверка загруженной выписки')}}</h3>
         <p class="sub">{{tx('Проверьте ранее загруженную выписку заново. До подтверждения операции и остатки не изменятся.')}}</p>

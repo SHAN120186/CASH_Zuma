@@ -5,20 +5,33 @@ import {toCents, formatCents} from './format.js';
 
 const props = defineProps({api:{type:Function,required:true},companyId:{type:Number,required:true},currency:{type:String,required:true},today:{type:String,required:true},refresh:{type:Number,default:0}});
 const date = ref(props.today), data = ref(null), error = ref(''), loading = ref(false);
+const currencies = ['UZS', 'USD', 'EUR'];
+const currencyTotals = ref({});
 let generation=0;
 async function load() {
-  const current=++generation, day=date.value, currency=props.currency;
-  data.value=null;error.value='';loading.value=false;
-  if (!day || !currency) return;
+  const current=++generation, day=date.value, selected=props.currency;
+  data.value=null;error.value='';loading.value=false;currencyTotals.value={};
+  if (!day || !selected) return;
   loading.value=true;
-  try {
-    const params=new URLSearchParams({date:day,currency});
-    const result=await props.api(`/api/bank-statements/daily?${params}`);
-    if(current!==generation)return;
-    if(result.date!==day || result.currency!==currency)throw new Error('mismatched daily statement');
-    data.value=result;
-  } catch(e) {if(current===generation)error.value=e.message || 'error';}
-  finally {if(current===generation)loading.value=false;}
+  currencyTotals.value=Object.fromEntries(currencies.map(currency=>[currency,{loading:true}]));
+  // Requests settle independently. A missing or inaccessible currency must not
+  // hide the selected currency, nor be presented as a confirmed zero.
+  await Promise.all(currencies.map(async currency=>{
+    try {
+      const params=new URLSearchParams({date:day,currency});
+      const result=await props.api(`/api/bank-statements/daily?${params}`);
+      if(current!==generation)return;
+      if(result.date!==day || result.currency!==currency)throw new Error('mismatched daily statement');
+      currencyTotals.value={...currencyTotals.value,[currency]:{data:result}};
+      if(currency===selected)data.value=result;
+    } catch(e) {
+      if(current!==generation)return;
+      currencyTotals.value={...currencyTotals.value,[currency]:{error:true}};
+      if(currency===selected)error.value=e.message || 'error';
+    } finally {
+      if(current===generation && currency===selected)loading.value=false;
+    }
+  }));
 }
 watch(()=>[props.companyId,props.currency,date.value,props.refresh],load,{immediate:true});
 onUnmounted(()=>{generation++;});
@@ -30,6 +43,22 @@ const money = value => formatCents(toCents(value),props.currency);
     <div class="card-h"><h2 id="daily-statements-title">{{tx('Банковская выписка за день')}}</h2><label>{{tx('Дата')}} <input v-model="date" type="date"></label></div>
     <div class="card-b">
       <p class="sub">{{tx('Данные выписки показаны отдельно. Проведённые поступления, комиссии и списания учитываются в остатке и Cash Flow; строки на проверке пока не проведены.')}}</p>
+      <div class="currency-summary" :aria-label="tx('Поступления по валютам за день')">
+        <h3>{{tx('Поступления по валютам за день')}}</h3>
+        <p class="sub">{{tx('Суммы по выпискам могут включать переводы и строки на проверке. В Cash Flow попадают только проведённые операции.')}}</p>
+        <div class="daily-totals">
+          <div v-for="cur in currencies" :key="cur">
+            <span>{{cur}}</span>
+            <b v-if="currencyTotals[cur]?.loading">{{tx('Загружаем данные…')}}</b>
+            <b v-else-if="currencyTotals[cur]?.error">{{tx('Ошибка загрузки')}}</b>
+            <b v-else-if="currencyTotals[cur]?.data?.available === false">{{tx('Нет выписки')}}</b>
+            <template v-else-if="currencyTotals[cur]?.data">
+              <b>{{formatCents(toCents(currencyTotals[cur].data.credit_total),cur)}} {{cur}}</b>
+              <small v-if="currencyTotals[cur].data.uncertain" class="error">{{tx('Требует проверки')}}</small>
+            </template>
+          </div>
+        </div>
+      </div>
       <p v-if="loading" role="status">{{tx('Загружаем данные…')}}</p>
       <p v-else-if="error" class="error" role="alert">{{tx('Не удалось загрузить данные выписки.')}}</p>
       <p v-else-if="data && data.available === false" class="sub">{{tx('За выбранный день выписка не загружена.')}}</p>

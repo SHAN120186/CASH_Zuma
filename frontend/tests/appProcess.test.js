@@ -388,6 +388,28 @@ const bankStatementsComponent=await compileComponent(new URL('../src/BankStateme
 const bankDailyComponent=await compileComponent(new URL('../src/overview/BankStatementDaily.vue',import.meta.url));
 const bankApp=await compileComponent(new URL('../src/App.vue',import.meta.url),{'./OperationProgress.vue':progressComponent,'./PeriodFilter.vue':periodComponent,'./BankStatements.vue':bankStatementsComponent,'./overview/BankStatementDaily.vue':bankDailyComponent});
 
+function mountedComponent(vnode,type){
+ if(!vnode)return null;
+ if(vnode.component){if(vnode.component.type===type)return vnode.component;return mountedComponent(vnode.component.subTree,type);}
+ if(Array.isArray(vnode.children))for(const child of vnode.children){const match=mountedComponent(child,type);if(match)return match;}
+ return null;
+}
+
+test('bank preview shortcut opens Cash Flow from operations without posting the statement',async t=>{
+ const calls=[];const account={id:21,name:'Synthetic bank',kind:'bank',currency:'UZS'};
+ const statement={id:7,status:'preview',preview_token:'synthetic-token',full_reconciliation:true,account:{id:21,name:'Synthetic bank',currency:'UZS'},statement:{account_number:'SYNTHETIC',ready:true,balance_matches:true,declared_totals_match:true,credit_total:'10.00',debit_total:'20.00',opening_balance:'100.00',closing_balance:'90.00',period_from:'2026-10-10',period_to:'2026-10-10'},rows:[{id:1,direction:'out',amount:'20.00',status:'outgoing_candidate',date:'2026-10-10'}]};
+ const {view}=await fixture(t,async(url,options)=>{calls.push({url,method:options.method||'GET'});return {ok:true,status:200,json:async()=>url.includes('/preview?')?statement:url.startsWith('/api/report?')?{currency:'UZS',year:2026,company_id:2,scenario:'A',as_of:'2026-10-10'}:{items:[],total:0}};},bankApp);
+ const accountant={...user,role:'accountant',company_role:'accountant',permissions:['ledger','pay_bank']};
+ Object.assign(view.state,{user:accountant,page:'ledger',boot:{...bootstrapBody(accountant),accounts:[account]},cashFlowBasis:'osv'});await settle();
+ const child=mountedComponent(view.app._instance.subTree,bankStatementsComponent);assert.ok(child);child.setupState.accountId='21';child.setupState.currency='UZS';await settle();
+ await child.setupState.upload({target:{files:[{name:'synthetic.xls',size:100}],value:'file'}});await settle();
+ assert.ok(calls.some(c=>c.url.includes('/api/bank-statements/preview?')));assert.equal(find(view.container,n=>n.tag==='button'&&text(n).includes('Открыть Cash Flow')),undefined);
+ view.state.user={...accountant,permissions:['ledger','pay_bank','export']};await settle();
+ const shortcut=find(view.container,n=>n.tag==='button'&&text(n).includes('Открыть Cash Flow'));assert.ok(shortcut);shortcut.props.onClick();await settle();
+ assert.equal(view.state.page,'report');assert.equal(view.state.cashFlowBasis,'operations');assert.equal(location.hash,'#report');
+ assert.ok(calls.some(c=>c.url.startsWith('/api/report?')));assert.equal(calls.some(c=>/bank-statements\/\d+\/commit/.test(c.url)),false);
+});
+
 test('bank reconciliation in Operations respects accountant rights, section read-only, and current company',async t=>{
  const calls=[];const accountant={...user,role:'accountant',company_role:'accountant',permissions:['ledger','pay_bank'],sections:{ledger:'edit',home:'hidden'}};
  const {view}=await fixture(t,async(url,options)=>{calls.push({url,company:options.headers['X-Company-ID']});return {ok:true,status:200,json:async()=>url.includes('/reviews')?{items:[{id:123,date:'2026-10-30',direction:'out',amount:'10',currency:'UZS',status:'review'}]}:url.startsWith('/api/ledger?')?{items:[],total:0}:{}}},bankApp);
@@ -450,4 +472,35 @@ test('statement deletion controls are shown only to holding administrators',asyn
  const accountant={...user,role:'accountant',company_role:'accountant',permissions:['view','ledger','pay_bank']};
  Object.assign(view.state,{user:accountant,page:'ledger'});await settle();assert.doesNotMatch(text(view.container),/Удаление выписки администратором/);assert.equal(calls.some(url=>url.includes('/admin/batches')),false);
  view.state.user={...accountant,holding_role:'admin',role:'admin',permissions:['view','ledger','write','pay_bank']};await settle();assert.match(text(view.container),/Удаление выписки администратором/);assert.ok(calls.some(url=>url.includes('/admin/batches')));
+});
+
+test('statement link opens actual Cash Flow in the statement currency and month range',async t=>{
+ const calls=[];const director={...user,role:'director',permissions:['view','ledger','export']};
+ const {view}=await fixture(t,async(url,options)=>{calls.push({url,company:options.headers['X-Company-ID']});return {ok:true,status:200,json:async()=>url.startsWith('/api/report?')?{currency:'USD',year:2026,company_id:2,scenario:'A',as_of:'2026-06-20'}:{items:[],total:0}}},bankApp);
+ Object.assign(view.state,{user:director,page:'ledger',boot:bootstrapBody(director),cashFlowBasis:'osv',currency:'UZS'});await settle();
+ await view.state.openStatementCashFlow({currency:'USD',period_from:'2026-05-10',period_to:'2026-06-20'});await settle();
+ assert.equal(view.state.page,'report');assert.equal(view.state.cashFlowBasis,'operations');assert.equal(view.state.currency,'USD');assert.equal(view.state.year,2026);assert.equal(view.state.reportAsOf,'2026-06-20');assert.equal(view.state.reportSelection.start,5);assert.equal(view.state.reportSelection.end,6);assert.equal(view.state.reportSelection.period,'custom');assert.ok(calls.some(c=>c.url.includes('currency=USD')&&c.url.includes('as_of=2026-06-20')&&c.company==='2'));
+});
+
+test('a saved statement history opens Cash Flow with that statement period and currency',async t=>{
+ const history=await compileComponent(new URL('../src/BankStatementHistory.vue',import.meta.url));
+ const bank=await compileComponent(new URL('../src/BankStatements.vue',import.meta.url),{'./BankStatementHistory.vue':history});
+ const app=await compileComponent(new URL('../src/App.vue',import.meta.url),{'./OperationProgress.vue':progressComponent,'./PeriodFilter.vue':periodComponent,'./BankStatements.vue':bank});
+ const account={id:21,name:'Synthetic bank',currency:'USD',kind:'bank'},item={id:9,filename:'synthetic.xls',account,period_from:'2026-05-10',period_to:'2026-06-20',credit_total:'100.00',debit_total:'25.00'};
+ const detail={...item,status:'committed',statement:{period_from:item.period_from,period_to:item.period_to},rows:[]},calls=[];
+ const director={...user,role:'director',permissions:['view','ledger','export','import']};
+ const {view}=await fixture(t,async(url,opts)=>{calls.push({url,method:opts.method||'GET'});return {ok:true,status:200,json:async()=>url.includes('/history?')?{page:1,has_more:false,items:[item]}:url.endsWith('/history/9')?detail:url.startsWith('/api/report?')?{currency:'USD',year:2026,company_id:2,scenario:'A',as_of:'2026-06-20'}:{items:[],total:0}}},app);
+ Object.assign(view.state,{user:director,boot:{...bootstrapBody(director),accounts:[account]},page:'ledger',currency:'UZS'});await settle();
+ const child=mountedComponent(view.app._instance.subTree,history);assert.ok(child);await child.setupState.toggle();await child.setupState.openDetail(item);await settle();
+ child.setupState.openCashFlow();await settle();assert.equal(view.state.page,'report');assert.equal(view.state.currency,'USD');assert.equal(view.state.reportAsOf,'2026-06-20');assert.deepEqual([view.state.reportSelection.start,view.state.reportSelection.end],[5,6]);assert.equal(calls.some(c=>c.method!=='GET'),false);
+});
+
+test('accountant with read-only ledger can view history but cannot upload or post a statement',async t=>{
+ const history=await compileComponent(new URL('../src/BankStatementHistory.vue',import.meta.url));
+ const bank=await compileComponent(new URL('../src/BankStatements.vue',import.meta.url),{'./BankStatementHistory.vue':history});
+ const app=await compileComponent(new URL('../src/App.vue',import.meta.url),{'./OperationProgress.vue':progressComponent,'./PeriodFilter.vue':periodComponent,'./BankStatements.vue':bank});
+ const accountant={...user,role:'accountant',company_role:'accountant',permissions:['ledger','pay_bank'],sections:{ledger:'view'}};const calls=[];
+ const {view}=await fixture(t,async(url,opts)=>{calls.push({url,method:opts.method||'GET'});return {ok:true,status:200,json:async()=>url.includes('/history?')?{page:1,has_more:false,items:[]}:{items:[],total:0}}},app);
+ Object.assign(view.state,{user:accountant,page:'ledger',boot:bootstrapBody(accountant)});await settle();const child=mountedComponent(view.app._instance.subTree,history);assert.ok(child);assert.match(text(view.container),/История банковских выписок/);assert.equal(find(view.container,n=>n.tag==='input'&&n.props?.type==='file'),undefined);
+ await child.setupState.toggle();await settle();assert.ok(calls.some(c=>c.url.includes('/history?')));assert.equal(calls.some(c=>c.method!=='GET'),false);
 });

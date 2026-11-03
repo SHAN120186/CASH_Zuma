@@ -11,6 +11,51 @@ const statement={id:7,status:'preview',preview_token:'snapshot-7',full_reconcili
 const file={name:'statement.xls',size:100};
 function event(f=file){return {target:{files:[f],value:'file'}}}
 
+test('statement expense groups keep unclassified debits, fees, transfers and uncertain rows separate',async t=>{
+ const lines=[
+  {id:1,direction:'out',amount:'1000.10',status:'auto_pay_candidate',request_id:44},
+  {id:2,direction:'out',amount:'2000.20',status:'outgoing_candidate',correspondent_name:'Synthetic supplier',correspondent_inn:'123456789'},
+  {id:3,direction:'out',amount:'50.05',status:'fee_candidate'},
+  {id:4,direction:'out',amount:'70.00',status:'review',reason:'Uncertain debit'},
+  {id:5,direction:'out',amount:'80.00',status:'manual_transfer_match'},
+  {id:6,direction:'out',amount:'90.00',status:'outgoing_candidate',uncertain:true},
+  {id:7,direction:'in',amount:'600.00',status:'income_candidate'},
+  {id:8,direction:'out',amount:'25.00',status:'other_matched_candidate'},
+ ];
+ const api=async url=>url==='/api/bank-statements/settings'?{fee_category_id:null}:url.includes('/preview?')?{...statement,full_reconciliation:false,rows:lines}:{items:[]};
+ const view=mount(component,{api,companyId:1,accounts,canImport:true});t.after(view.unmount);await settle();
+ view.state.accountId='21';view.state.currency='UZS';await settle();await view.state.upload(event());await settle();
+ const groups=Object.fromEntries(view.state.expenseGroups.map(g=>[g.key,g]));
+ assert.equal(groups.requests.total,100010);assert.equal(groups.noRequest.total,200020);assert.equal(groups.fees.total,5005);
+ assert.equal(groups.transfer.total,8000);assert.equal(groups.review.total,16000);assert.equal(groups.existing.total,2500);
+ assert.deepEqual(groups.noRequest.rows.map(r=>r.id),[2]);assert.deepEqual(groups.review.rows.map(r=>r.id),[4,6]);
+ assert.match(text(view.container),/Synthetic supplier/);assert.match(text(view.container),/123456789/);
+ assert.match(text(view.container),/Ожидает полной сверки/);assert.match(text(view.container),/Это суммы по файлу/);
+});
+
+test('statement summaries keep exact cents, refuse unsafe totals, and translate labels to Uzbek',async t=>{
+ const previous=lang.value;setLang('uz');t.after(()=>setLang(previous));
+ const api=async url=>url==='/api/bank-statements/settings'?{fee_category_id:null}:url.includes('/preview?')?{...statement,rows:[
+  {id:1,direction:'out',amount:'90071992547409.90',status:'outgoing_candidate'},
+  {id:2,direction:'out',amount:'0.10',status:'outgoing_candidate'},
+  {id:3,direction:'out',amount:'1.25',status:'fee_candidate'},
+ ]}:{items:[]};
+ const view=mount(component,{api,companyId:1,accounts,canImport:true});t.after(view.unmount);await settle();
+ view.state.accountId='21';view.state.currency='UZS';await settle();await view.state.upload(event());await settle();
+ const groups=Object.fromEntries(view.state.expenseGroups.map(g=>[g.key,g]));
+ assert.equal(groups.noRequest.total,null);assert.equal(groups.fees.total,125);
+ assert.match(text(view.container),/Ariza topilmagan xarajatlar/);assert.match(text(view.container),/Bank komissiyalari/);
+});
+
+test('Cash Flow shortcut is only offered when the current user can open the report',async t=>{
+ const api=async url=>url==='/api/bank-statements/settings'?{fee_category_id:null}:url.includes('/preview?')?statement:{items:[]};let opened=0;
+ const view=mount(component,{api,companyId:1,accounts,canImport:true,canViewCashFlow:false,onCashFlow:()=>{opened++}});t.after(view.unmount);await settle();
+ view.state.accountId='21';view.state.currency='UZS';await settle();await view.state.upload(event());await settle();
+ assert.equal(find(view.container,n=>n.tag==='button'&&text(n).includes('Открыть Cash Flow')),undefined);
+ view.app._instance.props.canViewCashFlow=true;await settle();
+ const button=find(view.container,n=>n.tag==='button'&&text(n).includes('Открыть Cash Flow'));assert.ok(button);button.props.onClick();assert.equal(opened,1);
+});
+
 test('select account and currency explicitly, inspect bank account then confirm each before commit',async t=>{
  const calls=[];
  const api=async(url,options={})=>{calls.push([url,options]);if(url==='/api/bank-statements/reviews')return {items:[]};if(url==='/api/bank-statements/settings')return {fee_category_id:null};if(url.includes('/preview?'))return statement;if(url.endsWith('/commit'))return {auto_paid:1,linked_paid:0,review:0,full_reconciliation:true};throw Error('unexpected')};
