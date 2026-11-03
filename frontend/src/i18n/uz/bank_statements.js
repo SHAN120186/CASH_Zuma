@@ -1,4 +1,7 @@
 export default {
+  'Банковская выписка': 'Bank ko‘chirmasi',
+  'Группа списаний': 'Chiqim guruhi',
+  'Операций: {n}': 'Operatsiyalar: {n}',
   'Исходные строки и статусы проведения': 'Asl satrlar va o‘tkazish holatlari',
   'Собственный счёт не определён однозначно': 'O‘z hisobi bir maʼnoli aniqlanmagan',
   'Возможный повтор строки или пересечение выписок': 'Satr takrorlanishi yoki ko‘chirmalar kesishishi mumkin',
