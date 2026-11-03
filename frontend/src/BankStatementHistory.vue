@@ -81,9 +81,11 @@ function openCashFlow(){
     <BankStatementExpenses :statement="detail.statement" :rows="detail.rows" :currency="detail.account?.currency"/>
     <p v-if="canViewCashFlow" class="sub">{{tx('Cash Flow показывает месяцы с первого числа начального месяца до даты окончания выписки. Если выписка охватывает разные годы, предыдущий год откройте отдельно.')}}</p>
     <button v-if="canViewCashFlow" type="button" class="secondary tiny" @click="openCashFlow">{{tx('Открыть Cash Flow за период выписки')}}</button>
+    <details class="statement-source"><summary>{{tx('Исходные строки и статусы проведения')}}</summary>
     <div class="table-scroll"><table><thead><tr><th>{{tx('Дата')}}</th><th>{{tx('Контрагент / документ')}}</th><th>{{tx('Назначение')}}</th><th>{{tx('Движение')}}</th><th>{{tx('Состояние операции')}}</th></tr></thead><tbody>
      <tr v-for="row in detail.rows" :key="row.id"><td>{{formatShortDate(row.date)}}</td><td>{{row.correspondent_name || '—'}}<small>{{row.correspondent_inn || '—'}} · {{row.document_number}}</small></td><td>{{row.purpose}}<small v-if="row.request_id">{{tx('Заявка №{id}',{id:row.request_id})}}</small></td><td>{{direction(row.direction)}}<small>{{money(row.amount,detail.account?.currency)}} {{detail.account?.currency}}</small></td><td>{{stateLabel(row)}}<small v-if="row.reason">{{tx(row.reason)}}</small></td></tr>
     </tbody></table></div>
+    </details>
    </div>
   </template>
  </section>

@@ -1,4 +1,5 @@
 export default {
+  'Исходные строки и статусы проведения': 'Asl satrlar va o‘tkazish holatlari',
   'Собственный счёт не определён однозначно': 'O‘z hisobi bir maʼnoli aniqlanmagan',
   'Возможный повтор строки или пересечение выписок': 'Satr takrorlanishi yoki ko‘chirmalar kesishishi mumkin',
   'Номер заявки в назначении не совпадает с реквизитами': 'To‘lov maqsadidagi ariza raqami rekvizitlarga mos emas',
