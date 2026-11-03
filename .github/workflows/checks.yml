@@ -48,6 +48,7 @@ jobs:
       - run: python -m unittest tests.test_bank_statement_fact_bridge -q
       - run: python -m unittest tests.test_bank_partial_posting -q
       - run: python -m unittest tests.test_bank_partial_fact -q
+      - run: python -m unittest tests.test_bank_statement_historical_transfers tests.test_bank_statement_historical_requests tests.test_bank_statement_distinct_income tests.test_bank_dispute_lifecycle -q
       - run: python -m unittest tests.test_bank_statement_charges -q
       - run: python -m unittest tests.test_bank_statement_charge_integration -q
       - run: python -m unittest tests.test_bank_statement_interest_lifecycle -q
@@ -119,6 +120,7 @@ jobs:
       - run: python -m unittest tests.test_bank_statement_fact_bridge -q
       - run: python -m unittest tests.test_bank_partial_posting -q
       - run: python -m unittest tests.test_bank_partial_fact -q
+      - run: python -m unittest tests.test_bank_statement_historical_transfers tests.test_bank_statement_historical_requests tests.test_bank_statement_distinct_income tests.test_bank_dispute_lifecycle -q
       - run: python -m unittest tests.test_bank_statement_charges -q
       - run: python -m unittest tests.test_bank_statement_charge_integration -q
       - run: python -m unittest tests.test_bank_statement_interest_lifecycle -q

@@ -21,7 +21,8 @@ from .services import deleted_ledger_ids, effective_cashflows, get, log, money
 router = APIRouter()
 LINKED = frozenset({'auto_paid', 'paid_match', 'manual_paid', 'manual_match',
                     'auto_income_posted', 'income_matched', 'auto_fee_posted', 'fee_matched',
-                    'auto_interest_posted', 'interest_matched', 'other_matched', 'auto_outgoing_posted', 'manual_transfer_match'})
+                    'auto_interest_posted', 'interest_matched', 'other_matched', 'auto_outgoing_posted', 'manual_transfer_match',
+                    'historical_transfer_posted', 'historical_request_paid', 'manual_distinct_income'})
 
 
 class DuplicateResolution(BaseModel):
@@ -74,10 +75,11 @@ def _matches(s, target, batch, account):
         if not entry or entry.id in deleted:
             continue
         active = s.scalar(effective_cashflows(s).where(Ledger.id == entry.id))
-        side_matches = (entry.kind == 'transfer' and prior.status == 'manual_transfer_match' and (
+        transfer_statuses = {'manual_transfer_match', 'historical_transfer_posted'}
+        side_matches = (entry.kind == 'transfer' and prior.status in transfer_statuses and (
             (target.direction == 'out' and entry.account_id == account.id) or
             (target.direction == 'in' and entry.to_account_id == account.id))) or (
-            prior.status != 'manual_transfer_match' and entry.kind == target.direction and entry.account_id == account.id)
+            prior.status not in transfer_statuses and entry.kind == target.direction and entry.account_id == account.id)
         if (not active or not side_matches
                 or entry.amount != target.amount or entry.date != target.date
                 or prior.date != target.date or prior.amount != target.amount

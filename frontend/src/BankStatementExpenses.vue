@@ -16,7 +16,7 @@ watch(()=>props.statement,()=>{selected.value='all';});
 const money=value=>formatCents(value,props.currency);
 const kinds=computed(()=>Object.fromEntries(summary.value.groups.map(g=>[g.key,g.title])));
 const label=row=>tx(kinds.value[row.expense_kind]||N_('Неоднозначные списания'));
-const posted=new Set(['auto_paid','manual_paid','auto_fee_posted','auto_interest_posted','auto_outgoing_posted']);
+const posted=new Set(['auto_paid','manual_paid','auto_fee_posted','auto_interest_posted','auto_outgoing_posted','historical_transfer_posted','historical_request_paid']);
 const linked=new Set(['paid_match','manual_match','fee_matched','interest_matched','other_matched','manual_transfer_match','duplicate']);
 const reasons={
  duplicate_or_overlap:N_('Возможный повтор строки или пересечение выписок'),

@@ -25,6 +25,7 @@ from .model_import import import_snapshot, MAX_SIZE
 from .bot_api import drop_groups_of, drop_orphan_groups, drop_shadowed_groups, journal_path, revoke_telegram
 from .workdays import enforce_lead_time, due_minimums
 from .requests_api import request_view, can_view_request, MAX_DOCUMENT
+from .bank_statement_guard import CREATED_BANK_STATUSES
 
 SECURE=os.getenv('COOKIE_SECURE','0')=='1'
 ALLOWED=[x.strip() for x in os.getenv('ALLOWED_HOSTS','127.0.0.1,localhost,testserver').split(',') if x.strip()]
@@ -808,12 +809,16 @@ def reverse_ledger_entry(s,u,t,reason,allow_archived=False):
     # Освобождаем уникальную связь оплаты, но сохраняем историю в журнале.
     if t.request_id:
         linked=get(s,PaymentRequest,t.request_id)
-        if linked.status!='deleted':linked.status='approved'
+        from .bank_statement_historical_requests import historical_original_status
+        original_status=historical_original_status(s,t)
+        if linked.status!='deleted':linked.status=original_status or 'approved'
         log(s,u,'Отмена оплаты заявки','request',t.request_id,f'Сторно операции {id}');t.request_id=None
     if t.receipt_id:
         get(s,Receipt,t.receipt_id).status='expected';log(s,u,'Отмена поступления','receipt',t.receipt_id,f'Сторно операции {id}');t.receipt_id=None
     s.flush();validate_running_balance(s,get(s,Account,t.account_id))
     if t.to_account_id:validate_running_balance(s,get(s,Account,t.to_account_id))
+    from .bank_statement_guard import refresh_reconciliation_after_reversal
+    refresh_reconciliation_after_reversal(s,u,t)
     # The inverse entry is already included in the actual balance. Check
     # only the account losing money, with required=0, to avoid a second debit.
     if t.kind in ('in','transfer'):
@@ -868,7 +873,7 @@ class BankStatementDeleteIn(BaseModel):
 def _statement_delete_snapshot(s,batch):
     import hashlib
     from .bank_statement_models import BankStatementBatch, BankStatementLine
-    owned_statuses={'auto_paid','manual_paid','auto_income_posted','auto_fee_posted','auto_interest_posted','auto_outgoing_posted'}
+    owned_statuses=CREATED_BANK_STATUSES
     lines=list(s.scalars(select(BankStatementLine).where(BankStatementLine.batch_id==batch.id).order_by(BankStatementLine.id)))
     owned={line.ledger_id for line in lines if line.status in owned_statuses and line.ledger_id}
     ledger={entry.id:entry for entry in s.scalars(select(Ledger).where(Ledger.id.in_(owned)))} if owned else {}
@@ -885,8 +890,10 @@ def _statement_delete_snapshot(s,batch):
         BankStatementBatch.id!=batch.id,BankStatementLine.ledger_id.in_(owned)))) if owned else []
     # Snapshot every other statement whose balance could change; the transaction
     # compares its actual opening/closing after reversal before allowing delete.
+    affected_accounts={batch.account_id}
+    affected_accounts.update(entry.to_account_id for entry in ledger.values() if entry.to_account_id)
     later=list(s.scalars(select(BankStatementBatch).where(BankStatementBatch.status=='committed',
-        BankStatementBatch.id!=batch.id,BankStatementBatch.account_id==batch.account_id,
+        BankStatementBatch.id!=batch.id,BankStatementBatch.account_id.in_(affected_accounts),
         BankStatementBatch.period_to>=batch.period_from).order_by(BankStatementBatch.id))) if batch.status=='committed' else []
     payload={'batch':{'id':batch.id,'company_id':batch.company_id,'account_id':batch.account_id,'status':batch.status,
         'sha256':batch.sha256,'period_from':str(batch.period_from),'period_to':str(batch.period_to)},
@@ -896,6 +903,9 @@ def _statement_delete_snapshot(s,batch):
         'requests':requests,'receipts':receipts,'guard':guard.value if guard else None,
         'account':{'opening':account.opening,'opening_date':str(account.opening_date),'currency':account.currency,
             'archived':account.archived,'balance':account_balance(s,account)},
+        'affected_accounts':{str(item.id):{'opening':item.opening,'opening_date':str(item.opening_date),
+            'currency':item.currency,'archived':item.archived,'balance':account_balance(s,item)}
+            for item in s.scalars(select(Account).where(Account.id.in_(affected_accounts)))},
         'external_links':sorted((int(a),int(b)) for a,b in links),
         'dependent_statements':[(other.id,str(other.period_from),str(other.period_to)) for other in later]}
     token=hashlib.sha256(json.dumps(payload,ensure_ascii=False,sort_keys=True,separators=(',',':')).encode()).hexdigest()
@@ -910,7 +920,7 @@ def statement_admin_batches(request:Request):
         batches=list(s.execute(select(BankStatementBatch,Account).join(Account,Account.id==BankStatementBatch.account_id)
             .where(BankStatementBatch.status.in_(('preview','committed'))).order_by(BankStatementBatch.id.desc())))
         items=[]
-        owned_statuses={'auto_paid','manual_paid','auto_income_posted','auto_fee_posted','auto_interest_posted','auto_outgoing_posted'}
+        owned_statuses=CREATED_BANK_STATUSES
         # Read only the fields required for counts, in one query for the whole
         # company. The expensive signed state is built when an admin opens one row.
         grouped={}
@@ -936,7 +946,7 @@ def statement_admin_delete_preview(id:int,request:Request):
         if batch.status not in ('preview','committed'):raise HTTPException(409,'Выписка уже удалена или недоступна.')
         account=get(s,Account,batch.account_id)
         lines,ledger,registry,reversals,links,later,token=_statement_delete_snapshot(s,batch)
-        owned={line.ledger_id for line in lines if line.status in {'auto_paid','manual_paid','auto_income_posted','auto_fee_posted','auto_interest_posted','auto_outgoing_posted'} and line.ledger_id}
+        owned={line.ledger_id for line in lines if line.status in CREATED_BANK_STATUSES and line.ledger_id}
         linked={line.ledger_id for line in lines if line.ledger_id and line.ledger_id not in owned}
         return {'id':batch.id,'filename':batch.filename,'status':batch.status,'account_name':account.name,'currency':batch.currency,
             'period_from':str(batch.period_from),'period_to':str(batch.period_to),'operation_count':len(owned),
@@ -956,11 +966,15 @@ def statement_admin_delete(id:int,data:BankStatementDeleteIn,request:Request):
         if not secrets.compare_digest(token,data.expected):raise HTTPException(409,'Выписка или её операции изменились. Обновите список.')
         if links:raise HTTPException(409,'Операция связана с другой выпиской. Сначала проверьте эту связь.')
         account=get(s,Account,batch.account_id)
-        other_balances={other.id:(day_start_balance(s,account,other.period_from),account_balance(s,account,other.period_to)) for other in later}
-        owned_lines=[line for line in lines if line.status in {'auto_paid','manual_paid','auto_income_posted','auto_fee_posted','auto_interest_posted','auto_outgoing_posted'}]
+        other_balances={other.id:(day_start_balance(s,get(s,Account,other.account_id),other.period_from),
+            account_balance(s,get(s,Account,other.account_id),other.period_to)) for other in later}
+        owned_lines=[line for line in lines if line.status in CREATED_BANK_STATUSES]
         for line in owned_lines:
             entry=ledger.get(line.ledger_id)
-            if not entry or entry.account_id!=batch.account_id or entry.date!=line.date or entry.amount!=line.amount or entry.reference!='BANK-'+line.fingerprint or entry.kind!=line.direction:
+            matching_kind=bool(entry and (entry.kind==line.direction or
+                line.status=='historical_transfer_posted' and line.direction=='out' and entry.kind=='transfer'
+                and entry.to_account_id and entry.to_account_id!=batch.account_id))
+            if not entry or entry.account_id!=batch.account_id or entry.date!=line.date or entry.amount!=line.amount or entry.reference!='BANK-'+line.fingerprint or not matching_kind:
                 raise HTTPException(409,'Созданная выпиской операция изменилась. Проверьте её вручную.')
             if entry.id in reversals and str(entry.id) not in registry:
                 raise HTTPException(409,'Операция уже сторнирована или исправлена. Проверьте её вручную перед удалением выписки.')
@@ -968,7 +982,7 @@ def statement_admin_delete(id:int,data:BankStatementDeleteIn,request:Request):
         # shortage. Each existing reversal still checks historical balances and reservations.
         removed=[]
         try:
-            for entry in sorted(ledger.values(),key=lambda e:(e.kind!='out',e.date,e.id)):
+            for entry in sorted(ledger.values(),key=lambda e:(e.kind not in ('out','transfer'),e.date,e.id)):
                 if str(entry.id) in registry:continue
                 before={k:str(getattr(entry,k)) for k in ('account_id','to_account_id','category_id','kind','amount','date','counterparty','reference','note','request_id','receipt_id')}
                 inverse=reverse_ledger_entry(s,u,entry,data.reason.strip(),allow_archived=True)
@@ -976,7 +990,8 @@ def statement_admin_delete(id:int,data:BankStatementDeleteIn,request:Request):
                 registry[str(entry.id)]=info;removed.append(entry.id)
                 log(s,u,'Удалена операция из выписки','ledger',entry.id,json.dumps(info,ensure_ascii=False))
             for other in later:
-                if other_balances[other.id]!=(day_start_balance(s,account,other.period_from),account_balance(s,account,other.period_to)):
+                other_account=get(s,Account,other.account_id)
+                if other_balances[other.id]!=(day_start_balance(s,other_account,other.period_from),account_balance(s,other_account,other.period_to)):
                     raise HTTPException(409,'Изменится остаток другой подтверждённой выписки. Сначала удалите её или сверьте с бухгалтером.')
         except HTTPException as exc:
             raise HTTPException(409,'Выписка не удалена: после отмены её операций нарушится остаток, резерв или связанная заявка. '+str(exc.detail))
@@ -1257,6 +1272,12 @@ from .bank_statement_duplicates import router as bank_statement_duplicates_route
 app.include_router(bank_statement_duplicates_router)
 from .bank_statement_transfers import router as bank_statement_transfers_router
 app.include_router(bank_statement_transfers_router)
+from .bank_statement_historical_transfers import router as historical_bank_transfers_router
+app.include_router(historical_bank_transfers_router)
+from .bank_statement_historical_requests import router as historical_bank_requests_router
+app.include_router(historical_bank_requests_router)
+from .bank_statement_distinct_income import router as distinct_bank_income_router
+app.include_router(distinct_bank_income_router)
 
 from .department_catalog import router as department_router
 app.include_router(department_router)
