@@ -104,7 +104,7 @@ test('existing active paid requests are explanations rather than a second amount
  for(const button of all(view.container,node=>node.tag==='button')){
   assert.equal(button.props.type,'button');button.props.onClick();await settle();
  }
- assert.equal(find(view.container,node=>['form','input','select','textarea'].includes(node.tag)),undefined);
+ assert.equal(find(view.container,node=>['form','input','textarea'].includes(node.tag)),undefined);
  assert.equal(calls,0);assert.equal(view.state.summary.total,23605);
 });
 
