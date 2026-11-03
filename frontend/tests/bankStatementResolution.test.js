@@ -49,6 +49,49 @@ for(const scenario of Object.keys(cases))test(`${scenario} uses a lazy read, exp
  else assert.deepEqual(body,{reason,[scenario==='historical-request'?'request_id':'distinct_from_line_id']:Number(data.target),attest_bank_fact:true,token:data.preview.token,confirm:true});
 });
 
+test('a flagged closed request with blank INN requires a separate unchecked identity acknowledgement in both signed requests and never fills INN',async t=>{
+ const data=cases['historical-request'];
+ const candidate={...data.options.items[0],counterparty_inn:'',requires_counterparty_confirmation:true,bank_inn:'123456789',bank_counterparty:'Synthetic supplier'};
+ const options={...data.options,items:[candidate,{...candidate,request_id:46,number:'CF-00046'}]};
+ const shown={...data.preview,requires_counterparty_confirmation:true,bank_inn:candidate.bank_inn,bank_counterparty:candidate.bank_counterparty};
+ const {view,calls}=fixture(t,'historical-request',async url=>url.endsWith('/options')?options:url.endsWith('/preview')?shown:{line_id:31,ledger_id:90,status:data.status});
+ await open(view,'historical-request');
+ const target=find(view.container,node=>node.tag==='select'&&node.children.some(option=>option.props?.value==='45'));
+ set(target,'45');set(find(view.container,node=>node.tag==='textarea'),reason);set(find(view.container,node=>node.tag==='input'&&node.props.type==='checkbox'),true);await settle();
+ const checks=()=>all(view.container,node=>node.tag==='input'&&node.props.type==='checkbox');
+ assert.equal(checks().length,2);assert.equal(view.state.attestCounterparty,false);assert.match(text(view.container),/получатель в закрытой заявке — этот контрагент из выписки \(ИНН 123456789\)/);assert.equal(button(view,'Проверить решение').props.disabled,true);await button(view,'Проверить решение').props.onClick();assert.equal(calls.filter(([url])=>url.endsWith('/preview')).length,0);
+ set(checks()[1],true);await settle();await button(view,'Проверить решение').props.onClick();await settle();set(checks().at(-1),true);await settle();
+ set(checks()[1],false);await settle();assert.equal(view.state.preview,null);assert.equal(view.state.confirm,false);await view.state.commit();assert.equal(calls.filter(([url])=>url.endsWith('/commit')).length,0);
+ set(checks()[1],true);await settle();await button(view,'Проверить решение').props.onClick();await settle();set(checks().at(-1),true);set(target,'46');await settle();assert.equal(view.state.attestCounterparty,false);assert.equal(view.state.preview,null);assert.equal(view.state.confirm,false);
+ set(target,'45');set(checks()[1],true);await settle();await button(view,'Проверить решение').props.onClick();await settle();set(checks().at(-1),true);await settle();await button(view,data.action).props.onClick();await settle();
+ for(const [url,request] of calls.filter(([url])=>url.endsWith('/preview')||url.endsWith('/commit'))){const body=JSON.parse(request.body);assert.equal(body.attest_counterparty,true);assert.equal(Object.hasOwn(body,'counterparty_inn'),false);if(url.endsWith('/commit'))assert.equal(body.token,'signed-request');}
+ assert.equal(calls.filter(([url])=>url.endsWith('/commit')).length,1);assert.equal(candidate.counterparty_inn,'');
+});
+
+test('an unflagged closed request does not ask for legacy identity acknowledgement or send that attestation',async t=>{
+ const data=cases['historical-request'];
+ const options={...data.options,items:[{...data.options.items[0],requires_counterparty_confirmation:false,bank_inn:'123',bank_counterparty:'Synthetic supplier'}]};
+ const {view,calls}=fixture(t,'historical-request',async url=>url.endsWith('/options')?options:url.endsWith('/preview')?{...data.preview,requires_counterparty_confirmation:false}:{line_id:31,ledger_id:90,status:data.status});
+ await prepare(view,'historical-request');await settle();assert.doesNotMatch(text(view.container),/Подтверждаю по договору или счёту/);assert.equal(all(view.container,node=>node.tag==='input'&&node.props.type==='checkbox').length,2);
+ set(all(view.container,node=>node.tag==='input'&&node.props.type==='checkbox').at(-1),true);await settle();await button(view,data.action).props.onClick();await settle();
+ for(const [,request] of calls.filter(([url])=>url.endsWith('/preview')||url.endsWith('/commit')))assert.equal(Object.hasOwn(JSON.parse(request.body),'attest_counterparty'),false);
+ assert.equal(options.items[0].counterparty_inn,'123');
+});
+
+test('a blocked historical candidate shows the exact translated server reason and cannot bypass a mismatched INN',async t=>{
+ const prior=lang.value;setLang('uz');t.after(()=>setLang(prior));
+ const {view,calls}=fixture(t,'historical-request',async()=>({items:[],available:false,reason:'ИНН закрытой заявки не совпадает с ИНН банковской строки. Проверьте контрагента.'}));
+ await button(view,'Bahsli satrni ko‘rib chiqish').props.onClick();await settle();set(find(view.container,node=>node.tag==='select'&&node.children.some(option=>option.props?.value==='historical-request')),'historical-request');await settle();
+ assert.match(text(view.container),/Yopiq arizadagi STIR bank satridagi STIRga mos emas/);assert.equal(view.state.canPreview,false);await view.state.check();await view.state.commit();assert.equal(calls.filter(([,request])=>request.method==='POST').length,0);assert.equal(view.state.attestCounterparty,false);
+});
+
+test('missing own receiving accounts explain how to add one and refresh only reads options',async t=>{
+ const data=cases['historical-transfer'];let reads=0;
+ const {view,calls}=fixture(t,'historical-transfer',async url=>{assert.ok(url.endsWith('/options'));return {...data.options,accounts:++reads===1?[]:[destination]};});
+ await open(view,'historical-transfer');assert.match(text(view.container),/Добавьте свой банковский счёт получателя в разделе «Банк и касса»: та же компания и валюта, дата начала учёта не позже даты перевода/);
+ await button(view,'Обновить варианты решения').props.onClick();await settle();assert.equal(view.state.items.length,1);assert.equal(view.state.target,'');assert.equal(reads,2);assert.ok(calls.every(([,request])=>!request.method||request.method==='GET'));
+});
+
 test('changing reason, selected record or attestation invalidates the signature and resets the final checkbox',async t=>{
  const {view,calls}=fixture(t,'historical-transfer');await prepare(view,'historical-transfer');set(all(view.container,node=>node.tag==='input'&&node.props.type==='checkbox')[1],true);await settle();
  set(find(view.container,node=>node.tag==='textarea'),'Updated bank document evidence');await settle();assert.equal(button(view,'Учесть выполненный перевод'),undefined);assert.equal(view.state.confirm,false);await view.state.commit();assert.equal(calls.filter(([url])=>url.endsWith('/commit')).length,0);
