@@ -1,6 +1,7 @@
 import {test} from 'node:test';
 import assert from 'node:assert/strict';
 import {compileComponent,mount,settle,find,text,all} from './helpers/mountVue.js';
+import {lang,setLang} from '../src/i18n/index.js';
 
 const progressComponent=await compileComponent(new URL('../src/OperationProgress.vue',import.meta.url));
 const periodComponent=await compileComponent(new URL('../src/PeriodFilter.vue',import.meta.url));
@@ -60,6 +61,30 @@ test('account card warns finance about un reconciled statements but never the sa
  view.state.user={...user,role:'finance',permissions:['view','ledger','pay_bank']};view.state.boot={...view.state.boot,accounts:[account]};view.state.rows=[account];view.state.currency='UZS';view.state.page='accounts';await settle();
  assert.match(text(view.container),/Есть несверенные выписки: 2/);assert.match(text(view.container),/Ручная оплата заявок с этого счёта временно недоступна/);
  view.state.user={...user,role:'sales',permissions:['view','ledger','pay_bank']};await settle();assert.doesNotMatch(text(view.container),/Есть несверенные выписки/);
+});
+
+test('request cards and paginated table retain the server due-date order in each company and explain it in RU and UZ',async t=>{
+ const prior=lang.value;t.after(()=>setLang(prior));setLang('ru');
+ const request=(id,date)=>({id,number:`CF-${String(id).padStart(5,'0')}`,date,status:'approved',currency:'UZS',amount:'10.00',counterparty:`Synthetic supplier ${id}`,purpose:'Synthetic expense',account:'Synthetic bank',priority:'normal',actions:[]});
+ const cards=[request(91,'2026-10-05'),request(3,'2026-10-10'),request(70,'2026-10-13')];
+ const table=Array.from({length:11},(_,index)=>request(100-index,`2026-10-${String(index+1).padStart(2,'0')}`));
+ const calls=[];let mode='cards';
+ const {view}=await fixture(t,async(url,options)=>{
+  assert.ok(url.startsWith('/api/requests?'));const params=new URL(url,'https://isolated.test').searchParams,page=Number(params.get('page'));
+  calls.push({company:options.headers['X-Company-ID'],params});
+  const ordered=mode==='cards'?cards:table;return {ok:true,status:200,json:async()=>({items:ordered.slice((page-1)*10,page*10),total:ordered.length})};
+ });
+ Object.assign(view.state,{page:'requests',user:{...user,permissions:['view','ledger','request']},boot:bootstrapBody(),currency:'UZS'});await settle();
+ const cardNumbers=()=>all(view.container,node=>node.tag==='section'&&String(node.props.class||'').split(/\s+/).includes('rq-card')).map(node=>text(node).match(/CF-\d+/)?.[0]);
+ const tableNumbers=()=>all(find(view.container,node=>node.tag==='tbody'),node=>node.tag==='tr').map(node=>text(node).match(/CF-\d+/)?.[0]);
+ for(const companyId of [2,3]){
+  view.state.companyId=companyId;view.state.listPage=1;await view.state.load();await settle();
+  assert.deepEqual(cardNumbers(),cards.map(row=>row.number));assert.match(text(view.container),/Сначала ранние сроки оплаты: просроченные, затем сегодняшние и ближайшие/);assert.equal(calls.at(-1).company,String(companyId));
+ }
+ mode='table';view.state.requestArchive='archived';view.state.requestStatus='approved';await view.state.load();await settle();assert.deepEqual(tableNumbers(),table.slice(0,10).map(row=>row.number));
+ await view.state.changeListPage(2);await settle();assert.deepEqual(tableNumbers(),[table[10].number]);assert.equal(calls.at(-1).params.get('archive'),'archived');assert.equal(calls.at(-1).params.get('state'),'approved');
+ assert.equal(calls.some(call=>call.params.has('sort')||call.params.has('order')),false);
+ setLang('uz');await settle();assert.match(text(view.container),/Avval eng erta to‘lov muddatlari: muddati o‘tgan, so‘ng bugungi va yaqin kunlardagi arizalar/);
 });
 
 for(const [page,label,endpoint] of [['business','Бизнес-планы','/api/business-projects?'],['reports','Архив отчётов','/api/report-archives?'],['pnl','P&L','/api/financial-statements?'],['balance','Баланс','/api/financial-statements?']]){

@@ -76,6 +76,74 @@ test('repeat processing uses signed readiness and reports only its new result wi
  assert.deepEqual(JSON.parse(calls.find(([url])=>url.endsWith('/reprocess/commit'))[1].body),{fee_category_id:null,preview_token:'reprocess-partial',confirm:true});
 });
 
+async function renderedReprocess(t,commitResponse,posting=summary,overrides={}){
+ const calls=[];
+ const api=apiFor(calls,async url=>url==='/api/bank-statements/reprocess/batches'?{items:[{id:7,account_name:account.name,currency:'UZS',filename:'synthetic.xls',period_from:source.period_from,period_to:source.period_to}]}:url.endsWith('/reprocess/preview')?{...preview,batch_id:7,preview_token:'reprocess-click-signed',posting_summary:posting,...overrides}:url.endsWith('/reprocess/commit')?commitResponse():{items:[]});
+ const view=mount(bank,{api,companyId:1,accounts:[account],canPost:true});t.after(view.unmount);await settle();
+ const select=find(view.container,node=>node.tag==='select'&&node.children.some(option=>option.tag==='option'&&option.props.value==='7'));
+ assert.ok(select);select.props['onUpdate:modelValue']('7');await settle();
+ const check=find(view.container,node=>node.tag==='button'&&text(node)==='Проверить выписку');assert.ok(check);await check.props.onClick();await settle();
+ return {view,calls};
+}
+
+test('the visible counted confirm action before reprocess rows posts once even on a rapid double click and displays actual result',async t=>{
+ let finish;
+ const {view,calls}=await renderedReprocess(t,()=>new Promise(resolve=>finish=resolve));
+ const action=find(view.container,node=>node.tag==='button'&&text(node)==='Провести проверенные строки (4)');assert.ok(action);assert.equal(action.props.disabled,false);
+ const summaryPanel=find(view.container,node=>node.tag==='section'&&String(node.props.class||'').includes('posting-summary'));
+ assert.equal(action.parent,summaryPanel.parent);assert.ok(action.parent.children.indexOf(action)>action.parent.children.indexOf(summaryPanel));
+ const sourceTable=find(action.parent,node=>node.tag==='tbody'&&node.children.some(row=>row.tag==='tr'&&text(row).includes('Synthetic 1')));
+ assert.ok(sourceTable);assert.ok(action.parent.children.indexOf(action)<action.parent.children.indexOf(sourceTable.parent.parent));
+ const first=action.props.onClick(),second=action.props.onClick();await settle();assert.equal(calls.filter(([url])=>url.endsWith('/reprocess/commit')).length,1);assert.equal(action.props.disabled,true);
+ finish({...result,posted:4,linked:0,review:2});await Promise.all([first,second]);await settle();
+ assert.deepEqual(JSON.parse(calls.find(([url])=>url.endsWith('/reprocess/commit'))[1].body),{fee_category_id:null,preview_token:'reprocess-click-signed',confirm:true});
+ assert.match(text(view.container),/Повторная проверка завершена. Проведено: 4; связано: 0; на проверке: 2/);assert.match(text(stateRow(view,'posted')),/Из них новые операции за это подтверждение430 UZS15 UZS/);assert.equal(calls.filter(([url])=>url.endsWith('/reprocess/commit')).length,1);
+});
+
+test('the counted confirm action cannot claim posted amounts after a server conflict',async t=>{
+ const {view,calls}=await renderedReprocess(t,()=>{throw Object.assign(Error('Synthetic preview changed. Check again.'),{status:409});});
+ const action=find(view.container,node=>node.tag==='button'&&text(node)==='Провести проверенные строки (4)');await action.props.onClick();await settle();
+ assert.match(text(view.container),/Synthetic preview changed. Check again./);assert.doesNotMatch(text(view.container),/Повторная проверка завершена|Проведено: 4/);assert.equal(stateRow(view,'posted'),undefined);assert.equal(calls.filter(([url])=>url.endsWith('/reprocess/commit')).length,1);
+});
+
+test('both reprocess confirmation actions are disabled when the signed summary has no ready or linked rows',async t=>{
+ const empty={...summary,ready:group(0,'0.00','0.00'),linked:group(0,'0.00','0.00')};
+ const {view,calls}=await renderedReprocess(t,()=>result,empty);
+ for(const label of ['Провести проверенные строки (0)','Подтвердить повторную обработку']){
+  const action=find(view.container,node=>node.tag==='button'&&text(node)===label);assert.ok(action);assert.equal(action.props.disabled,true);await action.props.onClick();
+ }
+ assert.equal(calls.filter(([url])=>url.endsWith('/reprocess/commit')).length,0);assert.doesNotMatch(text(view.container),/Повторная проверка завершена/);
+});
+
+test('already accounted rows do not enable a no-op reprocess while other rows remain disputed',async t=>{
+ const accountedRows=Array.from({length:74},(_,index)=>({...rows[3],id:index+1,status:'auto_interest_posted',posting_state:'linked'}));
+ const pendingRows=Array.from({length:9},(_,index)=>({...rows[5],id:index+75}));
+ const posting={...summary,ready:group(0,'0.00','0.00'),linked:group(74,'0.00','222.00'),pending:group(9,'0.00','180.00')};
+ const {view,calls}=await renderedReprocess(t,()=>result,posting,{rows:[...accountedRows,...pendingRows],full_reconciliation:false});
+ for(const label of ['Провести проверенные строки (0)','Подтвердить повторную обработку']){
+  const action=find(view.container,node=>node.tag==='button'&&text(node)===label);assert.ok(action);assert.equal(action.props.disabled,true);await action.props.onClick();
+ }
+ assert.equal(calls.filter(([url])=>url.endsWith('/reprocess/commit')).length,0);assert.doesNotMatch(text(view.container),/Повторная проверка завершена/);
+});
+
+test('new signed link candidates enable linking even when there are no new operations to post',async t=>{
+ const candidates=['income_matched_candidate','fee_existing','interest_existing','other_matched_candidate'].map((status,index)=>({...rows[index],status,posting_state:'linked'}));
+ const posting={...summary,ready:group(0,'0.00','0.00'),linked:group(4,'30.00','15.00')};
+ const {view,calls}=await renderedReprocess(t,()=>({...result,posted:0,linked:4}),posting,{rows:candidates});
+ const action=find(view.container,node=>node.tag==='button'&&text(node)==='Связать проверенные строки (4)');assert.ok(action);assert.equal(action.props.disabled,false);await action.props.onClick();await settle();
+ assert.equal(calls.filter(([url])=>url.endsWith('/reprocess/commit')).length,1);assert.match(text(view.container),/Проведено: 0; связано: 4/);
+});
+
+test('fully reconciled accounted rows can finish reconciliation without a misleading post-zero action',async t=>{
+ const posting={...resultSummary,ready:group(0,'0.00','0.00'),posted:group(0,'0.00','0.00'),pending:group(0,'0.00','0.00')};
+ const {view,calls}=await renderedReprocess(t,()=>({...result,posted:0,linked:0,review:0,full_reconciliation:true,posting_summary:posting}),posting,{rows:rows.slice(0,4).map(row=>({...row,status:'auto_fee_posted',posting_state:'linked'})),full_reconciliation:true});
+ assert.equal(find(view.container,node=>node.tag==='button'&&text(node)==='Провести проверенные строки (0)'),undefined);
+ const bottom=find(view.container,node=>node.tag==='button'&&text(node)==='Подтвердить повторную обработку');assert.equal(bottom.props.disabled,false);
+ const prior=lang.value;t.after(()=>setLang(prior));setLang('uz');await settle();
+ const finish=find(view.container,node=>node.tag==='button'&&text(node)==='Solishtirishni yakunlash');assert.ok(finish);assert.equal(finish.props.disabled,false);await finish.props.onClick();await settle();
+ assert.equal(calls.filter(([url])=>url.endsWith('/reprocess/commit')).length,1);assert.equal(stateRow(view,'posted')!==undefined,true);
+});
+
 test('read-only history shows active posted interest and partial statement summary without creating fact again',async t=>{
  const calls=[];const item={id:7,filename:'synthetic.xls',account,period_from:source.period_from,period_to:source.period_to,credit_total:source.credit_total,debit_total:source.debit_total};
  const detail={...item,status:'committed',statement:source,rows:rows.map(row=>({...row,status:row.id===4?'auto_interest_posted':row.status,ledger_id:row.id===4?44:null,operation_state:row.id===4?'active':'unposted'})),posting_summary:{...resultSummary,scope:'history'},full_reconciliation:false};

@@ -47,6 +47,21 @@ const incomeCategories = computed(() => props.categories.filter(c => c.type === 
 const feeCategories = computed(() => props.categories.filter(c => c.type === 'outcome' && c.activity !== 'unclassified' && !c.retired));
 const oldBatch = computed(() => oldBatches.value.find(item => String(item.id) === String(selectedOldBatch.value)));
 const oldCurrency = computed(() => oldBatch.value?.currency || 'UZS');
+const reprocessReadyCount = computed(() => {
+  const count = reprocessPreview.value?.posting_summary?.ready?.count;
+  return Number.isInteger(count) && count >= 0 ? count : null;
+});
+const newLinkStatuses = new Set(['income_matched_candidate','fee_existing','interest_existing','other_matched_candidate']);
+const reprocessNewLinkCount = computed(() => (reprocessPreview.value?.rows || []).filter(row => newLinkStatuses.has(row.status)).length);
+const reprocessHasWork = computed(() => {
+  return reprocessReadyCount.value === null || reprocessReadyCount.value > 0 || reprocessNewLinkCount.value > 0 || reprocessPreview.value?.full_reconciliation === true;
+});
+const reprocessActionLabel = computed(() => {
+  if (reprocessReadyCount.value > 0) return tx('Провести проверенные строки ({count})',{count:reprocessReadyCount.value});
+  if (reprocessNewLinkCount.value > 0) return tx('Связать проверенные строки ({count})',{count:reprocessNewLinkCount.value});
+  if (reprocessPreview.value?.full_reconciliation === true) return tx('Завершить сверку');
+  return tx('Провести проверенные строки ({count})',{count:reprocessReadyCount.value ?? 0});
+});
 const feeId = () => feeCategoryId.value ? Number(feeCategoryId.value) : null;
 const count = status => rows.value.filter(row => row.status === status).length;
 const ready = computed(() => !!preview.value && preview.value.status === 'preview' && !!preview.value.id && !!preview.value.preview_token && typeof preview.value.full_reconciliation === 'boolean' && !!preview.value.statement?.account_number && validSelection.value && confirmAccount.value && confirmCurrency.value
@@ -268,7 +283,7 @@ async function previewOldBatch() {
 }
 async function commitOldBatch() {
   const data = reprocessPreview.value, batch = oldBatches.value.find(item => String(item.id) === String(selectedOldBatch.value));
-  if (!props.canPost || busy.value || reprocessBusy.value || !batch || !data?.preview_token || typeof data.full_reconciliation !== 'boolean' || String(data.batch_id) !== String(batch.id)) return;
+  if (!props.canPost || busy.value || reprocessBusy.value || !reprocessHasWork.value || !batch || !data?.preview_token || typeof data.full_reconciliation !== 'boolean' || String(data.batch_id) !== String(batch.id)) return;
   const current = reprocessGeneration, company = props.companyId;
   reprocessBusy.value = true; reprocessError.value = ''; reprocessNotice.value = '';
   try {
@@ -698,9 +713,10 @@ async function commit() {
           <p v-if="reprocessPreview.full_reconciliation === true" class="good-text">{{tx('Все строки готовы к полной сверке. Результат будет перепроверен при подтверждении.')}}</p>
           <p v-else class="error" role="alert">{{tx('После подтверждения сервер проведёт доступные проверенные строки. Спорные строки останутся на проверке; счёт останется несверенным.')}}</p>
           <BankStatementPostingSummary :summary="reprocessPreview.posting_summary" :currency="oldCurrency" :full-reconciliation="reprocessPreview.full_reconciliation"/>
+          <button v-if="reprocessReadyCount!==null" type="button" :disabled="busy || reprocessBusy || !reprocessPreview.preview_token || !reprocessHasWork" @click="commitOldBatch">{{reprocessActionLabel}}</button>
           <div class="table-scroll"><table><thead><tr><th>{{tx('Дата')}}</th><th>{{tx('Контрагент / документ')}}</th><th>{{tx('Движение')}}</th><th>{{tx('Результат сверки')}}</th></tr></thead><tbody><tr v-for="row in reprocessPreview.rows || []" :key="row.id"><td>{{formatShortDate(row.date)}}</td><td>{{row.correspondent_name}}<small>{{row.correspondent_inn || '—'}} · {{row.document_number}}</small></td><td>{{directionLabel(row.direction)}}<small>{{money(row.amount,row.currency || oldCurrency)}} {{row.currency || oldCurrency}}</small></td><td>{{rowLabel(row,reprocessPreview.full_reconciliation)}}<small v-if="categoryName(row)">{{tx('Статья')}}: {{categoryName(row)}}</small><small v-if="row.reason">{{tx(row.reason)}}</small></td></tr></tbody></table></div>
           <p class="sub">{{tx('Каждая проверенная строка проводится с учётом прав, остатков и отсутствия повторов. Спорные строки не становятся фактом.')}}</p>
-          <button type="button" :disabled="busy || reprocessBusy || !reprocessPreview.preview_token" @click="commitOldBatch">{{tx('Подтвердить повторную обработку')}}</button>
+          <button type="button" :disabled="busy || reprocessBusy || !reprocessPreview.preview_token || !reprocessHasWork" @click="commitOldBatch">{{tx('Подтвердить повторную обработку')}}</button>
         </div>
         <BankStatementPostingSummary v-if="reprocessResult" :summary="reprocessResult.posting_summary" :currency="reprocessResult.currency" :result="true" :full-reconciliation="reprocessResult.full_reconciliation"/>
       </div>
