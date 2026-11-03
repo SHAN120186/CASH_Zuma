@@ -1,12 +1,13 @@
 """HTTP-level bank import tests using entirely synthetic statement content."""
 import unittest
+import json
 from datetime import date, timedelta
 from sqlalchemy import select
 
 from tests.test_site import SiteTests
-from app.db import Account, Audit, Budget, Category, Company, Ledger, PaymentRequest, User, engine, now, unit
+from app.db import Account, Audit, Budget, Category, Company, Ledger, PaymentRequest, Setting, User, engine, now, unit
 from app.bank_statement_models import BankStatementBatch
-from app.bank_statement_guard import set_statement_reconciliation
+from app.bank_statement_guard import set_statement_reconciliation, unreconciled_statements
 from app.services import account_balance, budget_state
 
 
@@ -222,8 +223,8 @@ class AutoBankIntegrationTests(SiteTests):
         self.assertEqual(self.confirmed(p,self.cat).status_code,409)
         with unit() as s:self.assertEqual(len(list(s.scalars(select(Ledger)))),2)
 
-    def test_current_split_roles_cannot_reconcile_incoming_funded_request(self):
-        """Expose the workflow deadlock until two-person authorization is implemented."""
+    def test_accountant_reconciles_incoming_funded_request_without_general_write(self):
+        """A bank payer can post one fully reconciled statement, never generic entries."""
         rid=self.approved()
         with unit(True) as s:s.get(Account,self.acc).opening=50000
         raw=self.statement().replace(b'1000000.00',b'500.00').replace(b'999580.00',b'80.00')
@@ -236,19 +237,16 @@ class AutoBankIntegrationTests(SiteTests):
             self.assertNotIn('auto_pay_candidate',[r['status'] for r in fin.json()['rows']])
             book=self.preview(raw,self.cat,client=accountant,headers=ah)
             self.assertEqual(book.status_code,200,book.text)
-            self.assertFalse(book.json()['full_reconciliation'])
+            self.assertTrue(book.json()['full_reconciliation'])
             self.assertIn('auto_pay_candidate',[r['status'] for r in book.json()['rows']])
             result=self.confirmed(book.json(),self.cat,client=accountant,headers=ah)
             self.assertEqual(result.status_code,200,result.text)
-            self.assertEqual((result.json()['auto_paid'],result.json()['auto_income'],result.json()['auto_fee']),(0,0,0))
+            self.assertEqual((result.json()['auto_paid'],result.json()['auto_income'],result.json()['auto_fee']),(1,1,1))
             with unit() as s:
-                self.assertEqual(s.get(PaymentRequest,rid).status,'approved')
-                self.assertEqual(len(list(s.scalars(select(Ledger)))),0)
-                self.assertEqual(account_balance(s,s.get(Account,self.acc)),50000)
-            recheck=finance.post(f"/api/bank-statements/{book.json()['id']}/reprocess/preview",
-                                 headers=fh,json={'fee_category_id':self.cat})
-            self.assertEqual(recheck.status_code,200,recheck.text)
-            self.assertFalse(recheck.json()['full_reconciliation'])
+                self.assertEqual(s.get(PaymentRequest,rid).status,'paid')
+                self.assertEqual(len(list(s.scalars(select(Ledger)))),3)
+                self.assertEqual(account_balance(s,s.get(Account,self.acc)),8000)
+            self.assertEqual(self.confirmed(book.json(),self.cat,client=accountant,headers=ah).status_code,409)
         finally:
             finance.close()
 
@@ -426,18 +424,161 @@ class AutoBankIntegrationTests(SiteTests):
         self.assertFalse(result.json()['full_reconciliation'])
         with unit() as s:self.assertEqual(len(list(s.scalars(select(Ledger)))),0)
 
-    def test_accountant_without_write_cannot_post_or_change_default_fee(self):
+    def test_accountant_posts_statement_but_cannot_change_default_fee(self):
         client,headers=self.accountant
         response=self.preview(self.statement(False),self.cat,client,headers)
         self.assertEqual(response.status_code,200,response.text)
-        p=response.json(); self.assertTrue(all(row['status']=='review' for row in p['rows']))
+        p=response.json(); self.assertEqual([r['status'] for r in p['rows']],['income_candidate','fee_candidate'])
         result=self.confirmed(p,self.cat,client,headers)
         self.assertEqual(result.status_code,200,result.text)
-        self.assertEqual((result.json()['auto_income'],result.json()['auto_fee']),(0,0))
+        self.assertEqual((result.json()['auto_income'],result.json()['auto_fee']),(1,1))
         settings=self.client.get('/api/bank-statements/settings',headers=self.h)
         self.assertEqual(settings.status_code,200,settings.text)
         self.assertIsNone(settings.json()['fee_category_id'])
+        with unit() as s:self.assertEqual(len(list(s.scalars(select(Ledger)))),2)
+
+    def test_accountant_statement_cannot_forge_general_ledger_capability(self):
+        client,headers=self.accountant
+        body={'account_id':self.acc,'category_id':self.cat,'amount':'20','kind':'out','date':self.date,
+              'reference':'SYN-FAKE','note':'Synthetic arbitrary operation'}
+        for kind in ('in','out','transfer'):
+            response=client.post('/api/ledger',headers=headers,json={**body,'kind':kind})
+            self.assertIn(response.status_code,(403,422),response.text)
+        for field in ('bank_statement_fact','bank_statement_import'):
+            response=client.post('/api/ledger',headers=headers,json={**body,field:True})
+            self.assertEqual(response.status_code,422,response.text)
         with unit() as s:self.assertEqual(len(list(s.scalars(select(Ledger)))),0)
+
+    def test_accountant_posts_external_debit_and_not_mismatched_statement(self):
+        client,headers=self.accountant
+        raw=self.statement(False,external=True)
+        p=self.preview(raw,self.cat,client,headers);self.assertEqual(p.status_code,200,p.text)
+        self.assertTrue(p.json()['full_reconciliation'])
+        forged=self.confirmed({**p.json(),'preview_token':'0'*64},self.cat,client,headers)
+        self.assertEqual(forged.status_code,409,forged.text)
+        with unit() as s:self.assertEqual(len(list(s.scalars(select(Ledger)))),0)
+        done=self.confirmed(p.json(),self.cat,client,headers);self.assertEqual(done.status_code,200,done.text)
+        self.assertEqual((done.json()['auto_income'],done.json()['auto_fee'],done.json()['auto_outgoing']),(1,1,1))
+        with unit() as s:
+            self.assertEqual(len(list(s.scalars(select(Ledger)))),3)
+            self.assertEqual(account_balance(s,s.get(Account,self.acc)),100010500)
+
+    def test_accountant_does_not_post_credits_if_any_transfer_is_unresolved(self):
+        client,headers=self.accountant
+        raw=self.statement(False,external=True).replace(b'<td>300000005</td>',b'<td>300000001</td>')
+        preview=self.preview(raw,self.cat,client,headers)
+        self.assertEqual(preview.status_code,200,preview.text)
+        self.assertFalse(preview.json()['full_reconciliation'])
+        done=self.confirmed(preview.json(),self.cat,client,headers)
+        self.assertEqual(done.status_code,200,done.text)
+        self.assertFalse(done.json()['full_reconciliation'])
+        with unit() as s:
+            self.assertIsNone(s.scalar(select(Ledger.id)))
+            self.assertTrue(unreconciled_statements(s,s.get(Account,self.acc)))
+
+    def test_accountant_fee_choice_does_not_replace_company_setting(self):
+        client,headers=self.accountant
+        with unit(True) as s:
+            alt=Category(company_id=self.company,name='Synthetic alternate fee',type='outcome',activity='operating')
+            foreign=s.scalar(select(Company.id).where(Company.code=='ZUMA'))
+            other=Category(company_id=foreign,name='Synthetic other fee',type='outcome',activity='operating')
+            retired=Category(company_id=self.company,name='Synthetic retired fee',type='outcome',activity='operating')
+            s.add_all([alt,other,retired]);s.flush(); alt_id,other_id,retired_id=alt.id,other.id,retired.id
+            s.merge(Setting(key=f'company:{self.company}:bank_statement_fee_category',value=str(self.cat)))
+            s.merge(Setting(key=f'company:{self.company}:category_catalog',value=json.dumps({'retired':[retired_id]})))
+        for invalid in (other_id,retired_id):
+            response=self.preview(self.statement(False),invalid,client,headers)
+            self.assertEqual(response.status_code,422,response.text)
+        response=self.preview(self.statement(False),alt_id,client,headers)
+        self.assertEqual(response.status_code,200,response.text)
+        changed=self.confirmed(response.json(),self.cat,client,headers)
+        self.assertEqual(changed.status_code,409,changed.text)
+        done=self.confirmed(response.json(),alt_id,client,headers)
+        self.assertEqual(done.status_code,200,done.text)
+        with unit() as s:
+            entry=next(e for e in s.scalars(select(Ledger)) if e.kind=='out')
+            self.assertEqual(entry.category_id,alt_id)
+        settings=self.client.get('/api/bank-statements/settings',headers=self.h)
+        self.assertEqual(settings.status_code,200,settings.text)
+        self.assertEqual(settings.json()['fee_category_id'],self.cat)
+
+    def test_changed_approved_request_version_invalidates_first_preview(self):
+        rid=self.approved(); client,headers=self.accountant
+        preview=self.preview(self.statement(),self.cat,client,headers)
+        self.assertEqual(preview.status_code,200,preview.text)
+        match=next(r for r in preview.json()['rows'] if r['status']=='auto_pay_candidate')
+        self.assertIsNotNone(match.get('request_version'))
+        with unit(True) as s:s.get(PaymentRequest,rid).version+=1
+        result=self.confirmed(preview.json(),self.cat,client,headers)
+        self.assertEqual(result.status_code,409,result.text)
+        with unit() as s:self.assertEqual(len(list(s.scalars(select(Ledger)))),0)
+
+    def test_accountant_needs_editable_section_and_company_access(self):
+        client,headers=self.accountant
+        with unit(True) as s:
+            user=s.scalar(select(User).where(User.username=='bank_synthetic_accountant'))
+            foreign=s.scalar(select(Company.id).where(Company.code=='ZUMA'))
+            uid=user.id
+        for mode in ('view','hidden'):
+            with unit(True) as s:
+                s.merge(Setting(key=f'sections:{self.company}:{uid}',value=json.dumps({'version':1,'sections':{'ledger':mode}})))
+            response=self.preview(self.statement(False),self.cat,client,headers)
+            self.assertEqual(response.status_code,403,response.text)
+            listing=client.get('/api/bank-statements/reprocess/batches',headers=headers)
+            if mode=='hidden':self.assertEqual(listing.status_code,403,listing.text)
+        with unit(True) as s:s.delete(s.get(Setting,f'sections:{self.company}:{uid}'))
+        foreign_result=self.preview(self.statement(False),self.cat,client,{**headers,'X-Company-ID':str(foreign)})
+        self.assertIn(foreign_result.status_code,(403,404,409),foreign_result.text)
+
+    def test_accountant_cannot_commit_reprocess_after_ledger_access_is_removed(self):
+        client,headers=self.accountant
+        first=self.preview(self.statement(False),None,client,headers)
+        self.assertEqual(first.status_code,200,first.text)
+        self.assertFalse(first.json()['full_reconciliation'])
+        batch_id=first.json()['id']
+        result=self.confirmed(first.json(),None,client,headers)
+        self.assertEqual(result.status_code,200,result.text)
+        with unit() as s:
+            self.assertTrue(unreconciled_statements(s,s.get(Account,self.acc)))
+            uid=s.scalar(select(User.id).where(User.username=='bank_synthetic_accountant'))
+        for mode in ('view','hidden'):
+            with unit(True) as s:
+                old=s.get(Setting,f'sections:{self.company}:{uid}')
+                if old:s.delete(old)
+            preview=client.post(f'/api/bank-statements/{batch_id}/reprocess/preview',headers=headers,
+                                json={'fee_category_id':self.cat})
+            self.assertEqual(preview.status_code,200,preview.text)
+            self.assertTrue(preview.json()['full_reconciliation'])
+            with unit(True) as s:
+                s.merge(Setting(key=f'sections:{self.company}:{uid}',value=json.dumps({'version':1,'sections':{'ledger':mode}})))
+            attempted=client.post(f'/api/bank-statements/{batch_id}/reprocess/commit',headers=headers,
+                                  json={'fee_category_id':self.cat,'preview_token':preview.json()['preview_token'],'confirm':True})
+            self.assertEqual(attempted.status_code,403,attempted.text)
+            with unit() as s:
+                self.assertIsNone(s.scalar(select(Ledger.id)))
+                self.assertTrue(unreconciled_statements(s,s.get(Account,self.acc)))
+
+    def test_accountant_reprocesses_verified_statement_once(self):
+        client,headers=self.accountant
+        preview=self.preview(self.statement(False),None,client,headers)
+        self.assertEqual(preview.status_code,200,preview.text)
+        batch_id=preview.json()['id']
+        self.assertEqual(self.confirmed(preview.json(),None,client,headers).status_code,200)
+        listing=client.get('/api/bank-statements/reprocess/batches',headers=headers)
+        self.assertEqual(listing.status_code,200,listing.text)
+        self.assertIn(batch_id,[row['id'] for row in listing.json()['items']])
+        p=client.post(f'/api/bank-statements/{batch_id}/reprocess/preview',headers=headers,
+                      json={'fee_category_id':self.cat})
+        self.assertEqual(p.status_code,200,p.text)
+        self.assertTrue(p.json()['full_reconciliation'])
+        payload={'fee_category_id':self.cat,'preview_token':p.json()['preview_token'],'confirm':True}
+        done=client.post(f'/api/bank-statements/{batch_id}/reprocess/commit',headers=headers,json=payload)
+        self.assertEqual(done.status_code,200,done.text)
+        self.assertEqual(done.json()['posted'],2)
+        self.assertEqual(client.post(f'/api/bank-statements/{batch_id}/reprocess/commit',headers=headers,json=payload).status_code,409)
+        with unit() as s:
+            self.assertEqual(len(list(s.scalars(select(Ledger)))),2)
+            self.assertFalse(unreconciled_statements(s,s.get(Account,self.acc)))
 
     def test_category_change_invalidates_preview(self):
         for changed_field in ('name', 'activity'):

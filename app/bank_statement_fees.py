@@ -14,7 +14,7 @@ from sqlalchemy import select
 from .bank_statement_models import BankStatementBatch, BankStatementLine
 from .category_catalog import catalog
 from .db import Ledger, PaymentRequest
-from .section_access import can_edit_section
+from .bank_statement_permissions import can_post_statement
 from .security import perms_of
 from .services import get, money, post_ledger
 
@@ -97,7 +97,7 @@ def classify_fee(s, batch, line, account, category_id, user, opening_ok, context
     category_valid = context['category_valid'] if context is not None else _valid_category(s, batch, category_id)
     if not category_valid:
         return _review('Выберите действующую расходную статью комиссии этой компании.')
-    if 'write' not in perms_of(user) or not can_edit_section(user, 'ledger'):
+    if not can_post_statement(user):
         return _review('Для проведения комиссии нужно право изменения операций.')
     if not line.document_number or not line.correspondent_name or len(line.correspondent_name) > 160:
         return _review('Неполные реквизиты комиссии: нужна проверка бухгалтера.')
@@ -181,12 +181,14 @@ def classify_fee(s, batch, line, account, category_id, user, opening_ok, context
     return {'status': 'fee_candidate', 'reason': '', 'ledger_id': None}
 
 
-def post_fee(s, batch, line, account, category_id, user, opening_ok):
+def post_fee(s, batch, line, account, category_id, user, opening_ok, *, confirmed_decision=False):
     """Recheck the candidate and use the ordinary ledger safeguards.
 
     Call within the shared write guard and a nested savepoint.  The caller must
     attach the returned entry and audit the bank-statement row atomically.
     """
+    if 'write' not in perms_of(user) and not confirmed_decision:
+        raise HTTPException(403, 'Комиссию можно провести только после подтверждения выписки.')
     verdict = classify_fee(s, batch, line, account, category_id, user, opening_ok)
     if not verdict or verdict['status'] != 'fee_candidate':
         raise HTTPException(409, verdict['reason'] if verdict else 'Операция не распознана как комиссия.')
@@ -194,4 +196,4 @@ def post_fee(s, batch, line, account, category_id, user, opening_ok):
         kind='out', amount=money(line.amount), date=line.date, counterparty=line.correspondent_name,
         reference='BANK-' + line.fingerprint, note='Банковская комиссия, документ ' + line.document_number,
         request_id=None, request_version=None, receipt_id=None)
-    return post_ledger(s, user, op)
+    return post_ledger(s, user, op, bank_statement_import=True)

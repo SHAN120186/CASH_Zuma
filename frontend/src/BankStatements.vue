@@ -13,6 +13,7 @@ const props = defineProps({
   canImport: {type: Boolean, default: false},
   canReview: {type: Boolean, default: false},
   canPost: {type: Boolean, default: false},
+  canManageFee: {type: Boolean, default: false},
   canAllocate: {type: Boolean, default: false},
 });
 const emit = defineEmits(['changed']);
@@ -82,6 +83,14 @@ function invalidate() {
 }
 watch(() => [accountId.value, currency.value, feeCategoryId.value], () => { invalidate(); reprocessGeneration += 1; reprocessBusy.value = false; reprocessPreview.value = null; reprocessError.value = ''; reprocessNotice.value = ''; });
 watch(() => props.companyId, () => { invalidate(); reviewGeneration += 1; reviewOperation += 1; allocationGeneration += 1; allocationOperation += 1; outgoingGeneration += 1; outgoingOperation += 1; batchGeneration += 1; settingsGeneration += 1; reprocessGeneration += 1; feeTouched = false; feeSettingsError.value = ''; reviewBusy.value = allocationBusy.value = outgoingBusy.value = null; reprocessBusy.value = false; reviewActions.value = {}; matchActions.value = {}; duplicateActions.value = {}; transferActions.value = {}; allocationActions.value = {}; outgoingActions.value = {}; accountId.value = currency.value = feeCategoryId.value = selectedOldBatch.value = ''; reviews.value = []; unallocated.value = []; outgoingUnallocated.value = []; oldBatches.value = []; reprocessPreview.value = null; reviewsLoaded.value = allocationLoaded.value = outgoingLoaded.value = oldBatchesLoaded.value = false; loadReviews(); loadUnallocated(); loadUnallocatedOutgoing(); loadOldBatches(); loadFeeSettings(); });
+// Permissions may change without remounting the component. Discard any signed
+// preview as soon as access changes, and reload eligible batches when restored.
+watch(() => props.canPost, allowed => {
+  batchGeneration += 1; reprocessGeneration += 1; reprocessBusy.value = false;
+  oldBatches.value = []; oldBatchesLoaded.value = false; selectedOldBatch.value = '';
+  reprocessPreview.value = null; reprocessError.value = ''; reprocessNotice.value = '';
+  if (allowed) loadOldBatches();
+});
 
 async function loadFeeSettings() {
   if (!props.canImport && !props.canPost) return;
@@ -388,6 +397,7 @@ async function commit() {
         <label class="button secondary file-label" :class="{disabled: busy || reprocessBusy || !validSelection}">{{tx('Загрузить выписку')}}<input ref="fileInput" type="file" accept=".xls,.html,.htm" :disabled="busy || reprocessBusy || !validSelection" @change="upload"></label>
       </div>
       <label v-if="canImport || canPost" class="bank-category">{{tx('Статья банковских комиссий')}}<select v-model="feeCategoryId" :disabled="busy || reprocessBusy" @change="feeTouched = true; feeSettingsError = ''"><option value="">{{tx('Не выбрана — комиссии на проверку')}}</option><option v-for="c in feeCategories" :key="c.id" :value="String(c.id)">{{c.name}}</option></select></label>
+      <p v-if="canPost && !canManageFee" class="sub">{{tx('Выбор статьи комиссии не меняет общую настройку компании.')}}</p>
       <p v-if="feeSettingsError" class="error" role="alert">{{feeSettingsError}}</p>
       <p v-if="canImport && !canPost" class="sub">{{tx('Для проведения поступлений и комиссий требуется право записи операций.')}}</p>
       <p v-if="account && currency && !validSelection" class="error" role="alert">{{tx('Валюта выписки должна совпадать с валютой выбранного счёта.')}}</p>

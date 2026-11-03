@@ -276,9 +276,18 @@ def _evaluated(s, batch, lines, account, user, fee_category_id, *, reprocess=Fal
     outgoing = classify_unallocated_out(s, batch, lines, account, user, unallocated=True)
     fee_context = prepare_fee_context(s, batch, lines, account, fee_category_id)
     payment_candidates = classify_reprocess_payments(s, batch, lines, account, user) if reprocess else {}
+    # Bind even initial exact matches to the approval version the operator saw.
+    # The write transaction classifies and signs again; any intervening request
+    # edit invalidates confirmation instead of silently paying the new version.
+    request_ids = {line.request_id for line in lines
+                   if line.status == 'auto_pay_candidate' and line.request_id is not None}
+    request_versions = {req.id: req.version for req in s.scalars(
+        select(PaymentRequest).where(PaymentRequest.id.in_(request_ids)))} if request_ids else {}
     rows = []
     for line in lines:
         row = _line_data(line)
+        if line.request_id in request_versions and line.status == 'auto_pay_candidate':
+            row['request_version'] = request_versions[line.request_id]
         decision = payment_candidates.get(line.id) or incoming.get(line.id)
         if decision is None and line.direction == 'out':
             # Never replace an existing request match with a commission guess.
@@ -363,7 +372,8 @@ def _apply_fees(s, batch, lines, account, user, fee_category_id, evaluated):
         elif verdict['status'] == 'fee_candidate':
             try:
                 with s.begin_nested():
-                    entry = post_fee(s, batch, line, account, fee_category_id, user, evaluated['opening_matches'])
+                    entry = post_fee(s, batch, line, account, fee_category_id, user, evaluated['opening_matches'],
+                                     confirmed_decision=True)
                     line.status = 'auto_fee_posted'; line.ledger_id = entry.id
                     line.classification = 'bank_fee'; line.reason = ''
             except HTTPException as exc:
@@ -618,7 +628,7 @@ def statement_settings(request: Request):
 @router.get('/api/bank-statements/reprocess/batches')
 def reprocess_batches(request: Request):
     with unit() as s:
-        session_user(s, request, 'write')
+        session_user(s, request, ('write', 'pay_bank'))
         eligible = select(BankStatementLine.id).where(BankStatementLine.batch_id == BankStatementBatch.id,
             BankStatementLine.status.in_(('review', 'reviewed')), BankStatementLine.uncertain.is_(False)).exists()
         pending_batches = unreconciled_batch_ids(s)
@@ -647,7 +657,7 @@ def _reprocess_context(s, id):
 @router.post('/api/bank-statements/{id}/reprocess/preview')
 def reprocess_preview(id: int, data: ReprocessInput, request: Request):
     with unit() as s:
-        user, _ = session_user(s, request, 'write')
+        user, _ = session_user(s, request, ('write', 'pay_bank'))
         batch, account, lines = _reprocess_context(s, id)
         evaluated = _evaluated(s, batch, lines, account, user, data.fee_category_id, reprocess=True)
         return {**evaluated, 'preview_token': _preview_token(batch, account, user, evaluated, 'reprocess')}
@@ -658,7 +668,7 @@ def reprocess_commit(id: int, data: ReprocessConfirm, request: Request):
     if not data.confirm:
         raise HTTPException(422, 'Подтвердите повторную обработку выписки.')
     with unit(True) as s:
-        user, _ = session_user(s, request, 'write')
+        user, _ = session_user(s, request, ('write', 'pay_bank'))
         batch, account, lines = _reprocess_context(s, id)
         evaluated = _evaluated(s, batch, lines, account, user, data.fee_category_id, reprocess=True)
         expected = _preview_token(batch, account, user, evaluated, 'reprocess')

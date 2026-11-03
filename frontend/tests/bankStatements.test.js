@@ -209,6 +209,23 @@ test('reprocessing requires a current server preview and invalidates it when art
  assert.match(text(view.container),/Повторная проверка завершена/);
 });
 
+test('reprocess access changes discard stale previews and load eligible statements when restored',async t=>{
+ let resolveOld; let requests=0;
+ const api=async url=>{
+  if(url==='/api/bank-statements/settings')return {fee_category_id:null};
+  if(url==='/api/bank-statements/reprocess/batches'){
+   requests++; if(requests===1)return new Promise(resolve=>{resolveOld=resolve});
+   return {items:[{id:8,filename:'current.xls',currency:'UZS',period_from:'2026-10-30',period_to:'2026-10-30'}]};
+  }
+  return {items:[]};
+ };
+ const view=mount(component,{api,companyId:1,accounts,canPost:true});t.after(view.unmount);await settle();
+ assert.equal(requests,1);view.app._instance.props.canPost=false;await settle();
+ resolveOld({items:[{id:7,filename:'stale.xls'}]});await settle();assert.equal(view.state.oldBatches.length,0);
+ view.app._instance.props.canPost=true;await settle();assert.equal(requests,2);
+ assert.equal(view.state.oldBatches[0].id,8);assert.match(text(view.container),/Повторная проверка загруженной выписки/);
+});
+
 test('a stale preview must be reloaded before attempting another commit',async t=>{
  let attempts=0;const api=async(url)=>{if(url==='/api/bank-statements/reviews')return {items:[]};if(url==='/api/bank-statements/settings')return {fee_category_id:null};if(url.includes('/preview?'))return statement;if(url.endsWith('/commit')){attempts++;throw Object.assign(Error('changed'),{status:409})}throw Error('unexpected')};
  const view=mount(component,{api,companyId:1,accounts,canImport:true});t.after(view.unmount);await settle();view.state.accountId='21';view.state.currency='UZS';await settle();await view.state.upload(event());view.state.confirmAccount=true;view.state.confirmCurrency=true;await settle();await view.state.commit();await view.state.commit();
@@ -230,7 +247,7 @@ test('an earlier company response cannot restore its fee article after a company
  assert.equal(view.state.feeCategoryId,'5');
 });
 
-test('accountant can assign an unallocated receipt without general ledger write, but cannot reprocess a statement',async t=>{
+test('review-only permissions allow assigning an unallocated receipt but not reprocessing',async t=>{
  const calls=[],row={id:71,date:'2026-10-30',amount:'15',currency:'UZS',account_name:'Bank',correspondent_name:'Synthetic',document_number:'doc',category_id:8,edit_token:'token'};
  const api=async(url,options={})=>{calls.push([url,options]);if(url==='/api/bank-statements/reviews'||url==='/api/bank-statements/outgoing-unallocated')return {items:[]};if(url==='/api/bank-statements/income-unallocated')return {items:[row]};if(url.endsWith('/income-category'))return {};throw Error('unexpected')};
  const view=mount(component,{api,companyId:1,accounts,categories:[{id:9,name:'Income',type:'income'}],canReview:true,canAllocate:true,canPost:false,canImport:false});t.after(view.unmount);await settle();

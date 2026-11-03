@@ -468,11 +468,16 @@ def request_json(s,r,accounts=None,categories=None,users=None,batch=None):
             'project':r.project,'decision_note':r.decision_note,'overdue':r.due_date<today() and r.status in ('pending','approved'),
             'budget':budget_json(b),'budget_card':budget_card(s,c.id,str(r.due_date)[:7],a.currency,0 if r.status=='paid' else r.amount,r.id,base_state=card_base)}
 
-def post_ledger(s,u,data,*,bank_statement_fact=False):
+def post_ledger(s,u,data,*,bank_statement_fact=False,bank_statement_import=False):
     a=get(s,Account,data.account_id)
     if a.archived:raise HTTPException(409,'Счёт в архиве. Сначала восстановите его.')
     if 'write' not in perms_of(u) and (data.kind!='out' or not data.request_id):
-        raise HTTPException(403,'Плательщик фиксирует только оплату утверждённой заявки: поступления, переводы и расход без заявки недоступны.')
+        # A private, server-only capability used exclusively by the confirmed,
+        # fully reconciled statement processors. It is not an API input field.
+        from .bank_statement_permissions import can_post_statement
+        if not (bank_statement_import and 'pay_bank' in perms_of(u) and can_post_statement(u)
+                and a.kind=='bank' and data.kind in ('in','out') and not data.request_id and not data.to_account_id):
+            raise HTTPException(403,'Плательщик фиксирует только оплату утверждённой заявки: поступления, переводы и расход без заявки недоступны.')
     req=None
     if data.request_id:
         # Право и разделение обязанностей проверяются до любых сведений о заявке.

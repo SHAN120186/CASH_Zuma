@@ -49,6 +49,14 @@ class UnallocatedOutTests(IncomingTests):
             self.assertEqual(account_balance(s,account),before-120000)
             self.assertEqual(len(list(s.scalars(select(Ledger)))),2)
 
+    def test_bank_payer_cannot_post_without_reviewed_decision(self):
+        with unit(True) as s:
+            batch,lines,account,user,cat=self.prepare_out(s)
+            user._permissions=frozenset({'ledger','pay_bank'})
+            self.assertEqual(classify_unallocated_out(s,batch,lines,account,user,cat.id)[lines[0].id]['status'],'outgoing_candidate')
+            self.assertEqual(process_unallocated_out(s,batch,lines,account,user,cat.id)['review'],1)
+            self.assertIsNone(s.scalar(select(Ledger.id)))
+
     def test_own_inn_missing_inn_known_own_account_or_transfer_stay_review(self):
         with unit(True) as s:
             batch,lines,account,user,cat=self.prepare_out(s)
@@ -127,9 +135,9 @@ class UnallocatedOutTests(IncomingTests):
             self.assertEqual(classify_unallocated_out(s,batch,lines,account,user,cat.id)[line.id]['status'],'review')
             batch.opening-=1;batch.source_ready=False
             self.assertEqual(classify_unallocated_out(s,batch,lines,account,user,cat.id)[line.id]['status'],'review')
-            batch.source_ready=True;user.role='accountant'
+            batch.source_ready=True;user._permissions=frozenset({'ledger','pay_cash'})
             self.assertEqual(process_unallocated_out(s,batch,lines,account,user,cat.id)['review'],1)
-            user.role='admin'
+            del user._permissions
             with self.assertRaises(HTTPException):classify_unallocated_out(s,batch,lines,account,user,999999)
             ordinary=s.scalar(select(Category).where(Category.company_id==self.company,Category.type=='outcome',Category.activity!='unclassified'))
             with self.assertRaises(HTTPException):classify_unallocated_out(s,batch,lines,account,user,ordinary.id)

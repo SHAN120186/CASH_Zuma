@@ -88,9 +88,9 @@ class FeeTests(unittest.TestCase):
         self.assertIsNone(self.classify())
         self.line.reviewed_by = self.user.id; self.s.flush()
         self.assertEqual(self.classify(opening_ok=False)['status'], 'review')
-        self.user.role = 'accountant'
+        self.user._permissions = frozenset({'ledger','pay_cash'})
         self.assertEqual(self.classify()['status'], 'review')
-        self.user.role = 'finance'
+        del self.user._permissions
         req = PaymentRequest(creator_id=self.user.id, category_id=self.cat.id, account_id=self.account.id,
             counterparty='Synthetic', counterparty_inn='300000123', purpose='Synthetic request', amount=self.line.amount,
             due_date=today(), status='draft')
@@ -112,6 +112,13 @@ class FeeTests(unittest.TestCase):
             post_fee(self.s, self.batch, self.line, self.account, self.cat.id, self.user, True)
         self.assertEqual(len(list(self.s.scalars(select(Ledger)))), 1)
 
+    def test_bank_payer_cannot_post_fee_without_confirmed_decision(self):
+        self.user._permissions = frozenset({'ledger','pay_bank'})
+        with self.assertRaises(HTTPException) as result:
+            post_fee(self.s, self.batch, self.line, self.account, self.cat.id, self.user, True)
+        self.assertEqual(result.exception.status_code,403)
+        self.assertIsNone(self.s.scalar(select(Ledger.id)))
+
     def test_scope_type_owner_balance_and_permissions_are_mandatory(self):
         for kwargs in ({'category_id':None}, {'category_id':self.income.id},
                        {'category_id':self.foreign.id}, {'opening_ok':False}):
@@ -119,9 +126,10 @@ class FeeTests(unittest.TestCase):
         self.line.correspondent_inn = '300000099'
         self.assertEqual(self.classify()['status'], 'review')
         self.line.correspondent_inn = self.batch.owner_inn
-        self.user.role = 'accountant'
+        self.user._permissions = frozenset({'ledger','pay_cash'})
         self.assertEqual(self.classify()['status'], 'review')
-        self.user.role = 'finance'; self.user._sections = {'ledger': 'view'}
+        del self.user._permissions
+        self.user._sections = {'ledger': 'view'}
         self.assertEqual(self.classify()['status'], 'review')
 
     def test_duplicate_bank_lines_and_requests_block_candidate(self):
