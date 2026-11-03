@@ -444,3 +444,10 @@ test('hidden Operations rejects navigation and never loads statement reviews',as
  Object.assign(view.state,{user:restricted,boot:bootstrapBody(restricted),page:'home'});await settle();
  await view.state.go('ledger');await settle();assert.equal(view.state.page,'home');assert.ok(!calls.some(url=>url==='/api/bank-statements/reviews'));assert.doesNotMatch(text(view.container),/Операции для проверки бухгалтера/);
 });
+
+test('statement deletion controls are shown only to holding administrators',async t=>{
+ const calls=[];const {view}=await fixture(t,async url=>{calls.push(url);return {ok:true,status:200,json:async()=>({items:[]})}},bankApp);
+ const accountant={...user,role:'accountant',company_role:'accountant',permissions:['view','ledger','pay_bank']};
+ Object.assign(view.state,{user:accountant,page:'ledger'});await settle();assert.doesNotMatch(text(view.container),/Удаление выписки администратором/);assert.equal(calls.some(url=>url.includes('/admin/batches')),false);
+ view.state.user={...accountant,holding_role:'admin',role:'admin',permissions:['view','ledger','write','pay_bank']};await settle();assert.match(text(view.container),/Удаление выписки администратором/);assert.ok(calls.some(url=>url.includes('/admin/batches')));
+});

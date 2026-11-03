@@ -346,3 +346,61 @@ test('overview warns on unreconciled accounts in selected currency and links to 
  const button=find(view.container,node=>node.tag==='button'&&text(node).includes('Перейти к операциям'));assert.ok(button);button.props.onClick();assert.equal(destination,'ledger');
  view.state.s.activeAccounts[1].unreconciled_statements=0;await settle();assert.doesNotMatch(text(view.container),/Остаток сайта не сверен/);
 });
+
+test('only holding admin can review and delete a statement with an explicit reason and confirmation',async t=>{
+ const calls=[];let changed=0;
+ const batch={id:73,filename:'synthetic.xls',account_name:'Synthetic bank',currency:'UZS',period_from:'2026-10-30',period_to:'2026-10-30',operation_count:2,linked_count:1,delete_token:'snapshot-token'};
+ let items=[batch];
+ const api=async(url,options={})=>{calls.push([url,options]);if(url==='/api/bank-statements/admin/batches')return {items};if(url==='/api/bank-statements/73/delete-preview')return batch;if(url==='/api/bank-statements/73/delete'){items=[];return {ok:true}};return {items:[]}};
+ const viewer=mount(component,{api,companyId:1,accounts,canDeleteStatements:false});t.after(viewer.unmount);await settle();
+ assert.doesNotMatch(text(viewer.container),/Удаление выписки администратором/);await viewer.state.selectDeleteBatch(batch);await viewer.state.deleteStatement();assert.equal(calls.some(([url])=>url.includes('/admin/batches')||url.endsWith('/delete')),false);
+ const view=mount(component,{api,companyId:1,accounts,canDeleteStatements:true,onChanged:()=>changed++});t.after(view.unmount);await settle();
+ assert.match(text(view.container),/synthetic.xls/);assert.match(text(view.container),/Создано выпиской: 2/);assert.match(text(view.container),/Ранее существовало: 1/);
+ await view.state.selectDeleteBatch(batch);view.state.deleteConfirmed=true;view.state.deleteReason='коротко';await view.state.deleteStatement();assert.equal(calls.filter(([url])=>url.endsWith('/delete')).length,0);
+ view.state.deleteReason='Тестовое обоснование';view.state.deleteConfirmed=false;await view.state.deleteStatement();assert.equal(calls.filter(([url])=>url.endsWith('/delete')).length,0);
+ view.state.deleteConfirmed=true;await view.state.deleteStatement();await settle();
+ assert.deepEqual(JSON.parse(calls.find(([url])=>url.endsWith('/delete'))[1].body),{confirm:true,reason:'Тестовое обоснование',expected:'snapshot-token'});
+ assert.equal(changed,1);assert.match(text(view.container),/Выписка удалена, её операции отменены/);assert.doesNotMatch(text(view.container),/synthetic.xls/);
+});
+
+test('statement deletion after an uncertain response is not repeated before a fresh read',async t=>{
+ let attempts=0;const batch={id:73,filename:'synthetic.xls',account_name:'Synthetic',currency:'UZS',period_from:'2026-10-30',period_to:'2026-10-30',operation_count:1,linked_count:0,delete_token:'version'};
+ const api=async(url)=>{if(url==='/api/bank-statements/admin/batches')return {items:[batch]};if(url.endsWith('/delete-preview'))return batch;if(url.endsWith('/delete')){attempts++;throw Error('network')};return {items:[]}};
+ const view=mount(component,{api,companyId:1,accounts,canDeleteStatements:true});t.after(view.unmount);await settle();
+ await view.state.selectDeleteBatch(batch);view.state.deleteReason='Тестовая причина удаления';view.state.deleteConfirmed=true;
+ await view.state.deleteStatement();await view.state.deleteStatement();assert.equal(attempts,1);assert.match(text(view.container),/Ответ об удалении не получен/);
+ await view.state.loadAdminBatches();assert.equal(view.state.deleteUncertain,false);assert.equal(view.state.deleteBatchId,null);
+});
+
+test('admin statement list and deletion completion are scoped to the current company',async t=>{
+ let resolveFirst,resolveDelete;const calls=[];const batch={id:73,filename:'one.xls',account_name:'Synthetic',currency:'UZS',period_from:'2026-10-30',period_to:'2026-10-30',operation_count:1,linked_count:0,delete_token:'v'};
+ let read=0,changed=0;const api=async(url)=>{calls.push(url);if(url==='/api/bank-statements/admin/batches'){read++;if(read===1)return new Promise(resolve=>resolveFirst=resolve);return {items:[{...batch,id:74,filename:'two.xls'}]}}if(url.endsWith('/delete-preview'))return {...batch,id:74,filename:'two.xls'};if(url.endsWith('/delete'))return new Promise(resolve=>resolveDelete=resolve);return {items:[]}};
+ const view=mount(component,{api,companyId:1,accounts,canDeleteStatements:true,onChanged:()=>changed++});t.after(view.unmount);await settle();
+ view.app._instance.props.companyId=2;await settle();resolveFirst({items:[batch]});await settle();assert.match(text(view.container),/two.xls/);assert.doesNotMatch(text(view.container),/one.xls/);
+ await view.state.selectDeleteBatch({...batch,id:74,filename:'two.xls'});view.state.deleteReason='Подробная причина';view.state.deleteConfirmed=true;const pending=view.state.deleteStatement();await settle();view.app._instance.props.companyId=3;await settle();resolveDelete({ok:true});await pending;await settle();assert.equal(changed,0);assert.doesNotMatch(text(view.container),/Выписка удалена/);
+});
+
+test('statement deletion actions are translated to Uzbek',async t=>{
+ const previous=lang.value;setLang('uz');t.after(()=>setLang(previous));
+ const api=async url=>url==='/api/bank-statements/admin/batches'?{items:[]}:{items:[]};const view=mount(component,{api,companyId:1,accounts,canDeleteStatements:true});t.after(view.unmount);await settle();assert.match(text(view.container),/Administrator tomonidan bank ko‘chirmasini o‘chirish/);assert.match(text(view.container),/Yuklangan ko‘chirmalar yo‘q/);
+});
+
+test('revoking admin access discards statement deletion controls and prevents submission',async t=>{
+ const calls=[];const batch={id:73,filename:'synthetic.xls',account_name:'Synthetic',currency:'UZS',period_from:'2026-10-30',period_to:'2026-10-30',operation_count:1,linked_count:0,delete_token:'version'};
+ const api=async(url)=>{calls.push(url);return url==='/api/bank-statements/admin/batches'?{items:[batch]}:url.endsWith('/delete-preview')?batch:{items:[]}};
+ const view=mount(component,{api,companyId:1,accounts,canDeleteStatements:true});t.after(view.unmount);await settle();await view.state.selectDeleteBatch(batch);view.state.deleteReason='Подробная причина';view.state.deleteConfirmed=true;
+ view.app._instance.props.canDeleteStatements=false;await settle();assert.doesNotMatch(text(view.container),/Удаление выписки администратором/);await view.state.deleteStatement();assert.equal(calls.some(url=>url.endsWith('/delete')),false);
+});
+
+test('a server error during deletion requires a refreshed list before retry',async t=>{
+ let attempts=0;const batch={id:73,filename:'synthetic.xls',status:'committed',account_name:'Synthetic',currency:'UZS',period_from:'2026-10-30',period_to:'2026-10-30',operation_count:1,linked_count:0,delete_token:'version'};
+ const api=async url=>{if(url==='/api/bank-statements/admin/batches')return {items:[batch]};if(url.endsWith('/delete-preview'))return batch;if(url.endsWith('/delete')){attempts++;throw Object.assign(Error('server'),{status:500})}return {items:[]}};
+ const view=mount(component,{api,companyId:1,accounts,canDeleteStatements:true});t.after(view.unmount);await settle();await view.state.selectDeleteBatch(batch);view.state.deleteReason='Подробная причина';view.state.deleteConfirmed=true;
+ await view.state.deleteStatement();await view.state.deleteStatement();assert.equal(attempts,1);assert.equal(view.state.deleteUncertain,true);
+});
+
+test('late deletion preview cannot be applied to another company',async t=>{
+ let finish;const batch={id:73,filename:'one.xls',status:'committed',account_name:'Synthetic',currency:'UZS',period_from:'2026-10-30',period_to:'2026-10-30',operation_count:1,linked_count:0};
+ const api=async url=>url==='/api/bank-statements/admin/batches'?{items:[batch]}:url.endsWith('/delete-preview')?new Promise(resolve=>finish=resolve):{items:[]};
+ const view=mount(component,{api,companyId:1,accounts,canDeleteStatements:true});t.after(view.unmount);await settle();const pending=view.state.selectDeleteBatch(batch);await settle();view.app._instance.props.companyId=2;await settle();finish({...batch,delete_token:'old-company'});await pending;await settle();assert.equal(view.state.deletePreview,null);assert.equal(view.state.deleteBatchId,null);assert.doesNotMatch(text(view.container),/Подтвердите удаление выписки/);
+});

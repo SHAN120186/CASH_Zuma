@@ -852,6 +852,139 @@ def delete_ledger(id:int,data:LedgerDeleteIn,request:Request):
         log(s,u,'Удалена операция','ledger',t.id,json.dumps(entry,ensure_ascii=False))
         return {'id':t.id,'deleted':True,'ids':entry['ids']}
 
+# Statement deletion is a separate, holding-administrator-only operation.
+# The original statement and both sides of the reversals remain as audit data.
+class BankStatementDeleteIn(BaseModel):
+    model_config=ConfigDict(extra='forbid')
+    confirm:bool
+    reason:str=Field(min_length=10,max_length=1000)
+    expected:str=Field(pattern=r'^[0-9a-f]{64}$')
+
+def _statement_delete_snapshot(s,batch):
+    import hashlib
+    from .bank_statement_models import BankStatementBatch, BankStatementLine
+    owned_statuses={'auto_paid','manual_paid','auto_income_posted','auto_fee_posted','auto_outgoing_posted'}
+    lines=list(s.scalars(select(BankStatementLine).where(BankStatementLine.batch_id==batch.id).order_by(BankStatementLine.id)))
+    owned={line.ledger_id for line in lines if line.status in owned_statuses and line.ledger_id}
+    ledger={entry.id:entry for entry in s.scalars(select(Ledger).where(Ledger.id.in_(owned)))} if owned else {}
+    registry=ledger_deletion_registry(s)
+    reversals={entry.reversal_of:entry.id for entry in s.scalars(select(Ledger).where(Ledger.reversal_of.in_(owned)))} if owned else {}
+    request_ids={entry.request_id for entry in ledger.values() if entry.request_id}
+    receipt_ids={entry.receipt_id for entry in ledger.values() if entry.receipt_id}
+    requests={str(item.id):{'status':item.status,'version':item.version} for item in s.scalars(select(PaymentRequest).where(PaymentRequest.id.in_(request_ids)))} if request_ids else {}
+    receipts={str(item.id):{'status':item.status,'version':item.version} for item in s.scalars(select(Receipt).where(Receipt.id.in_(receipt_ids)))} if receipt_ids else {}
+    guard=s.get(Setting,f'bsu:{batch.company_id}:{batch.account_id}:{batch.id}')
+    account=get(s,Account,batch.account_id)
+    links=list(s.execute(select(BankStatementLine.id,BankStatementLine.ledger_id).join(BankStatementBatch,
+        BankStatementBatch.id==BankStatementLine.batch_id).where(BankStatementBatch.status=='committed',
+        BankStatementBatch.id!=batch.id,BankStatementLine.ledger_id.in_(owned)))) if owned else []
+    # Snapshot every other statement whose balance could change; the transaction
+    # compares its actual opening/closing after reversal before allowing delete.
+    later=list(s.scalars(select(BankStatementBatch).where(BankStatementBatch.status=='committed',
+        BankStatementBatch.id!=batch.id,BankStatementBatch.account_id==batch.account_id,
+        BankStatementBatch.period_to>=batch.period_from).order_by(BankStatementBatch.id))) if batch.status=='committed' else []
+    payload={'batch':{'id':batch.id,'company_id':batch.company_id,'account_id':batch.account_id,'status':batch.status,
+        'sha256':batch.sha256,'period_from':str(batch.period_from),'period_to':str(batch.period_to)},
+        'lines':[{k:str(getattr(line,k)) for k in ('id','status','ledger_id','request_id','fingerprint','date','amount','direction','classification','include_in_daily')} for line in lines],
+        'ledgers':{str(id):ledger_edit_token(entry) for id,entry in ledger.items()},
+        'reversals':reversals,'deleted':{str(id):registry.get(str(id)) for id in owned if str(id) in registry},
+        'requests':requests,'receipts':receipts,'guard':guard.value if guard else None,
+        'account':{'opening':account.opening,'opening_date':str(account.opening_date),'currency':account.currency,
+            'archived':account.archived,'balance':account_balance(s,account)},
+        'external_links':sorted((int(a),int(b)) for a,b in links),
+        'dependent_statements':[(other.id,str(other.period_from),str(other.period_to)) for other in later]}
+    token=hashlib.sha256(json.dumps(payload,ensure_ascii=False,sort_keys=True,separators=(',',':')).encode()).hexdigest()
+    return lines,ledger,registry,reversals,links,later,token
+
+@app.get('/api/bank-statements/admin/batches')
+def statement_admin_batches(request:Request):
+    from .bank_statement_models import BankStatementBatch, BankStatementLine
+    with unit() as s:
+        u,_=session_user(s,request,'write')
+        if u.role!='admin':raise HTTPException(403,'Выписки удаляет только администратор холдинга.')
+        batches=list(s.execute(select(BankStatementBatch,Account).join(Account,Account.id==BankStatementBatch.account_id)
+            .where(BankStatementBatch.status.in_(('preview','committed'))).order_by(BankStatementBatch.id.desc())))
+        items=[]
+        owned_statuses={'auto_paid','manual_paid','auto_income_posted','auto_fee_posted','auto_outgoing_posted'}
+        # Read only the fields required for counts, in one query for the whole
+        # company. The expensive signed state is built when an admin opens one row.
+        grouped={}
+        for batch_id,status,ledger_id in s.execute(select(BankStatementLine.batch_id,BankStatementLine.status,BankStatementLine.ledger_id)
+            .join(BankStatementBatch,BankStatementBatch.id==BankStatementLine.batch_id)
+            .where(BankStatementBatch.status.in_(('preview','committed')),BankStatementLine.ledger_id.is_not(None))):
+            owned_ids,linked_ids=grouped.setdefault(batch_id,(set(),set()))
+            (owned_ids if status in owned_statuses else linked_ids).add(ledger_id)
+        for batch,account in batches:
+            owned_ids,linked_ids=grouped.get(batch.id,(set(),set()))
+            items.append({'id':batch.id,'filename':batch.filename,'status':batch.status,'account_name':account.name,
+                'currency':batch.currency,'period_from':str(batch.period_from),'period_to':str(batch.period_to),
+                'operation_count':len(owned_ids),'linked_count':len(linked_ids-owned_ids)})
+        return {'items':items}
+
+@app.get('/api/bank-statements/{id}/delete-preview')
+def statement_admin_delete_preview(id:int,request:Request):
+    from .bank_statement_models import BankStatementBatch
+    with unit() as s:
+        u,_=session_user(s,request,'write')
+        if u.role!='admin':raise HTTPException(403,'Выписки удаляет только администратор холдинга.')
+        batch=get(s,BankStatementBatch,id)
+        if batch.status not in ('preview','committed'):raise HTTPException(409,'Выписка уже удалена или недоступна.')
+        account=get(s,Account,batch.account_id)
+        lines,ledger,registry,reversals,links,later,token=_statement_delete_snapshot(s,batch)
+        owned={line.ledger_id for line in lines if line.status in {'auto_paid','manual_paid','auto_income_posted','auto_fee_posted','auto_outgoing_posted'} and line.ledger_id}
+        linked={line.ledger_id for line in lines if line.ledger_id and line.ledger_id not in owned}
+        return {'id':batch.id,'filename':batch.filename,'status':batch.status,'account_name':account.name,'currency':batch.currency,
+            'period_from':str(batch.period_from),'period_to':str(batch.period_to),'operation_count':len(owned),
+            'linked_count':len(linked),'delete_token':token}
+
+@app.post('/api/bank-statements/{id}/delete')
+def statement_admin_delete(id:int,data:BankStatementDeleteIn,request:Request):
+    from .bank_statement_models import BankStatementBatch
+    if not data.confirm or len(data.reason.strip())<10:
+        raise HTTPException(422,'Подтвердите удаление и укажите причину (не менее 10 символов).')
+    with unit(True) as s:
+        u,_=session_user(s,request,'write')
+        if u.role!='admin':raise HTTPException(403,'Выписки удаляет только администратор холдинга.')
+        batch=get(s,BankStatementBatch,id)
+        if batch.status not in ('preview','committed'):raise HTTPException(409,'Выписка уже удалена или недоступна.')
+        lines,ledger,registry,reversals,links,later,token=_statement_delete_snapshot(s,batch)
+        if not secrets.compare_digest(token,data.expected):raise HTTPException(409,'Выписка или её операции изменились. Обновите список.')
+        if links:raise HTTPException(409,'Операция связана с другой выпиской. Сначала проверьте эту связь.')
+        account=get(s,Account,batch.account_id)
+        other_balances={other.id:(day_start_balance(s,account,other.period_from),account_balance(s,account,other.period_to)) for other in later}
+        owned_lines=[line for line in lines if line.status in {'auto_paid','manual_paid','auto_income_posted','auto_fee_posted','auto_outgoing_posted'}]
+        for line in owned_lines:
+            entry=ledger.get(line.ledger_id)
+            if not entry or entry.account_id!=batch.account_id or entry.date!=line.date or entry.amount!=line.amount or entry.reference!='BANK-'+line.fingerprint or entry.kind!=line.direction:
+                raise HTTPException(409,'Созданная выпиской операция изменилась. Проверьте её вручную.')
+            if entry.id in reversals and str(entry.id) not in registry:
+                raise HTTPException(409,'Операция уже сторнирована или исправлена. Проверьте её вручную перед удалением выписки.')
+        # Removing expense before income avoids a spurious intermediate cash
+        # shortage. Each existing reversal still checks historical balances and reservations.
+        removed=[]
+        try:
+            for entry in sorted(ledger.values(),key=lambda e:(e.kind!='out',e.date,e.id)):
+                if str(entry.id) in registry:continue
+                before={k:str(getattr(entry,k)) for k in ('account_id','to_account_id','category_id','kind','amount','date','counterparty','reference','note','request_id','receipt_id')}
+                inverse=reverse_ledger_entry(s,u,entry,data.reason.strip(),allow_archived=True)
+                info={'ids':[entry.id,inverse.id],'reason':data.reason.strip(),'deleted_by':u.id,'deleted_at':str(now()),'before':before,'bank_statement_id':batch.id}
+                registry[str(entry.id)]=info;removed.append(entry.id)
+                log(s,u,'Удалена операция из выписки','ledger',entry.id,json.dumps(info,ensure_ascii=False))
+            for other in later:
+                if other_balances[other.id]!=(day_start_balance(s,account,other.period_from),account_balance(s,account,other.period_to)):
+                    raise HTTPException(409,'Изменится остаток другой подтверждённой выписки. Сначала удалите её или сверьте с бухгалтером.')
+        except HTTPException as exc:
+            raise HTTPException(409,'Выписка не удалена: после отмены её операций нарушится остаток, резерв или связанная заявка. '+str(exc.detail))
+        row=get_setting(s,'ledger_deletions')
+        if row:row.value=json.dumps(registry,ensure_ascii=False)
+        elif removed:s.add(Setting(key=setting_key(s,'ledger_deletions'),value=json.dumps(registry,ensure_ascii=False)))
+        marker=s.get(Setting,f'bsu:{batch.company_id}:{batch.account_id}:{batch.id}')
+        if marker:s.delete(marker)
+        batch.status='deleted'
+        log(s,u,'Удалена банковская выписка','bank_statement',batch.id,json.dumps({'reason':data.reason.strip(),
+            'removed_ledger_ids':removed,'preserved_linked':sum(1 for line in lines if line.ledger_id and line.ledger_id not in ledger)},ensure_ascii=False))
+        return {'deleted':True,'removed_operations':len(removed)}
+
 @app.get('/api/report')
 def operational_report(request:Request,year:int=2026,currency:Literal['UZS','USD','EUR']='UZS',company_id:int|None=None,scenario:Literal['A','B','V']='A',as_of:date|None=None):
     if not 2000<=year<=2100:raise HTTPException(422,'Некорректный год.')

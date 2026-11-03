@@ -15,6 +15,7 @@ const props = defineProps({
   canPost: {type: Boolean, default: false},
   canManageFee: {type: Boolean, default: false},
   canAllocate: {type: Boolean, default: false},
+  canDeleteStatements: {type: Boolean, default: false},
 });
 const emit = defineEmits(['changed']);
 const accountId = ref(''), currency = ref(''), preview = ref(null), busy = ref(false), error = ref(''), notice = ref('');
@@ -23,6 +24,8 @@ const reviewActions = ref({}), matchActions = ref({}), duplicateActions = ref({}
 const feeCategoryId = ref(''), unallocated = ref([]), allocationActions = ref({}), allocationBusy = ref(null), allocationError = ref(''), allocationLoaded = ref(false);
 const outgoingUnallocated = ref([]), outgoingActions = ref({}), outgoingBusy = ref(null), outgoingError = ref(''), outgoingLoaded = ref(false);
 const oldBatches = ref([]), oldBatchesLoaded = ref(false), selectedOldBatch = ref(''), reprocessPreview = ref(null), reprocessBusy = ref(false), reprocessError = ref(''), reprocessNotice = ref('');
+const adminBatches = ref([]), adminLoaded = ref(false), adminBusy = ref(false), adminError = ref(''), adminNotice = ref('');
+const deleteBatchId = ref(null), deletePreview = ref(null), deleteReason = ref(''), deleteConfirmed = ref(false), deleteUncertain = ref(false);
 const feeSettingsError = ref('');
 const reviewsLoaded = ref(false), uncertain = ref(false), fileInput = ref(null);
 const bankAccounts = computed(() => props.accounts.filter(a => a.kind === 'bank' && !a.archived));
@@ -75,6 +78,7 @@ const unallocatedNames = new Set([N_('Не распределено — пост
 const categoryName = row => {const name = row.category_name || props.categories.find(c => c.id === row.category_id)?.name || ''; return unallocatedNames.has(name) ? tx(name) : name || (['unclassified','unclassified_out'].includes(row.category_source) ? tx('Не распределено') : '');};
 const reviewErrorMessage = e => e?.status && e.message ? e.message : N_('Не удалось выполнить проверку. Обновите список и повторите.');
 let generation = 0, reviewGeneration = 0, reviewOperation = 0, allocationGeneration = 0, allocationOperation = 0, outgoingGeneration = 0, outgoingOperation = 0, batchGeneration = 0, settingsGeneration = 0, reprocessGeneration = 0, feeTouched = false;
+let adminGeneration = 0;
 
 function invalidate() {
   generation += 1;
@@ -91,6 +95,60 @@ watch(() => props.canPost, allowed => {
   reprocessPreview.value = null; reprocessError.value = ''; reprocessNotice.value = '';
   if (allowed) loadOldBatches();
 });
+
+watch(() => [props.companyId, props.canDeleteStatements], () => {
+  adminGeneration += 1; adminBusy.value = false; adminBatches.value = []; adminLoaded.value = false;
+  adminError.value = ''; adminNotice.value = ''; deleteBatchId.value = null; deletePreview.value = null;
+  deleteReason.value = ''; deleteConfirmed.value = false; deleteUncertain.value = false;
+  if (props.canDeleteStatements && props.companyId) loadAdminBatches();
+});
+
+async function loadAdminBatches() {
+  if (!props.canDeleteStatements || !props.companyId || adminBusy.value) return;
+  const current = ++adminGeneration;
+  try {
+    const result = await props.api('/api/bank-statements/admin/batches');
+    if (current !== adminGeneration) return;
+    adminBatches.value = Array.isArray(result.items) ? result.items : [];
+    adminLoaded.value = true; adminError.value = ''; deleteUncertain.value = false;
+    deleteBatchId.value = null; deletePreview.value = null; deleteReason.value = ''; deleteConfirmed.value = false;
+  } catch (e) {if (current === adminGeneration) {adminLoaded.value = false; adminError.value = e.message || tx('Не удалось загрузить список выписок.');}}
+}
+
+async function selectDeleteBatch(batch) {
+  if (!props.canDeleteStatements || adminBusy.value || deleteUncertain.value || !adminBatches.value.some(item => item.id === batch.id)) return;
+  const current = adminGeneration, company = props.companyId;
+  deleteBatchId.value = null; deletePreview.value = null; deleteReason.value = ''; deleteConfirmed.value = false; adminError.value = ''; adminNotice.value = ''; adminBusy.value = true;
+  try {
+    const result = await props.api(`/api/bank-statements/${encodeURIComponent(batch.id)}/delete-preview`);
+    if (current !== adminGeneration || props.companyId !== company || !props.canDeleteStatements) return;
+    if (result?.id !== batch.id || !result.delete_token) throw new Error(tx('Выписка изменилась. Обновите список и повторите.'));
+    deletePreview.value = result; deleteBatchId.value = batch.id;
+  } catch (e) {if (current === adminGeneration && props.companyId === company) adminError.value = e.message || tx('Не удалось проверить выписку перед удалением.');}
+  finally {if (current === adminGeneration) adminBusy.value = false;}
+}
+
+async function deleteStatement() {
+  const batch = deletePreview.value;
+  if (batch?.id !== deleteBatchId.value) return;
+  if (!props.canDeleteStatements || adminBusy.value || deleteUncertain.value || !batch?.delete_token || !deleteConfirmed.value || deleteReason.value.trim().length < 10) return;
+  const current = adminGeneration, company = props.companyId;
+  adminBusy.value = true; adminError.value = ''; adminNotice.value = '';
+  try {
+    await props.api(`/api/bank-statements/${encodeURIComponent(batch.id)}/delete`, {
+      method: 'POST', headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({confirm: true, reason: deleteReason.value.trim(), expected: batch.delete_token}),
+    });
+    if (current !== adminGeneration || props.companyId !== company) return;
+    adminBusy.value = false; adminNotice.value = tx('Выписка удалена, её операции отменены.');
+    await Promise.all([loadAdminBatches(), loadReviews(), loadUnallocated(), loadUnallocatedOutgoing(), loadOldBatches()]);
+    if (props.companyId === company && props.canDeleteStatements) emit('changed');
+  } catch (e) {
+    if (current !== adminGeneration || props.companyId !== company) return;
+    if (!e?.status || e.status >= 500) {deleteUncertain.value = true; adminError.value = tx('Ответ об удалении не получен. Обновите список, прежде чем повторить действие.');}
+    else adminError.value = e.message || tx('Не удалось удалить выписку.');
+  } finally {if (current === adminGeneration) adminBusy.value = false;}
+}
 
 async function loadFeeSettings() {
   if (!props.canImport && !props.canPost) return;
@@ -314,8 +372,8 @@ async function saveReview(row) {
   } catch (e) { if (current === reviewGeneration) reviewError.value = reviewErrorMessage(e); }
   finally { if (operation === reviewOperation) reviewBusy.value = null; }
 }
-onMounted(() => {loadReviews(); loadUnallocated(); loadUnallocatedOutgoing(); loadOldBatches(); loadFeeSettings();});
-onUnmounted(() => {generation += 1; reviewGeneration += 1; reviewOperation += 1; allocationGeneration += 1; allocationOperation += 1; outgoingGeneration += 1; outgoingOperation += 1; batchGeneration += 1; settingsGeneration += 1; reprocessGeneration += 1;});
+onMounted(() => {loadReviews(); loadUnallocated(); loadUnallocatedOutgoing(); loadOldBatches(); loadFeeSettings(); if (props.canDeleteStatements) loadAdminBatches();});
+onUnmounted(() => {generation += 1; reviewGeneration += 1; reviewOperation += 1; allocationGeneration += 1; allocationOperation += 1; outgoingGeneration += 1; outgoingOperation += 1; batchGeneration += 1; settingsGeneration += 1; reprocessGeneration += 1; adminGeneration += 1;});
 watch(selectedOldBatch, () => {reprocessGeneration += 1; reprocessBusy.value = false; reprocessPreview.value = null; reprocessError.value = ''; reprocessNotice.value = '';});
 
 async function upload(event) {
@@ -387,6 +445,25 @@ async function commit() {
       <p class="sub">{{tx('Автоматически сопоставляется только единственная заявка с теми же счётом, суммой, ИНН и плановой датой оплаты.')}}</p>
       <p class="sub">{{tx('Внешние поступления и списания без определённой статьи относятся к «Не распределено». Возможные собственные переводы, неясные комиссии, заявки и повторы остаются на проверке.')}}</p>
       <p class="sub">{{tx('Автоматически распознаются только явно отмеченные комиссии SWIFT в формате этого банка. Проценты и прочие удержания остаются на проверке.')}}</p>
+      <details v-if="canDeleteStatements" class="review-list">
+        <summary>{{tx('Удаление выписки администратором')}}</summary>
+        <p class="sub">{{tx('Удаление отменяет операции, созданные этой выпиской, и их влияние на остатки и отчёты. Ранее существовавшие связанные операции сохраняются.')}}</p>
+        <p class="sub">{{tx('Оплаченные заявки и подтверждённые поступления вернутся к предыдущему состоянию, если их оплата была создана этой выпиской. История действий сохраняется.')}}</p>
+        <button type="button" class="secondary tiny" :disabled="adminBusy" @click="loadAdminBatches">{{tx('Обновить список выписок')}}</button>
+        <p v-if="adminError" class="error" role="alert">{{tx(adminError)}}</p><p v-if="adminNotice" role="status">{{adminNotice}}</p>
+        <p v-if="adminLoaded && !adminBatches.length" class="sub">{{tx('Загруженных выписок нет.')}}</p>
+        <div v-if="adminBatches.length" class="table-scroll"><table><thead><tr><th>{{tx('Выписка')}}</th><th>{{tx('Счёт')}}</th><th>{{tx('Период')}}</th><th>{{tx('Операции')}}</th><th></th></tr></thead><tbody>
+          <tr v-for="batch in adminBatches" :key="batch.id"><td>{{batch.filename}}<small v-if="batch.status === 'preview'">{{tx('Предпросмотр')}}</small><small v-else-if="batch.status === 'committed'">{{tx('Подтверждена')}}</small></td><td>{{batch.account_name}} · {{batch.currency}}</td><td>{{formatShortDate(batch.period_from)}} – {{formatShortDate(batch.period_to)}}</td><td>{{tx('Создано выпиской: {n}',{n:batch.operation_count})}}<small>{{tx('Ранее существовало: {n}',{n:batch.linked_count})}}</small></td><td><button type="button" class="secondary tiny" :disabled="adminBusy || deleteUncertain" @click="selectDeleteBatch(batch)">{{tx('Удалить выписку')}}</button></td></tr>
+        </tbody></table></div>
+        <div v-if="deleteBatchId !== null" class="review-actions">
+          <p><b>{{tx('Подтвердите удаление выписки')}}</b>: {{deletePreview?.filename}} · {{deletePreview?.account_name}} · {{deletePreview?.currency}} · {{formatShortDate(deletePreview?.period_from)}} – {{formatShortDate(deletePreview?.period_to)}}</p>
+          <p>{{tx('Создано выпиской: {n}',{n:deletePreview?.operation_count})}} · {{tx('Ранее существовало: {n}',{n:deletePreview?.linked_count})}}</p>
+          <p class="sub">{{tx('Операции, созданные этой выпиской, будут отменены. Действие может быть отклонено, если нарушатся остатки или есть зависимые операции.')}}</p>
+          <label>{{tx('Причина удаления (не менее 10 символов)')}}<input v-model="deleteReason" :disabled="adminBusy || deleteUncertain"></label>
+          <label><input v-model="deleteConfirmed" type="checkbox" :disabled="adminBusy || deleteUncertain"> {{tx('Подтверждаю удаление выписки и отмену созданных ею операций.')}}</label>
+          <div class="form-actions"><button type="button" class="secondary" :disabled="adminBusy" @click="deleteBatchId = null">{{tx('Отмена')}}</button><button type="button" class="danger" :disabled="adminBusy || deleteUncertain || !deleteConfirmed || deleteReason.trim().length < 10" @click="deleteStatement">{{tx('Удалить выписку и отменить операции')}}</button></div>
+        </div>
+      </details>
       <div v-if="(canReview || canPost || canImport) && unreconciledAccounts.length" class="error" role="alert">
         <p>{{tx('Ручная оплата заявок с этих счетов временно недоступна до сверки выписок. Исправления операций и точные оплаты по выписке остаются доступны при наличии прав.')}}</p>
         <ul><li v-for="a in unreconciledAccounts" :key="a.id">{{a.name}} · {{a.currency}} — {{tx('Несверенных выписок: {n}',{n:a.unreconciled_statements})}}</li></ul>
