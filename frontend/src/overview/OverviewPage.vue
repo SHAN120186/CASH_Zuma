@@ -18,13 +18,17 @@ const props = defineProps({
   refresh: {type: Number, default: 0},
   has: {type: Function, required: true},
   canDecide: {type: Function, required: true},
+  canOpenRequests: {type: Boolean, default: false},
   // Forecast horizon, shared with the Calendar page through App.
   days: {type: Number, default: 30},
   // Approval track of a request and its step marks, the same as in «Заявки».
   track: {type: Function, default: null},
   marks: {type: Object, default: () => ({})},
 });
-const emit = defineEmits(['go', 'edit-reserve', 'update:days']);
+const emit = defineEmits(['go', 'open-request', 'edit-reserve', 'update:days']);
+function showRequest(request) {
+  if (props.canOpenRequests && Number.isInteger(request?.id) && request.id > 0) emit('open-request', request);
+}
 
 const HISTORY_DAYS = 30, PAGE = 100, MAX_PAGES = 30, MAX_REQUEST_PAGES = 10, SHOWN_ROWS = 6, PENDING_PREVIEW = 4;
 const HORIZONS = [7, 30, 90];
@@ -381,7 +385,7 @@ const signedLedger = t => (t.kind === 'out' ? -1 : t.kind === 'in' ? 1 : 0) * (t
     <p v-else-if="s.errors.pending" class="panel-err">{{tx('Заявки не загрузились: {error}', {error: tx(s.errors.pending)})}}</p>
     <ul v-else-if="decisions.length" class="rows">
      <li v-for="r in decisions.slice(0, SHOWN_ROWS)" :key="r.id">
-      <button type="button" class="row" @click="emit('go', 'requests', {status: 'pending'})">
+      <button type="button" class="row" :disabled="!canOpenRequests" @click="showRequest(r)">
        <span class="row-main"><b>{{r.number}} · {{r.counterparty}}</b><small>{{r.purpose}}</small><small>{{stage(r)}} · {{tx('до {date}', {date: formatShortDate(r.date)})}}<template v-if="r.priority !== 'normal'"> · <em class="prio">{{r.priority === 'urgent' ? tx('срочно') : tx('высокий приоритет')}}</em></template></small>
         <span v-if="track" class="trk"><template v-for="(st, i) in track(r)" :key="i"><span v-if="i" class="ln"></span><span class="st" :class="st.c === 'skip' ? '' : st.c"><u>{{marks[st.c]}}</u>{{tx(st.l)}}</span></template></span></span>
        <span class="row-amt">{{formatCents(toCents(r.amount), r.currency)}} <small>{{r.currency}}</small></span>
@@ -402,11 +406,11 @@ const signedLedger = t => (t.kind === 'out' ? -1 : t.kind === 'in' ? 1 : 0) * (t
     <p v-else-if="s.errors.pending" class="panel-err">{{tx('Заявки не загрузились: {error}', {error: tx(s.errors.pending)})}}</p>
     <ul v-else-if="pendingPreview.length" class="rows">
      <li v-for="r in pendingPreview" :key="r.id">
-      <div class="row static">
+      <component :is="canOpenRequests ? 'button' : 'div'" :type="canOpenRequests ? 'button' : undefined" class="row" :class="{static: !canOpenRequests}" @click="showRequest(r)">
        <span class="row-main"><b>{{r.number}} · {{r.counterparty}}</b><small>{{r.purpose}}</small><small>{{tx('до {date}', {date: formatShortDate(r.date)})}}</small>
         <span v-if="track" class="trk"><template v-for="(st, i) in track(r)" :key="i"><span v-if="i" class="ln"></span><span class="st" :class="st.c === 'skip' ? '' : st.c"><u>{{marks[st.c]}}</u>{{tx(st.l)}}</span></template></span></span>
        <span class="row-amt">{{formatCents(toCents(r.amount), r.currency)}} <small>{{r.currency}}</small></span>
-      </div>
+      </component>
      </li>
     </ul>
     <div v-else-if="!s.loading" class="ov-empty"><span class="empty-ic ok" aria-hidden="true">✓</span><p>{{tx('Заявок на согласовании в {currency} нет.', {currency})}}</p></div>
@@ -469,9 +473,9 @@ const signedLedger = t => (t.kind === 'out' ? -1 : t.kind === 'in' ? 1 : 0) * (t
      <table class="tbl" role="table">
       <thead role="rowgroup"><tr role="row"><th role="columnheader" scope="col">{{tx('Срок')}}</th><th role="columnheader" scope="col">{{tx('Получатель')}}</th><th role="columnheader" scope="col">{{tx('Счёт')}}</th><th role="columnheader" scope="col" class="r">{{tx('Сумма')}}</th></tr></thead>
       <tbody role="rowgroup">
-       <tr v-for="r in payments.slice(0, SHOWN_ROWS)" :key="r.id" role="row" :class="{late: r.date < today}">
+       <tr v-for="r in payments.slice(0, SHOWN_ROWS)" :key="r.id" role="row" :class="{late: r.date < today, 'request-clickable': canOpenRequests}" @click="showRequest(r)">
         <td role="cell" class="nowrap">{{formatShortDate(r.date)}}<small v-if="r.date < today" class="late-l">{{tx('просрочено')}}</small></td>
-        <td role="cell"><b>{{r.counterparty}}</b><small>{{r.number}} · {{r.purpose}}</small></td>
+        <td role="cell"><component :is="canOpenRequests ? 'button' : 'span'" :type="canOpenRequests ? 'button' : undefined" class="request-link" @click.stop="showRequest(r)"><b>{{r.counterparty}}</b><small>{{r.number}} · {{r.purpose}}</small></component></td>
         <td role="cell" class="nowrap acc">{{r.account}}</td>
         <td role="cell" class="r nowrap num">{{formatCents(toCents(r.amount), r.currency)}} <small class="cur">{{r.currency}}</small></td>
        </tr>
@@ -486,9 +490,11 @@ const signedLedger = t => (t.kind === 'out' ? -1 : t.kind === 'in' ? 1 : 0) * (t
     <p v-else-if="s.errors.dash" class="panel-err">{{tx('Прогноз выплат не загрузился: {error}', {error: tx(s.errors.dash)})}}</p>
     <ul v-else-if="upcoming.length" class="ov-upc">
      <li v-for="(p, i) in upcoming" :key="(p.id ?? 'x') + '-' + i">
+      <component :is="canOpenRequests ? 'button' : 'div'" :type="canOpenRequests ? 'button' : undefined" class="upcoming-request" @click="showRequest(p)">
       <span class="ov-upc-d">{{formatShortDate(p.date)}}</span>
       <span class="ov-upc-n">{{p.name}}<small>{{tx('утверждено')}}</small><small v-if="hasCashFundingFee(p)">{{tx('Включая комиссию {amount}',{amount:formatCents(toCents(p.cash_funding_fee),currency)+' '+currency})}}</small></span>
       <span class="ov-upc-a" :title="amountTitle(toCents(p.amount), currency)">{{formatAmount(toCents(p.amount), currency)}} <small>{{currency}}</small></span>
+      </component>
      </li>
     </ul>
     <p v-else class="panel-note">{{tx('Нет утверждённых выплат на ближайшие {n} дней.', {n: s.dashDays ?? horizon})}}</p>
@@ -582,7 +588,13 @@ const signedLedger = t => (t.kind === 'out' ? -1 : t.kind === 'in' ? 1 : 0) * (t
 .ov-acc-main small,.ov-steps small{font-size:12px;color:var(--muted);font-weight:600}
 .ov-acc-amt,.ov-upc-a{font-weight:800;color:var(--text);font-variant-numeric:tabular-nums;white-space:nowrap;text-align:right}
 .ov-acc-amt small,.ov-upc-a small{display:inline;font-size:11.5px;color:var(--muted);font-weight:700}
-.ov-upc li{display:grid;grid-template-columns:64px minmax(0,1fr) auto;gap:12px;align-items:baseline;padding:8px 0;border-bottom:1px solid var(--line2);font-size:13px;font-weight:600;color:var(--text)}
+.ov-upc li{border-bottom:1px solid var(--line2)}
+.upcoming-request{display:grid;width:100%;grid-template-columns:64px minmax(0,1fr) auto;gap:12px;align-items:baseline;padding:8px 0;border:0;border-radius:8px;background:transparent;text-align:left;font-size:13px;font-weight:600;color:var(--text)}
+button.upcoming-request:hover{background:var(--row-hover)}
+.request-clickable{cursor:pointer}
+.request-link{display:block;max-width:100%;padding:0;border:0;border-radius:4px;background:transparent;text-align:left;color:inherit;font:inherit}
+button.request-link:hover{color:var(--primary)}
+button.request-link:focus-visible,button.upcoming-request:focus-visible{outline:2px solid var(--primary);outline-offset:2px}
 .ov-upc li:last-child{border-bottom:0}
 .ov-upc-d{color:var(--muted)}
 .ov-upc-n{min-width:0;overflow-wrap:break-word}
