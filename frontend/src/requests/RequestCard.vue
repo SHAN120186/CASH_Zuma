@@ -68,7 +68,7 @@ const json = body => ({method: 'POST', headers: {'Content-Type': 'application/js
 async function deleteRequest() {
   const reason = window.prompt(tx('Причина удаления заявки (не менее 10 символов). Платёж останется в операциях.'));
   if (!reason) return;
-  if (!window.confirm(tx('Удалить заявку {number} и её вложения?', {number: r.value.number}))) return;
+  if (!window.confirm(tx('Удалить заявку {number} из списка? Проведённые платежи сохранятся.', {number: r.value.number}))) return;
   busy.value = true; error.value = '';
   try {
     await props.api(`/api/requests/${r.value.id}/delete`, json({version:r.value.version, reason}));

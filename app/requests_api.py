@@ -67,7 +67,7 @@ def request_actions(s, u, r):
     stage = approval_stage(r)
     # Без прав согласующего, проверяющего или финансового руководителя сотрудник действует только в своих заявках.
     own_only = not ({'approve', 'request_edit', 'request_check'} & perms)
-    actions = ['delete'] if u.role == 'admin' else []
+    actions = ['delete'] if 'request_delete' in perms else []
     editable = can_edit(u, r) and (not own_only or r.creator_id == u.id)
     if editable and r.status in ('draft', 'pending', 'returned'):
         actions.append('edit')
