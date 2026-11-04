@@ -6,6 +6,8 @@ import {PRIORITY_TERMS, DEPARTMENTS, CHANNELS, DOC_KINDS, requiredDocs, SINGLE_D
         periodLabel, fileProblem, fileSize} from './workflow.js';
 import {createSaveState, requestBody, saveRequest, removeSavedDocument, missingRequired} from './saveFlow.js';
 import {tx, N_,lang} from '../i18n/index.js';
+import MoneyInput from '../MoneyInput.vue';
+import {cashFundingAmounts, cashFundingBody, fundingBankAccounts} from './cashFunding.js';
 
 const props = defineProps({
   api: {type: Function, required: true},
@@ -23,14 +25,14 @@ const state = createSaveState(r);
 const sentMode = state.mode === 'sent';
 // По умолчанию — банковский счёт выбранной валюты, затем касса, затем любой счёт.
 const firstAccount = props.boot.accounts.find(a => a.currency === props.currency && a.kind === 'bank')
-  || props.boot.accounts.find(a => a.currency === props.currency) || props.boot.accounts[0];
+  || props.boot.accounts.find(a => a.currency === props.currency && ['bank', 'cash'].includes(a.kind)) || props.boot.accounts.find(a => ['bank', 'cash'].includes(a.kind));
 const form = ref(r ? {
   channel: r.channel || r.account_kind, currency: r.currency, account_id: r.account_id, category_id: r.category_id,
-  amount: r.amount, counterparty: r.counterparty, purpose: r.purpose, priority: r.priority, date: r.date, project: r.project || '', department: r.department || '', reason: '',
+  amount: r.amount, counterparty: r.counterparty, purpose: r.purpose, priority: r.priority, date: r.date, project: r.project || '', department: r.department || '', reason: '', cash_funding: cashFundingBody(r.cash_funding),
 } : {
   channel: firstAccount?.kind || 'bank', currency: firstAccount?.currency || props.currency, account_id: firstAccount?.id ?? null,
   category_id: props.boot.categories.find(c => c.type === 'outcome' && !c.retired)?.id ?? null, amount: '', counterparty: '', purpose: '',
-  priority: 'normal', date: minDue(props.boot.due_minimums, 'normal'), project: '', department: '',
+  priority: 'normal', date: minDue(props.boot.due_minimums, 'normal'), project: '', department: '', cash_funding: null,
 });
 const error = ref(''), notice = ref(''), saving = ref(false), step = ref(''), blocked = ref(''), card = ref(null), dialog = ref(null);
 // Номер появляется, когда форма создала черновик (например, до ошибки загрузки файла).
@@ -43,6 +45,33 @@ let fileKey = 0;
 const dues = ref(props.boot.due_minimums || {});
 const departmentCatalog=ref(props.boot.department_catalog?.items||Object.entries(DEPARTMENTS).map(([code,name])=>({code,name_ru:name,name_uz:'',active:true})));
 const departmentOptions=computed(()=>departmentCatalog.value.filter(x=>x.active||x.code===form.value.department));
+const openedCompanyId = props.company?.id;
+const fundingFrozen = computed(() => !!r?.cash_funding && r.cash_funding.state !== 'unfunded');
+const fundingAccounts = computed(() => fundingBankAccounts(props.boot.accounts, form.value.currency, props.company?.id));
+const paymentMethod = computed({get: () => form.value.cash_funding ? 'cash_bank' : form.value.channel, set: value => {
+  if (fundingFrozen.value) return;
+  if (value === 'cash_bank' && form.value.cash_funding) return;
+  const gross = form.value.cash_funding?.gross_amount ?? form.value.amount;
+  form.value.channel = value === 'cash_bank' ? 'cash' : value;
+  form.value.amount = gross;
+  form.value.cash_funding = value === 'cash_bank' ? {bank_account_id: fundingAccounts.value[0]?.id ?? null, gross_amount: gross || '', fee_percent: '1', fee_category_id: null} : null;
+}});
+const fundingAmounts = computed(() => form.value.cash_funding ? cashFundingAmounts(form.value.cash_funding.gross_amount, form.value.cash_funding.fee_percent) : null);
+const fundingProblem = computed(() => {
+  if (!form.value.cash_funding) return '';
+  if (fundingAmounts.value?.error) return fundingAmounts.value.error;
+  if (!fundingAccounts.value.some(account => account.id === Number(form.value.cash_funding.bank_account_id))) return N_('Выберите банковский счёт той же компании и валюты.');
+  if (!feeCategories.value.some(category => category.id === Number(form.value.cash_funding.fee_category_id))) return N_('Выберите действующую расходную статью комиссии.');
+  return '';
+});
+watch(() => [form.value.cash_funding?.gross_amount, form.value.cash_funding?.fee_percent], () => {
+  if (form.value.cash_funding && !fundingFrozen.value) form.value.amount = fundingAmounts.value?.net_amount || '';
+});
+watch(() => form.value.currency, () => {
+  if (!form.value.cash_funding || fundingFrozen.value) return;
+  if (!fundingAccounts.value.some(account => account.id === Number(form.value.cash_funding.bank_account_id))) form.value.cash_funding.bank_account_id = fundingAccounts.value[0]?.id ?? null;
+});
+watch(() => props.company?.id, value => { if (value !== openedCompanyId) blocked.value = 'company_changed'; });
 
 // Старые заявки не содержат ИНН: в них по умолчанию останется пустое поле.
 const partyInn = ref(r?.counterparty_inn || ''), partyMatches = ref([]), partyStatus = ref('');
@@ -99,6 +128,7 @@ const foreignBank = computed(() => {
   return account?.kind === 'bank' && ['USD', 'EUR'].includes(account.currency);
 });
 const outcomeCategories = computed(() => props.boot.categories.filter(c => c.type === 'outcome' && (!c.retired || c.id === form.value.category_id)));
+const feeCategories = computed(() => outcomeCategories.value.filter(category => !category.retired && category.activity !== 'unclassified'));
 const earliest = computed(() => minDue(dues.value, form.value.priority));
 const earliestLabel = computed(() => earliest.value ? earliest.value.split('-').reverse().join('.') : '');
 const title = computed(() => r ? tx('Изменить {number}', {number: r.number}) : number.value ? tx('Черновик {number}', {number: number.value}) : tx('Новая заявка на оплату'));
@@ -186,6 +216,8 @@ async function save(event) {
   if (saving.value || blocked.value) return;
   const send = event?.submitter?.dataset?.send ? event.submitter.dataset.send === '1' : sendIntent.value;
   error.value = ''; notice.value = '';
+  if (props.company?.id !== openedCompanyId) { blocked.value = 'company_changed'; error.value = N_('Компания изменилась. Закройте форму и откройте новую заявку.'); return; }
+  if (fundingProblem.value) { error.value = fundingProblem.value; return; }
   saving.value = true; step.value = 'save';
   try {
     const result = await saveRequest(props.api, state, {
@@ -237,13 +269,24 @@ onUnmounted(() => { document.removeEventListener('keydown', onKey); clearTimeout
       <p v-else class="form-note">{{ tx('Черновик можно сохранить без файлов. При отправке обязательность документов зависит от канала оплаты. Автор и последний редактор не согласуют свою заявку.') }}</p>
       <div class="form-grid">
         <label>{{ tx('Компания') }}<input :value="company?.name" disabled></label>
-        <label>{{ tx('Канал оплаты') }}<select v-model="form.channel" required><option v-for="(label, k) in CHANNELS" :key="k" :value="k">{{ tx(label) }}</option></select></label>
-        <label>{{ tx('Валюта') }}<select v-model="form.currency" required><option v-for="c in ['UZS','USD','EUR']" :key="c" :value="c">{{ c }}</option></select></label>
+        <label>{{ tx('Канал оплаты') }}<select v-model="paymentMethod" :disabled="fundingFrozen" required><option v-for="(label, k) in CHANNELS" :key="k" :value="k">{{ tx(label) }}</option><option value="cash_bank">{{ tx('Наличные через банк') }}</option></select></label>
+        <label>{{ tx('Валюта') }}<select v-model="form.currency" :disabled="fundingFrozen" required><option v-for="c in ['UZS','USD','EUR']" :key="c" :value="c">{{ c }}</option></select></label>
         <label>{{ tx('Счёт списания') }}<select v-model="form.account_id" required><option v-for="a in accountOptions" :key="a.id" :value="a.id">{{ a.name }}</option></select>
           <small v-if="!accountOptions.length" class="field-error">{{ tx('Нет счёта для выбранного канала и валюты.') }}</small></label>
         <label>{{ tx('Отдел') }}<select v-model="form.department"><option value="">{{ tx('Выберите отдел') }}</option><option v-for="item in departmentOptions" :key="item.code" :value="item.code">{{lang==='uz'&&item.name_uz?item.name_uz:tx(item.name_ru)}}</option></select></label>
         <label>{{ tx('Статья расходов') }}<select v-model="form.category_id" required><option v-for="c in outcomeCategories" :key="c.id" :value="c.id">{{ c.name }}</option></select></label>
-        <label>{{ tx('Сумма') }}<input v-model="form.amount" type="text" inputmode="decimal" pattern="[0-9]+([.][0-9]{1,2})?" required autocomplete="off"></label>
+        <label>{{ form.cash_funding ? tx('Сумма наличной заявки') : tx('Сумма') }}<MoneyInput v-if="form.cash_funding" v-model="form.amount" readonly required /><input v-else v-model="form.amount" type="text" inputmode="decimal" pattern="[0-9]+([.][0-9]{1,2})?" required autocomplete="off"></label>
+        <section v-if="form.cash_funding" class="wide cash-funding-editor" :aria-label="tx('Получение наличных из банка')">
+          <div class="form-grid">
+            <label>{{ tx('Банковский счёт') }}<select v-model="form.cash_funding.bank_account_id" :disabled="fundingFrozen" required><option v-for="account in fundingAccounts" :key="account.id" :value="account.id">{{ account.name }}</option></select></label>
+            <label>{{ tx('Всего списать с банка') }} · {{ form.currency }}<MoneyInput v-model="form.cash_funding.gross_amount" :disabled="fundingFrozen" required /></label>
+            <label>{{ tx('Комиссия от суммы списания, %') }}<input v-model="form.cash_funding.fee_percent" inputmode="decimal" pattern="[0-9]+([.,][0-9]{1,2})?" :disabled="fundingFrozen" required></label>
+            <label>{{ tx('Статья комиссии') }}<select v-model="form.cash_funding.fee_category_id" :disabled="fundingFrozen" required><option :value="null" disabled>{{ tx('Выберите статью комиссии') }}</option><option v-for="category in feeCategories" :key="category.id" :value="category.id">{{ category.name }}</option></select></label>
+          </div>
+          <p v-if="fundingAmounts && !fundingAmounts.error" class="notice" aria-live="polite">{{ tx('Комиссия: {fee}. Наличная заявка: {net} {currency}.', {fee: money(fundingAmounts.fee_amount), net: money(fundingAmounts.net_amount), currency: form.currency}) }}</p>
+          <p v-if="fundingProblem" class="field-error" role="status">{{ tx(fundingProblem) }}</p>
+          <small class="sub">{{ tx('Комиссия входит в списание банка. Заявка оплачивается из кассы после подтверждения получения наличных.') }}</small>
+        </section>
         <label>{{ foreignBank ? tx('ИНН контрагента (необязательно)') : tx('ИНН контрагента') }}<input v-model.trim="partyInn" inputmode="numeric" pattern="[0-9]*" maxlength="20" autocomplete="off" aria-describedby="rq-inn-hint">
           <small id="rq-inn-hint" class="sub">{{ foreignBank ? tx('ИНН необязателен для USD и EUR. Для иностранного контрагента без ИНН введите название вручную.') : tx('Введите ИНН для поиска контрагента.') }}</small>
           <small v-if="partyStatus === 'loading'" class="sub" role="status">{{ tx('Ищем контрагента…') }}</small>
@@ -289,19 +332,25 @@ onUnmounted(() => { document.removeEventListener('keydown', onKey); clearTimeout
 
       <p v-if="notice" class="notice" role="status">{{ tx(notice) }}</p>
       <p v-if="error" class="error" role="alert">{{ tx(error) }}</p>
+      <p v-if="blocked === 'company_changed'" class="error" role="alert">{{ tx('Компания изменилась. Закройте форму и откройте новую заявку.') }}</p>
       <p v-if="saving && step" class="sub" role="status">{{ tx(STEPS[step]) }}</p>
       <div class="form-actions">
         <button type="button" class="secondary" :disabled="saving" @click="close">{{ blocked ? tx('Закрыть') : tx('Отмена') }}</button>
-        <button v-if="blocked" type="button" @click="emit('open-card', state.id)">{{ tx('Открыть карточку заявки') }}</button>
+        <button v-if="blocked && blocked !== 'company_changed'" type="button" @click="emit('open-card', state.id)">{{ tx('Открыть карточку заявки') }}</button>
         <template v-else-if="sentMode">
-          <button type="submit" data-send="1" :disabled="saving || !accountOptions.length" @click="sendIntent = true">{{ saving ? tx('Сохраняем…') : tx('Сохранить изменения') }}</button>
+          <button type="submit" data-send="1" :disabled="saving || !accountOptions.length || !!fundingProblem" @click="sendIntent = true">{{ saving ? tx('Сохраняем…') : tx('Сохранить изменения') }}</button>
         </template>
         <template v-else>
-          <button type="submit" class="secondary" data-send="0" :disabled="saving || !accountOptions.length" @click="sendIntent = false">{{ tx('Сохранить черновик') }}</button>
-          <button type="submit" data-send="1" :disabled="saving || !accountOptions.length" @click="sendIntent = true" :aria-describedby="missing.length ? 'rq-missing' : undefined">{{ saving ? tx('Сохраняем…') : tx('Отправить на согласование') }}</button>
+          <button type="submit" class="secondary" data-send="0" :disabled="saving || !accountOptions.length || !!fundingProblem" @click="sendIntent = false">{{ tx('Сохранить черновик') }}</button>
+          <button type="submit" data-send="1" :disabled="saving || !accountOptions.length || !!fundingProblem" @click="sendIntent = true" :aria-describedby="missing.length ? 'rq-missing' : undefined">{{ saving ? tx('Сохраняем…') : tx('Отправить на согласование') }}</button>
         </template>
       </div>
       <p v-if="!blocked && missing.length" id="rq-missing" class="sub rq-missing">{{ tx('Для отправки не хватает: {list}.', {list: missing.map(k => tx(DOC_KINDS[k])).join(', ')}) }}</p>
     </form>
   </div>
 </template>
+
+<style scoped>
+.cash-funding-editor{padding:14px;background:var(--primary-soft);border:1px solid var(--line);border-radius:12px;min-width:0}
+.cash-funding-editor .notice{margin:12px 0 8px}.cash-funding-editor .sub{display:block}
+</style>

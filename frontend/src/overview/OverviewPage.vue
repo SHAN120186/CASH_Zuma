@@ -7,6 +7,7 @@ import {toCents, formatCents, formatAmount, amountTitle, formatShortDate, addDay
 import {balanceHistory, monthPlanFact} from './history.js';
 import {canPayAny} from './rights.js';
 import {tx, N_} from '../i18n/index.js';
+import {accountKindLabel, hasCashFundingFee} from '../requests/cashFunding.js';
 
 const props = defineProps({
   api: {type: Function, required: true},
@@ -230,7 +231,7 @@ const upcoming = computed(() => {
   const out = [];
   for (const d of s.value.dash?.forecast || []) {
     if (d.date <= props.today) continue;
-    for (const e of d.events || []) if (e.kind === 'out') out.push({date: d.date, name: e.name, amount: e.amount, id: e.id});
+    for (const e of d.events || []) if (e.kind === 'out') out.push({date: d.date, name: e.name, amount: e.amount, id: e.id, cash_amount:e.cash_amount, cash_funding_fee:e.cash_funding_fee});
     if (out.length >= 5) break;
   }
   return out.slice(0, 5);
@@ -452,7 +453,7 @@ const signedLedger = t => (t.kind === 'out' ? -1 : t.kind === 'in' ? 1 : 0) * (t
     <ul v-else-if="accountList.length" class="ov-acc">
      <li v-for="a in accountList" :key="a.id">
       <span class="ov-acc-ic" aria-hidden="true"><AppIcon :name="a.kind === 'bank' ? 'accounts' : 'cash'"/></span>
-      <span class="ov-acc-main"><b>{{a.name}}</b><small>{{a.kind === 'bank' ? tx('Банковский счёт') : tx('Касса')}}</small></span>
+      <span class="ov-acc-main"><b>{{a.name}}</b><small>{{accountKindLabel(a.kind)}}</small></span>
       <span class="ov-acc-amt" :title="amountTitle(toCents(a.balance), a.currency)">{{formatAmount(toCents(a.balance), a.currency)}} <small>{{a.currency}}</small></span>
      </li>
     </ul>
@@ -486,7 +487,7 @@ const signedLedger = t => (t.kind === 'out' ? -1 : t.kind === 'in' ? 1 : 0) * (t
     <ul v-else-if="upcoming.length" class="ov-upc">
      <li v-for="(p, i) in upcoming" :key="(p.id ?? 'x') + '-' + i">
       <span class="ov-upc-d">{{formatShortDate(p.date)}}</span>
-      <span class="ov-upc-n">{{p.name}}<small>{{tx('утверждено')}}</small></span>
+      <span class="ov-upc-n">{{p.name}}<small>{{tx('утверждено')}}</small><small v-if="hasCashFundingFee(p)">{{tx('Включая комиссию {amount}',{amount:formatCents(toCents(p.cash_funding_fee),currency)+' '+currency})}}</small></span>
       <span class="ov-upc-a" :title="amountTitle(toCents(p.amount), currency)">{{formatAmount(toCents(p.amount), currency)}} <small>{{currency}}</small></span>
      </li>
     </ul>

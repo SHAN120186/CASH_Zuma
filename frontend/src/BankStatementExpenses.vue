@@ -4,6 +4,7 @@ import {tx,N_} from './i18n/index.js';
 import {formatCents,formatShortDate,formatLongDate,toCents} from './overview/format.js';
 import {statementExpenses} from './cashflow/statementExpenses.js';
 import {statementCategoryName} from './cashflow/statementCategory.js';
+import CashFundingBankCaption from './CashFundingBankCaption.vue';
 const props=defineProps({statement:{type:Object,required:true},rows:{type:Array,required:true},currency:{type:String,default:''}});
 const selected=ref('all');
 const summary=computed(()=>statementExpenses(props.statement,props.rows));
@@ -17,7 +18,7 @@ const money=value=>formatCents(value,props.currency);
 const kinds=computed(()=>Object.fromEntries(summary.value.groups.map(g=>[g.key,g.title])));
 const label=row=>tx(kinds.value[row.expense_kind]||N_('Неоднозначные списания'));
 const posted=new Set(['auto_paid','manual_paid','auto_fee_posted','auto_interest_posted','auto_outgoing_posted','historical_transfer_posted','historical_request_paid']);
-const linked=new Set(['paid_match','manual_match','fee_matched','interest_matched','other_matched','manual_transfer_match','duplicate']);
+const linked=new Set(['paid_match','manual_match','fee_matched','interest_matched','other_matched','manual_transfer_match','cash_funding_matched','duplicate']);
 const reasons={
  duplicate_or_overlap:N_('Возможный повтор строки или пересечение выписок'),
  request_reference_conflict:N_('Номер заявки в назначении не совпадает с реквизитами'),
@@ -65,7 +66,7 @@ function state(row){
     <p v-else-if="selected==='unresolved'" class="expense-hint">{{tx('Показаны только неоднозначные связи, возможные повторы и движения с неподтверждённым назначением. Они не скрыты из общего итога.')}}</p>
     <p v-else class="expense-hint">{{tx('Статья берётся из найденной заявки. Комиссии выделяются отдельно, остальные внешние расходы показываются с фирмой и суммой из банка.')}}</p>
     <div v-if="shown.length" class="table-scroll"><table><thead><tr><th class="date-column">{{tx('Дата')}}</th><th>{{tx('Фирма / ИНН')}}</th><th class="amount">{{tx('Сумма')}}</th><th v-if="showDetails">{{tx('Сопоставление')}}</th></tr></thead><tbody>
-     <tr v-for="(row,index) in shown" :key="row.id ?? index"><td class="date-column">{{formatShortDate(row.date)}}<small>{{row.document_number}}</small></td><td class="counterparty">{{row.correspondent_name || tx('Название в выписке отсутствует')}}<small>{{row.correspondent_inn || '—'}}</small></td><td class="amount">{{money(toCents(row.amount))}} <small>{{currency}}</small></td><td v-if="showDetails" class="match-column"><strong v-if="selected==='all'" class="match-label" :class="row.expense_kind">{{label(row)}}</strong><span v-if="row.expense_request_id" class="request-reference">{{tx('Заявка №{id}',{id:row.expense_request_id})}}</span><small v-if="row.expense_category_name">{{tx('Статья')}}: {{statementCategoryName(row.expense_category_name)}}</small><small v-if="row.expense_reason" class="match-reason">{{reason(row)}}</small><small v-if="hasState(row)" class="operation-state">{{state(row)}}</small></td></tr>
+     <tr v-for="(row,index) in shown" :key="row.id ?? index"><td class="date-column">{{formatShortDate(row.date)}}<small>{{row.document_number}}</small></td><td class="counterparty">{{row.correspondent_name || tx('Название в выписке отсутствует')}}<small>{{row.correspondent_inn || '—'}}</small></td><td class="amount">{{money(toCents(row.amount))}} <small>{{currency}}</small></td><td v-if="showDetails" class="match-column"><strong v-if="selected==='all'" class="match-label" :class="row.expense_kind">{{label(row)}}</strong><span v-if="row.expense_request_id" class="request-reference">{{tx('Заявка №{id}',{id:row.expense_request_id})}}</span><CashFundingBankCaption :row="row" :currency="currency"/><small v-if="row.expense_category_name">{{tx('Статья')}}: {{statementCategoryName(row.expense_category_name)}}</small><small v-if="row.expense_reason" class="match-reason">{{reason(row)}}</small><small v-if="hasState(row)" class="operation-state">{{state(row)}}</small></td></tr>
     </tbody><tfoot><tr><th colspan="2">{{tx(selected==='all'?N_('Итого списаний по выписке'):N_('Итого по выбранной группе'))}}</th><th class="amount">{{money(currentGroup?.total)}} <small>{{currency}}</small></th><th v-if="showDetails"></th></tr></tfoot></table></div>
     <p v-else class="expense-empty">{{tx('В этой группе списаний нет.')}}</p>
     <p class="expense-footnote">{{tx('Итог взят из файла банка. В факт Cash Flow входят только действующие проведённые операции; строки на проверке в факт не добавляются.')}}</p>

@@ -26,7 +26,7 @@ from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy import delete, func, insert, or_, select
 
 from .company_scope import SERVICE_CODE
-from .db import (Account, Audit, Budget, Category, Company, CompanyUser, Delegation, Ledger, LoginAttempt, PaymentRequest,
+from .db import (Account, Audit, Budget, CashFunding, Category, Company, CompanyUser, Delegation, Ledger, LoginAttempt, PaymentRequest,
                  Setting, TelegramGroup, TelegramGroupCode, TelegramLink, TelegramLinkCode, User, now, unit)
 from .security import COMPANY_ROLES, PERMS, client_ip, digest, login_limited, pay_right, record_failure, session_user
 from .services import (account_balance, all_participants, approval_stage, budget_state, day_start_balance, effective_cashflows, funds_state, log,
@@ -197,6 +197,29 @@ def request_number(r):
     return f'CF-{r.id:05d}'
 
 
+def bot_account_kind(kind):
+    """The deployed bot accepts only bank/cash; preserve transit additively."""
+    return {'kind':'cash','source_kind':'transit'} if kind=='transit' else {'kind':kind}
+
+
+def funding_stage_label(funding,fallback):
+    if funding and funding.state=='unfunded':return 'Снятие наличных из банка'
+    if funding and funding.state=='in_transit':return 'Получение наличных в кассу'
+    return fallback
+
+
+def transit_report_warnings(s,companies,accounts,as_of):
+    result=[]
+    for account in accounts.values():
+        if account.kind!='transit' or account.company_id not in companies:continue
+        balance=account_balance(s,account,as_of)
+        if balance<=0:continue
+        company=companies[account.company_id]
+        result.append({'company':mask_digits(company.name,80),'company_code':company.code,
+                       'message':f'Деньги в пути: {money(balance)} {account.currency}. Недоступны для выдачи до получения кассой.'})
+    return result
+
+
 # ---------------------------------------------------------------- morning summary
 
 @router.get('/api/bot/v1/morning-summary')
@@ -233,7 +256,7 @@ def morning_summary(request: Request, chat_id: int, report_date: date, today: da
         balances = None
         if open_accounts:
             ordered = sorted(open_accounts, key=lambda a: (name[a.company_id], a.kind, currency_key(a.currency), a.name))
-            balances = [{'company': name[a.company_id], 'kind': a.kind, 'name': mask_digits(a.name, 80),
+            balances = [{'company': name[a.company_id], **bot_account_kind(a.kind), 'name': mask_digits(a.name, 80),
                          'account_tail': '', 'currency': a.currency, 'amount': money(day_start(s, a, today))}
                         for a in ordered]
 
@@ -247,28 +270,30 @@ def morning_summary(request: Request, chat_id: int, report_date: date, today: da
 
         def movements(kind):
             rows = sorted(totals[kind].items(), key=lambda item: (item[0][0], item[0][1], currency_key(item[0][2])))
-            return [{'company': c, 'kind': k, 'currency': cur, 'amount': money(v)} for (c, k, cur), v in rows] or None
+            return [{'company': c, **bot_account_kind(k), 'currency': cur, 'amount': money(v)} for (c, k, cur), v in rows] or None
 
         requests = list(s.scalars(select(PaymentRequest).where(
             PaymentRequest.account_id.in_(list(all_accounts)),
             PaymentRequest.status.in_(['approved', 'pending'])).order_by(PaymentRequest.due_date, PaymentRequest.id)))
+        fundings={f.request_id:f for f in s.scalars(select(CashFunding).where(CashFunding.company_id.in_(list(companies))))}
 
         def request_line(r, label):
             a = all_accounts[r.account_id]
             return {'number': request_number(r), 'company': name[a.company_id], 'currency': a.currency,
-                    'amount': money(r.amount), 'purpose': categories.get(r.category_id, ''), 'stage_label': label}
+                    'amount': money(r.amount), 'purpose': categories.get(r.category_id, ''),
+                    'stage_label':funding_stage_label(fundings.get(r.id),label) if r.status=='approved' else label}
 
         payments = [request_line(r, f'Просрочено с {r.due_date:%d.%m.%Y}' if r.due_date < today else '')
                     for r in requests if r.status == 'approved' and r.due_date <= today]
         pending = [request_line(r, STAGE_LABELS[approval_stage(r)])
                    for r in requests if r.status == 'pending']
 
-        warnings = []
+        warnings = transit_report_warnings(s,companies,all_accounts,today)
         available = {}
         for a in sorted(open_accounts, key=lambda a: (name[a.company_id], currency_key(a.currency), a.name)):
             state = funds_state(s, a, today)
             key = (a.company_id, a.currency)
-            available[key] = available.get(key, 0) + state['available']
+            available[key] = available.get(key, 0) + (0 if a.kind=='transit' else state['available'])
             if state['available'] < 0:
                 label = mask_digits(a.name, 80)
                 if state.get('bank_pending_debits'):
@@ -376,7 +401,7 @@ def daily_summary_payload(s, chat_id, report_date, companies, codes, scope_id, c
         if a.archived and not (closing or opening or a.id in active_ids):
             continue
         common = {'company': names[a.company_id], 'company_code': companies[a.company_id].code,
-                  'kind': a.kind, 'name': mask_digits(a.name, 80), 'account_tail': '', 'currency': a.currency}
+                  **bot_account_kind(a.kind), 'name': mask_digits(a.name, 80), 'account_tail': '', 'currency': a.currency}
         balances.append({**common, 'amount': money(closing)})
         opening_balances.append({**common, 'amount': money(opening)})
 
@@ -400,16 +425,18 @@ def daily_summary_payload(s, chat_id, report_date, companies, codes, scope_id, c
 
     def movements(kind):
         rows = sorted(totals[kind].items(), key=lambda item: (names[item[0][0]], item[0][1], currency_key(item[0][2])))
-        return [{'company': names[cid], 'company_code': companies[cid].code, 'kind': k,
+        return [{'company': names[cid], 'company_code': companies[cid].code, **bot_account_kind(k),
                  'currency': cur, 'amount': money(value)} for (cid, k, cur), value in rows]
 
     open_requests = []
+    fundings={f.request_id:f for f in s.scalars(select(CashFunding).where(CashFunding.company_id.in_(list(companies))))}
     for r in s.scalars(select(PaymentRequest).where(
         PaymentRequest.account_id.in_(list(accounts)), PaymentRequest.status.in_(['pending', 'approved']))
                        .order_by(PaymentRequest.due_date, PaymentRequest.id)):
         a = accounts[r.account_id]
         label = STAGE_LABELS[approval_stage(r)] if r.status == 'pending' else (
             f'Просрочено с {r.due_date:%d.%m.%Y}' if r.due_date < current_day else 'Ожидает оплаты')
+        if r.status=='approved':label=funding_stage_label(fundings.get(r.id),label)
         open_requests.append({'number': request_number(r), 'company': names[a.company_id],
                               'company_code': companies[a.company_id].code, 'currency': a.currency,
                               'amount': money(r.amount), 'purpose': mask_digits(categories.get(r.category_id, ''), 200),
@@ -419,7 +446,7 @@ def daily_summary_payload(s, chat_id, report_date, companies, codes, scope_id, c
               'companies': codes, 'scope_id': scope_id, 'balances': balances, 'opening_balances': opening_balances,
               'income': movements('in'), 'expense': movements('out'), 'operations': operations,
               'open_requests': open_requests, 'open_requests_as_of': str(current_day),
-              'warnings': statement_report_warnings(s, companies, accounts, report_date)}
+              'warnings': statement_report_warnings(s, companies, accounts, report_date)+transit_report_warnings(s,companies,accounts,report_date)}
     if user_id is not None:
         result['user_id'] = user_id
     # Recipient routing and access have their own scope checks. A group upgrade
@@ -560,7 +587,7 @@ def roles_in(user, company, members, acting):
 STAGE_ROLE = {'check': 'accountant', 'finance': 'finance', 'director': 'director'}
 
 
-def responsible(r, account, company, users, members, acting=None, past=None):
+def responsible(r, account, company, users, members, acting=None, past=None, funding=None):
     """Stage of an actionable request and the people who can act on it now (app/main.py decide,
     services.check_payer). Nobody else is reminded: a reminder must lead to a possible action.
     Pending requests: accountant check, finance, then the director only when the route snapshot
@@ -578,13 +605,32 @@ def responsible(r, account, company, users, members, acting=None, past=None):
         if not route_complete(r):
             return None, []
         # The payment channel decides the payer: bank - settlement accountant, cash - cashier.
-        right = pay_right(account)
-        stage = 'cash_payment' if account.kind == 'cash' else 'bank_payment'
+        if funding and funding.state=='unfunded':
+            right='pay_bank';stage='bank_payment'
+            excluded=participants(r,include_check=False)|(past or set())
+        elif funding and funding.state=='in_transit':
+            right='pay_cash';stage='cash_payment';excluded=set()
+        elif funding is None or funding.state=='received':
+            right = pay_right(account)
+            stage = 'cash_payment' if account.kind == 'cash' else 'bank_payment'
+            excluded = participants(r, include_check=account.kind!='bank') | (past or set())
+        else:return None,[]
         fits = lambda roles: any(right in PERMS.get(x, ()) for x in roles)
-        excluded = participants(r, include_check=account.kind!='bank') | (past or set())
     else:
         return None, []
     return stage, [u for u in users if u.id not in excluded and fits(roles_in(u, company, members, acting))]
+
+
+def funding_reminder_sections(s,user,company,members,acting):
+    """Match the cash-funding HTTP guard without mutating a shared bot user."""
+    if user.role=='admin':return True
+    if user.role=='founder':return False
+    from .section_access import defaults,stored
+    permissions=set().union(*(PERMS.get(role,set()) for role in roles_in(user,company,members,acting)))
+    modes=defaults(permissions)
+    for section,mode in stored(s,company.id,user.id).get('sections',{}).items():
+        if mode!='default':modes[section]=mode
+    return all(modes.get(section)=='edit' for section in ('requests','ledger'))
 
 
 def acting_roles(s):
@@ -616,6 +662,7 @@ def pending_items(s, user_id=None):
     companies = {c.id: c for c in s.scalars(select(Company).where(Company.active.is_(True)))}
     accounts = {a.id: a for a in s.scalars(select(Account))}
     categories = {c.id: c.name for c in s.scalars(select(Category))}
+    fundings={f.request_id:f for f in s.scalars(select(CashFunding).where(CashFunding.company_id.in_(list(companies))))}
     links = {link.user_id: link.telegram_user_id for link in s.scalars(select(TelegramLink))}
     members = {}
     for m in s.scalars(select(CompanyUser)):
@@ -641,22 +688,34 @@ def pending_items(s, user_id=None):
         company = companies.get(account.company_id) if account else None
         if company is None:
             continue
-        past = all_participants(s, r, include_check=account.kind!='bank') if r.status == 'approved' else round_participants(s, r)
-        stage, people = responsible(r, account, company, users, members, acting, past)
+        funding=fundings.get(r.id)
+        include_check=not(funding and funding.state=='unfunded') and account.kind!='bank'
+        past = all_participants(s, r, include_check=include_check) if r.status == 'approved' else round_participants(s, r)
+        stage, people = responsible(r, account, company, users, members, acting, past,funding)
+        if funding and r.status=='approved':
+            people=[u for u in people if funding_reminder_sections(s,u,company,members,acting)]
         since = entered.get(r.id, r.created_at)
         if r.status == 'approved':
             # Payment waits from the start of the working day it is due, not from the approval.
             since = max(since, datetime.combine(r.due_date, WORKDAY_START) - TASHKENT_OFFSET)
         purpose = mask_digits(f'{categories.get(r.category_id, "")}: {r.purpose}', 200)
+        if funding and r.status=='approved' and funding.state=='unfunded':
+            # User text was masked above. These trusted calculated amounts
+            # must remain readable and must not be masked a second time.
+            purpose=(f'Банк {money(funding.gross_amount)} {account.currency}; наличными {money(funding.net_amount)}; '
+                     f'комиссия {money(funding.fee_amount)}. '+purpose)
+            if len(purpose)>200:purpose=purpose[:199].rstrip()+'…'
         for u in people:
             if u.id not in links:
                 continue  # nobody to write to; linking is up to the user
             items.append({'request_id': r.id, 'number': request_number(r), 'status': r.status,
-                          'stage': stage, 'stage_label': STAGE_LABELS[stage],
+                          'stage': stage, 'stage_label':funding_stage_label(funding,STAGE_LABELS[stage]) if r.status=='approved' else STAGE_LABELS[stage],
                           'assignee_user_id': u.id, 'assignee_telegram_id': links[u.id],
                           'stage_entered_at': utc_iso(since),
                           'company': company.name, 'company_code': company.code, 'amount': money(r.amount), 'currency': account.currency,
-                          'purpose': purpose, 'url': url})
+                          'purpose': purpose, 'url': url,
+                          **({'funding_gross_amount':money(funding.gross_amount),'funding_fee_amount':money(funding.fee_amount),
+                              'funding_state':funding.state} if funding else {})})
     return items
 
 

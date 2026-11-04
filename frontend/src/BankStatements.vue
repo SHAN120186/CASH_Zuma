@@ -12,6 +12,7 @@ import BankStatementPostingSummary from './BankStatementPostingSummary.vue';
 import BankStatementResolution from './BankStatementResolution.vue';
 import BankStatementCategoryRules from './BankStatementCategoryRules.vue';
 import {statementCategoryName} from './cashflow/statementCategory.js';
+import CashFundingBankCaption from './CashFundingBankCaption.vue';
 
 const props = defineProps({
   api: {type: Function, required: true},
@@ -54,7 +55,7 @@ const reprocessReadyCount = computed(() => {
   const count = reprocessPreview.value?.posting_summary?.ready?.count;
   return Number.isInteger(count) && count >= 0 ? count : null;
 });
-const newLinkStatuses = new Set(['income_matched_candidate','fee_existing','interest_existing','other_matched_candidate']);
+const newLinkStatuses = new Set(['income_matched_candidate','fee_existing','interest_existing','other_matched_candidate','cash_funding_candidate']);
 const reprocessNewLinkCount = computed(() => (reprocessPreview.value?.rows || []).filter(row => newLinkStatuses.has(row.status)).length);
 const reprocessHasWork = computed(() => {
   return reprocessReadyCount.value === null || reprocessReadyCount.value > 0 || reprocessNewLinkCount.value > 0 || reprocessPreview.value?.full_reconciliation === true;
@@ -96,13 +97,15 @@ const labels = Object.freeze({
   historical_transfer_posted: N_('Выполненный перевод учтён'),
   historical_request_paid: N_('Историческая оплата учтена'),
   manual_distinct_income: N_('Отдельное поступление учтено'),
+  cash_funding_matched: N_('Снятие наличных учтено'),
+  cash_funding_candidate: N_('Связать со снятием наличных'),
   reviewed: N_('Проверено бухгалтером'),
   review: N_('Нужна проверка бухгалтера'),
   duplicate: N_('Повтор связан с ранее проведённой операцией'),
   ambiguous_duplicate: N_('Возможный повтор — нужна проверка'),
 });
 const label = value => tx(labels[value] || N_('Нужна проверка бухгалтера'));
-const pendingFullReconciliation = new Set(['income_candidate','income_matched_candidate','outgoing_candidate','fee_candidate','fee_existing','interest_candidate','interest_existing','other_matched_candidate']);
+const pendingFullReconciliation = new Set(['income_candidate','income_matched_candidate','outgoing_candidate','fee_candidate','fee_existing','interest_candidate','interest_existing','other_matched_candidate','cash_funding_candidate']);
 const rowLabel = (row, fullReconciliation) => row.posting_state === 'pending' || (!row.posting_state && fullReconciliation !== true && pendingFullReconciliation.has(row.status)) ? tx('Остаётся на проверке') : label(row.status);
 const reviewCount = (items, fullReconciliation) => items.filter(row => row.posting_state ? row.posting_state === 'pending' : ['review', 'ambiguous_duplicate'].includes(row.status) || (fullReconciliation !== true && pendingFullReconciliation.has(row.status))).length;
 const selectedTransfer = row => {const action = transferActions.value[row.id]; return action?.items.find(item => String(item.ledger_id) === String(action.selected));};
@@ -642,7 +645,7 @@ async function commit() {
         <button v-if="canViewCashFlow" type="button" class="secondary tiny" @click="emit('cash-flow',{currency,period_from:preview.statement.period_from,period_to:preview.statement.period_to})">{{tx('Открыть Cash Flow')}}</button>
         <details class="statement-source"><summary>{{tx('Исходные строки и статусы проведения')}}</summary>
         <div class="table-scroll"><table><thead><tr><th>{{tx('Дата')}}</th><th>{{tx('Контрагент / документ')}}</th><th>{{tx('Назначение')}}</th><th>{{tx('Движение')}}</th><th>{{tx('Результат сверки')}}</th></tr></thead><tbody>
-          <tr v-for="row in rows" :key="row.id"><td>{{formatShortDate(row.date)}}</td><td>{{row.correspondent_name}}<small>{{row.correspondent_inn || '—'}} · {{row.document_number}}</small></td><td>{{row.purpose}}</td><td>{{directionLabel(row.direction)}}<small>{{money(row.amount)}} {{currency}}</small></td><td>{{rowLabel(row,preview.full_reconciliation)}}<small v-if="categoryName(row)">{{tx('Статья')}}: {{categoryName(row)}}</small><small v-if="categoryRuleLabel(row)">{{categoryRuleLabel(row)}}</small><small v-if="row.reason">{{tx(row.reason)}}</small><small v-if="row.request_id">{{tx('Заявка №{id}',{id:row.request_id})}}</small></td></tr>
+          <tr v-for="row in rows" :key="row.id"><td>{{formatShortDate(row.date)}}</td><td>{{row.correspondent_name}}<small>{{row.correspondent_inn || '—'}} · {{row.document_number}}</small></td><td>{{row.purpose}}</td><td>{{directionLabel(row.direction)}}<small>{{money(row.amount)}} {{currency}}</small></td><td>{{rowLabel(row,preview.full_reconciliation)}}<CashFundingBankCaption :row="row" :currency="currency"/><small v-if="categoryName(row)">{{tx('Статья')}}: {{categoryName(row)}}</small><small v-if="categoryRuleLabel(row)">{{categoryRuleLabel(row)}}</small><small v-if="row.reason">{{tx(row.reason)}}</small><small v-if="row.request_id">{{tx('Заявка №{id}',{id:row.request_id})}}</small></td></tr>
         </tbody></table></div>
         </details>
         <label class="confirm"><input v-model="confirmAccount" type="checkbox" :disabled="busy"> {{tx('Подтверждаю: номер счёта в выписке относится к выбранному счёту на сайте.')}}</label>
@@ -753,7 +756,7 @@ async function commit() {
           <p v-else class="error" role="alert">{{tx('После подтверждения сервер проведёт доступные проверенные строки. Спорные строки останутся на проверке; счёт останется несверенным.')}}</p>
           <BankStatementPostingSummary :summary="reprocessPreview.posting_summary" :currency="oldCurrency" :full-reconciliation="reprocessPreview.full_reconciliation"/>
           <button v-if="reprocessReadyCount!==null" type="button" :disabled="busy || reprocessBusy || !reprocessPreview.preview_token || !reprocessHasWork" @click="commitOldBatch">{{reprocessActionLabel}}</button>
-          <div class="table-scroll"><table><thead><tr><th>{{tx('Дата')}}</th><th>{{tx('Контрагент / документ')}}</th><th>{{tx('Движение')}}</th><th>{{tx('Результат сверки')}}</th></tr></thead><tbody><tr v-for="row in reprocessPreview.rows || []" :key="row.id"><td>{{formatShortDate(row.date)}}</td><td>{{row.correspondent_name}}<small>{{row.correspondent_inn || '—'}} · {{row.document_number}}</small></td><td>{{directionLabel(row.direction)}}<small>{{money(row.amount,row.currency || oldCurrency)}} {{row.currency || oldCurrency}}</small></td><td>{{rowLabel(row,reprocessPreview.full_reconciliation)}}<small v-if="categoryName(row)">{{tx('Статья')}}: {{categoryName(row)}}</small><small v-if="categoryRuleLabel(row)">{{categoryRuleLabel(row)}}</small><small v-if="row.reason">{{tx(row.reason)}}</small></td></tr></tbody></table></div>
+          <div class="table-scroll"><table><thead><tr><th>{{tx('Дата')}}</th><th>{{tx('Контрагент / документ')}}</th><th>{{tx('Движение')}}</th><th>{{tx('Результат сверки')}}</th></tr></thead><tbody><tr v-for="row in reprocessPreview.rows || []" :key="row.id"><td>{{formatShortDate(row.date)}}</td><td>{{row.correspondent_name}}<small>{{row.correspondent_inn || '—'}} · {{row.document_number}}</small></td><td>{{directionLabel(row.direction)}}<small>{{money(row.amount,row.currency || oldCurrency)}} {{row.currency || oldCurrency}}</small></td><td>{{rowLabel(row,reprocessPreview.full_reconciliation)}}<CashFundingBankCaption :row="row" :currency="row.currency || oldCurrency"/><small v-if="categoryName(row)">{{tx('Статья')}}: {{categoryName(row)}}</small><small v-if="categoryRuleLabel(row)">{{categoryRuleLabel(row)}}</small><small v-if="row.reason">{{tx(row.reason)}}</small></td></tr></tbody></table></div>
           <p class="sub">{{tx('Каждая проверенная строка проводится с учётом прав, остатков и отсутствия повторов. Спорные строки не становятся фактом.')}}</p>
           <button type="button" :disabled="busy || reprocessBusy || !reprocessPreview.preview_token || !reprocessHasWork" @click="commitOldBatch">{{tx('Подтвердить повторную обработку')}}</button>
         </div>

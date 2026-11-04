@@ -14,12 +14,12 @@ export function statementExpenseGroups(rows) {
  const requestStatuses=new Set(['auto_pay_candidate','auto_paid','paid_match','manual_paid','manual_match']);
  const feeStatuses=new Set(['fee_candidate','fee_existing','auto_fee_posted','fee_matched']);
  const outgoingStatuses=new Set(['outgoing_candidate','auto_outgoing_posted']);
- const existingStatuses=new Set(['other_matched_candidate','other_matched']);
+ const existingStatuses=new Set(['other_matched_candidate','other_matched','cash_funding_candidate','cash_funding_matched']);
  for(const row of rows||[]){
   if(row.direction!=='out')continue;
   let key='review';
   if(!row.uncertain&&requestStatuses.has(row.status)&&row.request_id)key='requests';
-  else if(!row.uncertain&&(feeStatuses.has(row.status)||(row.status==='reviewed'&&row.classification==='bank_fee')))key='fees';
+  else if(!row.uncertain&&(feeStatuses.has(row.status)||(['reviewed','cash_funding_candidate','cash_funding_matched'].includes(row.status)&&row.classification==='bank_fee')))key='fees';
   else if(!row.uncertain&&outgoingStatuses.has(row.status))key='noRequest';
   else if(!row.uncertain&&existingStatuses.has(row.status))key='existing';
   else if(!row.uncertain&&row.status==='manual_transfer_match')key='transfer';

@@ -25,6 +25,10 @@ jobs:
       - run: python -m unittest tests.test_business_templates -q
       - run: python tests/test_site.py
       - run: python -m unittest tests.test_request_delete -q
+      - run: python -m unittest tests.test_cash_funding -q
+      - run: python -m unittest tests.test_cash_funding_audit -q
+      - run: python -m unittest tests.test_cash_funding_group_availability -q
+      - run: python -m unittest tests.test_bank_cash_funding -q
       - run: python -m unittest tests.test_request_auto_archive -q
       - run: python -m unittest tests.test_request_due_order -q
       - run: python -m unittest tests.test_request_form_rules -q
@@ -77,7 +81,7 @@ jobs:
       - run: docker build --tag uzgermed:check .
   postgres:
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 60
     services:
       postgres:
         image: postgres:17
@@ -100,6 +104,10 @@ jobs:
       # Separate processes avoid the suites' temporary DATA_DIR cleanup affecting each other.
       - run: python tests/test_site.py
       - run: python -m unittest tests.test_request_delete -q
+      - run: python -m unittest tests.test_cash_funding -q
+      - run: python -m unittest tests.test_cash_funding_audit -q
+      - run: python -m unittest tests.test_cash_funding_group_availability -q
+      - run: python -m unittest tests.test_bank_cash_funding -q
       - run: python -m unittest tests.test_request_auto_archive -q
       - run: python -m unittest tests.test_request_due_order -q
       - run: python -m unittest tests.test_request_form_rules -q

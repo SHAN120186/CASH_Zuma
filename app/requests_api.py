@@ -40,6 +40,9 @@ def can_view_request(s, u, r):
     account = s.get(Account, r.account_id)
     if r.status in ('approved', 'paid') and account and account.kind in payment_channels(perms):
         return True
+    if r.status in ('approved','paid') and 'pay_bank' in perms:
+        from .cash_funding import funding_for
+        if funding_for(s,r.id) is not None:return True
     if 'request_check' in perms and (r.status == 'pending' or r.checked_by == u.id):
         return True
     return False
@@ -65,6 +68,8 @@ def request_actions(s, u, r):
     perms = perms_of(u)
     account = s.get(Account, r.account_id)
     stage = approval_stage(r)
+    from .cash_funding import funding_for,capabilities
+    funding=funding_for(s,r.id)
     # Без прав согласующего, проверяющего или финансового руководителя сотрудник действует только в своих заявках.
     own_only = not ({'approve', 'request_edit', 'request_check'} & perms)
     actions = ['delete'] if 'request_delete' in perms else []
@@ -85,13 +90,24 @@ def request_actions(s, u, r):
         actions.append('close')
     if 'request_edit' in perms and r.status in ('pending', 'approved'):
         actions.append('reschedule')
-    if r.status == 'approved' and pay_right(account) in perms and route_complete(r) and u.id not in all_participants(s, r, include_check=account.kind!='bank'):
+    if r.status == 'approved' and pay_right(account) in perms and route_complete(r) and u.id not in all_participants(s, r, include_check=account.kind!='bank') and (funding is None or funding.state=='received'):
         actions.append('pay')
+    if funding:
+        allowed=capabilities(s,u,r,funding)
+        if allowed['can_withdraw']:actions.append('cash_withdraw')
+        if allowed['can_receive']:actions.append('cash_receive')
+        if funding.state!='unfunded':
+            actions=[a for a in actions if a not in ('edit','submit','documents','return','return_finance','reschedule')]
+        if funding.state=='in_transit':actions=[a for a in actions if a not in ('close','delete')]
     return actions
 
 
 def request_view(s, u, r, batch=None):
     data = request_json(s, r, batch=batch)
+    if data.get('cash_funding'):
+        from .cash_funding import funding_for,capabilities
+        funding=batch['fundings'].get(r.id) if batch else funding_for(s,r.id)
+        data['cash_funding'].update(capabilities(s,u,r,funding))
     # Без права просмотра реестра (заявитель, закупки, кассир, плательщик) прежний блок бюджета скрыт;
     # по выбранной статье и периоду остаётся карточка budget_card (лимит, использовано, резерв, доступно, после заявки).
     if 'view' not in perms_of(u):

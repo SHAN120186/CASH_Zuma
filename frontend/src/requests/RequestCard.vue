@@ -5,6 +5,7 @@ import {PRIORITIES, CHANNELS, DEPARTMENTS, DOC_KINDS, requiredDocs, SINGLE_DOCS,
         missingDocs, budgetRows, budgetNote, periodLabel, minDue, historyLabel, historyNote, historyFile, fileProblem} from './workflow.js';
 import {RETRY_REASON} from './saveFlow.js';
 import {tx, N_, formatDate, lang} from '../i18n/index.js';
+import CashFundingPanel from './CashFundingPanel.vue';
 
 const props = defineProps({
   api: {type: Function, required: true},
@@ -79,6 +80,15 @@ async function deleteRequest() {
 
 function submit() {
   run(() => props.api(`/api/requests/${r.value.id}/decision`, json({action: 'submit', version: r.value.version})), N_('Заявка отправлена на согласование.'));
+}
+
+async function fundingChanged(row) {
+  if (row?.id === r.value?.id) r.value = row;
+  // A commit returns the authoritative workflow view, while GET includes
+  // document versions, people and history. Never treat the short reply as an
+  // empty set of attachments after a successful money fact.
+  await load(true);
+  emit('changed');
 }
 
 async function decide() {
@@ -167,6 +177,8 @@ onUnmounted(() => document.removeEventListener('keydown', onKey));
           <template v-if="r.people?.approved_by && r.approved_by !== r.finance_approved_by"><dt>{{ tx('Директор') }}</dt><dd>{{ r.people.approved_by }}</dd></template>
           <template v-if="r.decision_note"><dt>{{ tx('Комментарий') }}</dt><dd>{{ r.decision_note }}</dd></template>
         </dl>
+
+        <CashFundingPanel v-if="r.cash_funding" :api="api" :request="r" :money="money" @busy="busy = $event" @changed="fundingChanged" />
 
         <section v-if="r.budget_card" class="budget-check" :class="r.budget_card.status" :aria-label="tx('Бюджет статьи')">
           <strong>{{ tx('Бюджет статьи «{category}» · {period}', {category: r.category, period: periodLabel(r.budget_card.period)}) }}</strong>
