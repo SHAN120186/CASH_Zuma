@@ -1,7 +1,8 @@
 {
-  "version": "2.34.21",
+  "version": "2.34.22",
   "date": "2026-11-04",
   "changes": [
+    "Форма правил статей сохраняет ширину экрана при длинных названиях статей.",
     "Добавлены отдельные правила статей банковских операций для каждой компании: ИНН, контрагент, назначение, договор и валюта. Известные заявки и поступления сохраняют свои статьи, неизвестные внешние операции идут в «Не распределено». Правила можно применить к нераспределённым операциям сохранённой выписки с подтверждением, без новых платежей. Изменение правил требует новой проверки; повторы защищены от дублей.",
     "Экран банковских выписок упрощён: подробные пояснения перенесены в свёрнутую справку. На основном экране остались короткая инструкция, рабочие поля, статусы и важные предупреждения.",
     "Историческая оплата сохраняет исходную статью закрытой заявки, включая архивную. Для старой заявки без ИНН требуется отдельное подтверждение получателя по банковским документам при точном совпадении названия, счёта и суммы. Несовпадающий ИНН не обходится; причины недоступности показаны явно.",
@@ -100,6 +101,7 @@
     "Длинные названия файлов и кнопки выбора шаблона переносятся на узком экране. В ТЭО дата архива отдельно обозначена и не подменяет начало финансового прогноза."
   ],
   "changes_uz": [
+    "Modda nomlari uzun bo‘lganda ham qoidalar shakli ekran kengligida qoladi.",
     "Har bir kompaniya uchun bank operatsiyalari moddalari qoidalari qo‘shildi: STIR, kontragent, to‘lov maqsadi, shartnoma va valyuta. Maʼlum ariza va tushumlar o‘z moddalarini saqlaydi, nomaʼlum tashqi operatsiyalar «Taqsimlanmagan»ga tushadi. Saqlangan ko‘chirmaning taqsimlanmagan operatsiyalariga qoidalarni yangi to‘lovsiz, tasdiqlash orqali qo‘llash mumkin. Qoidalar o‘zgarsa, qayta tekshirish talab qilinadi; takrorlar dublikatlardan himoyalangan.",
     "Bank ko‘chirmalari ekrani soddalashtirildi: batafsil izohlar yopiq yordam bo‘limiga ko‘chirildi. Asosiy ekranda qisqa ko‘rsatma, ish maydonlari, holatlar va muhim ogohlantirishlar qoldirildi.",
     "Barcha kompaniyalardagi arizalar sahifalarga ajratishdan oldin to‘lov muddati bo‘yicha ertadan kechga saralanadi. Sanalar, holatlar, arxiv va huquqlar saqlangan. Bank solishtiruvi yakuni ostida tekshirilgan qatorlar soni bilan aniq o‘tkazish tugmasi qo‘shildi; ko‘rish va o‘tkazish ajratilgan.",
