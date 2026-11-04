@@ -210,6 +210,39 @@ class CashFundingTests(base.SiteTests):
         self.assertEqual(paid.status_code,200,paid.text)
         self.assertEqual(self.report()['totals'][8],'-1000000.00')
 
+    def test_cross_month_shared_article_withdrawal_uses_only_current_month_commission_budget(self):
+        from app.services import budget_state
+        rid=self.cash_request(submit=False)
+        october='2026-10'
+        self.assertEqual(self.post('/api/budgets',{'category_id':self.cat,'month':october,'currency':'UZS',
+            'amount':'1000000','mode':'hard','reason':'Synthetic October cash and planned fee budget'}).status_code,200)
+        payload={**self.request_body('990000',account=self.cash,date='2026-10-02'),'version':self.row(rid)['version'],
+                 'reason':'Synthetic October issue funded by September withdrawal',
+                 'cash_funding':{'bank_account_id':self.acc,'gross_amount':'1000000','fee_percent':'1','fee_category_id':self.cat}}
+        edited=self.client.put(f'/api/requests/{rid}',json=payload,headers=self.h)
+        self.assertEqual(edited.status_code,200,edited.text)
+        self.assertEqual(self.upload(rid).status_code,200)
+        self.assertEqual(self.post(f'/api/requests/{rid}/decision',{'action':'submit'}).status_code,200)
+        approved=self.approve(rid);self.assertEqual(approved.status_code,200,approved.text)
+        # The earlier month's hard limit must still cover its actual fee.
+        self.budget('9999','hard')
+        body={'version':self.row(rid)['cash_funding']['version'],'date':self.date,'reference':'September funding for October issue'}
+        denied=self.post(f'/api/requests/{rid}/cash-funding/withdraw/preview',body,*self.stage_user('check'))
+        self.assertEqual(denied.status_code,409,denied.text)
+        self.budget('10000','hard')
+        self.funding_action(rid,'withdraw',*self.stage_user('check'),reference=body['reference'])
+        with unit() as s:
+            september=budget_state(s,self.cat,self.month,'UZS')
+            october_state=budget_state(s,self.cat,october,'UZS')
+            self.assertEqual(september['spent'],1000000)
+            self.assertEqual(september['reserved'],0)
+            self.assertEqual(october_state['spent'],0)
+            self.assertEqual(october_state['reserved'],99000000)
+            self.assertEqual(s.scalar(select(func.count()).select_from(Ledger)),2)
+        self.assertEqual(self.report()['totals'][8],'-10000.00')
+        self.assertEqual(self.row(rid)['amount'],'990000.00')
+        self.assertEqual(self.balances(),{'bank':0,'cash':0,'transit':99000000})
+
     def test_same_physical_bank_document_cannot_fund_two_requests(self):
         with unit(True) as s:s.get(Account,self.acc).opening=200000000
         first=self.cash_request();second=self.cash_request()

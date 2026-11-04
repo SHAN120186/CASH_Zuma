@@ -1081,7 +1081,22 @@ def group_report(request:Request,company_id:int,currency:Literal['UZS','USD','EU
         states=[funds_state(s,a,day) for a in opened]
         reserved=sum(state['reserved'] for state in states)
         bank_hold=sum(state['bank_pending_debits'] for state in states)
-        available=closing-reserved-bank_hold
+        # Reserve only the additional fee: the net cash request is already in
+        # `reserved`. Historical reports stop planning it on the withdrawal day,
+        # when the posted fee has already reduced the asset balance.
+        funding_fee_reserved=sum(s.scalars(select(CashFunding.fee_amount).join(
+            PaymentRequest,CashFunding.request_id==PaymentRequest.id).where(
+            CashFunding.company_id==company_id,
+            CashFunding.bank_account_id.in_([a.id for a in opened if a.kind=='bank']),
+            PaymentRequest.account_id.in_([a.id for a in opened]),
+            PaymentRequest.status=='approved',PaymentRequest.due_date<=day,
+            or_(CashFunding.withdraw_date.is_(None),CashFunding.withdraw_date>day))))
+        # Money in transit remains part of the company's assets, but cannot
+        # cover a cash issue before its physical receipt. Use this report's
+        # historical cut-off, not today's balance, and never release funds
+        # merely because a damaged technical account has a negative balance.
+        in_transit=sum(max(state['actual'],0) for a,state in zip(opened,states) if a.kind=='transit')
+        available=closing-reserved-funding_fee_reserved-bank_hold-in_transit
         if not plan['complete']:
             if plan['defined_rows']:
                 plan_line=(f'План расходов: частично задано {money(expense_plan)} {currency}; '
@@ -1098,15 +1113,18 @@ def group_report(request:Request,company_id:int,currency:Literal['UZS','USD','EU
                        'покрытие не требуется: план выплат равен нулю.')
         last_line='нет' if last_income is None else last_income.strftime('%d.%m.%Y')
         day_label=day.strftime('%d.%m.%Y')
+        transit_note=f'; деньги в пути {money(in_transit)} (недоступны к выдаче)' if in_transit else ''
+        funding_fee_note=f'; резерв комиссии {money(funding_fee_reserved)}' if funding_fee_reserved else ''
         text='\n'.join([f'{company.name} · {month} · сценарий {scenario}',plan_line,f'Последнее банковское поступление: {last_line}',
-            f'{day_label}: начало дня {money(opening)}; приход {money(income_day)}; расход {money(expense_day)}; конец дня {money(closing)}; резерв {money(reserved)}; доступно {money(available)} {currency}'])
+            f'{day_label}: начало дня {money(opening)}; приход {money(income_day)}; расход {money(expense_day)}; конец дня {money(closing)}; резерв {money(reserved)}{funding_fee_note}{transit_note}; доступно {money(available)} {currency}'])
         return {'text':text,'company':company.name,'month':month,'day':str(day),'currency':currency,'scenario':scenario,
             'expense_plan':money(expense_plan),'bank_income_mtd':money(income_mtd),'last_bank_income':str(last_income) if last_income else None,
             'expense_plan_complete':plan['complete'],'expense_plan_defined_rows':plan['defined_rows'],'expense_plan_missing_rows':plan['missing_rows'],
             'expense_plan_total':money(plan['total']) if plan['total'] is not None else None,
             'expense_plan_remaining':money(remaining) if remaining is not None else None,'expense_plan_coverage_percent':coverage,
             'opening':money(opening),'income_day':money(income_day),'expense_day':money(expense_day),'closing':money(closing),'reserved':money(reserved),
-            'bank_pending_debits':money(bank_hold),'available':money(available)}
+            'bank_pending_debits':money(bank_hold),'in_transit_balance':money(in_transit),
+            'funding_fee_reserved':money(funding_fee_reserved),'available':money(available)}
 
 @app.get('/api/export/ledger.csv')
 def export_ledger(request:Request):

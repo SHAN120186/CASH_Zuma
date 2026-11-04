@@ -285,7 +285,7 @@ def _checks(s,request,funding,bank,cash,action,data):
                 raise HTTPException(409,'Недостаточно средств с учётом банковских списаний на проверке.')
         if funding.fee_amount:
             state=budget_state(s,funding.fee_category_id,str(data.date)[:7],bank.currency,funding.fee_amount,request.id)
-            if funding.fee_category_id==request.category_id:
+            if funding.fee_category_id==request.category_id and str(request.due_date)[:7]==str(data.date)[:7]:
                 state=budget_state(s,funding.fee_category_id,str(data.date)[:7],bank.currency,funding.fee_amount+request.amount,request.id)
             allowed=funding.approved_fee_overrun if funding.approved_fee_month==str(data.date)[:7] else None
             if allowed is not None:allowed=max(allowed,accepted_fee_overrun(s,funding,str(data.date)[:7],bank.currency))
