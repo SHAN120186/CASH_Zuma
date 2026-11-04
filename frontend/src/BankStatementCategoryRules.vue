@@ -134,5 +134,6 @@ function remove(item){
 </template>
 
 <style scoped>
+.rule-fields label,.rule-fields input,.rule-fields select{min-width:0}.rule-fields input,.rule-fields select{width:100%;max-width:100%}
 .category-rules{margin:14px 0}.rules-content{margin-top:12px;padding:14px;border:1px solid var(--line,#dce0e8);border-radius:10px}.rules-toolbar,.rules-actions{display:flex;gap:8px;flex-wrap:wrap}.rule-editor{margin-top:16px;padding:12px;background:#f8fafc;border-radius:8px}.rule-editor h4{margin:0 0 12px}.rule-fields{display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:10px}.rule-fields label{display:grid;gap:4px}.rules-help{margin-top:12px}.rules-help summary{cursor:pointer}.table-scroll td{white-space:normal;max-width:420px;overflow-wrap:anywhere}.inactive{opacity:.65}.form-actions{display:flex;gap:8px;margin-top:12px}
 </style>
