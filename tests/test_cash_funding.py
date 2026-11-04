@@ -1,11 +1,13 @@
 """Synthetic cash funding: actual dates, company boundaries and duplicate guards."""
 import json
+import os
 import unittest
 from datetime import timedelta
 from sqlalchemy import select,func,inspect
+from unittest.mock import patch
 
 import tests.test_site as base
-from app.db import Account,Budget,CashFunding,Category,Company,CompanyUser,Ledger,PaymentRequest,User,unit,engine,initialize
+from app.db import Account,Budget,CashFunding,Category,Company,CompanyUser,Ledger,PaymentRequest,Setting,TelegramLink,User,unit,engine,initialize
 from app.services import account_balance,today
 
 
@@ -291,6 +293,158 @@ class CashFundingTests(base.SiteTests):
         event=next(e for e in day['events'] if e['id']==rid)
         self.assertEqual(event['amount'],'990000.00')
         self.assertNotIn('cash_funding_fee',event)
+
+    def test_retired_fee_article_allows_existing_cash_receipt_but_not_new_withdrawal(self):
+        first=self.cash_request();second=self.cash_request()
+        self.funding_action(first,'withdraw',*self.stage_user('check'))
+        funding=self.row(first)['cash_funding']
+        with unit(True) as s:
+            key=f'company:{self.company}:category_catalog'
+            row=s.get(Setting,key);config=json.loads(row.value) if row else {}
+            config['retired']=list(set(config.get('retired',[]))|{self.fee_cat})
+            if row:row.value=json.dumps(config)
+            else:s.add(Setting(key=key,value=json.dumps(config)))
+            fee=s.get(Ledger,funding['fee_ledger_id'])
+            before=(fee.account_id,fee.category_id,fee.kind,fee.amount,fee.date,fee.reference)
+        result,_,_=self.funding_action(first,'receive',*self.cash_payer())
+        self.assertEqual(result.json()['cash_funding']['state'],'received')
+        self.assertEqual(self.balances(),{'bank':0,'cash':99000000,'transit':0})
+        self.assertEqual(self.report()['totals'][8],'-10000.00')
+        with unit() as s:
+            fee=s.get(Ledger,funding['fee_ledger_id'])
+            self.assertEqual(before,(fee.account_id,fee.category_id,fee.kind,fee.amount,fee.date,fee.reference))
+        payload={'version':self.row(second)['cash_funding']['version'],'date':self.date,'reference':'New withdrawn fee'}
+        denied=self.post(f'/api/requests/{second}/cash-funding/withdraw/preview',payload,*self.stage_user('check'))
+        self.assertEqual(denied.status_code,422,denied.text)
+
+    def test_transit_bot_contract_is_legacy_compatible_scoped_and_balanced(self):
+        from decimal import Decimal
+        rid=self.cash_request()
+        self.funding_action(rid,'withdraw',*self.stage_user('check'))
+        group=-1001111111111;foreign_group=-1002222222222
+        bot=('synthetic-cash-funding-bot','synthetic-bot-secret-'+'x'*32)
+        environment={'BOT_CLIENT_ID':bot[0],'BOT_CLIENT_SECRET':bot[1],
+                     'BOT_REPORT_GROUPS':f'{group}:UZGERMED;{foreign_group}:ZUMA'}
+        with patch.dict(os.environ,environment):
+            response=self.client.get('/api/bot/v1/group-daily-summary',auth=bot,
+                params={'chat_id':group,'report_date':self.date})
+            self.assertEqual(response.status_code,200,response.text);daily=response.json()
+            response=self.client.get('/api/bot/v1/morning-summary',auth=bot,
+                params={'chat_id':group,'report_date':str(today()-timedelta(days=1)),'today':self.date})
+            self.assertEqual(response.status_code,200,response.text);morning=response.json()
+            foreign=self.client.get('/api/bot/v1/group-daily-summary',auth=bot,
+                params={'chat_id':foreign_group,'report_date':self.date}).json()
+        for payload in (daily,morning):
+            self.assertEqual(payload['companies'],['UZGERMED'])
+            for section in ('balances','income','expense'):
+                self.assertTrue(all(row['kind'] in ('bank','cash') and row['company_code']=='UZGERMED'
+                                    for row in payload[section] or []))
+            transit=[row for row in payload['balances'] if row.get('source_kind')=='transit']
+            self.assertEqual(len(transit),1)
+            self.assertEqual(transit[0]['kind'],'cash')
+            self.assertIn('Деньги в пути',transit[0]['name'])
+            self.assertTrue(any('Недоступны для выдачи до получения кассой' in row['message']
+                                for row in payload['warnings']))
+        self.assertTrue(all(row['kind'] in ('bank','cash') for row in daily['opening_balances']))
+        total=lambda rows:sum((Decimal(row['amount']) for row in rows or []),Decimal('0'))
+        self.assertEqual(total(daily['opening_balances'])+total(daily['income'])-total(daily['expense']),total(daily['balances']))
+        self.assertEqual(total(daily['expense']),Decimal('10000.00'))
+        self.assertEqual(total(daily['balances']),Decimal('990000.00'))
+        self.assertEqual(daily['income'],[])
+        self.assertEqual(foreign['companies'],['ZUMA']);self.assertEqual(foreign['balances'],[])
+        self.assertFalse(any('Деньги в пути' in row['message'] for row in foreign['warnings']))
+        self.assertTrue(any(row['kind']=='transit' for row in self.client.get('/api/accounts',headers=self.h).json()))
+        # Private harnesses may additionally feed these synthetic payloads into
+        # the already deployed bot parser, without a dependency on its checkout.
+        self.legacy_bot_payloads={'morning':morning,'daily':daily}
+
+    def test_funding_reminders_follow_bank_receipt_and_independent_cash_payer(self):
+        from app.bot_api import pending_items
+        rid=self.cash_request(submit=False)
+        receiver=self.cash_payer()
+        with unit(True) as s:
+            author=s.scalar(select(User).where(User.username=='cash_receiver'))
+            author_id=author.id
+            req=s.get(PaymentRequest,rid);req.creator_id=author_id;req.last_editor_id=author_id
+            req.purpose='Synthetic invoice account 20208000123456789012'
+            s.add(TelegramLink(user_id=author_id,telegram_user_id=7001002))
+        self.assertEqual(self.upload(rid).status_code,200)
+        self.assertEqual(self.post(f'/api/requests/{rid}/decision',{'action':'submit'}).status_code,200)
+        self.assertEqual(self.approve(rid).status_code,200)
+        with unit(True) as s:
+            checker=s.scalar(select(User).where(User.username=='checker'));banker_id=checker.id
+            s.add(TelegramLink(user_id=banker_id,telegram_user_id=7001001))
+        def items():
+            with unit() as s:return [row for row in pending_items(s) if row['request_id']==rid]
+        rows=items()
+        self.assertEqual([(r['assignee_user_id'],r['stage']) for r in rows],[(banker_id,'bank_payment')])
+        self.assertEqual(rows[0]['stage_label'],'Снятие наличных из банка')
+        self.assertEqual(rows[0]['amount'],'990000.00')
+        self.assertEqual(rows[0]['funding_gross_amount'],'1000000.00')
+        self.assertIn('1000000.00',rows[0]['purpose'])
+        self.assertNotIn('20208000123456789012',rows[0]['purpose'])
+        self.assertIn('••9012',rows[0]['purpose'])
+        self.funding_action(rid,'withdraw',*self.stage_user('check'))
+        rows=items()
+        self.assertEqual([(r['assignee_user_id'],r['stage']) for r in rows],[(author_id,'cash_payment')])
+        self.assertEqual(rows[0]['stage_label'],'Получение наличных в кассу')
+        # Receipt is not an expense: this cashier may receive their own cash
+        # funding, but may not subsequently issue the expense to themself.
+        self.funding_action(rid,'receive',*receiver)
+        self.assertEqual(items(),[])
+        independent=self.make_user('cashier','independent_cash_payer')
+        try:
+            with unit(True) as s:
+                user=s.scalar(select(User).where(User.username=='independent_cash_payer'));payer_id=user.id
+                s.add(TelegramLink(user_id=payer_id,telegram_user_id=7001003))
+            rows=items()
+            self.assertEqual([(r['assignee_user_id'],r['stage']) for r in rows],[(payer_id,'cash_payment')])
+            self.assertEqual(rows[0]['stage_label'],'Выдача кассиром')
+            with unit(True) as s:s.add(Setting(key=f'sections:{self.company}:{payer_id}',value=json.dumps(
+                {'version':1,'sections':{'requests':'view'}})))
+            self.assertEqual(items(),[])
+        finally:independent[0].close()
+
+    def test_imported_bank_document_cannot_be_debited_again_as_cash_withdrawal(self):
+        from app.bank_statement_models import BankStatementBatch,BankStatementLine
+        from app.bank_statement_guard import accounted_line_ids,require_reconciled_for_manual_payment,set_statement_reconciliation
+        from app.bank_statement_unallocated import ensure_category
+        with unit(True) as s:s.get(Account,self.acc).opening=200000000
+        rid=self.cash_request()
+        reference='Previously imported bank withdrawal'
+        fingerprint='a'*64
+        with unit(True) as s:
+            s.info['company_id']=self.company
+            admin=s.scalar(select(User).where(User.username=='admin'))
+            category=ensure_category(s,'out')
+            entry=Ledger(account_id=self.acc,category_id=category,kind='out',amount=100000000,
+                         date=today(),reference='BANK-'+fingerprint,counterparty='Synthetic bank withdrawal',creator_id=admin.id)
+            s.add(entry);s.flush()
+            batch=BankStatementBatch(company_id=self.company,account_id=self.acc,created_by=admin.id,
+                filename='Synthetic funding duplicate.xls',sha256='b'*64,account_number='20208000000000000001',
+                owner_name='Synthetic company',owner_inn='123456789',currency='UZS',period_from=today(),period_to=today(),
+                opening=200000000,closing=100000000,debit_total=100000000,credit_total=0,
+                balance_matches=True,declared_totals_match=True,source_ready=True,status='committed')
+            s.add(batch);s.flush()
+            line=BankStatementLine(company_id=self.company,batch_id=batch.id,account_id=self.acc,line=1,date=today(),
+                direction='out',amount=100000000,document_number=reference,correspondent_mfo='00001',
+                correspondent_account='20208000000000000002',correspondent_name='Synthetic bank withdrawal',
+                correspondent_inn='123456789',purpose='Completed withdrawal already imported',fingerprint=fingerprint,
+                status='auto_outgoing_posted',ledger_id=entry.id,classification='external_outgoing',include_in_daily=True)
+            s.add(line);s.flush()
+            self.assertEqual(accounted_line_ids(s,[line],s.get(Account,self.acc)),{line.id})
+            self.assertEqual(account_balance(s,s.get(Account,self.acc)),batch.closing)
+            set_statement_reconciliation(s,batch,True,admin)
+            require_reconciled_for_manual_payment(s,s.get(Account,self.acc))
+        payload={'version':self.row(rid)['cash_funding']['version'],'date':self.date,'reference':reference}
+        denied=self.post(f'/api/requests/{rid}/cash-funding/withdraw/preview',payload,*self.stage_user('check'))
+        self.assertEqual(denied.status_code,409,denied.text)
+        self.assertIn('документ уже есть в операциях',denied.json()['detail'])
+        with unit() as s:
+            self.assertEqual(s.scalar(select(func.count()).select_from(Ledger)),1)
+            self.assertEqual(account_balance(s,s.get(Account,self.acc)),100000000)
+            funding=s.scalar(select(CashFunding).where(CashFunding.request_id==rid))
+            self.assertEqual(funding.state,'unfunded');self.assertIsNone(funding.transfer_ledger_id)
 
 
 def load_tests(loader,tests,pattern):

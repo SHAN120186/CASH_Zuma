@@ -220,10 +220,18 @@ def _context(s,user,request_id,action,data):
     _authorized(s,user,request,funding,action)
     if data.version!=funding.version:raise HTTPException(409,'Наличное финансирование уже изменено. Обновите заявку.')
     bank=get(s,Account,funding.bank_account_id);cash=get(s,Account,funding.cash_account_id)
-    validate_plan(s,cash,request.amount,CashFundingIn(bank_account_id=bank.id,gross_amount=money(funding.gross_amount),
-                  fee_percent=funding.fee_percent,fee_category_id=funding.fee_category_id))
+    if action=='withdraw':
+        validate_plan(s,cash,request.amount,CashFundingIn(bank_account_id=bank.id,gross_amount=money(funding.gross_amount),
+                      fee_percent=funding.fee_percent,fee_category_id=funding.fee_category_id))
+    else:
+        # No new fee or expense is created on receipt. Retiring the historical
+        # fee article must not strand money already withdrawn from the bank.
+        get(s,Category,funding.fee_category_id)
+        gross,percent,fee,net=calculate(money(funding.gross_amount),funding.fee_percent)
+        if (gross,fee,net)!=(funding.gross_amount,funding.fee_amount,funding.net_amount):
+            raise HTTPException(409,'Параметры заявки и наличного финансирования расходятся. Нужна проверка.')
     if bank.archived or cash.archived:raise HTTPException(409,'Банк или касса в архиве. Сначала восстановите счёт.')
-    if bank.kind!='bank' or cash.kind!='cash' or bank.currency!=cash.currency:
+    if bank.kind!='bank' or cash.kind!='cash' or bank.currency!=cash.currency or bank.company_id!=cash.company_id:
         raise HTTPException(409,'Тип или валюта связанных счетов изменились. Нужна проверка.')
     minimum=local_date(request.approved_at or request.created_at)
     if data.date>today():raise HTTPException(422,'Подтверждайте только фактически выполненный этап, без будущей даты.')
@@ -243,6 +251,21 @@ def _context(s,user,request_id,action,data):
         or_(Ledger.to_account_id==cash.id, (Ledger.account_id==cash.id)&(Ledger.kind=='in')))
     if s.scalar(existing.limit(1)) is not None:
         raise HTTPException(409,'Этот банковский или кассовый документ уже есть в операциях. Сначала проверьте связь, повторное проведение запрещено.')
+    if action=='withdraw':
+        # Imported facts have generated BANK-* ledger references. Their source
+        # bank document number is the identity the user enters here, so a
+        # reference-only Ledger check cannot detect this already posted debit.
+        # Never convert an external fact into a funding group implicitly.
+        from .bank_statement_models import BankStatementBatch,BankStatementLine
+        source=s.scalar(select(BankStatementLine.id).join(BankStatementBatch,
+            BankStatementBatch.id==BankStatementLine.batch_id).where(
+            BankStatementBatch.company_id==funding.company_id,BankStatementBatch.account_id==bank.id,
+            BankStatementBatch.status=='committed',BankStatementBatch.source_ready.is_(True),
+            BankStatementLine.company_id==funding.company_id,BankStatementLine.account_id==bank.id,
+            BankStatementLine.direction=='out',BankStatementLine.date==data.date,
+            BankStatementLine.document_number==data.reference).limit(1))
+        if source is not None:
+            raise HTTPException(409,'Этот банковский или кассовый документ уже есть в операциях. Сначала проверьте связь, повторное проведение запрещено.')
     return request,funding,bank,cash
 
 
@@ -279,11 +302,23 @@ def _checks(s,request,funding,bank,cash,action,data):
 
 
 def _require_active_legs(s,funding):
-    for leg in (funding.transfer_ledger_id,funding.fee_ledger_id):
-        if leg is None:continue
+    expected=[(funding.transfer_ledger_id,{'account_id':funding.bank_account_id,'to_account_id':funding.transit_account_id,
+        'kind':'transfer','amount':funding.net_amount,'date':funding.withdraw_date,'category_id':None})]
+    if funding.fee_amount:
+        expected.append((funding.fee_ledger_id,{'account_id':funding.bank_account_id,'to_account_id':None,
+            'kind':'out','amount':funding.fee_amount,'date':funding.withdraw_date,'category_id':funding.fee_category_id}))
+    elif funding.fee_ledger_id is not None:
+        raise HTTPException(409,'Параметры заявки и наличного финансирования расходятся. Нужна проверка.')
+    from .services import deleted_ledger_ids
+    deleted=deleted_ledger_ids(s)
+    for leg,fields in expected:
+        if leg is None:raise HTTPException(409,'Параметры заявки и наличного финансирования расходятся. Нужна проверка.')
         entry=get(s,Ledger,leg)
+        if any(getattr(entry,key)!=value for key,value in fields.items()) or entry.request_id or entry.receipt_id:
+            raise HTTPException(409,'Параметры заявки и наличного финансирования расходятся. Нужна проверка.')
         if entry.reversal_of or s.scalar(select(Ledger.id).where(Ledger.reversal_of==leg)):
             raise HTTPException(409,'Снятие или комиссия отменены. Получение наличных заблокировано.')
+        if leg in deleted:raise HTTPException(409,'Снятие или комиссия отменены. Получение наличных заблокировано.')
 
 
 def _signature(s,user,request,funding,bank,cash,action,data):
