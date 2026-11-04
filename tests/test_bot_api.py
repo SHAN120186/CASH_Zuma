@@ -1,7 +1,7 @@
 """Bot API: service access, group scope, morning summary figures, responsible people, Telegram link.
 
 Uses its own temporary database. Client id/secret here are test-only values."""
-import os, sys, tempfile, unittest
+import json, os, subprocess, sys, tempfile, unittest
 from datetime import date, datetime, timedelta
 from pathlib import Path
 ROOT=Path(__file__).resolve().parents[1]
@@ -28,6 +28,7 @@ from fastapi.testclient import TestClient
 from sqlalchemy import select, func
 from app.main import app
 from app.db import *
+from app.bank_statement_models import BankStatementBatch, BankStatementLine
 from app.services import today
 from app.security import hash_password
 from app import clock
@@ -67,6 +68,140 @@ class BotApiTests(unittest.TestCase):
         for c in self.extra:c.close()
         self.client.close()
         clock.FROZEN=None
+
+    def test_group_statement_report_is_scoped_read_only_and_current_unpaid_is_labelled(self):
+        chat = -1005555555555
+        other_chat = -1006666666666
+        with unit(True) as s:
+            admin = s.scalar(select(User).where(User.username == 'admin'))
+            account = s.get(Account, self.acc)
+            s.add_all([TelegramGroup(chat_id=chat, title='Test', companies='UZGERMED', added_by=admin.id),
+                       TelegramGroup(chat_id=other_chat, title='Other', companies='ZUMA', added_by=admin.id)])
+            batch = BankStatementBatch(company_id=account.company_id, account_id=account.id, created_by=admin.id,
+                filename='sample.xls', sha256='a'*64, account_number='123', owner_name='Test', owner_inn='123',
+                currency='UZS', period_from=self.yesterday, period_to=self.yesterday, opening=20500, closing=0,
+                debit_total=20500, credit_total=0, balance_matches=True, source_ready=True, status='committed')
+            s.add(batch); s.flush()
+            s.add(BankStatementLine(company_id=account.company_id, batch_id=batch.id, account_id=account.id,
+                line=1, date=self.yesterday, direction='out', amount=20000, document_number='A',
+                correspondent_mfo='', correspondent_account='456', correspondent_name='Supplier',
+                correspondent_inn='777', purpose='Test service', fingerprint='b'*64))
+            s.add(BankStatementLine(company_id=account.company_id, batch_id=batch.id, account_id=account.id,
+                line=2, date=self.yesterday, direction='out', amount=500, document_number='B',
+                correspondent_mfo='', correspondent_account='16309', correspondent_name='Bank',
+                correspondent_inn='123', purpose='01014 кредит фоиз и основной долг', fingerprint='c'*64))
+            req=PaymentRequest(creator_id=admin.id, category_id=self.cat, account_id=account.id,
+                counterparty='Other', purpose='Test', amount=30000, due_date=self.yesterday, status='approved')
+            s.add(req)
+        path='/api/bot/v1/group-statement-reconciliation'
+        params={'chat_id':chat,'report_date':str(self.yesterday)}
+        self.assertEqual(self.client.get(path,params=params).status_code,401)
+        before=self.client.get(path,params=params,auth=BOT)
+        self.assertEqual(before.status_code,200,before.text)
+        data=before.json()
+        self.assertEqual(data['company_code'],'UZGERMED')
+        self.assertEqual(data['statement_state'],'confirmed')
+        self.assertEqual(data['expenses'][0]['kind'],'no_request')
+        self.assertEqual(data['expenses'][0]['amount'],'200.00')
+        self.assertEqual(data['expenses'][1]['kind'],'unresolved')
+        self.assertEqual(data['unpaid_requests'][0]['amount'],'300.00')
+        self.assertEqual(data['unpaid_requests'][0]['status'],'approved')
+        self.assertEqual(data['report_date'],str(self.yesterday))
+        self.assertTrue(data['unpaid_as_of'])
+        # Optional cross-repository contract check against the real bot parser.
+        bot_dir, bot_python = os.getenv('CASH_ZUMA_BOT_DIR'), os.getenv('CASH_ZUMA_BOT_PYTHON')
+        if bot_dir and bot_python:
+            code = ('import json,os,sys; from datetime import date; '
+                    'sys.path.insert(0,os.environ["CASH_ZUMA_BOT_DIR"]); '
+                    'from bot.services.statement_reports import parse_statement_summary; '
+                    'x=json.load(sys.stdin); parse_statement_summary(x,x["chat_id"],date.fromisoformat(x["report_date"]))')
+            process = subprocess.run([bot_python, '-c', code], input=json.dumps(data), text=True,
+                                     capture_output=True, env=os.environ.copy(), timeout=30)
+            self.assertEqual(process.returncode, 0, process.stderr)
+        after=self.client.get(path,params=params,auth=BOT).json()
+        self.assertEqual(data['revision'],after['revision'])
+        # A current open request with a past ledger link is not asserted to be fully unpaid.
+        with unit(True) as s:
+            admin=s.scalar(select(User).where(User.username=='admin'))
+            req=s.scalar(select(PaymentRequest).where(PaymentRequest.account_id==self.acc))
+            s.add(Ledger(account_id=self.acc,category_id=self.cat,kind='out',amount=10000,date=self.yesterday,
+                         reference='uncertain-partial',request_id=req.id,creator_id=admin.id))
+        changed=self.client.get(path,params=params,auth=BOT).json()
+        self.assertEqual(changed['unpaid_requests'][0]['status'],'needs_review')
+        self.assertIsNone(changed['unpaid_requests'][0]['amount'])
+        self.assertEqual(changed['unpaid_requests'][0]['request_amount'],'300.00')
+        self.assertNotEqual(data['revision'],changed['revision'])
+        cash=self.account('Cash account','cash','UZS','0.00')
+        with unit(True) as s:
+            admin=s.scalar(select(User).where(User.username=='admin'))
+            s.add(PaymentRequest(creator_id=admin.id,category_id=self.cat,account_id=self.acc,
+                counterparty='Supplier',counterparty_inn='777',purpose='Bank',amount=20000,
+                due_date=self.yesterday,status='approved'))
+            s.add(PaymentRequest(creator_id=admin.id,category_id=self.cat,account_id=cash,
+                counterparty='Cash recipient',purpose='Cash',amount=40000,
+                due_date=self.yesterday,status='pending'))
+            s.add(PaymentRequest(creator_id=admin.id,category_id=self.cat,account_id=self.acc,
+                counterparty='Supplier',counterparty_inn='777',purpose='Combined',amount=10000,
+                due_date=self.yesterday,status='approved'))
+            batch=s.scalar(select(BankStatementBatch).where(BankStatementBatch.account_id==self.acc))
+            s.add(BankStatementLine(company_id=batch.company_id,batch_id=batch.id,account_id=self.acc,
+                line=3,date=self.yesterday,direction='out',amount=12000,document_number='PART',
+                correspondent_mfo='',correspondent_account='456',correspondent_name='Supplier',
+                correspondent_inn='777',purpose='Partial payment',fingerprint='e'*64))
+        checked=self.client.get(path,params=params,auth=BOT).json()['unpaid_requests']
+        self.assertEqual([(row['status'],row['amount']) for row in checked],
+                         [('needs_review',None),('needs_review',None),('needs_review',None),('needs_review',None)])
+        classified=self.client.get(path,params=params,auth=BOT).json()['expenses']
+        self.assertNotEqual(classified[0]['kind'],'no_request')
+        self.assertEqual(classified[2]['kind'],'unresolved')
+        with unit(True) as s:s.get(Company,self.companies['UZGERMED']).code='UzGermed'
+        mixed=self.client.get(path,params=params,auth=BOT)
+        self.assertEqual(mixed.status_code,200,mixed.text)
+        self.assertEqual(mixed.json()['companies'],['UZGERMED'])
+        self.assertEqual(mixed.json()['expenses'][0]['company_code'],'UZGERMED')
+        with unit(True) as s:s.get(Company,self.companies['UZGERMED']).code='UZGERMED'
+        later=self.account('Opened today','bank','UZS','0.00',opened=self.today)
+        archived=self.account('Archived bank','bank','UZS','0.00',opened=self.yesterday)
+        with unit(True) as s:s.get(Account,archived).archived=True
+        covered=self.client.get(path,params=params,auth=BOT).json()
+        self.assertEqual(covered['coverage'],'partial')
+        self.assertEqual([row['account_name'] for row in covered['missing_accounts']],['Archived bank'])
+        other=self.client.get(path,params={**params,'chat_id':other_chat},auth=BOT).json()
+        self.assertEqual(other['statement_state'],'missing')
+        self.assertEqual(other['expenses'],[])
+        self.assertEqual(other['unpaid_requests'],[])
+        self.assertEqual(self.client.get(path,params={**params,'chat_id':GROUP_BOTH},auth=BOT).status_code,403)
+
+    def test_group_statement_rejects_preview_and_does_not_duplicate_overlapping_batches(self):
+        chat=-1005555555556
+        with unit(True) as s:
+            admin=s.scalar(select(User).where(User.username=='admin')); account=s.get(Account,self.acc)
+            s.add(TelegramGroup(chat_id=chat,title='Test',companies='UZGERMED',added_by=admin.id))
+            for marker,status in [('a','preview'),('b','committed'),('c','committed')]:
+                s.add(BankStatementBatch(company_id=account.company_id,account_id=account.id,created_by=admin.id,
+                    filename='sample.xls',sha256=marker*64,account_number='123',owner_name='Test',owner_inn='123',
+                    currency='UZS',period_from=self.yesterday,period_to=self.yesterday,opening=0,closing=0,
+                    debit_total=0,credit_total=0,balance_matches=True,source_ready=True,status=status))
+        r=self.client.get('/api/bot/v1/group-statement-reconciliation',
+            params={'chat_id':chat,'report_date':str(self.yesterday)},auth=BOT)
+        self.assertEqual(r.status_code,200,r.text)
+        self.assertEqual(r.json()['statement_state'],'needs_review')
+        self.assertEqual(r.json()['expenses'],[])
+
+    def test_group_statement_preview_only_does_not_enable_sending(self):
+        chat=-1005555555557
+        with unit(True) as s:
+            admin=s.scalar(select(User).where(User.username=='admin')); account=s.get(Account,self.acc)
+            s.add(TelegramGroup(chat_id=chat,title='Test',companies='UZGERMED',added_by=admin.id))
+            s.add(BankStatementBatch(company_id=account.company_id,account_id=account.id,created_by=admin.id,
+                filename='sample.xls',sha256='d'*64,account_number='123',owner_name='Test',owner_inn='123',
+                currency='UZS',period_from=self.yesterday,period_to=self.yesterday,opening=0,closing=0,
+                debit_total=0,credit_total=0,balance_matches=True,source_ready=True,status='preview'))
+        r=self.client.get('/api/bot/v1/group-statement-reconciliation',
+            params={'chat_id':chat,'report_date':str(self.yesterday)},auth=BOT)
+        self.assertEqual(r.status_code,200,r.text)
+        self.assertEqual(r.json()['statement_state'],'missing')
+        self.assertEqual(r.json()['expenses'],[])
 
     # -- helpers
     def post(self,path,data,client=None,headers=None):
