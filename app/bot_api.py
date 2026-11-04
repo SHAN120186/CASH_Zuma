@@ -495,6 +495,8 @@ def group_statement_reconciliation(request: Request, chat_id: int, report_date: 
     from .bank_statement_models import BankStatementBatch, BankStatementLine
     from .bank_statement_expenses import expense_annotations
     from .bank_statement_interest import PRINCIPAL, exact_loan_interest
+    from .bank_statement_cash_funding import (MATCHED as CASH_FUNDING_MATCHED,
+        accounted_funding_line_ids, binding as cash_funding_binding)
 
     authenticate_bot(request)
     if report_date >= tashkent_today():
@@ -554,12 +556,33 @@ def group_statement_reconciliation(request: Request, chat_id: int, report_date: 
                 BankStatementLine.batch_id == batch.id, BankStatementLine.company_id == company.id,
                 BankStatementLine.account_id == account.id)))
             annotations = expense_annotations(s, batch, all_lines, actor) if actor else {}
+            valid_funding = accounted_funding_line_ids(s, all_lines, account) if actor else set()
             candidate_requests = list(s.scalars(select(PaymentRequest).where(
                 PaymentRequest.account_id == account.id,
                 PaymentRequest.status.in_(['pending', 'approved', 'paid']))))
             for line in lines:
                 annotation = annotations.get(line.id, {})
                 kind = annotation.get('expense_kind', 'unresolved')
+                common = {'company_code': codes[0], 'currency': account.currency,
+                    'number': mask_digits(line.document_number, 80),
+                    'counterparty': mask_digits(line.correspondent_name, 120),
+                    'purpose': mask_digits(line.purpose, 200)}
+                if line.status == CASH_FUNDING_MATCHED:
+                    # One source row may cover both the cash transfer and its fee.
+                    # Revalidate linked ledger facts and never count an uncertain or
+                    # duplicate row. Metadata is accepted only after that check.
+                    duplicate = annotation.get('expense_reason') == 'duplicate_or_overlap' or line.uncertain
+                    funding = cash_funding_binding(line) if line.id in valid_funding and not duplicate else None
+                    if funding is None:
+                        expenses.append({**common, 'kind': 'unresolved', 'amount': money(line.amount), 'countable': False})
+                    elif funding['component'] == 'gross':
+                        expenses.append({**common, 'kind': 'internal_transfer', 'amount': funding['net_amount'], 'countable': True})
+                        if funding['fee_amount'] != '0.00':
+                            expenses.append({**common, 'kind': 'bank_fee', 'amount': funding['fee_amount'], 'countable': True})
+                    else:
+                        expenses.append({**common, 'kind': 'bank_fee' if funding['component'] == 'fee' else 'internal_transfer',
+                                         'amount': money(line.amount), 'countable': True})
+                    continue
                 # A different amount may be a partial or combined payment.
                 if kind == 'no_request' and any(
                         (r.counterparty_inn and r.counterparty_inn == line.correspondent_inn) or
@@ -573,10 +596,7 @@ def group_statement_reconciliation(request: Request, chat_id: int, report_date: 
                     kind = 'unresolved'
                 if kind == 'bank_fee' and annotation.get('expense_evidence') == 'explicit_bank_fee':
                     kind = 'unresolved'  # broad description alone is not confirmed commission
-                expenses.append({'company_code': codes[0], 'kind': kind, 'amount': money(line.amount), 'currency': account.currency,
-                    'number': mask_digits(line.document_number, 80),
-                    'counterparty': mask_digits(line.correspondent_name, 120),
-                    'purpose': mask_digits(line.purpose, 200),
+                expenses.append({**common, 'kind': kind, 'amount': money(line.amount),
                     'countable': annotation.get('expense_reason') != 'duplicate_or_overlap' and not line.uncertain})
         # A currently open request with any historical ledger link is ambiguous:
         # a reversal or correction must not be presented as a definite balance.
