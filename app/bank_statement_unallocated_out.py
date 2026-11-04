@@ -5,6 +5,7 @@ obtain an explicit preview confirmation, hold ``unit(True)``, and reconcile the
 whole bank statement including its closing balance before committing entries.
 """
 from collections import Counter
+import json
 import re
 from types import SimpleNamespace
 
@@ -17,8 +18,10 @@ from .category_catalog import catalog
 from .clock import today
 from .db import Ledger, PaymentRequest
 from .bank_statement_permissions import can_post_statement
+from .bank_statement_category_rules import load_rules, resolve_rule
 from .security import perms_of
-from .services import deleted_ledger_ids, money, post_ledger
+from .services import budget_state, deleted_ledger_ids, log, money, post_ledger
+from .bank_statement_unallocated import ensure_category
 
 
 REQUEST_NUMBER = re.compile(r'(?<![A-Za-z0-9])CF-0*[1-9][0-9]*(?![A-Za-z0-9])', re.I)
@@ -52,7 +55,7 @@ def _active_unclassified_expense(s):
 
 
 def classify_unallocated_out(s, batch, lines, account, user, outgoing_category_id=None,
-                             unallocated=False):
+                             unallocated=False, *, rule_context=None):
     """Return non-mutating decisions for potentially independent bank debits.
 
     With ``unallocated=True``, candidates can be previewed without creating the
@@ -66,6 +69,7 @@ def classify_unallocated_out(s, batch, lines, account, user, outgoing_category_i
             or account.kind != 'bank' or account.currency != batch.currency):
         raise HTTPException(409, 'Счёт или валюта изменились. Проверьте выписку.')
     opening_ok = opening_matches(s, batch, account)
+    rule_context = rule_context if rule_context is not None else load_rules(s, account.company_id)
     rows = [line for line in lines if line.direction == 'out'
             and line.status in ('review', 'reviewed', 'outgoing_candidate')]
     current_ids = {line.id for line in lines}
@@ -171,6 +175,17 @@ def classify_unallocated_out(s, batch, lines, account, user, outgoing_category_i
             result['reason'] = 'Похожая операция на другую дату требует проверки.'; continue
         if any(entry.account_id == account.id and entry.reference == 'BANK-' + line.fingerprint for entry in ledger):
             result['reason'] = 'Номер банковской операции уже занят и требует проверки.'; continue
+        rule = resolve_rule(rule_context, line, account)
+        result.update(rule)
+        if rule['category_rule_status'] == 'matched':
+            key = (rule['category_id'], str(line.date)[:7], account.currency)
+            budgets = rule_context.setdefault('budget_snapshot', {})
+            if key not in budgets:
+                budgets[key] = budget_state(s, *key)
+            budget = budgets[key]
+            result.update(status='outgoing_candidate', category_rule_budget_over=bool(
+                budget['limit'] is not None and budget['used'] + line.amount > budget['limit']))
+            continue
         if outgoing_category_id is None and unallocated:
             result.update(status='outgoing_candidate',category_source='unclassified_out');continue
         if outgoing_category_id not in categories:
@@ -195,13 +210,31 @@ def process_unallocated_out(s, batch, lines, account, user, outgoing_category_id
         if result['status'] == 'outgoing_candidate':
             try:
                 with s.begin_nested():
+                    actual_category = result['category_id']
+                    budget = None
+                    if result.get('category_source') == 'bank_rule':
+                        # A generated bank note is not a human soft-budget
+                        # approval. Recheck after each earlier row was posted.
+                        budget = budget_state(s, actual_category, str(line.date)[:7], account.currency, line.amount)
+                        if budget['over']:
+                            actual_category = ensure_category(s, 'out')
                     data=SimpleNamespace(account_id=account.id,to_account_id=None,
-                        category_id=result['category_id'],kind='out',amount=money(line.amount),date=line.date,
+                        category_id=actual_category,kind='out',amount=money(line.amount),date=line.date,
                         counterparty=line.correspondent_name[:160],reference='BANK-'+line.fingerprint,
                         note='Банковская выписка, документ '+line.document_number+'; контрагент: '+line.correspondent_name,
                         request_id=None,request_version=None,receipt_id=None)
                     entry=post_ledger(s,user,data,bank_statement_import=True)
                     line.ledger_id=entry.id;line.status='auto_outgoing_posted';line.classification='other';line.reason=''
+                    if result.get('category_source') == 'bank_rule':
+                        log(s, user, 'Применено правило статьи банковской выписки', 'bank_statement_line', line.id,
+                            json.dumps({'rule_ids': result['category_rule_ids'],
+                                'rule_revision': result['category_rule_revision'], 'intended_category_id': result['category_id'],
+                                'intended_category_name': result.get('category_name', ''),
+                                'category_id': entry.category_id, 'ledger_id': entry.id, 'direction': 'out',
+                                'fallback': 'budget_overrun' if budget['over'] else None,
+                                'fallback_reason': ('Превышен бюджет статьи правила: факт учтён в «Не распределено».'
+                                    if budget['over'] else ''), 'budget_mode': budget['mode'],
+                                'budget_limit': budget['limit'], 'budget_used': budget['used'], 'amount': line.amount}, ensure_ascii=False))
             except HTTPException as exc:
                 line.status='review';line.reason=str(exc.detail)[:160]
         else:

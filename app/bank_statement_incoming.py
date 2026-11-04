@@ -5,6 +5,7 @@ and obtain a fresh, explicit operator confirmation before calling ``process``.
 All database queries are company-scoped by the authenticated session.
 """
 from collections import Counter
+import json
 from types import SimpleNamespace
 
 from fastapi import HTTPException
@@ -15,6 +16,7 @@ from .category_catalog import catalog
 from .clock import today
 from .db import Category, Ledger, Receipt
 from .bank_statement_permissions import can_post_statement
+from .bank_statement_category_rules import RULE_METADATA, load_rules, resolve_rule
 from .security import perms_of
 from .services import day_start_balance, log, money, post_ledger
 
@@ -38,7 +40,7 @@ def _key(line):
     return (line.account_id, line.date, line.amount, line.correspondent_inn)
 
 
-def classify_incoming(s, batch, lines, account, user, income_category_id=None, unallocated=False):
+def classify_incoming(s, batch, lines, account, user, income_category_id=None, unallocated=False, *, rule_context=None):
     """Return a non-mutating decision for each eligible incoming line.
 
     Both existing manual ledger rows and already accepted bank lines are
@@ -55,6 +57,7 @@ def classify_incoming(s, batch, lines, account, user, income_category_id=None, u
             or account.kind != 'bank' or account.currency != batch.currency):
         raise HTTPException(409, 'Счёт или валюта изменились. Проверьте выписку.')
     opening_ok = opening_matches(s, batch, account)
+    rule_context = rule_context if rule_context is not None else load_rules(s, account.company_id)
     rows = [line for line in lines if line.direction == 'in'
             and line.status in ('review', 'reviewed', 'income_candidate', 'income_matched_candidate')]
     current_ids = {line.id for line in lines}
@@ -171,6 +174,12 @@ def classify_incoming(s, batch, lines, account, user, income_category_id=None, u
         if any(e.reference == 'BANK-' + line.fingerprint and e.account_id == account.id for e in ledger):
             result['reason'] = 'Номер банковской операции уже занят и требует проверки.'; continue
         category_id = receipt.category_id if receipt else income_category_id
+        if not receipt and (category_id is None or active_categories[category_id].activity == 'unclassified'):
+            rule = resolve_rule(rule_context, line, account)
+            result.update(rule)
+            if rule['category_rule_status'] == 'matched':
+                result.update(status='income_candidate')
+                continue
         if category_id is None and not receipt and unallocated:
             result.update(status='income_candidate', category_source='unclassified')
             continue
@@ -196,6 +205,9 @@ def approved_decision_matches(decision, approved, candidate_statuses, placeholde
         return False
     if any(decision.get(key) != approved.get(key) for key in ('ledger_id','receipt_id','attach_receipt')):
         return False
+    if decision.get('category_source') == 'bank_rule' or any(key in approved for key in RULE_METADATA):
+        if any(decision.get(key) != approved.get(key) for key in RULE_METADATA):
+            return False
     if decision.get('category_id') != approved.get('category_id'):
         if not (approved.get('category_id') is None and approved.get('category_source') == placeholder_source
                 and placeholder_source is not None and placeholder_id is not None
@@ -249,6 +261,11 @@ def process_incoming(s, batch, lines, account, user, income_category_id=None, ap
                     line.classification = 'receipt'
                     line.status = 'auto_income_posted'
                     line.reason = ''
+                    if decision.get('category_source') == 'bank_rule':
+                        log(s, user, 'Применено правило статьи банковской выписки', 'bank_statement_line', line.id,
+                            json.dumps({'rule_ids': decision['category_rule_ids'],
+                                'rule_revision': decision['category_rule_revision'], 'category_id': entry.category_id,
+                                'ledger_id': entry.id, 'direction': 'in'}, ensure_ascii=False))
             except HTTPException as exc:
                 line.status = 'review'; line.reason = str(exc.detail)[:160]
         else:

@@ -5,10 +5,11 @@ import {toCents, formatCents, formatShortDate} from './overview/format.js';
 import BankStatementExpenses from './BankStatementExpenses.vue';
 import BankStatementIncome from './BankStatementIncome.vue';
 import BankStatementPostingSummary from './BankStatementPostingSummary.vue';
+import BankStatementRuleAllocation from './BankStatementRuleAllocation.vue';
 
 const props = defineProps({api:{type:Function,required:true},companyId:{type:Number,required:true},
-  canView:{type:Boolean,default:false},canViewCashFlow:{type:Boolean,default:false},refreshKey:{type:Number,default:0}});
-const emit = defineEmits(['cash-flow']);
+  canView:{type:Boolean,default:false},canViewCashFlow:{type:Boolean,default:false},canApplyRules:{type:Boolean,default:false},refreshKey:{type:Number,default:0}});
+const emit = defineEmits(['cash-flow','changed']);
 const open = ref(false), page = ref(1), hasMore = ref(false), items = ref([]), loaded = ref(false), loading = ref(false), error = ref('');
 const detail = ref(null), detailLoading = ref(false), detailError = ref('');
 let generation = 0, detailGeneration = 0;
@@ -83,11 +84,12 @@ function openCashFlow(){
     <BankStatementPostingSummary :summary="detail.posting_summary" :currency="detail.account?.currency" :result="true" :full-reconciliation="detail.full_reconciliation"/>
     <BankStatementIncome :statement="detail.statement" :rows="detail.rows" :currency="detail.account?.currency"/>
     <BankStatementExpenses :statement="detail.statement" :rows="detail.rows" :currency="detail.account?.currency"/>
+    <BankStatementRuleAllocation :api="api" :company-id="companyId" :batch-id="detail.id" :can-apply="canApplyRules" @changed="emit('changed')"/>
     <p v-if="canViewCashFlow" class="sub">{{tx('Cash Flow показывает месяцы с первого числа начального месяца до даты окончания выписки. Если выписка охватывает разные годы, предыдущий год откройте отдельно.')}}</p>
     <button v-if="canViewCashFlow" type="button" class="secondary tiny" @click="openCashFlow">{{tx('Открыть Cash Flow за период выписки')}}</button>
     <details class="statement-source"><summary>{{tx('Исходные строки и статусы проведения')}}</summary>
     <div class="table-scroll"><table><thead><tr><th>{{tx('Дата')}}</th><th>{{tx('Контрагент / документ')}}</th><th>{{tx('Назначение')}}</th><th>{{tx('Движение')}}</th><th>{{tx('Состояние операции')}}</th></tr></thead><tbody>
-     <tr v-for="row in detail.rows" :key="row.id"><td>{{formatShortDate(row.date)}}</td><td>{{row.correspondent_name || '—'}}<small>{{row.correspondent_inn || '—'}} · {{row.document_number}}</small></td><td>{{row.purpose}}<small v-if="row.request_id">{{tx('Заявка №{id}',{id:row.request_id})}}</small></td><td>{{direction(row.direction)}}<small>{{money(row.amount,detail.account?.currency)}} {{detail.account?.currency}}</small></td><td>{{stateLabel(row)}}<small v-if="row.reason">{{tx(row.reason)}}</small></td></tr>
+     <tr v-for="row in detail.rows" :key="row.id"><td>{{formatShortDate(row.date)}}</td><td>{{row.correspondent_name || '—'}}<small>{{row.correspondent_inn || '—'}} · {{row.document_number}}</small></td><td>{{row.purpose}}<small v-if="row.request_id">{{tx('Заявка №{id}',{id:row.request_id})}}</small></td><td>{{direction(row.direction)}}<small>{{money(row.amount,detail.account?.currency)}} {{detail.account?.currency}}</small></td><td>{{stateLabel(row)}}<small v-if="row.category_name">{{tx('Статья')}}: {{row.category_name}}</small><small v-if="row.category_rule_status==='budget_fallback'">{{tx('Превышен бюджет статьи правила: факт учтён в «Не распределено».')}}</small><small v-if="row.reason">{{tx(row.reason)}}</small></td></tr>
     </tbody></table></div>
     </details>
    </div>

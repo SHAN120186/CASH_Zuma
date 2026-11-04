@@ -1266,8 +1266,12 @@ app.include_router(counterparties_router)
 from .counterparty_replace_api import router as counterparty_replace_router
 app.include_router(counterparty_replace_router)
 
+from .bank_statement_category_rules import router as bank_statement_category_rules_router
+app.include_router(bank_statement_category_rules_router)
 from .bank_statement_api import router as bank_statement_router
 app.include_router(bank_statement_router)
+from .bank_statement_rule_allocation import router as bank_statement_rule_allocation_router
+app.include_router(bank_statement_rule_allocation_router)
 from .bank_statement_duplicates import router as bank_statement_duplicates_router
 app.include_router(bank_statement_duplicates_router)
 from .bank_statement_transfers import router as bank_statement_transfers_router

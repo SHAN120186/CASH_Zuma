@@ -1,7 +1,8 @@
 {
-  "version": "2.34.20",
+  "version": "2.34.21",
   "date": "2026-11-04",
   "changes": [
+    "Добавлены отдельные правила статей банковских операций для каждой компании: ИНН, контрагент, назначение, договор и валюта. Известные заявки и поступления сохраняют свои статьи, неизвестные внешние операции идут в «Не распределено». Правила можно применить к нераспределённым операциям сохранённой выписки с подтверждением, без новых платежей. Изменение правил требует новой проверки; повторы защищены от дублей.",
     "Экран банковских выписок упрощён: подробные пояснения перенесены в свёрнутую справку. На основном экране остались короткая инструкция, рабочие поля, статусы и важные предупреждения.",
     "Историческая оплата сохраняет исходную статью закрытой заявки, включая архивную. Для старой заявки без ИНН требуется отдельное подтверждение получателя по банковским документам при точном совпадении названия, счёта и суммы. Несовпадающий ИНН не обходится; причины недоступности показаны явно.",
     "Администратор может отдельно проверить и учесть уже выполненный перевод между своими счетами, историческую оплату закрытой заявки и самостоятельные поступления с одинаковым номером документа. Подписанный предпросмотр, явное подтверждение реквизитов и причины, журнал и защита от повторов; внешние платежи не выполняются.",
@@ -99,6 +100,7 @@
     "Длинные названия файлов и кнопки выбора шаблона переносятся на узком экране. В ТЭО дата архива отдельно обозначена и не подменяет начало финансового прогноза."
   ],
   "changes_uz": [
+    "Har bir kompaniya uchun bank operatsiyalari moddalari qoidalari qo‘shildi: STIR, kontragent, to‘lov maqsadi, shartnoma va valyuta. Maʼlum ariza va tushumlar o‘z moddalarini saqlaydi, nomaʼlum tashqi operatsiyalar «Taqsimlanmagan»ga tushadi. Saqlangan ko‘chirmaning taqsimlanmagan operatsiyalariga qoidalarni yangi to‘lovsiz, tasdiqlash orqali qo‘llash mumkin. Qoidalar o‘zgarsa, qayta tekshirish talab qilinadi; takrorlar dublikatlardan himoyalangan.",
     "Bank ko‘chirmalari ekrani soddalashtirildi: batafsil izohlar yopiq yordam bo‘limiga ko‘chirildi. Asosiy ekranda qisqa ko‘rsatma, ish maydonlari, holatlar va muhim ogohlantirishlar qoldirildi.",
     "Barcha kompaniyalardagi arizalar sahifalarga ajratishdan oldin to‘lov muddati bo‘yicha ertadan kechga saralanadi. Sanalar, holatlar, arxiv va huquqlar saqlangan. Bank solishtiruvi yakuni ostida tekshirilgan qatorlar soni bilan aniq o‘tkazish tugmasi qo‘shildi; ko‘rish va o‘tkazish ajratilgan.",
     "Bank ko‘chirmasining tekshirilgan qatorlari bahsli qatorlardan alohida o‘tkaziladi: tushumlar, xarajatlar, bank komissiyalari va kredit foizlari Cash Flow hamda haqiqiy ko‘rsatkichlarga takrorsiz kiradi. Tayyor va o‘tkazilmagan summalar ko‘rsatiladi; bahsli chiqimlar solishtirish tugaguncha mavjud mablag‘dan ushlab turiladi.",
