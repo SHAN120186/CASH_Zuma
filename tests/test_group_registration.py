@@ -13,6 +13,7 @@ from app.bot_api import GROUP_CODE_REFUSAL, group_code_hash
 from app.db import (Account, Audit, Base, Company, CompanyUser, TelegramGroup,
                     TelegramGroupCode, TelegramLink, User, engine, initialize, now, unit)
 from app.main import app
+from app.bank_statement_models import BankStatementBatch, BankStatementLine
 
 
 CHAT = -1009876543210
@@ -114,6 +115,29 @@ class GroupRegistrationTests(unittest.TestCase):
                     self.assertIsNone(s.get(TelegramGroupCode, group_code_hash(code)))
                 listed = self.client.get('/api/bot/v1/report-groups', auth=base.BOT).json()['items']
                 self.assertEqual(next(g['companies'] for g in listed if g['chat_id'] == chat), [company])
+
+    def test_one_time_registered_group_can_receive_only_its_company_statement(self):
+        self.assertEqual(self.consume(self.code(company='ZUMA')).status_code, 200)
+        day=base.FROZEN_TODAY-timedelta(days=1)
+        with unit(True) as s:
+            account=Account(name='Synthetic bank',kind='bank',currency='UZS',company_id=self.ids['ZUMA'],
+                opening=10000,opening_date=day,created_by=self.admin_id)
+            s.add(account);s.flush()
+            batch=BankStatementBatch(company_id=self.ids['ZUMA'],account_id=account.id,created_by=self.admin_id,
+                filename='sample.xls',sha256='a'*64,account_number='123',owner_name='Test',owner_inn='123',
+                currency='UZS',period_from=day,period_to=day,opening=10000,closing=0,debit_total=10000,
+                credit_total=0,balance_matches=True,source_ready=True,status='committed')
+            s.add(batch);s.flush()
+            s.add(BankStatementLine(company_id=self.ids['ZUMA'],batch_id=batch.id,account_id=account.id,
+                line=1,date=day,direction='out',amount=10000,document_number='A',correspondent_mfo='',
+                correspondent_account='456',correspondent_name='Supplier',correspondent_inn='777',
+                purpose='Service',fingerprint='b'*64))
+        r=self.client.get('/api/bot/v1/group-statement-reconciliation',
+            params={'chat_id':CHAT,'report_date':str(day)},auth=base.BOT)
+        self.assertEqual(r.status_code,200,r.text)
+        self.assertEqual(r.json()['statement_state'],'confirmed')
+        self.assertEqual(r.json()['companies'],['ZUMA'])
+        self.assertEqual(r.json()['expenses'][0]['kind'],'no_request')
 
     def test_expired_unknown_and_malformed_codes_have_one_safe_refusal(self):
         code = self.code()
