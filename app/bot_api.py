@@ -496,7 +496,7 @@ def group_statement_reconciliation(request: Request, chat_id: int, report_date: 
     from .bank_statement_expenses import expense_annotations
     from .bank_statement_interest import PRINCIPAL, exact_loan_interest
     from .bank_statement_cash_funding import (MATCHED as CASH_FUNDING_MATCHED,
-        accounted_funding_line_ids, binding as cash_funding_binding)
+        _CASH as CASH_WITHDRAWAL_TEXT, accounted_funding_line_ids, binding as cash_funding_binding)
 
     authenticate_bot(request)
     if report_date >= tashkent_today():
@@ -588,6 +588,10 @@ def group_statement_reconciliation(request: Request, chat_id: int, report_date: 
                         (r.counterparty_inn and r.counterparty_inn == line.correspondent_inn) or
                         (r.counterparty and r.counterparty.casefold().strip() == line.correspondent_name.casefold().strip())
                         for r in candidate_requests):
+                    kind = 'unresolved'
+                if kind == 'no_request' and CASH_WITHDRAWAL_TEXT.search(line.purpose or ''):
+                    # Cash movement can be an internal funding transfer; a
+                    # description alone does not prove an external payment.
                     kind = 'unresolved'
                 # A broad text match cannot prove that a combined debt and
                 # interest payment is a pure bank charge.

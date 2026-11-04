@@ -74,6 +74,24 @@ class BankCashFundingTests(SiteTests):
         self.assertEqual(row['kind'], 'unresolved')
         self.assertFalse(row['countable'])
 
+    def test_group_statement_does_not_call_uncertain_cash_withdrawal_unrequested_payment(self):
+        self.date = str(date.fromisoformat(self.date) - timedelta(days=1))
+        chat = -1008888888888
+        with unit(True) as s:
+            batch, lines, bank, cash, transit, user, fee_cat, req, funding = self.prepared(s)
+            lines[0].correspondent_inn = '309999999'
+            lines[0].correspondent_name = 'Synthetic bank ATM'
+            lines[0].purpose = 'Снятие наличных через банкомат'
+            lines[0].status = 'review'
+            s.add(TelegramGroup(chat_id=chat, title='Test group', companies='UZGERMED', added_by=user.id))
+        with patch.dict(os.environ, {'BOT_CLIENT_ID':'test-client', 'BOT_CLIENT_SECRET':'x'*40}):
+            response = self.client.get('/api/bot/v1/group-statement-reconciliation',
+                params={'chat_id':chat, 'report_date':self.date}, auth=('test-client','x'*40))
+        self.assertEqual(response.status_code, 200, response.text)
+        row = response.json()['expenses'][0]
+        self.assertEqual(row['kind'], 'unresolved')
+        self.assertTrue(row['countable'])
+
     def prepared(self, s, layout='gross'):
         s.info['company_id'] = self.company
         bank = s.get(Account, self.acc)
