@@ -48,6 +48,7 @@ export default {
 
   'Удалить заявку': 'Arizani o‘chirish',
   'Удалить заявку {number} и её вложения?': '{number} ariza va uning fayllari o‘chirilsinmi?',
+  'Удалить заявку {number} из списка? Проведённые платежи сохранятся.': '{number} ariza ro‘yxatdan o‘chirilsinmi? Qayd etilgan to‘lovlar saqlanadi.',
   'Причина удаления заявки (не менее 10 символов). Платёж останется в операциях.': 'Arizani o‘chirish sababi (kamida 10 belgi). To‘lov operatsiyalarda qoladi.',
 
   // Backdated highlight (workflow.js BACKDATED_HINT)

@@ -20,9 +20,9 @@ PERMS = {
  'admin': {'view','ledger','export','download','users','catalog','audit','approval_policy','counterparties','receipt_edit','receipt_delete','request_edit','request_delete'},
  # Учредитель: все компании только для чтения.
  'founder': {'view','ledger','export','download','audit'},
- 'director': {'view','ledger','export','download','request','write','approve','budget','plan','import','schedule','catalog','audit','approval_policy','request_edit','counterparties','receipt_edit','receipt_delete'},
+ 'director': {'view','ledger','export','download','request','write','approve','budget','plan','import','schedule','catalog','audit','approval_policy','request_edit','request_delete','counterparties','receipt_edit','receipt_delete'},
  'cashier': {'request','ledger','pay_cash'},
- 'finance': {'view','ledger','export','request','write','approve','budget','plan','import','schedule','request_edit'},
+ 'finance': {'view','ledger','export','request','write','approve','budget','plan','import','schedule','request_edit','request_delete'},
  # Расчётный бухгалтер проверяет реквизиты и комплектность заявок и оплачивает банк.
  'accountant': {'ledger','pay_bank','request_check'},
  'employee': {'request'},

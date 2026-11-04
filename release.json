@@ -1,7 +1,8 @@
 {
-  "version": "2.34.22",
+  "version": "2.34.23",
   "date": "2026-11-04",
   "changes": [
+    "Финансовый директор и директор могут удалять заявки своей компании с причиной и проверкой версии. Проведённые оплаты, операции, остатки и история сохраняются. Учредитель остаётся только читателем; ограничения разделов и компаний проверяет сервер.",
     "Форма правил статей сохраняет ширину экрана при длинных названиях статей.",
     "Добавлены отдельные правила статей банковских операций для каждой компании: ИНН, контрагент, назначение, договор и валюта. Известные заявки и поступления сохраняют свои статьи, неизвестные внешние операции идут в «Не распределено». Правила можно применить к нераспределённым операциям сохранённой выписки с подтверждением, без новых платежей. Изменение правил требует новой проверки; повторы защищены от дублей.",
     "Экран банковских выписок упрощён: подробные пояснения перенесены в свёрнутую справку. На основном экране остались короткая инструкция, рабочие поля, статусы и важные предупреждения.",
@@ -101,6 +102,7 @@
     "Длинные названия файлов и кнопки выбора шаблона переносятся на узком экране. В ТЭО дата архива отдельно обозначена и не подменяет начало финансового прогноза."
   ],
   "changes_uz": [
+    "Moliya direktori va direktor o‘z kompaniyasi arizalarini sabab va versiya tekshiruvi bilan o‘chira oladi. Amalga oshirilgan to‘lovlar, operatsiyalar, qoldiqlar va tarix saqlanadi. Ta’sischi faqat ko‘radi; bo‘lim va kompaniya cheklovlari serverda tekshiriladi.",
     "Modda nomlari uzun bo‘lganda ham qoidalar shakli ekran kengligida qoladi.",
     "Har bir kompaniya uchun bank operatsiyalari moddalari qoidalari qo‘shildi: STIR, kontragent, to‘lov maqsadi, shartnoma va valyuta. Maʼlum ariza va tushumlar o‘z moddalarini saqlaydi, nomaʼlum tashqi operatsiyalar «Taqsimlanmagan»ga tushadi. Saqlangan ko‘chirmaning taqsimlanmagan operatsiyalariga qoidalarni yangi to‘lovsiz, tasdiqlash orqali qo‘llash mumkin. Qoidalar o‘zgarsa, qayta tekshirish talab qilinadi; takrorlar dublikatlardan himoyalangan.",
     "Bank ko‘chirmalari ekrani soddalashtirildi: batafsil izohlar yopiq yordam bo‘limiga ko‘chirildi. Asosiy ekranda qisqa ko‘rsatma, ish maydonlari, holatlar va muhim ogohlantirishlar qoldirildi.",
