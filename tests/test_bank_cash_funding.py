@@ -1,7 +1,9 @@
 """Synthetic bank evidence for cash funding: no production money or files."""
 import json
+import os
 import unittest
 from datetime import date, timedelta
+from unittest.mock import patch
 
 from fastapi import HTTPException
 from sqlalchemy import select
@@ -14,11 +16,82 @@ from app.bank_statement_guard import (accounted_line_ids, pending_bank_debit_hol
     set_statement_reconciliation)
 from app.bank_statement_models import BankStatementBatch, BankStatementLine
 from app.cash_report import report
-from app.db import Account, CashFunding, Category, Company, Ledger, PaymentRequest, User, engine, now, unit
+from app.db import Account, CashFunding, Category, Company, Ledger, PaymentRequest, TelegramGroup, User, engine, now, unit
 from app.services import account_balance, effective_cashflows
 
 
 class BankCashFundingTests(SiteTests):
+    def test_group_statement_separates_verified_cash_withdrawal_and_fee(self):
+        self.date = str(date.fromisoformat(self.date) - timedelta(days=1))
+        chat = -1008888888888
+        with unit(True) as s:
+            batch, lines, bank, cash, transit, user, fee_cat, req, funding = self.prepared(s)
+            checked = _evaluated(s, batch, lines, bank, user, fee_cat.id)
+            self.assertTrue(_apply_reconciled(s, batch, lines, bank, user, fee_cat.id, checked, True))
+            s.add(TelegramGroup(chat_id=chat, title='Test group', companies='UZGERMED', added_by=user.id))
+        with patch.dict(os.environ, {'BOT_CLIENT_ID':'test-client', 'BOT_CLIENT_SECRET':'x'*40}):
+            response = self.client.get('/api/bot/v1/group-statement-reconciliation',
+                params={'chat_id':chat, 'report_date':self.date}, auth=('test-client','x'*40))
+        self.assertEqual(response.status_code, 200, response.text)
+        data = response.json()
+        self.assertEqual(data['statement_state'], 'confirmed')
+        by_kind = {row['kind']: row['amount'] for row in data['expenses'] if row['countable']}
+        self.assertEqual(by_kind.get('internal_transfer'), '990000.00')
+        self.assertEqual(by_kind.get('bank_fee'), '10000.00')
+        self.assertNotIn('no_request', by_kind)
+
+    def test_group_statement_keeps_split_cash_withdrawal_and_fee_distinct(self):
+        self.date = str(date.fromisoformat(self.date) - timedelta(days=1))
+        chat = -1008888888888
+        with unit(True) as s:
+            batch, lines, bank, cash, transit, user, fee_cat, req, funding = self.prepared(s, 'split')
+            checked = _evaluated(s, batch, lines, bank, user, fee_cat.id)
+            self.assertTrue(_apply_reconciled(s, batch, lines, bank, user, fee_cat.id, checked, True))
+            s.add(TelegramGroup(chat_id=chat, title='Test group', companies='UZGERMED', added_by=user.id))
+        with patch.dict(os.environ, {'BOT_CLIENT_ID':'test-client', 'BOT_CLIENT_SECRET':'x'*40}):
+            response = self.client.get('/api/bot/v1/group-statement-reconciliation',
+                params={'chat_id':chat, 'report_date':self.date}, auth=('test-client','x'*40))
+        self.assertEqual(response.status_code, 200, response.text)
+        by_kind = {row['kind']: row['amount'] for row in response.json()['expenses'] if row['countable']}
+        self.assertEqual(by_kind.get('internal_transfer'), '990000.00')
+        self.assertEqual(by_kind.get('bank_fee'), '10000.00')
+        self.assertNotIn('no_request', by_kind)
+
+    def test_group_statement_does_not_assert_stale_cash_funding(self):
+        self.date = str(date.fromisoformat(self.date) - timedelta(days=1))
+        chat = -1008888888888
+        with unit(True) as s:
+            batch, lines, bank, cash, transit, user, fee_cat, req, funding = self.prepared(s)
+            checked = _evaluated(s, batch, lines, bank, user, fee_cat.id)
+            self.assertTrue(_apply_reconciled(s, batch, lines, bank, user, fee_cat.id, checked, True))
+            s.get(Ledger, funding.transfer_ledger_id).amount += 1
+            s.add(TelegramGroup(chat_id=chat, title='Test group', companies='UZGERMED', added_by=user.id))
+        with patch.dict(os.environ, {'BOT_CLIENT_ID':'test-client', 'BOT_CLIENT_SECRET':'x'*40}):
+            response = self.client.get('/api/bot/v1/group-statement-reconciliation',
+                params={'chat_id':chat, 'report_date':self.date}, auth=('test-client','x'*40))
+        self.assertEqual(response.status_code, 200, response.text)
+        row = response.json()['expenses'][0]
+        self.assertEqual(row['kind'], 'unresolved')
+        self.assertFalse(row['countable'])
+
+    def test_group_statement_does_not_call_uncertain_cash_withdrawal_unrequested_payment(self):
+        self.date = str(date.fromisoformat(self.date) - timedelta(days=1))
+        chat = -1008888888888
+        with unit(True) as s:
+            batch, lines, bank, cash, transit, user, fee_cat, req, funding = self.prepared(s)
+            lines[0].correspondent_inn = '309999999'
+            lines[0].correspondent_name = 'Synthetic bank ATM'
+            lines[0].purpose = 'Снятие наличных через банкомат'
+            lines[0].status = 'review'
+            s.add(TelegramGroup(chat_id=chat, title='Test group', companies='UZGERMED', added_by=user.id))
+        with patch.dict(os.environ, {'BOT_CLIENT_ID':'test-client', 'BOT_CLIENT_SECRET':'x'*40}):
+            response = self.client.get('/api/bot/v1/group-statement-reconciliation',
+                params={'chat_id':chat, 'report_date':self.date}, auth=('test-client','x'*40))
+        self.assertEqual(response.status_code, 200, response.text)
+        row = response.json()['expenses'][0]
+        self.assertEqual(row['kind'], 'unresolved')
+        self.assertTrue(row['countable'])
+
     def prepared(self, s, layout='gross'):
         s.info['company_id'] = self.company
         bank = s.get(Account, self.acc)
