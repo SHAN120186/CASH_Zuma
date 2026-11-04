@@ -493,6 +493,8 @@ export default {
   'Документ: PDF, PNG или JPEG, максимум 5 МБ.': 'Hujjat: PDF, PNG yoki JPEG, koʻpi bilan 5 MB.',
   'Документ заявки: PDF, PNG, JPEG, DOCX или XLSX, не больше 5 МБ.': 'Ariza hujjati: PDF, PNG, JPEG, DOCX yoki XLSX, 5 MB dan oshmasin.',
   'Документ заявки: PDF, PNG, JPEG, DOCX или XLSX, не больше 10 МБ.': 'Ariza hujjati: PDF, PNG, JPEG, DOCX yoki XLSX, 10 MB dan oshmasin.',
+  'Содержимое XLSX после распаковки превышает 128 МБ.': 'XLSX faylining ochilgan tarkibi 128 MB dan oshadi.',
+  'Содержимое DOCX после распаковки превышает 50 МБ.': 'DOCX faylining ochilgan tarkibi 50 MB dan oshadi.',
   'Документы изменяет автор или финансовый руководитель.': 'Hujjatlarni muallif yoki moliyaviy rahbar oʻzgartiradi.',
   'Документы оплаченной или закрытой заявки не меняются.': 'Toʻlangan yoki yopilgan ariza hujjatlari oʻzgartirilmaydi.',
   'Нет доступа к документам этой заявки.': 'Ushbu ariza hujjatlariga kirish huquqi yoʻq.',

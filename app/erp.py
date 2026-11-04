@@ -209,6 +209,10 @@ REQUEST_FILE_TYPES={'.pdf':('application/pdf',b'%PDF-'),'.png':('image/png',b'\x
                     '.docx':('application/vnd.openxmlformats-officedocument.wordprocessingml.document',b'PK\x03\x04'),
                     '.xlsx':('application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',b'PK\x03\x04')}
 REQUEST_FILE_ERROR='Документ заявки: PDF, PNG, JPEG, DOCX или XLSX, не больше 10 МБ.'
+REQUEST_OFFICE_EXPANDED_LIMITS={
+    '.xlsx':(128*1024*1024,'Содержимое XLSX после распаковки превышает 128 МБ.'),
+    '.docx':(50*1024*1024,'Содержимое DOCX после распаковки превышает 50 МБ.'),
+}
 
 def request_file_type(raw,suffix):
     if suffix not in REQUEST_FILE_TYPES or not raw.startswith(REQUEST_FILE_TYPES[suffix][1]):raise HTTPException(422,REQUEST_FILE_ERROR)
@@ -216,7 +220,8 @@ def request_file_type(raw,suffix):
         try:
             with zipfile.ZipFile(io.BytesIO(raw)) as archive:
                 names=archive.namelist()
-                if sum(i.file_size for i in archive.infolist())>50*1024*1024:raise HTTPException(422,REQUEST_FILE_ERROR)
+                limit,detail=REQUEST_OFFICE_EXPANDED_LIMITS[suffix]
+                if sum(i.file_size for i in archive.infolist())>limit:raise HTTPException(422,detail)
         except zipfile.BadZipFile:raise HTTPException(422,REQUEST_FILE_ERROR)
         folder='word/' if suffix=='.docx' else 'xl/'
         if '[Content_Types].xml' not in names or not any(n.startswith(folder) for n in names):raise HTTPException(422,REQUEST_FILE_ERROR)
