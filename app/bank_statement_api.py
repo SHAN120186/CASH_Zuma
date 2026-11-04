@@ -38,6 +38,7 @@ from .bank_statement_guard import (accounted_line_ids, set_statement_reconciliat
 from .bank_statement_interest import classify_interest, post_interest
 from .bank_statement_reprocess_payments import classify_reprocess_payments, process_reprocess_payments
 from .bank_statement_expenses import annotate_expense_rows, sanitize_request_fields
+from .bank_statement_category_rules import annotate_budget_fallbacks, load_rules
 
 router = APIRouter()
 REQUEST_ID = re.compile(r'(?<![A-Za-z0-9])CF-0*([1-9][0-9]*)(?![A-Za-z0-9])', re.I)
@@ -344,9 +345,10 @@ def _evaluated(s, batch, lines, account, user, fee_category_id, *, reprocess=Fal
     """Read-only view; never add a category or financial operation in preview."""
     _fee_category(s, fee_category_id)
     opening_ok = opening_matches(s, batch, account)
-    incoming = classify_incoming(s, batch, lines, account, user, unallocated=True)
+    rules = load_rules(s, batch.company_id)
+    incoming = classify_incoming(s, batch, lines, account, user, unallocated=True, rule_context=rules)
     existing = classify_existing(s, batch, lines, account, user, opening_ok)
-    outgoing = classify_unallocated_out(s, batch, lines, account, user, unallocated=True)
+    outgoing = classify_unallocated_out(s, batch, lines, account, user, unallocated=True, rule_context=rules)
     fee_context = prepare_fee_context(s, batch, lines, account, fee_category_id)
     interest_context = prepare_fee_context(s, batch, lines, account, None, charge_kind='interest')
     payment_candidates = classify_reprocess_payments(s, batch, lines, account, user) if reprocess else {}
@@ -378,7 +380,8 @@ def _evaluated(s, batch, lines, account, user, fee_category_id, *, reprocess=Fal
         if decision:
             row.update({key: value for key, value in decision.items()
                         if key in ('status', 'reason', 'category_id', 'category_source', 'category_name', 'category_code', 'receipt_id', 'ledger_id', 'attach_receipt',
-                                   'request_id', 'request_version')})
+                                   'request_id', 'request_version', 'category_rule_ids', 'category_rule_status',
+                                   'category_rule_revision', 'category_rule_budget_policy', 'category_rule_budget_over', 'intended_category_id')})
         rows.append(row)
     site_opening = (money(day_start_balance(s, account, batch.period_from))
                     if batch.period_from >= account.opening_date else None)
@@ -399,13 +402,18 @@ def _evaluated(s, batch, lines, account, user, fee_category_id, *, reprocess=Fal
                                                (line.direction == 'in' and entry.to_account_id == account.id)))))
             if (not entry or entry.id in deleted_ids or not same_side or entry.date != line.date or entry.amount != line.amount):
                 row['status'] = 'review'; row['reason'] = 'Связанная операция изменилась или была отменена.'
+            elif entry.request_id is None and entry.category_id in rules['categories']:
+                row.update(category_id=entry.category_id, category_name=rules['categories'][entry.category_id][0].name,
+                    category_source='existing')
+    annotate_budget_fallbacks(s, rows, {key: entry for key, entry in active_entries.items() if key not in deleted_ids})
     summary = _posting_summary(s, batch, lines, account, rows)
     full = bool(opening_ok and batch.source_ready and summary['closing_matches'] and summary['pending']['count'] == 0)
     annotate_expense_rows(s, batch, lines, rows, user)
     sanitize_request_fields(s, rows, user)
     return {'batch_id': batch.id, 'fee_category_id': fee_category_id, 'opening_matches': opening_ok,
             'full_reconciliation': full, 'posting_summary': summary,
-            'category_snapshot': category_snapshot,
+            'category_snapshot': category_snapshot, 'category_rules_revision': rules['revision'],
+            'category_rules_warning': rules['warning'],
             'statement_opening': money(batch.opening), 'site_opening': site_opening, 'rows': rows}
 
 
@@ -545,7 +553,7 @@ def _apply_reconciled(s, batch, lines, account, user, fee_category_id, evaluated
             _apply_fees(s, batch, lines, account, user, fee_category_id, evaluated)
             _apply_interest(s, batch, lines, account, user, evaluated)
             outgoing = [line for line in lines if approved[line.id]['status'] == 'outgoing_candidate' and line.id in selected]
-            outgoing_id = ensure_category(s, 'out') if outgoing else None
+            outgoing_id = ensure_category(s, 'out') if any(approved[line.id].get('category_source') == 'unclassified_out' for line in outgoing) else None
             process_unallocated_out(s, batch, outgoing, account, user, outgoing_id, approved=approved)
             s.flush()
             final = _posting_summary(s, batch, lines, account, [_line_data(line) for line in lines], scope='result')
@@ -1133,6 +1141,7 @@ def statement_history_detail(id: int, request: Request):
         deleted_ids = deleted_ledger_ids(s)
         request_ids = {row['request_id'] for row in rows if row['request_id'] is not None}
         requests = {item.id: item for item in s.scalars(select(PaymentRequest).where(PaymentRequest.id.in_(request_ids)))} if request_ids and _can_read_requests(user) else {}
+        category_names = {category.id: category.name for category, _ in catalog(s, include_retired=True)}
         for row in rows:
             entry = entries.get(row['ledger_id'])
             if row['ledger_id'] is None:
@@ -1152,6 +1161,10 @@ def statement_history_detail(id: int, request: Request):
             req = requests.get(row['request_id'])
             if not req or not can_view_request(s, user, req):
                 row['request_id'] = None
+            if state == 'active' and entry.category_id in category_names and (entry.request_id is None or row['request_id'] is not None):
+                row.update(category_id=entry.category_id, category_name=category_names[entry.category_id], category_source='existing')
+        annotate_budget_fallbacks(s, rows, {row['ledger_id']: entries[row['ledger_id']] for row in rows
+            if row['operation_state'] == 'active'})
         lines = list(s.scalars(select(BankStatementLine).where(BankStatementLine.batch_id == batch.id)
                                .order_by(BankStatementLine.line, BankStatementLine.id)))
         created = {line.id for line in lines if line.status in CREATED_BANK_STATUSES}
