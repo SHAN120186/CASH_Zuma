@@ -213,6 +213,40 @@ class Receipt(Base):
     status = Column(String(20), nullable=False, default='expected')
     __mapper_args__ = {'version_id_col': version}
 
+class CashFunding(Base):
+    """One immutable funding plan and its completed bank/cash facts per request.
+
+    Only the eventual cash issue carries Ledger.request_id. Funding transfers
+    and the fee have independent IDs, so they never close or duplicate a request.
+    All monetary values use minor currency units, like the ordinary Ledger.
+    """
+    __tablename__ = 'request_cash_fundings'
+    id = Column(Integer, primary_key=True)
+    company_id = Column(Integer, ForeignKey('companies.id'), nullable=False)
+    request_id = Column(Integer, ForeignKey('payment_requests.id'), nullable=False, unique=True)
+    bank_account_id = Column(Integer, ForeignKey('accounts.id'), nullable=False)
+    cash_account_id = Column(Integer, ForeignKey('accounts.id'), nullable=False)
+    transit_account_id = Column(Integer, ForeignKey('accounts.id'), nullable=True)
+    gross_amount = Column(BigInteger, nullable=False)
+    fee_percent = Column(String(20), nullable=False)
+    fee_amount = Column(BigInteger, nullable=False)
+    net_amount = Column(BigInteger, nullable=False)
+    fee_category_id = Column(Integer, ForeignKey('categories.id'), nullable=False)
+    approved_fee_overrun = Column(BigInteger, nullable=True)
+    approved_fee_month = Column(String(7), nullable=True)
+    state = Column(String(20), nullable=False, default='unfunded')
+    version = Column(Integer, nullable=False, default=1)
+    withdraw_date = Column(Date, nullable=True)
+    receive_date = Column(Date, nullable=True)
+    withdraw_reference = Column(String(120), nullable=False, default='')
+    receive_reference = Column(String(120), nullable=False, default='')
+    transfer_ledger_id = Column(Integer, ForeignKey('ledger.id'), nullable=True, unique=True)
+    fee_ledger_id = Column(Integer, ForeignKey('ledger.id'), nullable=True, unique=True)
+    receipt_ledger_id = Column(Integer, ForeignKey('ledger.id'), nullable=True, unique=True)
+    created_by = Column(Integer, ForeignKey('users.id'), nullable=False)
+    created_at = Column(DateTime, nullable=False, default=now)
+    __mapper_args__ = {'version_id_col': version}
+
 class Ledger(Base):
     __tablename__ = 'ledger'
     id = Column(Integer, primary_key=True)

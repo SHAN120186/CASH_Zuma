@@ -15,14 +15,14 @@ from .db import (Company, CompanyUser, User, Account, Category, Counterparty,
                  Document, ImportBatch, PlanImportBatch, BudgetImportBatch, Audit, ModelVersion,
                  ReportSchedule, Setting, RequestDocument, Delegation, ReportArchive, ReportArchiveFile,
                  BusinessProject, BusinessSourceFile, BusinessGeneration, FinancialStatementSource, IfrsRatingSource,
-                 CashFlowOsvSource, CashFlowOsvPreview)
+                 CashFlowOsvSource, CashFlowOsvPreview, CashFunding)
 from .bank_statement_models import BankStatementBatch, BankStatementLine
 
 # Вложения заявок принадлежат компании через свою заявку (criteria ниже), а не собственным полем.
 DIRECT = (Account, Category, Counterparty, CashPlan, PlanNote, PlanImportBatch, BudgetImportBatch,
           ImportBatch, Audit, ModelVersion, ReportSchedule, Delegation, ReportArchive, ReportArchiveFile,
           BusinessProject, BusinessSourceFile, BusinessGeneration, FinancialStatementSource, IfrsRatingSource,
-          CashFlowOsvSource, CashFlowOsvPreview, BankStatementBatch, BankStatementLine)
+          CashFlowOsvSource, CashFlowOsvPreview, BankStatementBatch, BankStatementLine, CashFunding)
 
 
 def active_delegations(s, user_id, company_id=None):
@@ -143,6 +143,10 @@ def check_object(s, obj):
         refs.append((Ledger, obj.ledger_id))
     if isinstance(obj, RequestDocument):
         refs.append((PaymentRequest, obj.request_id))
+    if isinstance(obj, CashFunding):
+        refs.extend([(PaymentRequest,obj.request_id),(Account,obj.bank_account_id),
+                     (Account,obj.cash_account_id),(Category,obj.fee_category_id)])
+        if obj.transit_account_id is not None:refs.append((Account,obj.transit_account_id))
     if isinstance(obj, ReportArchiveFile):
         refs.append((ReportArchive, obj.archive_id))
     if isinstance(obj, (BusinessSourceFile, BusinessGeneration)):

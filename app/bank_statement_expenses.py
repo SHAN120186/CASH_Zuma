@@ -163,6 +163,12 @@ def annotate_expense_rows(s, batch, lines, rows, user):
     annotations = expense_annotations(s, batch, lines, user)
     for row in rows:
         row.update(annotations.get(row['id'], {}))
+        if row.get('cash_funding') and row.get('status') in ('cash_funding_candidate', 'cash_funding_matched'):
+            row.update(expense_kind='bank_fee' if row['cash_funding']['component'] == 'fee' else 'internal_transfer',
+                       expense_reason=None, expense_evidence='existing_cash_funding',
+                       expense_existing_operation=True, expense_request_id=None,
+                       expense_request_status=None, expense_category_id=None,
+                       expense_category_name=None, expense_category_code=None)
     return rows
 
 

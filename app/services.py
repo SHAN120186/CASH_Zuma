@@ -6,7 +6,7 @@ from sqlalchemy import select, func, or_, and_
 from fastapi import HTTPException
 from .company_scope import get_setting
 from .security import PERMS, pay_right, perms_of, company_role, has_role, act_with_right
-from .db import Account, Category, Budget, PaymentRequest, Receipt, Ledger, Audit, Setting, RequestDocument, now
+from .db import Account, Category, Budget, PaymentRequest, Receipt, Ledger, Audit, Setting, RequestDocument, CashFunding, now
 from . import clock
 
 def today():return clock.today()
@@ -172,6 +172,10 @@ def budget_state(s,category,month,currency,extra=0,exclude_request=None):
         if t.kind=='out':spent+=t.amount
     reserved=sum(r.amount for r in s.scalars(select(PaymentRequest).where(PaymentRequest.category_id==category,PaymentRequest.status=='approved'))
                  if str(r.due_date)[:7]==month and accounts[r.account_id].currency==currency and r.id!=exclude_request)
+    fee_plans=s.execute(select(CashFunding,PaymentRequest).join(PaymentRequest,PaymentRequest.id==CashFunding.request_id).where(
+        CashFunding.fee_category_id==category,CashFunding.state=='unfunded',PaymentRequest.status=='approved'))
+    reserved+=sum(f.fee_amount for f,r in fee_plans if r.id!=exclude_request and str(r.due_date)[:7]==month
+                  and accounts[f.bank_account_id].currency==currency)
     used=spent+reserved
     return {'id':b.id if b else None,'limit':b.amount if b else None,'mode':b.mode if b else 'soft',
             'spent':spent,'reserved':reserved,'used':used,'remaining':b.amount-used if b else None,
@@ -212,6 +216,16 @@ def snapshot_route(s,r,currency):
     """Снимок политики статьи при отправке: поздние правки справочника маршрут не меняют."""
     c=s.get(Category,r.category_id)
     r.route_policy,r.route_threshold=category_policy(c,currency)
+    # The fee is part of the same funding decision. It may strengthen, never
+    # weaken, the request article's approval route.
+    from .cash_funding import funding_for
+    funding=funding_for(s,r.id)
+    if funding and funding.fee_amount:
+        fee=get(s,Category,funding.fee_category_id)
+        policy,threshold=category_policy(fee,currency)
+        fee_basis=funding.gross_amount if funding.fee_category_id==r.category_id else funding.fee_amount
+        if policy=='always' or (policy=='threshold' and fee_basis>threshold):
+            r.route_policy='always';r.route_threshold=None
     r.route_at=now()
 
 def requires_director(r):
@@ -405,7 +419,10 @@ def request_batch(s,requests):
     from collections import defaultdict
     ids=[r.id for r in requests]
     if not ids:return None
+    fundings={f.request_id:f for f in s.scalars(select(CashFunding).where(CashFunding.request_id.in_(ids)))}
+    s.info['cash_funding_batch']={'ids':set(ids),'values':fundings}
     category_ids={r.category_id for r in requests}
+    category_ids.update(f.fee_category_id for f in fundings.values())
     accounts={a.id:a for a in s.scalars(select(Account))}
     categories={c.id:c for c in s.scalars(select(Category).where(Category.id.in_(category_ids)))}
     for r in requests:get(s,Account,r.account_id);get(s,Category,r.category_id)
@@ -419,6 +436,11 @@ def request_batch(s,requests):
     for item in s.scalars(select(PaymentRequest).where(PaymentRequest.category_id.in_(category_ids),PaymentRequest.status=='approved',PaymentRequest.due_date>=start,PaymentRequest.due_date<end)):
         a=accounts.get(item.account_id)
         if a:reserved[(item.category_id,str(item.due_date)[:7],a.currency)]+=item.amount
+    for funding,request in s.execute(select(CashFunding,PaymentRequest).join(PaymentRequest,PaymentRequest.id==CashFunding.request_id).where(
+        CashFunding.fee_category_id.in_(category_ids),CashFunding.state=='unfunded',PaymentRequest.status=='approved',
+        PaymentRequest.due_date>=start,PaymentRequest.due_date<end)):
+        a=accounts.get(funding.bank_account_id)
+        if a:reserved[(funding.fee_category_id,str(request.due_date)[:7],a.currency)]+=funding.fee_amount
     docs=defaultdict(list)
     for d in s.scalars(select(RequestDocument).where(RequestDocument.request_id.in_(ids),RequestDocument.active.is_(True)).order_by(RequestDocument.id)):
         docs[d.request_id].append(d)
@@ -428,13 +450,16 @@ def request_batch(s,requests):
         for x in s.scalars(select(Ledger).where(Ledger.request_id.in_(paid))):
             paid_dates.setdefault(x.request_id,x.date)
     paid_audits={int(rid):at for rid,at in s.execute(select(Audit.entity_id,func.min(Audit.created_at)).where(Audit.entity=='request',Audit.entity_id.in_([str(i) for i in paid]),Audit.action=='Оплата заявки').group_by(Audit.entity_id))} if paid else {}
-    return {'accounts':accounts,'categories':categories,'departments':department_catalog(s)['items'],'budgets':budgets,'spent':spent,'reserved':reserved,'documents':docs,'paid_dates':paid_dates,'paid_audits':paid_audits}
+    return {'accounts':accounts,'categories':categories,'fundings':fundings,'departments':department_catalog(s)['items'],'budgets':budgets,'spent':spent,'reserved':reserved,'documents':docs,'paid_dates':paid_dates,'paid_audits':paid_audits}
 
 
 def batch_budget_state(batch,r,account,extra=0,exclude_request=None):
     key=(r.category_id,str(r.due_date)[:7],account.currency);b=batch['budgets'].get(key)
     spent=batch['spent'].get(key,0);reserved=batch['reserved'].get(key,0)
     if exclude_request==r.id and r.status=='approved':reserved-=r.amount
+    funding=batch['fundings'].get(r.id)
+    if exclude_request==r.id and r.status=='approved' and funding and funding.state=='unfunded' and funding.fee_category_id==r.category_id:
+        reserved-=funding.fee_amount
     used=spent+reserved
     return {'id':b.id if b else None,'limit':b.amount if b else None,'mode':b.mode if b else 'soft',
             'spent':spent,'reserved':reserved,'used':used,'remaining':b.amount-used if b else None,
@@ -448,6 +473,8 @@ def batch_backdated(batch,r):
 
 
 def request_json(s,r,accounts=None,categories=None,users=None,batch=None):
+    from .cash_funding import funding_for,funding_json
+    funding=batch['fundings'].get(r.id) if batch is not None else funding_for(s,r.id)
     from .department_catalog import catalog as department_catalog
     department_items=batch['departments'] if batch is not None else department_catalog(s)['items']
     a=get(s,Account,r.account_id);c=get(s,Category,r.category_id)
@@ -459,6 +486,7 @@ def request_json(s,r,accounts=None,categories=None,users=None,batch=None):
     present={d.kind for d in docs}
     card_base=batch_budget_state(batch,r,a,0,exclude_request=r.id) if batch is not None else None
     return {'id':r.id,'number':f'CF-{r.id:05d}','creator_id':r.creator_id,'category_id':c.id,'category':c.name,
+            'cash_funding':funding_json(s,funding,accounts=batch['accounts'] if batch else None,categories=batch['categories'] if batch else None),
             'account_id':a.id,'account':a.name,'account_kind':a.kind,'channel':a.kind,'currency':a.currency,'company_id':a.company_id,
             'counterparty':r.counterparty,'counterparty_inn':r.counterparty_inn,'amount':money(r.amount),'date':str(r.due_date),'status':r.status,'purpose':r.purpose,
             'version':r.version,'last_editor_id':r.last_editor_id,'priority':r.priority,
@@ -474,6 +502,8 @@ def request_json(s,r,accounts=None,categories=None,users=None,batch=None):
 
 def post_ledger(s,u,data,*,bank_statement_fact=False,bank_statement_import=False):
     a=get(s,Account,data.account_id)
+    from .cash_funding import require_regular_account,funding_for
+    require_regular_account(a)
     if a.archived:raise HTTPException(409,'Счёт в архиве. Сначала восстановите его.')
     if 'write' not in perms_of(u) and (data.kind!='out' or not data.request_id):
         # A private, server-only capability used exclusively by the confirmed,
@@ -496,6 +526,7 @@ def post_ledger(s,u,data,*,bank_statement_fact=False,bank_statement_import=False
     target=None
     if kind=='transfer':
         target=get(s,Account,data.to_account_id)
+        require_regular_account(target)
         if target.archived:raise HTTPException(409,'Счёт-получатель в архиве.')
         if target.company_id!=a.company_id:raise HTTPException(422,'Переводы между компаниями оформляются отдельными поступлением и выплатой.')
         if target.id==a.id or target.currency!=a.currency:raise HTTPException(422,'Для перевода нужны разные счета одной валюты. Конвертация в этой версии не поддерживается.')
@@ -505,6 +536,10 @@ def post_ledger(s,u,data,*,bank_statement_fact=False,bank_statement_import=False
     if req:
         check_request_version(req,data.request_version)
         if req.status!='approved':raise HTTPException(409,'Оплатить можно только утверждённую заявку.')
+        funding=funding_for(s,req.id)
+        if funding is not None:
+            if funding.state!='received':raise HTTPException(409,'Сначала подтвердите получение наличных из банка в кассу.')
+            if data.date<funding.receive_date:raise HTTPException(422,'Дата наличной оплаты не может быть раньше получения денег в кассу.')
         # Сумма, счёт (и его валюта), статья и получатель берутся из утверждённой заявки.
         if kind!='out' or data.to_account_id or data.receipt_id or req.account_id!=a.id or req.amount!=n or req.category_id!=data.category_id:
             raise HTTPException(409,'Оплата проводится ровно по утверждённой заявке: её счёт, валюта, статья и сумма целиком. Изменить их при оплате нельзя.')
@@ -561,6 +596,7 @@ def dashboard(s,currency,horizon=30):
     ids={a.id for a in accounts};start=today()
     account_balances={a.id:account_balance(s,a) for a in accounts}
     current=sum(account_balances.values())
+    in_transit=sum(max(account_balances[a.id],0) for a in accounts if a.kind=='transit')
     from .bank_statement_guard import pending_bank_debit_hold
     bank_holds={a.id:pending_bank_debit_hold(s,a,start) for a in accounts}
     bank_hold=sum(bank_holds.values())
@@ -569,21 +605,45 @@ def dashboard(s,currency,horizon=30):
     receipt=[r for r in s.scalars(select(Receipt)) if r.account_id in ids and r.status=='expected']
     approved=[r for r in req if r.status=='approved']
     pending=[r for r in req if r.status=='pending']
+    # A planned withdrawal has two eventual external costs: the cash issue
+    # and its fee. Do not invent the internal transfer/cash receipt; include
+    # only the fee in addition to the existing net request obligation.
+    planned_ids=[r.id for r in approved+pending]
+    funding_plans={f.request_id:f for f in s.scalars(select(CashFunding).where(
+        CashFunding.request_id.in_(planned_ids),CashFunding.state=='unfunded'))} if planned_ids else {}
+    def planned_fee(request):
+        funding=funding_plans.get(request.id)
+        return funding.fee_amount if funding and funding.bank_account_id in ids else 0
+    def expense_event(request,kind):
+        fee=planned_fee(request)
+        event={'id':request.id,'kind':kind,'name':request.counterparty,'amount':money(request.amount+fee),
+               'overdue':request.due_date<start,'priority':request.priority}
+        if fee:
+            event.update({'cash_amount':money(request.amount),'cash_funding_fee':money(fee),
+                          'cash_funding_bank_account_id':funding_plans[request.id].bank_account_id})
+        return event
     reserve=get_setting(s,'reserve_'+currency);reserve=int(reserve.value) if reserve else 0
-    days=[];bal=current-bank_hold;requested_bal=bal;requested_accounts=account_balances.copy()
+    # Money withdrawn but not physically received is an asset, not spendable
+    # cash. Do not invent an expected cash receipt or spend it in the forecast.
+    account_balances={a.id:(0 if a.kind=='transit' else account_balances[a.id]) for a in accounts}
+    days=[];bal=current-bank_hold-in_transit;requested_bal=bal;requested_accounts=account_balances.copy()
     for i in range(horizon):
         day=start+timedelta(days=i)
         ins=[r for r in receipt if max(start,r.due_date)==day]
         outs=[r for r in approved if max(start,r.due_date)==day]
         waiting=[r for r in pending if max(start,r.due_date)==day]
-        inc=sum(r.amount for r in ins);out=sum(r.amount for r in outs)
+        inc=sum(r.amount for r in ins);out=sum(r.amount+planned_fee(r) for r in outs)
         opening=bal;requested_opening=requested_bal
-        all_out=out+sum(r.amount for r in waiting)
+        all_out=out+sum(r.amount+planned_fee(r) for r in waiting)
         bal+=inc-out;requested_bal+=inc-all_out
         for r in ins:account_balances[r.account_id]+=r.amount
-        for r in outs:account_balances[r.account_id]-=r.amount
+        for r in outs:
+            account_balances[r.account_id]-=r.amount
+            if planned_fee(r):account_balances[funding_plans[r.id].bank_account_id]-=planned_fee(r)
         for r in ins:requested_accounts[r.account_id]+=r.amount
-        for r in outs+waiting:requested_accounts[r.account_id]-=r.amount
+        for r in outs+waiting:
+            requested_accounts[r.account_id]-=r.amount
+            if planned_fee(r):requested_accounts[funding_plans[r.id].bank_account_id]-=planned_fee(r)
         shortfalls=[{'account_id':a.id,'account':a.name,'balance':money(account_balances[a.id]),
                      'allow_overdraft':a.allow_overdraft} for a in accounts if account_balances[a.id]<0]
         requested_shortfalls=[{'account_id':a.id,'account':a.name,'balance':money(requested_accounts[a.id])} for a in accounts if requested_accounts[a.id]<0]
@@ -593,15 +653,16 @@ def dashboard(s,currency,horizon=30):
                      'risk':bal<reserve or bool(shortfalls),'reserve_risk':bal<reserve,'account_shortfalls':shortfalls,
                      'events':[{'id':r.id,'kind':'in','name':r.counterparty,'inn':r.inn,'note':r.note,'amount':money(r.amount),'overdue':r.due_date<start,
                                 'date':str(r.due_date),'account_id':r.account_id,'category_id':r.category_id,'version':r.version} for r in ins]+
-                     [{'id':r.id,'kind':'out','name':r.counterparty,'amount':money(r.amount),'overdue':r.due_date<start,'priority':r.priority} for r in outs],
-                     'pending_events':[{'id':r.id,'kind':'pending','name':r.counterparty,'amount':money(r.amount),'overdue':r.due_date<start,'priority':r.priority} for r in waiting]})
+                     [expense_event(r,'out') for r in outs],
+                     'pending_events':[expense_event(r,'pending') for r in waiting]})
     period=[t for t in s.scalars(effective_cashflows(s)) if t.account_id in ids and t.date.year==start.year and t.date.month==start.month and t.date<=start]
     pending=[r for r in req if r.status=='pending']
     return {'currency':currency,'as_of':str(start),'account_count':len(accounts),'balance':money(current) if accounts else None,
-            'bank_pending_debits':money(bank_hold),'spendable_balance':money(current-bank_hold) if accounts else None,
+            'bank_pending_debits':money(bank_hold),'in_transit_balance':money(in_transit),
+            'spendable_balance':money(current-bank_hold-in_transit) if accounts else None,
             'reserve':money(reserve),'pending_count':len(pending),'pending_amount':money(sum(r.amount for r in pending)),
             'incoming7':money(sum(r.amount for r in receipt if max(start,r.due_date)<start+timedelta(days=7))),
-            'outgoing7':money(sum(r.amount for r in approved if max(start,r.due_date)<start+timedelta(days=7))),
+            'outgoing7':money(sum(r.amount+planned_fee(r) for r in approved if max(start,r.due_date)<start+timedelta(days=7))),
             'fact_in':money(sum(t.amount for t in period if t.kind=='in')),'fact_out':money(sum(t.amount for t in period if t.kind=='out')),
             'overdue_count':sum(r.due_date<start for r in approved)+sum(r.due_date<start for r in receipt),
             'forecast':days,'forecast_has_events':bool(receipt or approved or pending),

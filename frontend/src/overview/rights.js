@@ -11,6 +11,7 @@ export const canPayAny = has => PAY_RIGHTS.some(right => has(right));
 // The author, last editor, checking accountant and both approvers of a request never pay it.
 export function canPayRequest(r, userId, has) {
   return r.status === 'approved'
+    && (!r.cash_funding || r.cash_funding.state === 'received')
     && has(payRight(r))
     && ![r.creator_id, r.last_editor_id, r.checked_by, r.finance_approved_by, r.approved_by].filter(x => x != null).includes(userId);
 }

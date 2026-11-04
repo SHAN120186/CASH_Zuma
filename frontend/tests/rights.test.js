@@ -6,6 +6,11 @@ import {PAY_RIGHTS, payRight, canPayAny, canPayRequest} from '../src/overview/ri
 const has = list => right => list.includes(right);
 const request = extra => ({status: 'approved', account_kind: 'bank', creator_id: 1, last_editor_id: 2, checked_by: 5, finance_approved_by: 3, approved_by: 4, ...extra});
 
+test('cash-funded requests cannot be issued before their cash receipt', () => {
+  for (const state of ['unfunded', 'in_transit']) assert.equal(canPayRequest(request({account_kind:'cash',cash_funding:{state}}),9,has(['pay_cash'])),false);
+  assert.equal(canPayRequest(request({account_kind:'cash',cash_funding:{state:'received'}}),9,has(['pay_cash'])),true);
+});
+
 test('only pay_bank and pay_cash open a payment; generic pay and write never do', () => {
   assert.deepEqual(PAY_RIGHTS, ['pay_bank', 'pay_cash']);
   assert.equal(canPayAny(has(['pay', 'write', 'approve'])), false);

@@ -17,12 +17,13 @@ from .db import Account, Ledger, now, unit
 from .section_access import can_edit_section
 from .security import jwt_key, session_user
 from .services import deleted_ledger_ids, effective_cashflows, get, log, money
+from .bank_statement_cash_funding import MATCHED as FUNDING_MATCHED, binding as funding_binding, accounted_funding_line_ids
 
 router = APIRouter()
 LINKED = frozenset({'auto_paid', 'paid_match', 'manual_paid', 'manual_match',
                     'auto_income_posted', 'income_matched', 'auto_fee_posted', 'fee_matched',
                     'auto_interest_posted', 'interest_matched', 'other_matched', 'auto_outgoing_posted', 'manual_transfer_match',
-                    'historical_transfer_posted', 'historical_request_paid', 'manual_distinct_income'})
+                    'historical_transfer_posted', 'historical_request_paid', 'manual_distinct_income', FUNDING_MATCHED})
 
 
 class DuplicateResolution(BaseModel):
@@ -47,9 +48,11 @@ def _target(s, line_id):
 
 def _matches(s, target, batch, account):
     """Candidate is older, exact and backed by one active journal operation."""
-    used = set(s.scalars(select(BankStatementLine.ledger_id).where(
+    used_lines = list(s.scalars(select(BankStatementLine).where(
         BankStatementLine.batch_id == batch.id, BankStatementLine.id != target.id,
         BankStatementLine.ledger_id.is_not(None))))
+    used = {line.ledger_id for line in used_lines}
+    used.update(key for line in used_lines for key in (funding_binding(line) or {}).get('ledger_ids', []))
     pairs = s.execute(select(BankStatementLine, BankStatementBatch).join(
         BankStatementBatch, BankStatementBatch.id == BankStatementLine.batch_id).where(
         BankStatementBatch.status == 'committed', BankStatementBatch.source_ready.is_(True),
@@ -73,6 +76,16 @@ def _matches(s, target, batch, account):
             continue
         entry = s.get(Ledger, prior.ledger_id)
         if not entry or entry.id in deleted:
+            continue
+        if prior.status == FUNDING_MATCHED:
+            group = funding_binding(prior)
+            prior_lines = list(s.scalars(select(BankStatementLine).where(BankStatementLine.batch_id == prior_batch.id)))
+            if (not group or set(group['ledger_ids']) & used
+                    or prior.id not in accounted_funding_line_ids(s, prior_lines, account)
+                    or prior.date != target.date or prior.amount != target.amount
+                    or prior.direction != target.direction):
+                continue
+            yield prior, prior_batch, entry
             continue
         active = s.scalar(effective_cashflows(s).where(Ledger.id == entry.id))
         transfer_statuses = {'manual_transfer_match', 'historical_transfer_posted'}
@@ -102,7 +115,7 @@ def _token(user, target, batch, prior, prior_batch, entry):
         'prior': values(prior, ('id', 'batch_id', 'account_id', 'date', 'direction', 'amount',
                                 'document_number', 'correspondent_mfo', 'correspondent_account',
                                 'correspondent_name', 'correspondent_inn', 'purpose', 'fingerprint',
-                                'status', 'uncertain', 'include_in_daily', 'ledger_id', 'classification')),
+                                'status', 'uncertain', 'include_in_daily', 'ledger_id', 'classification', 'review_note')),
         'prior_batch': values(prior_batch, ('id', 'account_id', 'account_number', 'currency', 'status', 'committed_at')),
         'ledger': values(entry, ('id', 'account_id', 'to_account_id', 'kind', 'amount', 'date', 'category_id', 'counterparty',
                                  'reference', 'note', 'request_id', 'receipt_id', 'reversal_of'))}
@@ -145,7 +158,12 @@ def duplicate_resolve(id: int, data: DuplicateResolution, request: Request):
         target.status = 'duplicate'; target.uncertain = False; target.include_in_daily = False
         target.classification = prior.classification
         target.reason = ''; target.review_note = data.reason
+        if prior.status == FUNDING_MATCHED:
+            # Keep both validated bank legs for a gross withdrawal instead of
+            # reducing the proof to its primary net transfer. No new Ledger.
+            target.status = FUNDING_MATCHED
+            target.review_note = prior.review_note
         target.reviewed_by = user.id; target.reviewed_at = now()
         log(s, user, 'Разрешён повтор выписки', 'bank_statement_line', target.id,
             json.dumps({'source_line_id': prior.id, 'ledger_id': entry.id, 'reason': data.reason}, ensure_ascii=False))
-        return {'status': 'duplicate', 'line_id': target.id, 'ledger_id': entry.id}
+        return {'status': target.status, 'line_id': target.id, 'ledger_id': entry.id}

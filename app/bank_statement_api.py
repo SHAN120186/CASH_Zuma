@@ -39,16 +39,18 @@ from .bank_statement_interest import classify_interest, post_interest
 from .bank_statement_reprocess_payments import classify_reprocess_payments, process_reprocess_payments
 from .bank_statement_expenses import annotate_expense_rows, sanitize_request_fields
 from .bank_statement_category_rules import annotate_budget_fallbacks, load_rules
+from .bank_statement_cash_funding import (CANDIDATE as FUNDING_CANDIDATE, MATCHED as FUNDING_MATCHED,
+    binding as funding_binding, accounted_funding_line_ids, classify_cash_funding, process_cash_funding)
 
 router = APIRouter()
 REQUEST_ID = re.compile(r'(?<![A-Za-z0-9])CF-0*([1-9][0-9]*)(?![A-Za-z0-9])', re.I)
 DRAFT_REFRESH_ACTION = 'Обновлён предпросмотр банковской выписки'
 NEW_POSTING_STATUSES = {'auto_pay_candidate', 'income_candidate', 'fee_candidate', 'interest_candidate', 'outgoing_candidate'}
-LINK_POSTING_STATUSES = {'income_matched_candidate', 'fee_existing', 'interest_existing', 'other_matched_candidate'}
+LINK_POSTING_STATUSES = {'income_matched_candidate', 'fee_existing', 'interest_existing', 'other_matched_candidate', FUNDING_CANDIDATE}
 FINAL_POSTING_STATUSES = {'paid_match', 'auto_paid', 'manual_paid', 'manual_match', 'income_matched',
     'auto_income_posted', 'fee_matched', 'auto_fee_posted', 'interest_matched', 'auto_interest_posted',
     'duplicate', 'other_matched', 'auto_outgoing_posted', 'manual_transfer_match',
-    'historical_transfer_posted', 'historical_request_paid', 'manual_distinct_income'}
+    'historical_transfer_posted', 'historical_request_paid', 'manual_distinct_income', FUNDING_MATCHED}
 
 
 class Confirmation(BaseModel):
@@ -108,13 +110,18 @@ def _minor(value):
 
 
 def _line_data(line):
-    return {'id': line.id, 'line': line.line, 'date': str(line.date), 'document_number': line.document_number,
+    result = {'id': line.id, 'line': line.line, 'date': str(line.date), 'document_number': line.document_number,
             'correspondent_mfo': line.correspondent_mfo, 'correspondent_account': line.correspondent_account,
             'correspondent_name': line.correspondent_name, 'correspondent_inn': line.correspondent_inn,
             'purpose': line.purpose, 'direction': line.direction, 'amount': money(line.amount),
             'status': line.status, 'reason': line.reason, 'request_id': line.request_id,
             'ledger_id': line.ledger_id, 'classification': line.classification,
             'review_note': line.review_note, 'uncertain': line.uncertain}
+    linked_funding = funding_binding(line)
+    if linked_funding:
+        result['cash_funding'] = linked_funding
+        result['review_note'] = 'Снятие наличных связано с ранее проведёнными операциями; повторного списания нет.'
+    return result
 
 
 def _statement(batch):
@@ -348,6 +355,7 @@ def _evaluated(s, batch, lines, account, user, fee_category_id, *, reprocess=Fal
     rules = load_rules(s, batch.company_id)
     incoming = classify_incoming(s, batch, lines, account, user, unallocated=True, rule_context=rules)
     existing = classify_existing(s, batch, lines, account, user, opening_ok)
+    cash_funding = classify_cash_funding(s, batch, lines, account, user, opening_ok)
     outgoing = classify_unallocated_out(s, batch, lines, account, user, unallocated=True, rule_context=rules)
     fee_context = prepare_fee_context(s, batch, lines, account, fee_category_id)
     interest_context = prepare_fee_context(s, batch, lines, account, None, charge_kind='interest')
@@ -364,16 +372,16 @@ def _evaluated(s, batch, lines, account, user, fee_category_id, *, reprocess=Fal
         row = _line_data(line)
         if line.request_id in request_versions and line.status == 'auto_pay_candidate':
             row['request_version'] = request_versions[line.request_id]
-        decision = payment_candidates.get(line.id) or incoming.get(line.id)
+        decision = cash_funding.get(line.id) or payment_candidates.get(line.id) or incoming.get(line.id)
         if decision is None and line.direction == 'out':
             # Never replace an existing request match with a commission guess.
             if line.status in ('review', 'reviewed', 'fee_candidate', 'fee_existing'):
                 decision = classify_fee(s, batch, line, account, fee_category_id, user, opening_ok, context=fee_context)
                 if decision is None:
                     decision = classify_interest(s, batch, line, account, user, opening_ok, context=interest_context)
-        if (decision is None or decision.get('status') == 'review') and existing.get(line.id, {}).get('status') == 'other_matched_candidate':
+        if line.id not in cash_funding and (decision is None or decision.get('status') == 'review') and existing.get(line.id, {}).get('status') == 'other_matched_candidate':
             decision = existing[line.id]
-        if (decision is None or decision.get('status') == 'review') and outgoing.get(line.id, {}).get('status') == 'outgoing_candidate':
+        if line.id not in cash_funding and (decision is None or decision.get('status') == 'review') and outgoing.get(line.id, {}).get('status') == 'outgoing_candidate':
             decision = outgoing[line.id]
         elif decision is None and line.id in outgoing:
             decision = outgoing[line.id]
@@ -381,7 +389,7 @@ def _evaluated(s, batch, lines, account, user, fee_category_id, *, reprocess=Fal
             row.update({key: value for key, value in decision.items()
                         if key in ('status', 'reason', 'category_id', 'category_source', 'category_name', 'category_code', 'receipt_id', 'ledger_id', 'attach_receipt',
                                    'request_id', 'request_version', 'category_rule_ids', 'category_rule_status',
-                                   'category_rule_revision', 'category_rule_budget_policy', 'category_rule_budget_over', 'intended_category_id')})
+                                   'category_rule_revision', 'category_rule_budget_policy', 'category_rule_budget_over', 'intended_category_id', 'cash_funding')})
         rows.append(row)
     site_opening = (money(day_start_balance(s, account, batch.period_from))
                     if batch.period_from >= account.opening_date else None)
@@ -394,8 +402,13 @@ def _evaluated(s, batch, lines, account, user, fee_category_id, *, reprocess=Fal
     linked_ids = {line.ledger_id for line in lines if line.ledger_id is not None}
     active_entries = {entry.id: entry for entry in s.scalars(effective_cashflows(s).where(
         Ledger.id.in_(linked_ids)))} if linked_ids else {}
+    valid_funding = accounted_funding_line_ids(s, lines, account)
     for line, row in zip(lines, rows):
         if line.status in FINAL_POSTING_STATUSES:
+            if line.status == FUNDING_MATCHED:
+                if line.id not in valid_funding:
+                    row.update(status='review', reason='Связанное снятие наличных изменилось или было отменено.')
+                continue
             entry = active_entries.get(line.ledger_id)
             same_side = bool(entry and ((entry.kind == line.direction and entry.account_id == account.id) or
                 (entry.kind == 'transfer' and ((line.direction == 'out' and entry.account_id == account.id) or
@@ -525,6 +538,7 @@ def _apply_reconciled(s, batch, lines, account, user, fee_category_id, evaluated
         return False
     try:
         with s.begin_nested():
+            process_cash_funding(s, batch, lines, account, user, evaluated['opening_matches'], approved)
             incoming = [line for line in lines if approved[line.id]['status'] in ('income_candidate', 'income_matched_candidate')
                         and line.id in selected]
             _apply_incoming(s, batch, incoming, account, user, evaluated)
@@ -871,7 +885,7 @@ def reprocess_commit(id: int, data: ReprocessConfirm, request: Request):
             json.dumps({'statuses': dict(counts)}, ensure_ascii=False))
         changed = [line for line in lines if before[line.id] != (line.status, line.ledger_id)]
         created = {line.id for line in changed if line.status in CREATED_BANK_STATUSES}
-        linked = sum(line.status in ('income_matched', 'fee_matched', 'interest_matched', 'other_matched') for line in changed)
+        linked = sum(line.status in ('income_matched', 'fee_matched', 'interest_matched', 'other_matched', FUNDING_MATCHED) for line in changed)
         summary = _posting_summary(s, batch, lines, account, [_line_data(line) for line in lines], posted_ids=created, scope='result')
         return {'posted': len(created), 'linked': linked,
                 'auto_interest': sum(line.status == 'auto_interest_posted' for line in changed),
@@ -1142,10 +1156,15 @@ def statement_history_detail(id: int, request: Request):
         request_ids = {row['request_id'] for row in rows if row['request_id'] is not None}
         requests = {item.id: item for item in s.scalars(select(PaymentRequest).where(PaymentRequest.id.in_(request_ids)))} if request_ids and _can_read_requests(user) else {}
         category_names = {category.id: category.name for category, _ in catalog(s, include_retired=True)}
+        lines = list(s.scalars(select(BankStatementLine).where(BankStatementLine.batch_id == batch.id)
+                               .order_by(BankStatementLine.line, BankStatementLine.id)))
+        valid_funding = accounted_funding_line_ids(s, lines, get(s, Account, batch.account_id))
         for row in rows:
             entry = entries.get(row['ledger_id'])
             if row['ledger_id'] is None:
                 state = 'unposted'
+            elif row['status'] == FUNDING_MATCHED:
+                state = 'active' if row['id'] in valid_funding else 'changed'
             elif not entry:
                 state = 'missing'
             elif entry.id in deleted_ids or entry.id in reversed_ids or entry.reversal_of is not None:

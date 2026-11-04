@@ -1,4 +1,5 @@
 <script setup>
+import CashFundingBankCaption from './CashFundingBankCaption.vue';
 import {ref, computed, watch, onUnmounted} from 'vue';
 import {tx, N_} from './i18n/index.js';
 import {toCents, formatCents, formatShortDate} from './overview/format.js';
@@ -15,7 +16,7 @@ const detail = ref(null), detailLoading = ref(false), detailError = ref('');
 let generation = 0, detailGeneration = 0;
 const states = Object.freeze({active:N_('Проведена'),reversed:N_('Сторнирована'),changed:N_('Операция изменена'),missing:N_('Операция не найдена'),unposted:N_('Не проведена')});
 const createdStatuses = new Set(['auto_paid','manual_paid','auto_income_posted','auto_fee_posted','auto_interest_posted','auto_outgoing_posted','historical_transfer_posted','historical_request_paid','manual_distinct_income']);
-const linkedStatuses = new Set(['paid_match','manual_match','income_matched','fee_matched','interest_matched','other_matched','manual_transfer_match']);
+const linkedStatuses = new Set(['paid_match','manual_match','income_matched','fee_matched','interest_matched','other_matched','manual_transfer_match','cash_funding_matched']);
 const stateLabel = row => {
  if(row.operation_state !== 'active')return tx(states[row.operation_state] || N_('Состояние не определено'));
  if(row.status === 'duplicate')return tx('Повтор связан с операцией');
@@ -89,7 +90,7 @@ function openCashFlow(){
     <button v-if="canViewCashFlow" type="button" class="secondary tiny" @click="openCashFlow">{{tx('Открыть Cash Flow за период выписки')}}</button>
     <details class="statement-source"><summary>{{tx('Исходные строки и статусы проведения')}}</summary>
     <div class="table-scroll"><table><thead><tr><th>{{tx('Дата')}}</th><th>{{tx('Контрагент / документ')}}</th><th>{{tx('Назначение')}}</th><th>{{tx('Движение')}}</th><th>{{tx('Состояние операции')}}</th></tr></thead><tbody>
-     <tr v-for="row in detail.rows" :key="row.id"><td>{{formatShortDate(row.date)}}</td><td>{{row.correspondent_name || '—'}}<small>{{row.correspondent_inn || '—'}} · {{row.document_number}}</small></td><td>{{row.purpose}}<small v-if="row.request_id">{{tx('Заявка №{id}',{id:row.request_id})}}</small></td><td>{{direction(row.direction)}}<small>{{money(row.amount,detail.account?.currency)}} {{detail.account?.currency}}</small></td><td>{{stateLabel(row)}}<small v-if="row.category_name">{{tx('Статья')}}: {{row.category_name}}</small><small v-if="row.category_rule_status==='budget_fallback'">{{tx('Превышен бюджет статьи правила: факт учтён в «Не распределено».')}}</small><small v-if="row.reason">{{tx(row.reason)}}</small></td></tr>
+     <tr v-for="row in detail.rows" :key="row.id"><td>{{formatShortDate(row.date)}}</td><td>{{row.correspondent_name || '—'}}<small>{{row.correspondent_inn || '—'}} · {{row.document_number}}</small></td><td>{{row.purpose}}<small v-if="row.request_id">{{tx('Заявка №{id}',{id:row.request_id})}}</small></td><td>{{direction(row.direction)}}<small>{{money(row.amount,detail.account?.currency)}} {{detail.account?.currency}}</small></td><td>{{stateLabel(row)}}<CashFundingBankCaption :row="row" :currency="detail.account?.currency"/><small v-if="row.category_name">{{tx('Статья')}}: {{row.category_name}}</small><small v-if="row.category_rule_status==='budget_fallback'">{{tx('Превышен бюджет статьи правила: факт учтён в «Не распределено».')}}</small><small v-if="row.reason">{{tx(row.reason)}}</small></td></tr>
     </tbody></table></div>
     </details>
    </div>

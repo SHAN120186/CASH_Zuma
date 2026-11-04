@@ -26,6 +26,7 @@ from .bot_api import drop_groups_of, drop_orphan_groups, drop_shadowed_groups, j
 from .workdays import enforce_lead_time, due_minimums
 from .requests_api import request_view, can_view_request, MAX_DOCUMENT
 from .bank_statement_guard import CREATED_BANK_STATUSES
+from .cash_funding import CashFundingIn
 
 SECURE=os.getenv('COOKIE_SECURE','0')=='1'
 ALLOWED=[x.strip() for x in os.getenv('ALLOWED_HOSTS','127.0.0.1,localhost,testserver').split(',') if x.strip()]
@@ -170,6 +171,7 @@ class RequestIn(Input):
     department:str=Field(default='',max_length=30)
     priority:Literal['normal','high','urgent']
     status:Literal['draft','pending']='draft'
+    cash_funding:Optional[CashFundingIn]=None
 class RequestEdit(RequestIn):
     version:int=Field(ge=1)
     reason:str=Field(min_length=10,max_length=1000)
@@ -330,8 +332,14 @@ def accounts(request:Request,archived:bool=False):
 def archive_account(id:int,data:ArchiveIn,request:Request):
     with unit(True) as s:
         u,_=session_user(s,request,'users');a=get(s,Account,id)
+        from .cash_funding import require_regular_account
+        require_regular_account(a)
         if 'write' not in perms_of(u):raise HTTPException(403,'Архивировать счёт может администратор с назначением «Директор», «Финансовый директор» или «Сотрудник / оператор» в этой компании.')
         if data.archived:
+            if s.scalar(select(CashFunding.id).join(PaymentRequest,PaymentRequest.id==CashFunding.request_id).where(
+                or_(CashFunding.bank_account_id==id,CashFunding.cash_account_id==id),
+                PaymentRequest.status.in_(['draft','pending','approved','returned']))):
+                raise HTTPException(409,'Сначала завершите или закройте заявки с получением наличных через этот счёт.')
             if account_balance(s,a)!=0:raise HTTPException(409,'Сначала перенесите остаток: архивировать можно счёт с нулевым балансом.')
             if s.scalar(select(PaymentRequest.id).where(PaymentRequest.account_id==id,PaymentRequest.status.in_(['draft','pending','approved','returned'])).limit(1)) or s.scalar(select(Receipt.id).where(Receipt.account_id==id,Receipt.status=='expected').limit(1)):
                 raise HTTPException(409,'Сначала закройте или перенесите незавершённые заявки и поступления.')
@@ -354,6 +362,8 @@ def add_account(data:AccountIn,request:Request):
 def edit_account(id:int,data:AccountEdit,request:Request):
     with unit(True) as s:
         u,_=session_user(s,request,'write');a=get(s,Account,id)
+        from .cash_funding import require_regular_account
+        require_regular_account(a)
         if a.archived:raise HTTPException(409,'Сначала восстановите счёт из архива.')
         if data.opening_date>today():raise HTTPException(422,'Начальный остаток не может быть задан будущей датой.')
         if data.kind=='cash' and data.allow_overdraft:raise HTTPException(422,'Для кассы отрицательный остаток запрещён.')
@@ -438,6 +448,7 @@ def requests_list(request:Request,date_from:Optional[date]=None,date_to:Optional
             visible=[]
             if 'request' in perms:visible.append(PaymentRequest.creator_id==u.id)
             if channels:visible.append(and_(PaymentRequest.status.in_(['approved','paid']),Account.kind.in_(sorted(channels))))
+            if 'pay_bank' in perms:visible.append(and_(PaymentRequest.status.in_(['approved','paid']),PaymentRequest.id.in_(select(CashFunding.request_id))))
             if checker:visible.append(or_(PaymentRequest.status=='pending',PaymentRequest.checked_by==u.id))
             query=query.where(or_(*visible))
         if currency:query=query.where(Account.currency==currency)
@@ -502,6 +513,8 @@ def add_request(data:RequestIn,request:Request):
         r=PaymentRequest(creator_id=u.id,last_editor_id=u.id,category_id=c.id,account_id=a.id,counterparty=data.counterparty,counterparty_inn=data.counterparty_inn,amount=n,due_date=data.date,purpose=data.purpose,project=data.project,department=data.department,status='draft',priority=data.priority)
         remember_counterparty(s,data.counterparty,data.counterparty_inn)
         s.add(r);s.flush()
+        from .cash_funding import save_plan
+        save_plan(s,u,r,data.cash_funding)
         log(s,u,'Создана заявка','request',r.id,json.dumps({'status':r.status,'version':r.version,'amount':money(n),'currency':a.currency,
             'category':c.name,'channel':a.kind,'date':str(r.due_date),'priority':r.priority,'department':r.department},ensure_ascii=False))
         return request_view(s,u,r)
@@ -516,6 +529,8 @@ def delete_request(id:int,data:RequestDeleteIn,request:Request):
         r=get(s,PaymentRequest,id)
         if r.status=='deleted':raise HTTPException(404,'Запись не найдена.')
         check_request_version(r,data.version)
+        from .cash_funding import require_settled_cash_receipt
+        require_settled_cash_receipt(s,r)
         before=request_json(s,r)
         entries=list(s.scalars(select(Ledger).where(Ledger.request_id==r.id)))
         documents=list(s.scalars(select(RequestDocument).where(RequestDocument.request_id==r.id)))
@@ -534,6 +549,8 @@ def edit_request(id:int,data:RequestEdit,request:Request):
         if not can_view_request(s,u,r):raise HTTPException(404,'Запись не найдена.')
         if r.creator_id!=u.id and 'request_edit' not in perms_of(u):raise HTTPException(403,'Редактировать может автор или финансовый руководитель.')
         check_request_version(r,data.version)
+        from .cash_funding import require_unfunded,save_plan
+        require_unfunded(s,r)
         if r.status=='rejected':raise HTTPException(409,'Отклонённая заявка хранится только для чтения. Создайте новую заявку.')
         if r.status not in ('draft','pending','returned'):raise HTTPException(409,'Редактирование доступно до утверждения. Утверждённую заявку сначала верните на доработку.')
         if r.creator_id!=u.id:act_with_right(u,'request_edit')
@@ -551,9 +568,12 @@ def edit_request(id:int,data:RequestEdit,request:Request):
             validate_department(s,data.department,r.department)
             r.department=data.department
         r.amount=n;r.due_date=data.date;clear_approval(r);r.last_editor_id=u.id;r.decision_note=data.reason;r.status=data.status
+        save_plan(s,u,r,data.cash_funding,provided='cash_funding' in data.model_fields_set)
         s.flush()
         if data.status=='pending':
             enforce_documents(s,r);enforce_budget(s,r.category_id,r.due_date,a.currency,n,data.purpose,r.id)
+            from .cash_funding import fee_budget
+            fee_budget(s,r,data.purpose)
             if not was_pending or route_changed:snapshot_route(s,r,a.currency)
             elif r.route_policy is not None:
                 # Правка отправленной заявки не ослабляет маршрут: из сохранённого снимка и текущей
@@ -588,11 +608,16 @@ def decide(id:int,data:DecisionIn,request:Request):
         if own_only and r.creator_id!=u.id and data.action!='return_finance':raise HTTPException(403,'Доступны только собственные заявки.')
         check_request_version(r,data.version)
         stage=approval_stage(r);before=request_state(r);note=data.note.strip()
+        from .cash_funding import require_unfunded,require_settled_cash_receipt
+        if data.action=='close':require_settled_cash_receipt(s,r)
+        elif data.action in ('return','return_finance','reschedule','submit'):require_unfunded(s,r)
         if data.action=='submit':
             if r.status not in ('draft','returned') or (r.creator_id!=u.id and 'request_edit' not in perms):raise HTTPException(403,'Отправить можно свой черновик или возвращённую заявку.')
             act_with_right(u,'request' if r.creator_id==u.id else 'request_edit')
             enforce_lead_time(s,r.priority,r.due_date,today());enforce_documents(s,r)
             enforce_budget(s,r.category_id,r.due_date,a.currency,r.amount,r.purpose,r.id)
+            from .cash_funding import fee_budget
+            fee_budget(s,r,r.purpose)
             clear_approval(r);r.status='pending';snapshot_route(s,r,a.currency)
         elif data.action=='check':
             if 'request_check' not in perms:raise HTTPException(403,'Реквизиты и комплектность проверяет расчётный бухгалтер компании.')
@@ -600,6 +625,8 @@ def decide(id:int,data:DecisionIn,request:Request):
             if stage!='check':raise HTTPException(409,'Заявка не ожидает проверки расчётного бухгалтера.')
             if not act_as(u,'accountant'):raise HTTPException(403,'Реквизиты и комплектность проверяет расчётный бухгалтер компании.')
             enforce_documents(s,r)
+            from .cash_funding import fee_budget
+            fee_budget(s,r,check_only=True)
             b=budget_state(s,r.category_id,str(r.due_date)[:7],a.currency,r.amount,r.id)
             if b['over'] and b['mode']=='hard':raise HTTPException(409,'Жёсткий лимит статьи превышен. Верните заявку на доработку или дождитесь пересмотра бюджета.')
             r.checked_by=u.id;r.checked_at=now()
@@ -612,13 +639,15 @@ def decide(id:int,data:DecisionIn,request:Request):
                 raise HTTPException(403,'Сначала требуется проверка финансового директора компании.' if stage=='finance' else 'Требуется отдельное подтверждение директора компании.')
             ensure_new_participant(s,u,r)
             b=enforce_budget(s,r.category_id,r.due_date,a.currency,r.amount,note,r.id)
+            from .cash_funding import fee_budget
+            fee_budget(s,r,note,final=stage=='director' or not requires_director(r))
             if stage=='finance':r.finance_approved_by=u.id
             else:r.approved_by=u.id
             # Директор участвует по снимку политики статьи; последний нужный этап завершает согласование.
             if stage=='director' or not requires_director(r):
                 # Согласование подтверждает обязательство, а не наличие денег.
                 # Фактическое покрытие проверяется атомарно при оплате.
-                r.status='approved';r.approved_at=now();r.approved_overrun=overrun(b)
+                r.status='approved';r.approved_at=now();r.approved_overrun=max(r.approved_overrun or 0,overrun(b))
         elif data.action=='return':
             if not (('approve' in perms and act_with_right(u,'approve')) or act_as(u,'accountant')):raise HTTPException(403,'Недостаточно прав для возврата.')
             if r.status not in ('pending','approved'):raise HTTPException(409,'Вернуть можно заявку на согласовании или утверждённую заявку.')
@@ -666,6 +695,8 @@ def get_receipts(request:Request):
 def add_receipt(data:ReceiptIn,request:Request):
     with unit(True) as s:
         u,_=session_user(s,request,('schedule','receipts'));a=get(s,Account,data.account_id);category=get(s,Category,data.category_id)
+        from .cash_funding import require_regular_account
+        require_regular_account(a)
         if category.activity=='unclassified':raise HTTPException(422,'Для плана выберите обычную статью поступлений.')
         if 'schedule' not in perms_of(u) and category.type!='income':
             raise HTTPException(422,'Для плана поступления выберите доходную статью.')
@@ -682,6 +713,8 @@ def edit_receipt(id:int,data:ReceiptIn,request:Request):
         if r.status!='expected':raise HTTPException(409,'Полученное поступление нельзя изменить как план.')
         if data.version!=r.version:raise HTTPException(409,'План поступления изменён. Обновите данные и повторите правку.')
         a=get(s,Account,data.account_id);c=get(s,Category,data.category_id)
+        from .cash_funding import require_regular_account
+        require_regular_account(a)
         if c.activity=='unclassified':raise HTTPException(422,'Для плана выберите обычную статью поступлений.')
         if c.type!='income':raise HTTPException(422,'Для плана поступления выберите доходную статью.')
         if a.archived:raise HTTPException(409,'Счёт в архиве.')
@@ -714,6 +747,8 @@ def ledger_list(request:Request,include_deleted:bool=False,date_from:Optional[da
         u,_=session_user(s,request,'ledger')
         if include_deleted and u.role!='admin':raise HTTPException(403,'Удалённые операции доступны администратору холдинга.')
         deleted_ids=deleted_ledger_ids(s)
+        from .cash_funding import protected_ledger_ids
+        funding_legs=protected_ledger_ids(s)
         acc={a.id:a for a in s.scalars(select(Account))};cats={c.id:c.name for c in s.scalars(select(Category))}
         reversed_ids={t.reversal_of for t in s.scalars(select(Ledger).where(Ledger.reversal_of!=None))}
         if date_from and date_to and date_from>date_to:raise HTTPException(422,'Начало периода позже окончания.')
@@ -738,8 +773,9 @@ def ledger_list(request:Request,include_deleted:bool=False,date_from:Optional[da
                  'reference':t.reference,'note':t.note,'request_id':t.request_id,'receipt_id':t.receipt_id,
                  'can_attach_document':can_attach_document(u,t),
                  'category_id':t.category_id,'to_account_id':t.to_account_id,
-                 'edit_token':ledger_edit_token(t),'deleted':t.id in deleted_ids,'can_delete':u.role=='admin' and t.id not in deleted_ids,
-                 'can_edit':u.role=='admin' and t.id not in deleted_ids and not t.reversal_of and t.id not in reversed_ids,
+                 'cash_funding_protected':t.id in funding_legs,'can_reverse':t.id not in funding_legs and not t.reversal_of and t.id not in reversed_ids,
+                 'edit_token':ledger_edit_token(t),'deleted':t.id in deleted_ids,'can_delete':u.role=='admin' and t.id not in deleted_ids and t.id not in funding_legs,
+                 'can_edit':u.role=='admin' and t.id not in deleted_ids and not t.reversal_of and t.id not in reversed_ids and t.id not in funding_legs,
                  'reversal_of':t.reversal_of,'reversed':t.id in reversed_ids} for t in s.scalars(query.offset((page-1)*page_size).limit(page_size) if paginated else query.limit(500))]
         return {'items':items,'total':total,'page':page,'page_size':page_size} if paginated else items
 @app.post('/api/ledger')
@@ -766,6 +802,8 @@ def edit_ledger(id:int,data:LedgerEditIn,request:Request):
         u,_=session_user(s,request,'write')
         if u.role!='admin':raise HTTPException(403,'Операции редактирует администратор холдинга.')
         old=get(s,Ledger,id)
+        from .cash_funding import require_independent_ledger
+        require_independent_ledger(s,old)
         if any(get(s,Account,x).archived for x in (old.account_id,old.to_account_id) if x):raise HTTPException(409,'Счёт в архиве. Сначала восстановите его.')
         if ledger_edit_token(old)!=data.expected:raise HTTPException(409,'Операция уже изменена. Обновите данные.')
         if old.reversal_of or s.scalar(select(Ledger.id).where(Ledger.reversal_of==id)):raise HTTPException(409,'Операция уже сторнирована.')
@@ -797,6 +835,8 @@ def edit_ledger(id:int,data:LedgerEditIn,request:Request):
 
 def reverse_ledger_entry(s,u,t,reason,allow_archived=False):
     id=t.id
+    from .cash_funding import require_independent_ledger
+    require_independent_ledger(s,t)
     if not allow_archived and any(get(s,Account,x).archived for x in (t.account_id,t.to_account_id) if x):raise HTTPException(409,'Счёт в архиве. Сначала восстановите его.')
     if t.reversal_of or s.scalar(select(Ledger.id).where(Ledger.reversal_of==id)):raise HTTPException(409,'Сторнирование уже выполнено или это запись сторно.')
     inverse_account=t.to_account_id if t.kind=='transfer' else t.account_id
@@ -845,6 +885,8 @@ def delete_ledger(id:int,data:LedgerDeleteIn,request:Request):
         u,_=session_user(s,request,'write')
         if u.role!='admin':raise HTTPException(403,'Операции удаляет администратор холдинга.')
         clicked=get(s,Ledger,id)
+        from .cash_funding import require_independent_ledger
+        require_independent_ledger(s,clicked)
         if ledger_edit_token(clicked)!=data.expected:raise HTTPException(409,'Операция уже изменена. Обновите данные.')
         registry=ledger_deletion_registry(s)
         t=get(s,Ledger,clicked.reversal_of) if clicked.reversal_of else clicked
@@ -1245,6 +1287,8 @@ app.include_router(bot_router)
 
 from .requests_api import router as requests_router
 app.include_router(requests_router)
+from .cash_funding import router as cash_funding_router
+app.include_router(cash_funding_router)
 
 from .report_archives import router as report_archives_router
 app.include_router(report_archives_router)

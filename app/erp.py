@@ -229,6 +229,8 @@ def request_document_access(s,user,payment,write=False):
     утверждённой заявки. Меняет автор или финансовый руководитель, пока заявка не оплачена и не закрыта."""
     from .requests_api import can_view_request
     if write:
+        from .cash_funding import require_unfunded
+        require_unfunded(s,payment)
         permissions=perms_of(user)
         own=payment.creator_id==user.id and 'request' in permissions
         if not (own or 'request_edit' in permissions):raise HTTPException(403,'Документы изменяет автор или финансовый руководитель.')

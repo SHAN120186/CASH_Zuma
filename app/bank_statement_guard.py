@@ -129,8 +129,14 @@ def accounted_line_ids(s, lines, account):
         Ledger.id.in_(ids)))} if ids else {}
     deleted = deleted_ledger_ids(s)
     ties = Counter((line.ledger_id, line.direction) for line in lines if line.ledger_id is not None)
-    result = set()
+    from .bank_statement_cash_funding import MATCHED as FUNDING_MATCHED, accounted_funding_line_ids
+    result = accounted_funding_line_ids(s, lines, account)
     for line in lines:
+        # A gross bank debit can represent the net transfer plus its fee. The
+        # compound validator proves both active legs instead of comparing the
+        # gross source amount to just the transfer's net Ledger amount.
+        if line.status == FUNDING_MATCHED:
+            continue
         entry = entries.get(line.ledger_id)
         if (not entry or entry.id in deleted or line.account_id != account.id
                 or line.company_id != account.company_id or entry.date != line.date or entry.amount != line.amount

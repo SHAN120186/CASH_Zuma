@@ -25,6 +25,9 @@ jobs:
       - run: python -m unittest tests.test_business_templates -q
       - run: python tests/test_site.py
       - run: python -m unittest tests.test_request_delete -q
+      - run: python -m unittest tests.test_cash_funding -q
+      - run: python -m unittest tests.test_cash_funding_audit -q
+      - run: python -m unittest tests.test_bank_cash_funding -q
       - run: python -m unittest tests.test_request_auto_archive -q
       - run: python -m unittest tests.test_request_due_order -q
       - run: python -m unittest tests.test_request_form_rules -q
@@ -100,6 +103,9 @@ jobs:
       # Separate processes avoid the suites' temporary DATA_DIR cleanup affecting each other.
       - run: python tests/test_site.py
       - run: python -m unittest tests.test_request_delete -q
+      - run: python -m unittest tests.test_cash_funding -q
+      - run: python -m unittest tests.test_cash_funding_audit -q
+      - run: python -m unittest tests.test_bank_cash_funding -q
       - run: python -m unittest tests.test_request_auto_archive -q
       - run: python -m unittest tests.test_request_due_order -q
       - run: python -m unittest tests.test_request_form_rules -q
