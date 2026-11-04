@@ -489,6 +489,159 @@ def group_daily_summary(request: Request, chat_id: int, report_date: date):
     return result
 
 
+@router.get('/api/bot/v1/group-statement-reconciliation')
+def group_statement_reconciliation(request: Request, chat_id: int, report_date: date):
+    """Confirmed statements for one company and one bank day; this endpoint never posts money."""
+    from .bank_statement_models import BankStatementBatch, BankStatementLine
+    from .bank_statement_expenses import expense_annotations
+    from .bank_statement_interest import PRINCIPAL, exact_loan_interest
+    from .bank_statement_cash_funding import (MATCHED as CASH_FUNDING_MATCHED,
+        _CASH as CASH_WITHDRAWAL_TEXT, accounted_funding_line_ids, binding as cash_funding_binding)
+
+    authenticate_bot(request)
+    if report_date >= tashkent_today():
+        raise HTTPException(422, 'Сверка доступна за прошедший день.')
+    with unit() as s:
+        begin_report_snapshot(s)
+        group = report_groups(s).get(chat_id)
+        codes, scope_id = group_scope(s, chat_id, group) if group else ([], None)
+        if not codes:
+            raise HTTPException(403, 'Для группы не подключена одна активная компания.')
+        codes = [code.upper() for code in codes]
+        company = next((c for c in s.scalars(select(Company).where(Company.active.is_(True)))
+                        if c.code.upper() == codes[0]), None)
+        if company is None:
+            raise HTTPException(403, 'Компания группы недоступна.')
+        # No archive timestamp exists: include archived accounts opened by the
+        # report date so coverage never falsely claims a complete bank history.
+        accounts = list(s.scalars(select(Account).where(Account.company_id == company.id,
+            Account.kind == 'bank', Account.opening_date <= report_date).order_by(Account.id)))
+        batches = list(s.scalars(select(BankStatementBatch).where(
+            BankStatementBatch.company_id == company.id, BankStatementBatch.status == 'committed',
+            BankStatementBatch.period_from <= report_date, BankStatementBatch.period_to >= report_date)))
+        # Use the real active administrator who connected the group for the same
+        # request visibility checks as the site's statement screen. Configuration-only
+        # groups have no such actor: do not guess one or expand their access.
+        binding = s.get(TelegramGroup, chat_id) if group['source'] == 'site' else None
+        actor = s.get(User, binding.added_by) if binding else None
+        if actor is not None and (not actor.active or actor.role != 'admin'):
+            actor = None
+        periods, missing, expenses = [], [], []
+        bank_debits = {}
+        conflicted = False
+        covered = 0
+        for account in accounts:
+            matches = [b for b in batches if b.account_id == account.id and b.currency == account.currency]
+            name = mask_digits(account.name, 80)
+            if not matches:
+                missing.append({'company_code': codes[0], 'account_name': name, 'currency': account.currency})
+                continue
+            covered += 1
+            if len(matches) != 1:
+                conflicted = True
+                continue  # overlapping files: never double count or guess which is authoritative
+            batch = matches[0]
+            if not batch.source_ready or not batch.balance_matches or batch.declared_totals_match is False:
+                conflicted = True
+                continue  # a confirmed but structurally inconsistent file needs human review
+            periods.append({'company_code': codes[0], 'account_name': name, 'currency': account.currency,
+                            'period_from': str(batch.period_from), 'period_to': str(batch.period_to)})
+            lines = list(s.scalars(select(BankStatementLine).where(
+                BankStatementLine.batch_id == batch.id, BankStatementLine.company_id == company.id,
+                BankStatementLine.account_id == account.id, BankStatementLine.date == report_date,
+                BankStatementLine.direction == 'out').order_by(BankStatementLine.line)))
+            bank_debits[account.id] = lines
+            # Annotation considers the entire file, including duplicate fingerprints.
+            all_lines = list(s.scalars(select(BankStatementLine).where(
+                BankStatementLine.batch_id == batch.id, BankStatementLine.company_id == company.id,
+                BankStatementLine.account_id == account.id)))
+            annotations = expense_annotations(s, batch, all_lines, actor) if actor else {}
+            valid_funding = accounted_funding_line_ids(s, all_lines, account) if actor else set()
+            candidate_requests = list(s.scalars(select(PaymentRequest).where(
+                PaymentRequest.account_id == account.id,
+                PaymentRequest.status.in_(['pending', 'approved', 'paid']))))
+            for line in lines:
+                annotation = annotations.get(line.id, {})
+                kind = annotation.get('expense_kind', 'unresolved')
+                common = {'company_code': codes[0], 'currency': account.currency,
+                    'number': mask_digits(line.document_number, 80),
+                    'counterparty': mask_digits(line.correspondent_name, 120),
+                    'purpose': mask_digits(line.purpose, 200)}
+                if line.status == CASH_FUNDING_MATCHED:
+                    # One source row may cover both the cash transfer and its fee.
+                    # Revalidate linked ledger facts and never count an uncertain or
+                    # duplicate row. Metadata is accepted only after that check.
+                    duplicate = annotation.get('expense_reason') == 'duplicate_or_overlap' or line.uncertain
+                    funding = cash_funding_binding(line) if line.id in valid_funding and not duplicate else None
+                    if funding is None:
+                        expenses.append({**common, 'kind': 'unresolved', 'amount': money(line.amount), 'countable': False})
+                    elif funding['component'] == 'gross':
+                        expenses.append({**common, 'kind': 'internal_transfer', 'amount': funding['net_amount'], 'countable': True})
+                        if funding['fee_amount'] != '0.00':
+                            expenses.append({**common, 'kind': 'bank_fee', 'amount': funding['fee_amount'], 'countable': True})
+                    else:
+                        expenses.append({**common, 'kind': 'bank_fee' if funding['component'] == 'fee' else 'internal_transfer',
+                                         'amount': money(line.amount), 'countable': True})
+                    continue
+                # A different amount may be a partial or combined payment.
+                if kind == 'no_request' and any(
+                        (r.counterparty_inn and r.counterparty_inn == line.correspondent_inn) or
+                        (r.counterparty and r.counterparty.casefold().strip() == line.correspondent_name.casefold().strip())
+                        for r in candidate_requests):
+                    kind = 'unresolved'
+                if kind == 'no_request' and CASH_WITHDRAWAL_TEXT.search(line.purpose or ''):
+                    # Cash movement can be an internal funding transfer; a
+                    # description alone does not prove an external payment.
+                    kind = 'unresolved'
+                # A broad text match cannot prove that a combined debt and
+                # interest payment is a pure bank charge.
+                if kind == 'bank_interest' and (PRINCIPAL.search(line.purpose or '') or
+                        not exact_loan_interest(batch, line)):
+                    kind = 'unresolved'
+                if kind == 'bank_fee' and annotation.get('expense_evidence') == 'explicit_bank_fee':
+                    kind = 'unresolved'  # broad description alone is not confirmed commission
+                expenses.append({**common, 'kind': kind, 'amount': money(line.amount),
+                    'countable': annotation.get('expense_reason') != 'duplicate_or_overlap' and not line.uncertain})
+        # A currently open request with any historical ledger link is ambiguous:
+        # a reversal or correction must not be presented as a definite balance.
+        # Cash and archived accounts can have overdue requests too; the bank
+        # statement coverage calculation above uses active bank accounts only.
+        request_accounts = {a.id: a for a in s.scalars(select(Account).where(Account.company_id == company.id))}
+        account_ids = list(request_accounts)
+        unpaid = []
+        for item in s.scalars(select(PaymentRequest).where(PaymentRequest.account_id.in_(account_ids),
+                PaymentRequest.due_date == report_date, PaymentRequest.status.in_(['pending', 'approved']))
+                .order_by(PaymentRequest.id)):
+            account = request_accounts[item.account_id]
+            has_link = s.scalar(select(Ledger.id).where(Ledger.request_id == item.id).limit(1)) is not None
+            # A bank debit can indicate a full or partial payment that has not
+            # yet been posted on the site.  Never label it definitely unpaid.
+            possible_debit = any(
+                (item.counterparty_inn and line.correspondent_inn == item.counterparty_inn) or
+                (item.counterparty and line.correspondent_name.casefold().strip() == item.counterparty.casefold().strip()) or
+                (not item.counterparty_inn and line.amount == item.amount)
+                for line in bank_debits.get(account.id, []))
+            # Bank evidence is unavailable for cash and for accounts without
+            # an accepted statement covering this day; absence is not proof.
+            uncertain = has_link or possible_debit or account.id not in bank_debits
+            unpaid.append({'company_code': codes[0], 'number': request_number(item), 'amount': None if uncertain else money(item.amount),
+                'request_amount': money(item.amount),
+                'currency': account.currency, 'status': 'needs_review' if uncertain else item.status,
+                'due_date': str(item.due_date)})
+        state = 'needs_review' if conflicted or (covered and actor is None) else ('confirmed' if covered else 'missing')
+        generated = utc_iso(now())
+        result = {'chat_id': chat_id, 'report_date': str(report_date), 'company_code': codes[0],
+            'company_name': mask_digits(company.name, 80), 'companies': codes, 'scope_id': scope_id,
+            'statement_state': state, 'coverage': 'partial' if missing else 'all',
+            'statement_periods': periods, 'missing_accounts': missing, 'expenses': expenses,
+            'unpaid_requests': unpaid}
+        result['revision'] = hashlib.sha256(json.dumps(result, ensure_ascii=False, sort_keys=True,
+            separators=(',', ':')).encode('utf-8')).hexdigest()
+        result['generated_at'] = generated
+        result['unpaid_as_of'] = generated
+        return result
+
+
 def director_report_companies(s, user):
     """Only an explicit, active company director can request a private report.
 

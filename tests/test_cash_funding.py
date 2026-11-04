@@ -46,7 +46,7 @@ class CashFundingTests(base.SiteTests):
         if not hasattr(self,'cash_user'):self.cash_user=self.make_user('cashier','cash_receiver')
         return self.cash_user
 
-    def balances(self):
+    def funding_balances(self):
         with unit() as s:
             return {a.kind:account_balance(s,a) for a in s.scalars(select(Account))
                     if a.id in (self.acc,self.cash) or a.kind=='transit'}
@@ -63,7 +63,7 @@ class CashFundingTests(base.SiteTests):
         self.assertNotIn('pay',self.cash_payer()[0].get(f'/api/requests/{rid}',headers=self.cash_payer()[1]).json()['actions'])
         row,payload,token=self.funding_action(rid,'withdraw',*checker)
         self.assertEqual(row.json()['status'],'approved')
-        self.assertEqual(self.balances(),{'bank':0,'cash':0,'transit':99000000})
+        self.assertEqual(self.funding_balances(),{'bank':0,'cash':0,'transit':99000000})
         report=self.report();self.assertEqual(report['totals'][8],'-10000.00')
         dash=self.client.get('/api/dashboard',headers=self.h).json()
         self.assertEqual(dash['fact_in'],'0.00');self.assertEqual(dash['fact_out'],'10000.00')
@@ -73,14 +73,14 @@ class CashFundingTests(base.SiteTests):
         self.assertEqual(repeat.status_code,409,repeat.text)
         row,received,_=self.funding_action(rid,'receive',*self.cash_payer())
         self.assertEqual(row.json()['cash_funding']['state'],'received')
-        self.assertEqual(self.balances(),{'bank':0,'cash':99000000,'transit':0})
+        self.assertEqual(self.funding_balances(),{'bank':0,'cash':99000000,'transit':0})
         self.assertEqual(self.report()['totals'][8],'-10000.00')
         r=self.ledger('990000','out',reference='Synthetic cash issue',client=self.cash_payer(),account_id=self.cash,
                       category_id=self.cat,request_id=rid)
         self.assertEqual(r.status_code,200,r.text)
         self.assertEqual(self.row(rid)['status'],'paid')
         self.assertEqual(self.report()['totals'][8],'-1000000.00')
-        self.assertEqual(self.balances(),{'bank':0,'cash':0,'transit':0})
+        self.assertEqual(self.funding_balances(),{'bank':0,'cash':0,'transit':0})
         duplicate=self.ledger('990000','out',reference='Repeated cash issue',client=self.cash_payer(),account_id=self.cash,
                               category_id=self.cat,request_id=rid)
         self.assertEqual(duplicate.status_code,409,duplicate.text)
@@ -122,7 +122,7 @@ class CashFundingTests(base.SiteTests):
         self.assertEqual(bad.status_code,409,bad.text)
         self.funding_action(rid,'withdraw',*self.stage_user('check'))
         # Cash stays empty while funds are in transit.
-        self.assertEqual(self.balances()['cash'],0)
+        self.assertEqual(self.funding_balances()['cash'],0)
         body={'version':self.row(rid)['cash_funding']['version'],'date':str(today()-timedelta(days=1)),'reference':'Earlier receipt'}
         response=self.post(f'/api/requests/{rid}/cash-funding/receive/preview',body,*self.cash_payer())
         self.assertEqual(response.status_code,422,response.text)
@@ -162,7 +162,7 @@ class CashFundingTests(base.SiteTests):
         self.assertEqual(archive.status_code,409,archive.text)
         closed=self.post(f'/api/requests/{rid}/decision',{'action':'close','note':'Cash remains in company cash desk'})
         self.assertEqual(closed.status_code,200,closed.text)
-        self.assertEqual(self.balances(),{'bank':0,'cash':99000000,'transit':0})
+        self.assertEqual(self.funding_balances(),{'bank':0,'cash':99000000,'transit':0})
         with unit() as s:self.assertEqual(s.scalar(select(func.count()).select_from(Ledger)),3)
 
     def test_additive_table_initialization_preserves_existing_data(self):
@@ -241,7 +241,7 @@ class CashFundingTests(base.SiteTests):
             self.assertEqual(s.scalar(select(func.count()).select_from(Ledger)),2)
         self.assertEqual(self.report()['totals'][8],'-10000.00')
         self.assertEqual(self.row(rid)['amount'],'990000.00')
-        self.assertEqual(self.balances(),{'bank':0,'cash':0,'transit':99000000})
+        self.assertEqual(self.funding_balances(),{'bank':0,'cash':0,'transit':99000000})
 
     def test_same_physical_bank_document_cannot_fund_two_requests(self):
         with unit(True) as s:s.get(Account,self.acc).opening=200000000
@@ -341,7 +341,7 @@ class CashFundingTests(base.SiteTests):
             before=(fee.account_id,fee.category_id,fee.kind,fee.amount,fee.date,fee.reference)
         result,_,_=self.funding_action(first,'receive',*self.cash_payer())
         self.assertEqual(result.json()['cash_funding']['state'],'received')
-        self.assertEqual(self.balances(),{'bank':0,'cash':99000000,'transit':0})
+        self.assertEqual(self.funding_balances(),{'bank':0,'cash':99000000,'transit':0})
         self.assertEqual(self.report()['totals'][8],'-10000.00')
         with unit() as s:
             fee=s.get(Ledger,funding['fee_ledger_id'])
