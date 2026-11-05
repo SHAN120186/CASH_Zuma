@@ -1,0 +1,104 @@
+# Isolated pilot only. This file does not provision a VPS or use production secrets.
+# Run standalone (-f this file), never merge it with compose.yaml.
+name: cashzuma-pilot
+
+services:
+  db:
+    image: postgres:18-bookworm
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: cashzuma_pilot
+      POSTGRES_USER: pilot
+      POSTGRES_PASSWORD: ${PILOT_DB_PASSWORD:?Set a new 64-character hexadecimal pilot database password}
+    entrypoint:
+      - /bin/sh
+      - -ec
+      - |
+        case "$$POSTGRES_PASSWORD" in *[!0-9a-fA-F]*|'') echo 'Pilot database password must be hexadecimal.' >&2; exit 1;; esac
+        [ "$${#POSTGRES_PASSWORD}" -eq 64 ] || { echo 'Pilot database password must have 64 characters.' >&2; exit 1; }
+        [ "$$POSTGRES_PASSWORD" != '0000000000000000000000000000000000000000000000000000000000000000' ] || { echo 'Generate a random pilot password.' >&2; exit 1; }
+        exec /usr/local/bin/docker-entrypoint.sh "$$@"
+      - pilot-db-guard
+    command: [postgres]
+    volumes:
+      # PostgreSQL 18 official images use a versioned PGDATA below this directory.
+      - pilot_postgres:/var/lib/postgresql
+    networks: [pilot]
+    healthcheck:
+      test: [CMD-SHELL, pg_isready -U pilot -d cashzuma_pilot]
+      interval: 5s
+      timeout: 5s
+      retries: 15
+
+  web:
+    image: cashzuma-pilot:local
+    build:
+      context: ..
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      # Construct a local-only URL; never interpolate an existing DATABASE_URL.
+      DATABASE_URL: postgresql+psycopg://pilot:${PILOT_DB_PASSWORD:?Set the pilot database password}@db:5432/cashzuma_pilot
+      PILOT_DB_PASSWORD: ${PILOT_DB_PASSWORD:?Set the pilot database password}
+      JWT_SECRET: ${PILOT_JWT_SECRET:?Set a different new 64-character hexadecimal pilot JWT secret}
+      PILOT_RESTORE_CONFIRMED: ${PILOT_RESTORE_CONFIRMED:-no}
+      DATA_DIR: /app/data
+      BACKUP_DIR: /app/backups
+      TZ: Asia/Tashkent
+      # HTTP is confined to loopback and transported through an SSH tunnel.
+      COOKIE_SECURE: "0"
+      PUBLIC_ORIGIN: http://127.0.0.1:18000
+      ALLOWED_HOSTS: 127.0.0.1,localhost
+      UZGERMED_HOSTING: ""
+      RENDER: ""
+      RENDER_SERVICE_ID: ""
+      SMTP_HOST: ""
+      SMTP_FROM: ""
+      SMTP_USER: ""
+      SMTP_PASSWORD: ""
+      BOT_CLIENT_ID: ""
+      BOT_CLIENT_SECRET: ""
+      BOT_REPORT_GROUPS: ""
+      TELEGRAM_BOT_USERNAME: ""
+      GOOGLE_APPLICATION_CREDENTIALS: ""
+      GOOGLE_DRIVE_FILE_ID: ""
+      GOOGLE_SHEETS_TRANSACTIONS_ID: ""
+    entrypoint:
+      - /bin/sh
+      - -ec
+      - |
+        [ "$$PILOT_RESTORE_CONFIRMED" = isolated-copy-verified ] || { echo 'Restore and verify the isolated database and DATA_DIR before starting the pilot.' >&2; exit 1; }
+        case "$$PILOT_DB_PASSWORD" in *[!0-9a-fA-F]*|'') echo 'Invalid pilot database password.' >&2; exit 1;; esac
+        [ "$${#PILOT_DB_PASSWORD}" -eq 64 ] || { echo 'Pilot database password must have 64 characters.' >&2; exit 1; }
+        case "$$JWT_SECRET" in *[!0-9a-fA-F]*|'') echo 'Invalid pilot JWT secret.' >&2; exit 1;; esac
+        [ "$${#JWT_SECRET}" -eq 64 ] || { echo 'Pilot JWT secret must have 64 characters.' >&2; exit 1; }
+        [ "$$JWT_SECRET" != "$$PILOT_DB_PASSWORD" ] || { echo 'Pilot database and JWT secrets must differ.' >&2; exit 1; }
+        [ "$$JWT_SECRET" != '0000000000000000000000000000000000000000000000000000000000000000' ] || { echo 'Generate a random pilot JWT secret.' >&2; exit 1; }
+        exec /app/entrypoint.sh "$$@"
+      - pilot-web-guard
+    command: [python, -m, uvicorn, app.main:app, --host, 0.0.0.0, --port, "8000", --workers, "1", --no-proxy-headers, --no-access-log]
+    ports:
+      - 127.0.0.1:18000:8000
+    volumes:
+      - pilot_data:/app/data
+    networks: [pilot]
+    read_only: true
+    tmpfs: [/tmp]
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    healthcheck:
+      test: [CMD, python, -c, "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/ready', timeout=4)"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+
+networks:
+  pilot:
+    internal: true
+
+volumes:
+  pilot_postgres:
+  pilot_data:
