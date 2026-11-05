@@ -1142,10 +1142,7 @@ class SiteTests(unittest.TestCase):
                 self.assertEqual(r.status_code,503,r.text)
                 self.assertNotIn('secret',r.text);self.assertNotIn('private SQL',r.text)
                 self.assertEqual(r.headers['X-Content-Type-Options'],'nosniff')
-        def technical_audit_unavailable(write=False):
-            if write:raise OperationalError('http audit',{},Exception('temporary failure'))
-            return unit()
-        with patch('app.main.unit',side_effect=technical_audit_unavailable):
+        with patch('app.main.persist_http_audit',side_effect=OperationalError('http audit',{},Exception('temporary failure'))):
             self.assertEqual(self.client.get('/api/me').status_code,200)
 
     def test_71_plan_xml_rejects_entities_and_absurd_row_numbers(self):

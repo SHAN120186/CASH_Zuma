@@ -11,6 +11,7 @@ from fastapi.encoders import jsonable_encoder
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.middleware.trustedhost import TrustedHostMiddleware
+from starlette.concurrency import run_in_threadpool
 from pydantic import BaseModel, Field, ConfigDict
 from sqlalchemy import select, delete, func, or_, and_, cast, String
 from sqlalchemy.exc import IntegrityError, OperationalError
@@ -27,6 +28,7 @@ from .workdays import enforce_lead_time, due_minimums
 from .requests_api import request_view, can_view_request, MAX_DOCUMENT
 from .bank_statement_guard import CREATED_BANK_STATUSES
 from .cash_funding import CashFundingIn
+from .http_audit import persist_http_audit
 
 SECURE=os.getenv('COOKIE_SECURE','0')=='1'
 ALLOWED=[x.strip() for x in os.getenv('ALLOWED_HOSTS','127.0.0.1,localhost,testserver').split(',') if x.strip()]
@@ -61,13 +63,14 @@ async def safety(request,call_next):
         expected=PUBLIC_ORIGIN or str(request.base_url).rstrip('/')
         if origin and origin!=expected:return JSONResponse({'detail':'Запрос с другого сайта запрещён.'},status_code=403)
     response=await call_next(request)
-    # Технический журнал пишется только для вошедших пользователей и бота с верным ключом:
-    # анонимные 401/404 не занимают общую блокировку записи. Неудачные входы учитывает ограничение попыток.
+    # Технический журнал остаётся синхронным по отношению к ответу: ждём commit,
+    # но ожидание БД не блокирует event loop и не берёт финансовый write guard.
+    # Анонимные 401/404 не журналируются; неудачные входы учитывает их ограничение.
     if request.url.path.startswith('/api') and (getattr(request.state,'user_id',None) or getattr(request.state,'bot',False)):
+        audit_payload = dict(company_id=getattr(request.state,'company_id',None),user_id=getattr(request.state,'user_id',None),action='API '+request.method,entity='http',detail=journal_path(request.url.path)+'; status='+str(response.status_code),
+                             ip=client_ip(request),forwarded_for=(request.headers.get('X-Forwarded-For') or '')[:200] or None)
         try:
-            with unit(True) as audit_session:
-                audit_session.add(Audit(company_id=getattr(request.state,'company_id',None),user_id=getattr(request.state,'user_id',None),action='API '+request.method,entity='http',detail=journal_path(request.url.path)+'; status='+str(response.status_code),
-                                        ip=client_ip(request),forwarded_for=(request.headers.get('X-Forwarded-For') or '')[:200] or None))
+            await run_in_threadpool(persist_http_audit, audit_payload)
         except OperationalError:
             # Financial changes and their business audit are committed together.
             # A failed secondary HTTP log must not disguise a completed payment.
