@@ -83,7 +83,7 @@ def modules(path):
       (r'/api/report-archives(?:/|$)',('reports','business')),
       (r'/api/budgets(?:/|$)',('budgets',)),
       (r'/api/counterparties(?:/|$)',('counterparties',)),
-      (r'/api/categories/[^/]+/(?:director-policy|skip-allowed)',('approval',)),
+      (r'/api/categories/[^/]+/(?:director-policy|director-limits|skip-allowed)',('approval',)),
       (r'/api/categories(?:/|$)',('categories',)),
       (r'/api/(?:approval|director-policy)',('approval',)),
       (r'/api/(?:users|company-users|delegations)(?:/|$)',('users',)),

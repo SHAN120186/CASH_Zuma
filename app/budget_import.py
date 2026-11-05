@@ -139,7 +139,10 @@ def commit(id:int,data:CommitBudget,request:Request):
                 require_permission(u,'catalog')
                 if not can_edit_section(u,'categories'):raise HTTPException(403,'Нет права создавать статьи в справочнике.')
                 if any(c.name==r['name'] or article_code(c)==r['code'] for c in cats):raise HTTPException(409,'Статья с таким кодом или названием уже есть. Выберите её.')
-                c=Category(company_id=batch.company_id,code=r['code'],name=r['name'],type='outcome',activity='operating',cost_group='other');s.add(c);s.flush();cats.append(c)
+                c=Category(company_id=batch.company_id,code=r['code'],name=r['name'],type='outcome',activity='operating',cost_group='other')
+                from .director_limits import apply_default_director_limit
+                apply_default_director_limit(c)
+                s.add(c);s.flush();cats.append(c)
             else:
                 try:c=by_id[int(choice)]
                 except (ValueError,KeyError):raise HTTPException(422,'Выберите расходную статью или пропуск для каждой суммы.')
@@ -148,6 +151,8 @@ def commit(id:int,data:CommitBudget,request:Request):
                 if article_code(c) and article_code(c)!=r['code']:raise HTTPException(409,'Код выбранной статьи отличается от Excel.')
                 if any(x.id!=c.id and article_code(x)==r['code'] for x in cats):raise HTTPException(409,'Код статьи уже занят.')
                 c.code=r['code']
+                from .director_limits import apply_default_director_limit
+                apply_default_director_limit(c)
             if c.id in used:raise HTTPException(422,'Несколько строк сопоставлены одной статье.')
             used.add(c.id);b=old.get(c.id);before=b.amount if b else None
             if b is None:b=Budget(category_id=c.id,month=batch.month,currency=batch.currency,mode='soft');s.add(b)

@@ -392,7 +392,10 @@ def edit_account(id:int,data:AccountEdit,request:Request):
 @app.post('/api/categories')
 def add_category(data:CategoryIn,request:Request):
     with unit(True) as s:
-        u,_=session_user(s,request,'catalog');c=Category(**data.model_dump());s.add(c);s.flush();log(s,u,'Создана статья','category',c.id,c.name);return {'id':c.id}
+        u,_=session_user(s,request,'catalog');c=Category(**data.model_dump())
+        from .director_limits import apply_default_director_limit
+        apply_default_director_limit(c)
+        s.add(c);s.flush();log(s,u,'Создана статья','category',c.id,c.name);return {'id':c.id}
 
 @app.put('/api/categories/{id}')
 def edit_category(id:int,data:CategoryIn,request:Request):
@@ -638,6 +641,9 @@ def decide(id:int,data:DecisionIn,request:Request):
             if not act_as(u,'finance' if stage=='finance' else 'director'):
                 raise HTTPException(403,'Сначала требуется проверка финансового директора компании.' if stage=='finance' else 'Требуется отдельное подтверждение директора компании.')
             ensure_new_participant(s,u,r)
+            if stage=='director' or not requires_director(r):
+                from .director_limits import enforce_director_limit
+                enforce_director_limit(s,r,a.currency)
             b=enforce_budget(s,r.category_id,r.due_date,a.currency,r.amount,note,r.id)
             from .cash_funding import fee_budget
             fee_budget(s,r,note,final=stage=='director' or not requires_director(r))

@@ -12,9 +12,10 @@ from .db import (unit, now, User, Account, Category, PaymentRequest, RequestDocu
 from .security import (session_user, perms_of, has_role, payment_channels, pay_right, ROLES, COMPANY_ROLES)
 from .services import (get, log, money, amount, today, approval_stage, round_participants, all_participants, route_complete,
                        DOCUMENT_KINDS, REQUIRED_DOCUMENTS, REQUIRED_DOCUMENTS_BY_CHANNEL, REQUEST_DEPARTMENTS,
-                       THRESHOLD_FIELDS, category_policy, request_json, request_journal)
+                       THRESHOLD_FIELDS, category_policy, request_json, request_journal, requires_director)
 from .workdays import due_minimums, LEAD_DAYS
 from .workflow_setup import DEFAULT_THRESHOLDS
+from .director_limits import LIMIT_FIELDS, limits_json, request_director_limit
 
 router = APIRouter()
 MAX_DOCUMENT = 10 * 1024 * 1024
@@ -63,7 +64,7 @@ def can_edit(u, r):
 STAGE_ROLE = {'check': 'accountant', 'finance': 'finance', 'director': 'director'}
 
 
-def request_actions(s, u, r):
+def request_actions(s, u, r, director_limit=None):
     """Действия, которые сервер примет от этого пользователя. Интерфейс только показывает их."""
     perms = perms_of(u)
     account = s.get(Account, r.account_id)
@@ -82,6 +83,9 @@ def request_actions(s, u, r):
         actions.append('documents')
     if stage and has_role(u, STAGE_ROLE[stage]) and u.id not in round_participants(s, r) and ('approve' in perms or stage == 'check'):
         actions.append('check' if stage == 'check' else 'approve')
+    if 'approve' in actions and (stage == 'director' or not requires_director(r)):
+        if (director_limit if director_limit is not None else request_director_limit(s, r, account.currency))['exceeded']:
+            actions.remove('approve')
     if (('approve' in perms and r.status in ('pending', 'approved')) or (stage == 'check' and has_role(u, 'accountant'))) and not own_only:
         actions.append('return')
     if r.status == 'approved' and pay_right(account) in perms:
@@ -112,7 +116,7 @@ def request_view(s, u, r, batch=None):
     # по выбранной статье и периоду остаётся карточка budget_card (лимит, использовано, резерв, доступно, после заявки).
     if 'view' not in perms_of(u):
         data['budget'] = {'limit': None, 'hidden': True, 'over': data['budget']['over'], 'mode': data['budget']['mode']}
-    data['actions'] = [] if (getattr(u,'_sections',None) or {}).get('requests')=='view' else request_actions(s, u, r)
+    data['actions'] = [] if (getattr(u,'_sections',None) or {}).get('requests')=='view' else request_actions(s, u, r, data['director_limit'])
     return data
 
 
@@ -167,6 +171,9 @@ def request_rules(request: Request):
 def policy_json(c, names):
     effective = {cur: category_policy(c, cur) for cur in ('UZS', 'USD', 'EUR')}
     return {'id': c.id, 'name': c.name, 'policy': c.director_policy or 'always', 'skip_allowed': c.skip_allowed,
+            'code': c.code, 'director_limits': limits_json(c),
+            'limit_changed_at': str(c.director_limit_changed_at) if c.director_limit_changed_at else None,
+            'limit_changed_by': names.get(c.director_limit_changed_by, '') if c.director_limit_changed_by else '',
             'thresholds': {cur: money(getattr(c, field)) if getattr(c, field) is not None else None for cur, field in THRESHOLD_FIELDS.items()},
             'effective': {cur: {'policy': p, 'threshold': money(t) if t is not None else None} for cur, (p, t) in effective.items()},
             'changed_at': str(c.director_policy_changed_at) if c.director_policy_changed_at else None,
@@ -178,10 +185,11 @@ def approval_policy(request: Request):
     with unit() as s:
         u, _ = session_user(s, request, 'approval_policy')
         cats = [c for c,_ in catalog(s) if c.type=='outcome']
-        names = names_of(s, [c.director_policy_changed_by for c in cats])
+        names = names_of(s, [uid for c in cats for uid in (c.director_policy_changed_by, c.director_limit_changed_by)])
         return {'categories': [policy_json(c, names) for c in cats],
                 'defaults': {cur: money(v) if v is not None else None for cur, v in DEFAULT_THRESHOLDS.items()},
                 'can_edit_skip_list': 'users' in perms_of(u),
+                'can_edit_director_limits': 'users' in perms_of(u),
                 'rule': 'Директор участвует по политике статьи на момент отправки заявки. Нет политики или порога валюты — директор утверждает любую сумму.'}
 
 
@@ -200,6 +208,34 @@ class PolicyIn(Input):
     reason: str = Field(min_length=10, max_length=1000)
 
 
+class DirectorLimitsIn(Input):
+    limit_uzs: Optional[str] = None
+    limit_usd: Optional[str] = None
+    limit_eur: Optional[str] = None
+    reason: str = Field(min_length=10, max_length=1000)
+
+
+@router.put('/api/categories/{id}/director-limits')
+def set_director_limits(id: int, data: DirectorLimitsIn, request: Request):
+    with unit(True) as s:
+        u, _ = session_user(s, request, 'approval_policy')
+        if 'users' not in perms_of(u):
+            raise HTTPException(403, 'Лимит директора изменяет только администратор холдинга.')
+        c = get(s, Category, id)
+        if c.type != 'outcome':
+            raise HTTPException(422, 'Лимит директора задаётся только для расходных статей.')
+        before = limits_json(c)
+        for cur, field in LIMIT_FIELDS.items():
+            value = getattr(data, 'limit_' + cur.lower())
+            setattr(c, field, None if value in (None, '') else amount(value, allow_zero=True))
+        c.director_limit_changed_at = now()
+        c.director_limit_changed_by = u.id
+        s.flush()
+        log(s, u, 'Изменён лимит директора по статье', 'category', c.id,
+            json.dumps({'before': before, 'after': limits_json(c), 'reason': data.reason}, ensure_ascii=False))
+        return policy_json(c, names_of(s, [u.id, c.director_policy_changed_by]))
+
+
 @router.put('/api/categories/{id}/director-policy')
 def set_director_policy(id: int, data: PolicyIn, request: Request):
     with unit(True) as s:
@@ -213,7 +249,7 @@ def set_director_policy(id: int, data: PolicyIn, request: Request):
                   for f in ('threshold_uzs', 'threshold_usd', 'threshold_eur')}
         if data.policy == 'threshold' and not any(v is not None for v in values.values()):
             raise HTTPException(422, 'Для политики «выше порога» задайте порог хотя бы для одной валюты.')
-        names = names_of(s, [c.director_policy_changed_by])
+        names = names_of(s, [c.director_policy_changed_by, c.director_limit_changed_by])
         before = policy_json(c, names)
         c.director_policy = data.policy
         for field, value in values.items():
@@ -221,7 +257,7 @@ def set_director_policy(id: int, data: PolicyIn, request: Request):
         c.director_policy_changed_at = now()
         c.director_policy_changed_by = u.id
         s.flush()
-        after = policy_json(c, names_of(s, [u.id]))
+        after = policy_json(c, names_of(s, [u.id, c.director_limit_changed_by]))
         log(s, u, 'Изменена политика директора по статье', 'category', c.id,
             json.dumps({'before': before, 'after': after, 'reason': data.reason}, ensure_ascii=False))
         return after

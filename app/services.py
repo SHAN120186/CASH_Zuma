@@ -473,6 +473,7 @@ def batch_backdated(batch,r):
 
 
 def request_json(s,r,accounts=None,categories=None,users=None,batch=None):
+    from .director_limits import request_director_limit
     from .cash_funding import funding_for,funding_json
     funding=batch['fundings'].get(r.id) if batch is not None else funding_for(s,r.id)
     from .department_catalog import catalog as department_catalog
@@ -493,6 +494,7 @@ def request_json(s,r,accounts=None,categories=None,users=None,batch=None):
             'created_at':str(r.created_at),'backdated_created':late_created,'backdated_posted':late_posted,'checked_by':r.checked_by,'finance_approved_by':r.finance_approved_by,'approved_by':r.approved_by,
             'approved_on':str(local_date(r.approved_at)) if r.approved_at else None,
             'approval_stage':approval_stage(r),'route':route_json(r,a.currency),
+            'director_limit':request_director_limit(s,r,a.currency,batch=batch),
             'documents':{k:sum(d.kind==k for d in docs) for k in DOCUMENT_KINDS},'missing_documents':[k for k in required if k not in present],
             'required_documents':list(required),
             'department':r.department or '','department_label':next((x['name_ru'] for x in department_items if x['code']==r.department),r.department or ''),
