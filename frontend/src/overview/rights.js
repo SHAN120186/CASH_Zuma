@@ -8,9 +8,9 @@ export const payRight = r => (r.account_kind === 'cash' ? 'pay_cash' : 'pay_bank
 
 export const canPayAny = has => PAY_RIGHTS.some(right => has(right));
 
-// These overview panels are reserved for the company's financial leadership.
+// The full financial overview is reserved for the company's financial leadership.
 // A grant or a temporary approval/payment duty does not change the employee's role.
-export function canSeeRequestPanels(user) {
+export function canSeeFullOverview(user) {
   if (!user) return false;
   const holding = Object.hasOwn(user, 'holding_role') ? user.holding_role : user.role;
   const company = Object.hasOwn(user, 'company_role') ? user.company_role : user.role;

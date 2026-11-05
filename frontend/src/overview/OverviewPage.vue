@@ -20,6 +20,7 @@ const props = defineProps({
   canDecide: {type: Function, required: true},
   canOpenRequests: {type: Boolean, default: false},
   showRequestPanels: {type: Boolean, default: false},
+  requestsOnly: {type: Boolean, default: false},
   // Forecast horizon, shared with the Calendar page through App.
   days: {type: Number, default: 30},
   // Approval track of a request and its step marks, the same as in «Заявки».
@@ -40,7 +41,8 @@ function fresh() {
   return {
     dash: null, dashDays: null, now: null, prev: null, accounts: null, activeAccounts: null, history: null, historyNote: '',
     latest: null, pending: null, pendingAll: null, pendingTotal: 0, pendingLoaded: 0, approved: null, approvedTotal: 0, approvedLoaded: 0,
-    budgets: null, report: null, errors: {}, loading: true, requestsLoading: props.showRequestPanels, dashLoading: false,
+    budgets: null, report: null, errors: {}, loading: true,
+    requestsLoading: props.showRequestPanels && (!props.requestsOnly || props.canOpenRequests), dashLoading: false,
   };
 }
 
@@ -84,10 +86,29 @@ async function load() {
   // Request lists may take several pages; they fill in after the balance and
   // KPIs are already on screen. The API returns the earliest due dates first;
   // read the allowed page window to retain honest totals and stable previews.
-  const requests = props.showRequestPanels ? Promise.all([
+  const requests = props.showRequestPanels && (!props.requestsOnly || props.canOpenRequests) ? Promise.all([
     settle(allPages('/api/requests', {state: 'pending', currency: c}, MAX_REQUEST_PAGES, gen)),
-    settle(allPages('/api/requests', {state: 'approved', currency: c, date_to: today}, MAX_REQUEST_PAGES, gen)),
+    settle(allPages('/api/requests', {state: 'approved', currency: c, ...(!props.requestsOnly ? {date_to: today} : {})}, MAX_REQUEST_PAGES, gen)),
   ]) : Promise.resolve(null);
+  const receiveRequests = results => {
+    if (gen !== generation || !results) return;
+    const [pending, approved] = results;
+    if ([pending, approved].some(aborted)) return;
+    const fields = {requestsLoading: false}, errs = {};
+    if (pending.ok) {
+      Object.assign(fields, {pendingAll: pending.v.items, pending: pending.v.items.filter(props.canDecide),
+        pendingTotal: pending.v.total, pendingLoaded: pending.v.items.length});
+    } else errs.pending = pending.e.message;
+    if (approved.ok) Object.assign(fields, {approved: approved.v.items, approvedTotal: approved.v.total, approvedLoaded: approved.v.items.length});
+    else errs.approved = approved.e.message;
+    patch(gen, fields, errs);
+  };
+  // Read only the requests already visible in the work section, without financial summaries.
+  if (props.requestsOnly) {
+    receiveRequests(await requests);
+    patch(gen, {loading: false, requestsLoading: false});
+    return;
+  }
   const [dash, now, prev, active, archived, latest, budgets] = await Promise.all([
     settle(props.api(`/api/dashboard?${q({currency: c, days})}`)),
     settle(report(today)),
@@ -118,19 +139,7 @@ async function load() {
   patch(gen, first, errors);
   loadReport(gen);
 
-  requests.then(results => {
-    if (!results) return;
-    const [pending, approved] = results;
-    if (gen !== generation || [pending, approved].some(aborted)) return;
-    const fields = {requestsLoading: false}, errs = {};
-    if (pending.ok) {
-      Object.assign(fields, {pendingAll: pending.v.items, pending: pending.v.items.filter(props.canDecide),
-        pendingTotal: pending.v.total, pendingLoaded: pending.v.items.length});
-    } else errs.pending = pending.e.message;
-    if (approved.ok) Object.assign(fields, {approved: approved.v.items, approvedTotal: approved.v.total, approvedLoaded: approved.v.items.length});
-    else errs.approved = approved.e.message;
-    patch(gen, fields, errs);
-  });
+  requests.then(receiveRequests);
 
   // The balance history needs every ledger entry of the window; page through it.
   if (first.accounts) {
@@ -149,6 +158,7 @@ async function load() {
 }
 
 async function loadReport(gen = generation) {
+  if (props.requestsOnly) return;
   const year = props.today.slice(0, 4), wanted = scenario.value;
   // A slower answer for another scenario must not land under the selected button.
   const current = () => gen === generation && wanted === scenario.value;
@@ -163,6 +173,7 @@ async function loadReport(gen = generation) {
 // A horizon switch reloads only the dashboard. Labels follow the horizon of the
 // data on screen (dashDays), so a slow or failed switch never mislabels it.
 async function reloadForecast() {
+  if (props.requestsOnly) return;
   const gen = generation, mine = ++dashGeneration, days = horizon.value;
   const current = () => gen === generation && mine === dashGeneration;
   s.value = {...s.value, dashLoading: true};
@@ -174,7 +185,7 @@ async function reloadForecast() {
   }
 }
 
-watch(() => [props.refresh, props.currency, props.companyId, props.showRequestPanels], load, {immediate: true});
+watch(() => [props.refresh, props.currency, props.companyId, props.showRequestPanels, props.requestsOnly, props.canOpenRequests], load, {immediate: true});
 watch(horizon, (h, old) => { if (h !== old) reloadForecast(); });
 watch(scenario, () => { s.value = {...s.value, report: null, errors: {...s.value.errors, report: ''}}; loadReport(); });
 
@@ -235,6 +246,12 @@ const kpiCards = computed(() => {
 const forecastState = computed(() => (s.value.loading || s.value.dashLoading ? 'loading' : s.value.errors.dash || !s.value.dash ? 'error' : 'ready'));
 // Approved outgoing payments after today, in forecast order (the old «Ближайшие выплаты»).
 const upcoming = computed(() => {
+  if (props.requestsOnly) {
+    if (!props.canOpenRequests) return [];
+    const until = addDays(props.today, horizon.value - 1);
+    return [...(s.value.approved || [])].filter(r => r.date > props.today && r.date <= until).sort(byDue).slice(0, 5)
+      .map(r => ({id: r.id, date: r.date, name: r.counterparty, amount: r.amount}));
+  }
   const out = [];
   for (const d of s.value.dash?.forecast || []) {
     if (d.date <= props.today) continue;
@@ -252,7 +269,7 @@ const byDue = (a, b) => a.date.localeCompare(b.date) || a.id - b.id;
 const payments = computed(() => props.showRequestPanels ? (s.value.approved || []).filter(r => r.date <= props.today).sort(byDue) : []);
 const decisions = computed(() => props.showRequestPanels ? [...(s.value.pending || [])].sort(byDue) : []);
 // Решения по заявкам принимают согласующие и расчётный бухгалтер (проверка реквизитов).
-const approver = computed(() => props.showRequestPanels && (props.has('approve') || props.has('request_check')));
+const approver = computed(() => props.showRequestPanels && (!props.requestsOnly || props.canOpenRequests) && (props.has('approve') || props.has('request_check')));
 // Paying a request needs a payment right; the general right to write never pays.
 const canPay = computed(() => canPayAny(props.has));
 
@@ -344,8 +361,8 @@ const signedLedger = t => (t.kind === 'out' ? -1 : t.kind === 'in' ? 1 : 0) * (t
 </script>
 
 <template>
- <div class="ov">
-  <section class="ov-today" :aria-label="tx('Что требует внимания сегодня')">
+ <div class="ov" :class="{'ov-requests-only': requestsOnly}">
+  <section v-if="!requestsOnly" class="ov-today" :aria-label="tx('Что требует внимания сегодня')">
    <span class="ov-today-label">{{tx('Сегодня')}}</span>
    <template v-if="s.loading"><span class="ov-chip sk-chip" aria-hidden="true"></span><span class="ov-chip sk-chip" aria-hidden="true"></span></template>
    <template v-else>
@@ -355,13 +372,13 @@ const signedLedger = t => (t.kind === 'out' ? -1 : t.kind === 'in' ? 1 : 0) * (t
    </template>
   </section>
 
-  <div v-if="hasUnreconciledBalance" class="ov-reconciliation-warning" role="alert">
+  <div v-if="!requestsOnly && hasUnreconciledBalance" class="ov-reconciliation-warning" role="alert">
    <span>{{tx('Остаток сайта не сверен с банком; ручные оплаты по этому счёту временно заблокированы до сверки выписки.')}}</span>
    <button v-if="has('ledger')" type="button" class="secondary tiny" @click="emit('go', 'ledger')">{{tx('Перейти к операциям')}}</button>
    <button v-else type="button" class="secondary tiny" @click="emit('go', 'accounts')">{{tx('Перейти к счетам')}}</button>
   </div>
-  <p v-if="bankPendingDebits!==null && bankPendingDebits>0" class="ov-reconciliation-warning" role="status">{{tx('Доступные средства уменьшены на {amount} {currency} банковских списаний на проверке. Факт отражает только проведённые операции; полная сверка с банком не завершена.',{amount:formatCents(bankPendingDebits,currency),currency})}}</p>
-  <div class="ov-top">
+  <p v-if="!requestsOnly && bankPendingDebits!==null && bankPendingDebits>0" class="ov-reconciliation-warning" role="status">{{tx('Доступные средства уменьшены на {amount} {currency} банковских списаний на проверке. Факт отражает только проведённые операции; полная сверка с банком не завершена.',{amount:formatCents(bankPendingDebits,currency),currency})}}</p>
+  <div v-if="!requestsOnly" class="ov-top">
    <BalanceCard class="ov-main" :state="balanceState" :error="s.errors.now" :company="company?.name || ''" :as-of="s.now?.day || today"
     :currency="currency" :available="available" :on-accounts="onAccounts" :reserved="reserved" :change="change"
     :history="s.history" :history-note="s.errors.history ? tx('График не загрузился: {error}', {error: tx(s.errors.history)}) : s.errors.accounts ? tx('Счета не загрузились: {error}', {error: tx(s.errors.accounts)})
@@ -385,7 +402,7 @@ const signedLedger = t => (t.kind === 'out' ? -1 : t.kind === 'in' ? 1 : 0) * (t
 
   <div class="ov-grid">
    <section v-if="approver" id="ov-decisions" class="panel span-7" tabindex="-1" aria-labelledby="ov-dec-h">
-    <header class="panel-h"><h2 id="ov-dec-h">{{tx('Ждут вашего решения')}}</h2><button type="button" class="ghost tiny" @click="emit('go', 'requests', {status: 'pending'})">{{tx('Все заявки')}} <AppIcon name="arrow"/></button></header>
+    <header class="panel-h"><h2 id="ov-dec-h">{{requestsOnly ? tx('На согласовании') : tx('Ждут вашего решения')}}</h2><button type="button" class="ghost tiny" @click="emit('go', 'requests', {status: 'pending'})">{{tx('Все заявки')}} <AppIcon name="arrow"/></button></header>
     <div v-if="s.loading || s.requestsLoading" class="panel-sk" aria-hidden="true"><span class="sk"></span><span class="sk"></span></div>
     <p v-else-if="s.errors.pending" class="panel-err">{{tx('Заявки не загрузились: {error}', {error: tx(s.errors.pending)})}}</p>
     <ul v-else-if="decisions.length" class="rows">
@@ -403,7 +420,9 @@ const signedLedger = t => (t.kind === 'out' ? -1 : t.kind === 'in' ? 1 : 0) * (t
     <p v-if="s.dash?.pending_count" class="ov-pend-total">{{tx('Всего на согласовании:')}} <b>{{s.dash.pending_count}}</b> {{plural(s.dash.pending_count, tx('заявка на сумму'), tx('заявки на сумму'), tx('заявок на сумму'))}} <b :title="amountTitle(toCents(s.dash.pending_amount), currency)">{{formatAmount(toCents(s.dash.pending_amount), currency)}}</b> {{currency}}</p>
    </section>
    <section v-else-if="showRequestPanels" class="panel span-7" aria-labelledby="ov-pend-h">
-    <header class="panel-h"><h2 id="ov-pend-h">{{tx('На согласовании')}}</h2><button v-if="has('requests-view')" type="button" class="ghost tiny" @click="emit('go', 'requests', {status: 'pending'})">{{tx('Все заявки')}} <AppIcon name="arrow"/></button></header>
+    <header class="panel-h"><h2 id="ov-pend-h">{{tx('На согласовании')}}</h2><button v-if="has('requests-view') && (!requestsOnly || canOpenRequests)" type="button" class="ghost tiny" @click="emit('go', 'requests', {status: 'pending'})">{{tx('Все заявки')}} <AppIcon name="arrow"/></button></header>
+    <p v-if="requestsOnly && !canOpenRequests" class="panel-note">{{tx('Раздел «Заявки» недоступен по вашим настройкам доступа.')}}</p>
+    <template v-else>
     <div v-if="s.loading" class="panel-sk" aria-hidden="true"><span class="sk"></span></div>
     <p v-else-if="s.dash?.pending_count" class="ov-pend"><b>{{s.dash.pending_count}}</b> {{plural(s.dash.pending_count, tx('заявка на сумму'), tx('заявки на сумму'), tx('заявок на сумму'))}} <b :title="amountTitle(toCents(s.dash.pending_amount), currency)">{{formatAmount(toCents(s.dash.pending_amount), currency)}}</b> {{currency}}</p>
     <p v-else-if="!s.dash && s.errors.dash" class="panel-err">{{tx('Сводка не загрузилась: {error}', {error: tx(s.errors.dash)})}}</p>
@@ -419,8 +438,10 @@ const signedLedger = t => (t.kind === 'out' ? -1 : t.kind === 'in' ? 1 : 0) * (t
      </li>
     </ul>
     <div v-else-if="!s.loading" class="ov-empty"><span class="empty-ic ok" aria-hidden="true">✓</span><p>{{tx('Заявок на согласовании в {currency} нет.', {currency})}}</p></div>
+    </template>
    </section>
 
+   <template v-if="!requestsOnly">
    <section id="ov-risks" class="panel" :class="showRequestPanels ? 'span-5' : balanceState === 'empty' ? 'span-12' : 'span-8'" tabindex="-1" aria-labelledby="ov-risk-h">
     <header class="panel-h"><h2 id="ov-risk-h">{{tx('Риски')}}</h2></header>
     <div v-if="s.loading" class="panel-sk" aria-hidden="true"><span class="sk"></span><span class="sk"></span></div>
@@ -469,8 +490,11 @@ const signedLedger = t => (t.kind === 'out' ? -1 : t.kind === 'in' ? 1 : 0) * (t
     <div v-else class="ov-empty"><span class="empty-ic" aria-hidden="true"><AppIcon name="accounts"/></span><p>{{tx('Нет счетов в {currency}.', {currency})}}</p></div>
    </section>
 
+   </template>
    <section v-if="showRequestPanels" id="ov-payments" class="panel span-7" tabindex="-1" aria-labelledby="ov-pay-h">
-    <header class="panel-h"><h2 id="ov-pay-h">{{tx('Платежи')}}</h2><button v-if="has('requests-view')" type="button" class="ghost tiny" @click="emit('go', 'requests', {status: 'approved'})">{{canPay ? tx('К оплате') : tx('Все утверждённые')}} <AppIcon name="arrow"/></button></header>
+    <header class="panel-h"><h2 id="ov-pay-h">{{tx('Платежи')}}</h2><button v-if="has('requests-view') && (!requestsOnly || canOpenRequests)" type="button" class="ghost tiny" @click="emit('go', 'requests', {status: 'approved'})">{{canPay ? tx('К оплате') : tx('Все утверждённые')}} <AppIcon name="arrow"/></button></header>
+    <p v-if="requestsOnly && !canOpenRequests" class="panel-note">{{tx('Раздел «Заявки» недоступен по вашим настройкам доступа.')}}</p>
+    <template v-else>
     <h3 class="ov-sub">{{tx('Сегодня и просроченные')}}</h3>
     <div v-if="s.loading || s.requestsLoading" class="panel-sk" aria-hidden="true"><span class="sk"></span><span class="sk"></span></div>
     <p v-else-if="s.errors.approved" class="panel-err">{{tx('Платежи не загрузились: {error}', {error: tx(s.errors.approved)})}}</p>
@@ -491,7 +515,8 @@ const signedLedger = t => (t.kind === 'out' ? -1 : t.kind === 'in' ? 1 : 0) * (t
     <p v-if="payments.length > SHOWN_ROWS" class="panel-note">{{tx('Ещё {n} — в разделе «Заявки».', {n: payments.length - SHOWN_ROWS})}}</p>
     <p v-if="s.approvedLoaded < s.approvedTotal" class="panel-note">{{tx('Прочитаны {loaded} из {total} утверждённых заявок; остальные — в разделе «Заявки».', {loaded: s.approvedLoaded, total: s.approvedTotal})}}</p>
     <h3 class="ov-sub">{{tx('Ближайшие выплаты · план')}}</h3>
-    <div v-if="s.loading || s.dashLoading" class="panel-sk" aria-hidden="true"><span class="sk"></span></div>
+    <div v-if="s.loading || s.dashLoading || requestsOnly && s.requestsLoading" class="panel-sk" aria-hidden="true"><span class="sk"></span></div>
+    <p v-else-if="requestsOnly && s.errors.approved" class="panel-err">{{tx('Платежи не загрузились: {error}', {error: tx(s.errors.approved)})}}</p>
     <p v-else-if="s.errors.dash" class="panel-err">{{tx('Прогноз выплат не загрузился: {error}', {error: tx(s.errors.dash)})}}</p>
     <ul v-else-if="upcoming.length" class="ov-upc">
      <li v-for="(p, i) in upcoming" :key="(p.id ?? 'x') + '-' + i">
@@ -503,9 +528,10 @@ const signedLedger = t => (t.kind === 'out' ? -1 : t.kind === 'in' ? 1 : 0) * (t
      </li>
     </ul>
     <p v-else class="panel-note">{{tx('Нет утверждённых выплат на ближайшие {n} дней.', {n: s.dashDays ?? horizon})}}</p>
+    </template>
    </section>
 
-   <section class="panel" :class="showRequestPanels ? 'span-5' : 'span-12'" aria-labelledby="ov-pf-h">
+   <section v-if="!requestsOnly" class="panel" :class="showRequestPanels ? 'span-5' : 'span-12'" aria-labelledby="ov-pf-h">
     <header class="panel-h">
      <h2 id="ov-pf-h">{{tx('План и факт месяца')}}</h2>
      <div class="seg" role="group" :aria-label="tx('Сценарий плана')">
@@ -527,7 +553,7 @@ const signedLedger = t => (t.kind === 'out' ? -1 : t.kind === 'in' ? 1 : 0) * (t
     </div>
    </section>
 
-   <section class="panel span-12" aria-labelledby="ov-ops-h">
+   <section v-if="!requestsOnly" class="panel span-12" aria-labelledby="ov-ops-h">
     <header class="panel-h"><h2 id="ov-ops-h">{{tx('Последние операции')}}</h2><button v-if="has('ledger')" type="button" class="ghost tiny" @click="emit('go', 'ledger')">{{tx('Все операции')}} <AppIcon name="arrow"/></button></header>
     <div v-if="s.loading" class="panel-sk" aria-hidden="true"><span class="sk"></span><span class="sk"></span><span class="sk"></span></div>
     <p v-else-if="s.errors.latest" class="panel-err">{{tx('Операции не загрузились: {error}', {error: tx(s.errors.latest)})}}</p>
@@ -578,6 +604,7 @@ const signedLedger = t => (t.kind === 'out' ? -1 : t.kind === 'in' ? 1 : 0) * (t
 .kpi-err{grid-column:1/-1;align-items:flex-start;justify-content:flex-start;padding-top:22px}
 
 .ov-grid{display:grid;grid-template-columns:repeat(12,minmax(0,1fr));gap:18px}
+.ov-requests-only .ov-grid>.panel{grid-column:span 6}
 .span-4{grid-column:span 4}.span-5{grid-column:span 5}.span-7{grid-column:span 7}.span-8{grid-column:span 8}.span-12{grid-column:span 12}
 .panel{display:flex;flex-direction:column;gap:10px;min-width:0;padding:18px 20px;border-radius:var(--radius-card);background:var(--surface);border:1px solid var(--line2);box-shadow:var(--shadow-1);outline-offset:3px;scroll-margin-top:76px}
 .panel-h{display:flex;align-items:center;justify-content:space-between;gap:10px;flex-wrap:wrap}
@@ -685,7 +712,7 @@ button.request-link:focus-visible,button.upcoming-request:focus-visible{outline:
 }
 @media (max-width:920px){
  .ov-kpis{grid-template-columns:1fr 1fr}
- .span-4,.span-5,.span-7,.span-8{grid-column:span 12}
+ .span-4,.span-5,.span-7,.span-8,.ov-requests-only .ov-grid>.panel{grid-column:span 12}
 }
 @media (max-width:600px){
  .ov{gap:14px}.ov-top,.ov-grid{gap:14px}
