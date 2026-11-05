@@ -23,6 +23,7 @@ import {invalidFormFields,focusInvalidField} from './formFeedback.js';
 import {isAppFileLink,isRequestDocumentLink,fetchDownload} from './fileDownload.js';
 import CompanyCard from './CompanyCard.vue';
 import OverviewPage from './overview/OverviewPage.vue';
+import {canSeeRequestPanels} from './overview/rights.js';
 import BankStatements from './BankStatements.vue';
 import BankStatementDaily from './overview/BankStatementDaily.vue';
 import SalesOverview from './overview/SalesOverview.vue';
@@ -560,7 +561,7 @@ onMounted(async()=>{try{const r=await api('/api/me');user.value=r.user;csrf.valu
 
     <!-- Обзор -->
     <SalesOverview v-if="page==='home'&&isSales&&has('overview')" :key="companyId" :api="api" :company-id="companyId" :currency="currency" :refresh="homeRefresh" :days="days" @go="goWith" @update:days="d=>days=d"/>
-    <OverviewPage v-if="page==='home'&&!isSales&&has('view')" :key="companyId" :api="api" :company-id="companyId" :company="company" :currency="currency" :today="boot.today" :refresh="homeRefresh" :has="has" :can-decide="canDecide" :can-open-requests="canNavigate('requests')" :days="days" :track="trkSteps" :marks="MK" @update:days="d=>days=d" @go="goWith" @open-request="openRequest" @edit-reserve="v=>reserve(v)"/>
+    <OverviewPage v-if="page==='home'&&!isSales&&has('view')" :key="companyId" :api="api" :company-id="companyId" :company="company" :currency="currency" :today="boot.today" :refresh="homeRefresh" :has="has" :can-decide="canDecide" :can-open-requests="canNavigate('requests')" :show-request-panels="canSeeRequestPanels(user)" :days="days" :track="trkSteps" :marks="MK" @update:days="d=>days=d" @go="goWith" @open-request="openRequest" @edit-reserve="v=>reserve(v)"/>
     <BankStatementDaily v-if="page==='home'&&!isSales&&has('view')&&companyId" :key="`bank-daily-${companyId}`" :api="api" :company-id="companyId" :currency="currency" :today="boot.today" :refresh="homeRefresh"/>
 
     <nav v-if="isReportPage&&reportTabs.length>1" class="report-tabs" :aria-label="tx('Отчёты')"><button v-for="n in reportTabs" :key="n[0]" type="button" :class="{on:page===n[0]}" :aria-current="page===n[0]?'page':undefined" @click="go(n[0])"><AppIcon :name="n[0]"/> {{tx(n[2])}}</button></nav>
