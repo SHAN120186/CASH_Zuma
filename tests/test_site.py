@@ -2031,7 +2031,7 @@ class SiteTests(unittest.TestCase):
                 hh={**h,'X-Company-ID':str(ids[code])}
                 me=cl.get('/api/bootstrap',headers=hh).json()['user']
                 self.assertEqual((me['holding_role'],me['company_role']),('founder',None))
-                self.assertEqual(me['permissions'],['audit','download','export','ledger','view'])
+                self.assertEqual(me['permissions'],['audit','download','export','home_view','ledger','view'])
                 for path in ('/api/dashboard','/api/accounts','/api/ledger','/api/requests','/api/budgets',f'/api/report?year={self.date[:4]}','/api/audit'):
                     self.assertEqual(cl.get(path,headers=hh).status_code,200,(code,path))
             # Учредитель видит заявку, но сервер не предлагает ему ни одного действия.
@@ -2167,12 +2167,12 @@ class SiteTests(unittest.TestCase):
         from app.security import PERMS,ROLES
         self.assertTrue(all('pay' not in PERMS[r] for r in ROLES))
         # Расчётный бухгалтер проверяет заявки и платит только банк; касса — только кассир.
-        self.assertEqual(PERMS['accountant'],{'ledger','pay_bank','request_check'});self.assertIn('pay_cash',PERMS['cashier'])
+        self.assertEqual(PERMS['accountant'],{'home_view','ledger','pay_bank','request_check'});self.assertIn('pay_cash',PERMS['cashier'])
         self.assertNotIn('pay_bank',PERMS['cashier']);self.assertNotIn('pay_cash',PERMS['accountant'])
         self.assertTrue(all(not {'pay_bank','pay_cash'}&PERMS[r] for r in ('founder','director','finance','operator')))
         self.assertFalse({'request','approve','write'}&PERMS['accountant'])
         book=self.make_user('accountant','split_book')
-        self.assertEqual(book[0].get('/api/bootstrap',headers=book[1]).json()['user']['permissions'],['ledger','pay_bank','request_check'])
+        self.assertEqual(book[0].get('/api/bootstrap',headers=book[1]).json()['user']['permissions'],['home_view','ledger','pay_bank','request_check'])
 
     def test_111_company_role_column_is_added_to_an_existing_database(self):
         from sqlalchemy import inspect as sa_inspect,text

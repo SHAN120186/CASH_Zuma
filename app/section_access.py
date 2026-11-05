@@ -7,7 +7,7 @@ from .db import Setting
 WRITE={'write','request','request_edit','request_check','approve','pay_bank','pay_cash','budget','plan','import','schedule','catalog','approval_policy','counterparties','receipt_edit','receipt_delete','request_delete'}
 # Navigation key, label, read prerequisites, explicit read grants, edit grants.
 SECTIONS={
- 'home':('Обзор',{'view','overview'},{'view'},set()),
+ 'home':('Обзор',{'view','overview','home_view'},{'home_view'},set()),
  'accounts':('Банк и касса',{'view'},{'view'},{'write','catalog'}),
  'ledger':('Операции',{'ledger'},{'ledger'},{'write'}),
  'requests':('Заявки',{'view','request','request_check','pay_bank','pay_cash'},{'view'},{'request','request_edit'}),

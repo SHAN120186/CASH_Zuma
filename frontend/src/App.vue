@@ -23,7 +23,7 @@ import {invalidFormFields,focusInvalidField} from './formFeedback.js';
 import {isAppFileLink,isRequestDocumentLink,fetchDownload} from './fileDownload.js';
 import CompanyCard from './CompanyCard.vue';
 import OverviewPage from './overview/OverviewPage.vue';
-import {canSeeFullOverview} from './overview/rights.js';
+import {canOpenOverview,canSeeFullOverview} from './overview/rights.js';
 import BankStatements from './BankStatements.vue';
 import BankStatementDaily from './overview/BankStatementDaily.vue';
 import AdminCenter from './admin/AdminCenter.vue';
@@ -122,10 +122,10 @@ const importMode=ref('operations'),planMonthFrom=ref(1),planMonthTo=ref(12),plan
 const defaultPlanReason=()=>tx('Загрузка планов расходов из проверенной книги Cash Flow');
 let planReasonDefault=defaultPlanReason();planReason.value=planReasonDefault;
 watch(lang,()=>{const next=defaultPlanReason();if(planReason.value===planReasonDefault)planReason.value=next;planReasonDefault=next});
-const allNav=[['home','◈',N_('Обзор'),'view'],['report','▥','Cash Flow','export'],['pnl','▥',N_('P&L'),'export'],['balance','▤',N_('Баланс'),'export'],['rating','▥','IFRS Rating','export'],['business','▤',N_('Бизнес-планы'),'export'],['reports','▤',N_('Архив отчётов'),'export'],['accounts','▣',N_('Банк и касса'),'view'],['ledger','⇄',N_('Операции'),'ledger'],['requests','✓',N_('Заявки'),'requests-view'],['calendar','▦',N_('Календарь'),'calendar-view'],['budgets','◷',N_('Бюджеты'),'view'],['import','↥',N_('Импорт'),'import'],['counterparties','≡',N_('Контрагенты'),'counterparties'],['categories','≡',N_('Статьи ДДС'),'catalog'],['departments','≡',N_('Отделы'),'catalog'],['approval','✓',N_('Согласование'),'approval_policy'],['users','♙',N_('Пользователи'),'users'],['audit','⊞',N_('Журнал'),'audit'],['profile','⚙',N_('Профиль'),'']];
+const allNav=[['home','◈',N_('Обзор'),'home-view'],['report','▥','Cash Flow','export'],['pnl','▥',N_('P&L'),'export'],['balance','▤',N_('Баланс'),'export'],['rating','▥','IFRS Rating','export'],['business','▤',N_('Бизнес-планы'),'export'],['reports','▤',N_('Архив отчётов'),'export'],['accounts','▣',N_('Банк и касса'),'view'],['ledger','⇄',N_('Операции'),'ledger'],['requests','✓',N_('Заявки'),'requests-view'],['calendar','▦',N_('Календарь'),'calendar-view'],['budgets','◷',N_('Бюджеты'),'view'],['import','↥',N_('Импорт'),'import'],['counterparties','≡',N_('Контрагенты'),'counterparties'],['categories','≡',N_('Статьи ДДС'),'catalog'],['departments','≡',N_('Отделы'),'catalog'],['approval','✓',N_('Согласование'),'approval_policy'],['users','♙',N_('Пользователи'),'users'],['audit','⊞',N_('Журнал'),'audit'],['profile','⚙',N_('Профиль'),'']];
 const sectionWrites=new Set(['write','request','request_edit','request_check','approve','pay_bank','pay_cash','budget','plan','import','schedule','receipt_edit','receipt_delete','request_delete']);
 const sectionKey=name=>name==='departments'?'categories':name;
-const has=p=>user.value?.sections?.[sectionKey(page.value)]==='view'&&sectionWrites.has(p)?false:isSales.value&&!user.value?.sections&&!['overview','receipts','receipt_edit','receipt_delete'].includes(p)?false:p==='calendar-view'?['view','overview','calendar'].some(x=>user.value?.permissions.includes(x)):p==='requests-view'?['request','view','pay_bank','pay_cash','request_check'].some(x=>user.value?.permissions.includes(x)):user.value?.permissions.includes(p);
+const has=p=>p==='home-view'?canOpenOverview(user.value):user.value?.sections?.[sectionKey(page.value)]==='view'&&sectionWrites.has(p)?false:isSales.value&&!user.value?.sections&&!['overview','receipts','receipt_edit','receipt_delete'].includes(p)?false:p==='calendar-view'?['view','overview','calendar'].some(x=>user.value?.permissions.includes(x)):p==='requests-view'?['request','view','pay_bank','pay_cash','request_check'].some(x=>user.value?.permissions.includes(x)):user.value?.permissions.includes(p);
 const isSales=computed(()=>!user.value?.holding_role&&(user.value?.company_role||user.value?.role)==='sales');
 const nav=computed(()=>allNav.filter(n=>(n[0]!=='rating'||company.value?.code==='ZUMA')&&(user.value?.sections&&n[0]!=='profile'?['view','edit'].includes(user.value.sections[sectionKey(n[0])]):(!isSales.value||['home','calendar','profile'].includes(n[0]))&&(!n[3]||has(n[3])||['home','calendar'].includes(n[0])&&has('overview')))));
 const canNavigate=name=>nav.value.some(n=>n[0]===name);
@@ -559,7 +559,7 @@ onMounted(async()=>{try{const r=await api('/api/me');user.value=r.user;csrf.valu
     <div v-if="busy" class="loading">{{tx('Загрузка данных…')}}</div>
 
     <!-- Обзор -->
-    <OverviewPage v-if="page==='home'&&canNavigate('home')&&(has('view')||has('overview'))" :key="companyId" :api="api" :company-id="companyId" :company="company" :currency="currency" :today="boot.today" :refresh="homeRefresh" :has="has" :can-decide="canDecide" :can-open-requests="canNavigate('requests')" :show-request-panels="true" :requests-only="!canSeeFullOverview(user)" :days="days" :track="trkSteps" :marks="MK" @update:days="d=>days=d" @go="goWith" @open-request="openRequest" @edit-reserve="v=>reserve(v)"/>
+    <OverviewPage v-if="page==='home'&&canNavigate('home')&&has('home-view')" :key="companyId" :api="api" :company-id="companyId" :company="company" :currency="currency" :today="boot.today" :refresh="homeRefresh" :has="has" :can-decide="canDecide" :can-open-requests="canNavigate('requests')" :show-request-panels="true" :requests-only="!canSeeFullOverview(user)" :days="days" :track="trkSteps" :marks="MK" @update:days="d=>days=d" @go="goWith" @open-request="openRequest" @edit-reserve="v=>reserve(v)"/>
     <BankStatementDaily v-if="page==='home'&&canNavigate('home')&&canSeeFullOverview(user)&&has('view')&&companyId" :key="`bank-daily-${companyId}`" :api="api" :company-id="companyId" :currency="currency" :today="boot.today" :refresh="homeRefresh"/>
 
     <nav v-if="isReportPage&&reportTabs.length>1" class="report-tabs" :aria-label="tx('Отчёты')"><button v-for="n in reportTabs" :key="n[0]" type="button" :class="{on:page===n[0]}" :aria-current="page===n[0]?'page':undefined" @click="go(n[0])"><AppIcon :name="n[0]"/> {{tx(n[2])}}</button></nav>
