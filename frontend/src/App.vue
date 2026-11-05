@@ -23,10 +23,9 @@ import {invalidFormFields,focusInvalidField} from './formFeedback.js';
 import {isAppFileLink,isRequestDocumentLink,fetchDownload} from './fileDownload.js';
 import CompanyCard from './CompanyCard.vue';
 import OverviewPage from './overview/OverviewPage.vue';
-import {canSeeRequestPanels} from './overview/rights.js';
+import {canSeeFullOverview} from './overview/rights.js';
 import BankStatements from './BankStatements.vue';
 import BankStatementDaily from './overview/BankStatementDaily.vue';
-import SalesOverview from './overview/SalesOverview.vue';
 import AdminCenter from './admin/AdminCenter.vue';
 import {groupCompanyInfo} from './admin/groupRegistration.js';
 import {loadRecentLogins,rememberLogin,matchingLogins,offerPasswordSave} from './loginPreferences.js';
@@ -181,7 +180,7 @@ const helpSections=computed(()=>({
  users:[[tx('Одна компания'),tx('Сотрудник работает ровно в одной компании и только по назначенной роли. Новое назначение переносит его и отзывает прежний доступ; связь без роли доступа не даёт. Если в старых данных сотрудник назначен в нескольких компаниях, доступ приостановлен, пока администратор не выберет одну.')],[tx('Центр администрирования'),tx('Поиск по имени и логину, фильтры по компании, роли и состоянию. Карточка сотрудника: имя, назначение, статус холдинга, сброс пароля, завершение сеансов, архив и восстановление. Каждое действие требует причину и записывается в журнал с прежним и новым назначением.')],[tx('Выданный пароль'),tx('При создании, сбросе и восстановлении выдаётся случайный постоянный пароль, который показывается один раз. Обязательной смены при входе нет. Действующие пароли автоматически не меняются. Прежние сеансы и Telegram отключаются.')],[tx('Холдинг'),tx('Администратор холдинга видит все компании, управляет пользователями и доступами; финансовые действия — только по отдельному назначению роли в компании, которое выдаёт другой администратор. Учредитель видит все компании только для чтения.')],[tx('Согласование и оплата'),tx('Расчётный бухгалтер проверяет реквизиты и комплектность, финансовый директор — бюджет и дату, директор участвует по политике статьи. Банковскую заявку оплачивает расчётный бухгалтер, в том числе проверявший её, кассовую — кассир. Автор, редакторы, финансовый директор и директор её не оплачивают.')],[tx('ВрИО'),tx('На время отсутствия администратор холдинга назначает временно исполняющего из сотрудников этой же компании (или администратора холдинга). ВрИО работает под своим логином с ролью отсутствующего только в этой компании и только до конца срока. Сотрудника другой компании сначала переводят в центре администрирования. Собственную заявку ВрИО не согласует; журнал хранит обоих сотрудников. Смена назначения или архив завершают замещения, потерявшие основание.')],[tx('Пароли'),tx('Сохранённые пароли не отображаются и не восстанавливаются: доступ возвращается только новым временным паролем.')],[tx('Telegram-группы сводки'),tx('Каждая группа получает сводку ровно одной компании. В форме подключения укажите ID группы и выберите её компанию, затем отправьте полученную команду /register в эту группу. Код подходит только выбранной группе и компании. Неизвестная или неподключённая группа не получает финансовую сводку. Чтобы сменить компанию, отключите группу и подключите заново. Группа отключается сама, если подключивший её администратор отключён или больше не администратор холдинга.')]],
  audit:[[tx('Как искать'),tx('Выберите месяц или даты, сотрудника и действие, затем нажмите «Показать». Записи показываются простым списком; технические сведения — по кнопке «Подробности». Время указано по Ташкенту.')]],
  profile:[[tx('Сессия и пароль'),tx('Сессия действует 60 минут. Пароль не короче 12 символов. После смены пароля все сессии отзываются. Пароль от администратора постоянный; обязательной смены при входе нет.')],[tx('ВрИО'),tx('Если вы временно исполняете обязанности отсутствующего сотрудника, его роль показана рядом с вашей и действует только в этой компании до конца срока замещения.')],['Telegram',tx('Чтобы бот присылал напоминания по заявкам, которые ждут вашего действия, нажмите «Привязать Telegram» и отправьте боту одноразовый код — он действует 10 минут.')]]
-}[page.value]||[]));
+}[page.value==='home'&&!canSeeFullOverview(user.value)?'requests':page.value]||[]));
 
 const budgetGroup=ref(''),calendarOrder=ref('asc');
 const budgetRows=computed(()=>rows.value.filter(r=>!budgetGroup.value||r.cost_group===budgetGroup.value));
@@ -211,7 +210,7 @@ subtitles.business=N_('Проект → Данные → Отчёт. Готов�
 subtitles.reports=N_('Все готовые отчёты компании: рассчитанные бизнес-планы и загруженные PDF и Excel с периодами.');
 subtitles.pnl=N_('Доходы, расходы и прибыль за выбранный период.');
 subtitles.balance=N_('Активы, обязательства и капитал на конец периода.');
-const pageSubtitle=computed(()=>page.value==='report'&&cashFlowBasis.value==='osv'?N_('Отчёт по банковской ОСВ 5110 и выбранному образцу.'):subtitles[page.value]);
+const pageSubtitle=computed(()=>page.value==='home'&&!canSeeFullOverview(user.value)?subtitles.requests:page.value==='report'&&cashFlowBasis.value==='osv'?N_('Отчёт по банковской ОСВ 5110 и выбранному образцу.'):subtitles[page.value]);
 const priorities={normal:N_('Обычный'),high:N_('Высокий'),urgent:N_('Срочный')};
 const scenario=ref('approved');
 const forecastRows=computed(()=>(dash.value?.forecast||[]).map(d=>scenario.value==='all'?{...d,opening:d.requested_opening,outgoing:d.requested_outgoing,balance:d.requested_balance,risk:d.requested_risk,account_shortfalls:d.requested_account_shortfalls,events:[...d.events,...d.pending_events]}:d));
@@ -560,9 +559,8 @@ onMounted(async()=>{try{const r=await api('/api/me');user.value=r.user;csrf.valu
     <div v-if="busy" class="loading">{{tx('Загрузка данных…')}}</div>
 
     <!-- Обзор -->
-    <SalesOverview v-if="page==='home'&&isSales&&has('overview')" :key="companyId" :api="api" :company-id="companyId" :currency="currency" :refresh="homeRefresh" :days="days" @go="goWith" @update:days="d=>days=d"/>
-    <OverviewPage v-if="page==='home'&&!isSales&&has('view')" :key="companyId" :api="api" :company-id="companyId" :company="company" :currency="currency" :today="boot.today" :refresh="homeRefresh" :has="has" :can-decide="canDecide" :can-open-requests="canNavigate('requests')" :show-request-panels="canSeeRequestPanels(user)" :days="days" :track="trkSteps" :marks="MK" @update:days="d=>days=d" @go="goWith" @open-request="openRequest" @edit-reserve="v=>reserve(v)"/>
-    <BankStatementDaily v-if="page==='home'&&!isSales&&has('view')&&companyId" :key="`bank-daily-${companyId}`" :api="api" :company-id="companyId" :currency="currency" :today="boot.today" :refresh="homeRefresh"/>
+    <OverviewPage v-if="page==='home'&&canNavigate('home')&&(has('view')||has('overview'))" :key="companyId" :api="api" :company-id="companyId" :company="company" :currency="currency" :today="boot.today" :refresh="homeRefresh" :has="has" :can-decide="canDecide" :can-open-requests="canNavigate('requests')" :show-request-panels="true" :requests-only="!canSeeFullOverview(user)" :days="days" :track="trkSteps" :marks="MK" @update:days="d=>days=d" @go="goWith" @open-request="openRequest" @edit-reserve="v=>reserve(v)"/>
+    <BankStatementDaily v-if="page==='home'&&canNavigate('home')&&canSeeFullOverview(user)&&has('view')&&companyId" :key="`bank-daily-${companyId}`" :api="api" :company-id="companyId" :currency="currency" :today="boot.today" :refresh="homeRefresh"/>
 
     <nav v-if="isReportPage&&reportTabs.length>1" class="report-tabs" :aria-label="tx('Отчёты')"><button v-for="n in reportTabs" :key="n[0]" type="button" :class="{on:page===n[0]}" :aria-current="page===n[0]?'page':undefined" @click="go(n[0])"><AppIcon :name="n[0]"/> {{tx(n[2])}}</button></nav>
     <BusinessProjects :can-download="has('download')" v-if="page==='business'&&has('export')" :key="companyId" :api="api" :company="company" :refresh="businessRefresh" @editing="reportEditing=$event" @generated="reportArchiveRefresh++"/>
