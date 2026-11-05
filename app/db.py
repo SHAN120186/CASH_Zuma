@@ -87,6 +87,12 @@ class Category(Base):
     director_threshold_uzs = Column(BigInteger, nullable=True)
     director_threshold_usd = Column(BigInteger, nullable=True)
     director_threshold_eur = Column(BigInteger, nullable=True)
+    # Верхняя сумма окончательного согласования; NULL — без лимита, 0 — запрет.
+    director_limit_uzs = Column(BigInteger, nullable=True)
+    director_limit_usd = Column(BigInteger, nullable=True)
+    director_limit_eur = Column(BigInteger, nullable=True)
+    director_limit_changed_at = Column(DateTime, nullable=True)
+    director_limit_changed_by = Column(Integer, ForeignKey('users.id'), nullable=True)
     director_policy_changed_at = Column(DateTime, nullable=True)
     director_policy_changed_by = Column(Integer, ForeignKey('users.id'), nullable=True)
     # Утверждённый перечень регулярных статей, для которых разрешён skip.
@@ -639,6 +645,8 @@ def initialize():
             conn.execute(text("UPDATE categories SET type='income' WHERE name IN ('Поступления от покупателей','Получение кредита')"))
         for name,definition in [('director_policy','VARCHAR(10)'),('director_threshold_uzs','BIGINT'),('director_threshold_usd','BIGINT'),
                                 ('director_threshold_eur','BIGINT'),('director_policy_changed_at','TIMESTAMP'),
+                                ('director_limit_uzs','BIGINT'),('director_limit_usd','BIGINT'),('director_limit_eur','BIGINT'),
+                                ('director_limit_changed_at','TIMESTAMP'),('director_limit_changed_by','INTEGER REFERENCES users(id)'),
                                 ('director_policy_changed_by','INTEGER REFERENCES users(id)'),('skip_allowed','BOOLEAN NOT NULL DEFAULT FALSE')]:
             if name not in columns:conn.execute(text(f'ALTER TABLE categories ADD COLUMN {name} {definition}'))
         if 'last_attempt' not in {c['name'] for c in inspect(conn).get_columns('report_schedules')}:
@@ -707,3 +715,5 @@ def initialize():
     # открывала сотрудникам все компании из старой миграции. Пустая связь доступа не даёт.
     from .workflow_setup import migrate_workflow
     migrate_workflow(engine)
+    from .director_limits import migrate_director_limits
+    migrate_director_limits(engine)

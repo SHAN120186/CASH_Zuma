@@ -1,7 +1,8 @@
 {
-  "version": "2.35.7",
-  "date": "2026-11-05",
+  "version": "2.35.8",
+  "date": "2026-11-06",
   "changes": [
+    "Во всех компаниях добавлен верхний лимит директора по статье и валюте. По наименованиям таблицы: основные средства — 100 млн UZS; маркетинг (бонус), займы 4720/7820, «Само учун карз» и дивиденды — ноль. Одинаковые номера разных статей компаний не смешиваются. Превышение блокирует окончательное утверждение, включая маршрут без директора и комиссию при получении наличных через банк. Лимиты изменяет администратор холдинга с причиной и журналом; права учредителя и прежние пороги участия директора сохранены.",
     "Ускорены списки и карточки заявок: история участников и данные получения наличных читаются пакетно. Технический HTTP-журнал сохраняется до ответа в отдельной транзакции, не блокируя обработку других запросов. Финансовые проверки, права, история согласований и защита от повторных оплат сохранены.",
     "Компактный Обзор доступен всем сотрудникам: «На согласовании» и «Платежи». Отдельное право на Обзор не открывает финансовые разделы и календарь; заявки отображаются в пределах действующего доступа. Полный обзор финансового директора, директора, администратора и учредителя сохранён.",
     "Исправлен состав обзора: у сотрудников остаются только «На согласовании» и «Платежи». Остатки, показатели, прогнозы, риски, операции и банковская сводка в этом режиме не загружаются. Обзор финансового директора, директора, администратора и учредителя сохранён полностью. Действующие права разделов и платежей не изменяются.",
@@ -108,6 +109,7 @@
     "Длинные названия файлов и кнопки выбора шаблона переносятся на узком экране. В ТЭО дата архива отдельно обозначена и не подменяет начало финансового прогноза."
   ],
   "changes_uz": [
+    "Barcha kompaniyalarda modda va valyuta bo‘yicha direktorning yuqori limiti qo‘shildi. Jadvaldagi nomlarga ko‘ra: asosiy vositalar — 100 mln UZS; marketing (bonus), 4720/7820 qarzlari, «Samo uchun qarz» va dividendlar — nol. Kompaniyalardagi turli moddalarning bir xil raqamlari aralashtirilmaydi. Limitdan oshish yakuniy tasdiqlashni, jumladan direktorsiz yo‘nalish va bankdan naqd olish komissiyasini ham bloklaydi. Limitlarni xolding administratori sabab va jurnal bilan o‘zgartiradi; ta’sischi huquqlari va direktor ishtiroki chegaralari saqlanadi.",
     "Moliya direktori va direktor o‘z kompaniyasi arizalarini sabab va versiya tekshiruvi bilan o‘chira oladi. Amalga oshirilgan to‘lovlar, operatsiyalar, qoldiqlar va tarix saqlanadi. Ta’sischi faqat ko‘radi; bo‘lim va kompaniya cheklovlari serverda tekshiriladi.",
     "Modda nomlari uzun bo‘lganda ham qoidalar shakli ekran kengligida qoladi.",
     "Har bir kompaniya uchun bank operatsiyalari moddalari qoidalari qo‘shildi: STIR, kontragent, to‘lov maqsadi, shartnoma va valyuta. Maʼlum ariza va tushumlar o‘z moddalarini saqlaydi, nomaʼlum tashqi operatsiyalar «Taqsimlanmagan»ga tushadi. Saqlangan ko‘chirmaning taqsimlanmagan operatsiyalariga qoidalarni yangi to‘lovsiz, tasdiqlash orqali qo‘llash mumkin. Qoidalar o‘zgarsa, qayta tekshirish talab qilinadi; takrorlar dublikatlardan himoyalangan.",

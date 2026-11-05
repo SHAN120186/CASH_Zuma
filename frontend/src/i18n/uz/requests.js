@@ -1,6 +1,14 @@
 // Uzbek (Latin) translations: requests/*.
 // Key: the exact Russian text; value: the Uzbek text with the same {placeholders}.
 export default {
+  'Лимит директора': 'Direktor limiti',
+  'Директор участвует всегда': 'Direktor doimo ishtirok etadi',
+  'Без лимита': 'Cheklovsiz',
+  'Лимит директора {currency}': 'Direktor limiti {currency}',
+  'Лимит директора по статье «{name}» сохранён.': '«{name}» moddasi bo‘yicha direktor limiti saqlandi.',
+  'Лимит директора — максимальная сумма окончательного согласования по статье. Пустое поле — без лимита, 0 — согласование запрещено. Лимит проверяется на момент утверждения; изменить его может администратор холдинга.': 'Direktor limiti — modda bo‘yicha yakuniy tasdiqlashning eng yuqori summasi. Bo‘sh maydon — cheklov yo‘q, 0 — tasdiqlash taqiqlangan. Limit tasdiqlash paytida tekshiriladi; uni xolding administratori o‘zgartirishi mumkin.',
+  'Лимит директора изменяет только администратор холдинга.': 'Direktor limitini faqat xolding administratori o‘zgartiradi.',
+  'Лимит директора задаётся только для расходных статей.': 'Direktor limiti faqat xarajat moddalari uchun belgilanadi.',
   'Сначала ранние сроки оплаты: просроченные, затем сегодняшние и ближайшие.': 'Avval eng erta to‘lov muddatlari: muddati o‘tgan, so‘ng bugungi va yaqin kunlardagi arizalar.',
   'Контрагент или ИНН заявки изменился. Закройте форму и откройте заявку заново.': 'Arizadagi kontragent yoki STIR o‘zgargan. Shaklni yoping va arizani qayta oching.',
   'ИНН контрагента': 'Kontragent STIRi',
@@ -322,4 +330,5 @@ export default {
 
 // [RegExp over the whole Russian message, Uzbek replacement with $1…] for texts with numbers or names.
 export const patterns = [
+  [/^Лимит директора по статье «(.+)» — (.+) (UZS|USD|EUR); сумма — (.+) \3\. Окончательное согласование недоступно\. Измените сумму заявки или обратитесь к администратору холдинга для пересмотра лимита\.$/, '«$1» moddasi bo‘yicha direktor limiti — $2 $3; summa — $4 $3. Yakuniy tasdiqlash mumkin emas. Ariza summasini o‘zgartiring yoki limitni qayta ko‘rib chiqish uchun xolding administratoriga murojaat qiling.'],
 ];
