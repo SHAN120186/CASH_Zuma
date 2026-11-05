@@ -2,7 +2,7 @@ from __future__ import annotations
 import json
 from decimal import Decimal, InvalidOperation
 from datetime import date, datetime, timedelta, timezone
-from sqlalchemy import select, func, or_, and_
+from sqlalchemy import select, func, or_, and_, case
 from fastapi import HTTPException
 from .company_scope import get_setting
 from .security import PERMS, pay_right, perms_of, company_role, has_role, act_with_right
@@ -303,8 +303,11 @@ def request_journal(r_id):
     return or_(and_(Audit.entity=='request',Audit.entity_id==str(r_id)),
                and_(Audit.entity=='request_document',Audit.action.in_(LEGACY_DOCUMENT_ACTIONS),Audit.detail.like(f'request={r_id};%')))
 
-def all_participants(s,r,include_check=True):
+def all_participants(s,r,include_check=True,*,batch=None):
     """Автор, редакторы, проверявшие и согласующие заявки во всех кругах согласования."""
+    history=(batch or {}).get('participant_history',{}).get(r.id)
+    if history is not None:
+        return participants(r,include_check)|history['all' if include_check else 'without_check']
     actions=PARTICIPANT_ACTIONS if include_check else tuple(x for x in PARTICIPANT_ACTIONS if x!='Действие по заявке: check')
     past=s.scalars(select(Audit.user_id).where(request_journal(r.id),Audit.user_id.is_not(None),
                                               Audit.action.in_(actions+LEGACY_DOCUMENT_ACTIONS)))
@@ -313,10 +316,12 @@ def all_participants(s,r,include_check=True):
 # Правки заявки и её файлов. После возврата на доработку круг согласования начинается заново.
 EDIT_ACTIONS=('Изменена заявка','Действие по заявке: reschedule','Добавлен документ заявки','Новая версия документа заявки','Убран документ заявки')
 
-def round_participants(s,r):
+def round_participants(s,r,*,batch=None):
     """Участники текущего круга: автор, последний редактор, проверявший и согласующие, а также все, кто
     правил заявку или её файлы после последнего возврата на доработку. Кто менял содержание — не согласует,
     даже если после него заявку правил кто-то ещё."""
+    history=(batch or {}).get('participant_history',{}).get(r.id)
+    if history is not None:return participants(r)|history['round']
     last_return=s.scalar(select(func.max(Audit.id)).where(request_journal(r.id),Audit.action=='Действие по заявке: return'))
     q=select(Audit.user_id).where(request_journal(r.id),Audit.user_id.is_not(None),Audit.action.in_(EDIT_ACTIONS))
     if last_return is not None:q=q.where(Audit.id>last_return)
@@ -413,6 +418,42 @@ def backdated_flags(s,r):
         late_posted = bool(row and entered and row.date < local_date(entered))
     return late_created, late_posted
 
+def request_participant_history(s,ids):
+    """One scoped journal read for this list response, never reused by write guards.
+
+    Round boundaries use audit IDs, as the single-request checks do. Legacy
+    document events belong only to the exact ``request=<id>;`` prefix.
+    """
+    ids=set(ids)
+    if not ids:return {},{}
+    from collections import defaultdict
+    history={rid:{'all':set(),'without_check':set(),'round':set()} for rid in ids}
+    string_ids={str(rid):rid for rid in ids}
+    prefixes={f'request={rid}':rid for rid in ids}
+    actions=set(PARTICIPANT_ACTIONS+LEGACY_DOCUMENT_ACTIONS+EDIT_ACTIONS+('Действие по заявке: return','Оплата заявки'))
+    journal=or_(and_(Audit.entity=='request',Audit.entity_id.in_(string_ids)),
+                and_(Audit.entity=='request_document',Audit.action.in_(LEGACY_DOCUMENT_ACTIONS),
+                     or_(*(Audit.detail.like(prefix+';%') for prefix in prefixes))))
+    rows=s.execute(select(Audit.id,Audit.entity,Audit.entity_id,Audit.action,Audit.user_id,Audit.created_at,
+                          case((Audit.entity=='request_document',Audit.detail),else_='')).where(
+                              journal,Audit.action.in_(actions)))
+    returns={};edits=defaultdict(list);paid={}
+    for aid,entity,entity_id,action,user_id,created_at,detail in rows:
+        rid=string_ids.get(entity_id) if entity=='request' else prefixes.get((detail or '').partition(';')[0])
+        if rid is None:continue
+        if action=='Действие по заявке: return':returns[rid]=max(aid,returns.get(rid,aid))
+        if entity=='request' and action=='Оплата заявки' and created_at is not None:
+            paid[rid]=min(created_at,paid.get(rid,created_at))
+        if user_id is None:continue
+        if action in PARTICIPANT_ACTIONS+LEGACY_DOCUMENT_ACTIONS:
+            history[rid]['all'].add(user_id)
+            if action!='Действие по заявке: check':history[rid]['without_check'].add(user_id)
+        if action in EDIT_ACTIONS:edits[rid].append((aid,user_id))
+    for rid,events in edits.items():
+        history[rid]['round']={uid for aid,uid in events if rid not in returns or aid>returns[rid]}
+    return history,paid
+
+
 def request_batch(s,requests):
     """Prefetch data used by request cards, within the current company scope."""
     from .department_catalog import catalog as department_catalog
@@ -420,7 +461,6 @@ def request_batch(s,requests):
     ids=[r.id for r in requests]
     if not ids:return None
     fundings={f.request_id:f for f in s.scalars(select(CashFunding).where(CashFunding.request_id.in_(ids)))}
-    s.info['cash_funding_batch']={'ids':set(ids),'values':fundings}
     category_ids={r.category_id for r in requests}
     category_ids.update(f.fee_category_id for f in fundings.values())
     accounts={a.id:a for a in s.scalars(select(Account))}
@@ -449,8 +489,8 @@ def request_batch(s,requests):
     if paid:
         for x in s.scalars(select(Ledger).where(Ledger.request_id.in_(paid))):
             paid_dates.setdefault(x.request_id,x.date)
-    paid_audits={int(rid):at for rid,at in s.execute(select(Audit.entity_id,func.min(Audit.created_at)).where(Audit.entity=='request',Audit.entity_id.in_([str(i) for i in paid]),Audit.action=='Оплата заявки').group_by(Audit.entity_id))} if paid else {}
-    return {'accounts':accounts,'categories':categories,'fundings':fundings,'departments':department_catalog(s)['items'],'budgets':budgets,'spent':spent,'reserved':reserved,'documents':docs,'paid_dates':paid_dates,'paid_audits':paid_audits}
+    participant_history,paid_audits=request_participant_history(s,ids)
+    return {'accounts':accounts,'categories':categories,'fundings':fundings,'participant_history':participant_history,'departments':department_catalog(s)['items'],'budgets':budgets,'spent':spent,'reserved':reserved,'documents':docs,'paid_dates':paid_dates,'paid_audits':paid_audits}
 
 
 def batch_budget_state(batch,r,account,extra=0,exclude_request=None):

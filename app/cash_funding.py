@@ -45,8 +45,6 @@ class FundingCommit(FundingPreview):
 
 
 def funding_for(s,request_id):
-    cache=s.info.get('cash_funding_batch')
-    if cache is not None and request_id in cache['ids']:return cache['values'].get(request_id)
     return s.scalar(select(CashFunding).where(CashFunding.request_id==request_id))
 
 
@@ -169,7 +167,7 @@ def require_regular_account(account):
         raise HTTPException(409,'Служебный счёт «Деньги в пути» используется только связанным получением наличных через банк.')
 
 
-def _authorized(s,user,request,funding,action):
+def _authorized(s,user,request,funding,action,*,batch=None):
     right='pay_bank' if action=='withdraw' else 'pay_cash'
     if right not in perms_of(user) or not can_edit_section(user,'requests','ledger'):
         raise HTTPException(403,'Снятие из банка подтверждает расчётный бухгалтер, получение в кассу — кассир.')
@@ -177,7 +175,7 @@ def _authorized(s,user,request,funding,action):
         raise HTTPException(409,'Сначала заявка должна пройти все этапы согласования.')
     # The checking accountant may record the bank fact. Cash receiving is not
     # issuing a payment; its payer separation is checked on the final cash issue.
-    if action=='withdraw' and user.id in all_participants(s,request,include_check=False):
+    if action=='withdraw' and user.id in all_participants(s,request,include_check=False,batch=batch):
         raise HTTPException(403,'Автор, редакторы и финансовые согласующие не подтверждают снятие по своей заявке.')
     if funding.cash_account_id!=request.account_id or funding.net_amount!=request.amount:
         raise HTTPException(409,'Параметры заявки и наличного финансирования расходятся. Нужна проверка.')
@@ -187,10 +185,10 @@ def _authorized(s,user,request,funding,action):
     act_with_right(user,right)
 
 
-def capabilities(s,user,request,funding):
+def capabilities(s,user,request,funding,*,batch=None):
     result={}
     for action in ('withdraw','receive'):
-        try:_authorized(s,user,request,funding,action)
+        try:_authorized(s,user,request,funding,action,batch=batch)
         except HTTPException:result['can_'+action]=False
         else:result['can_'+action]=True
     return result

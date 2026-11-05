@@ -12,7 +12,7 @@ from .db import (unit, now, User, Account, Category, PaymentRequest, RequestDocu
 from .security import (session_user, perms_of, has_role, payment_channels, pay_right, ROLES, COMPANY_ROLES)
 from .services import (get, log, money, amount, today, approval_stage, round_participants, all_participants, route_complete,
                        DOCUMENT_KINDS, REQUIRED_DOCUMENTS, REQUIRED_DOCUMENTS_BY_CHANNEL, REQUEST_DEPARTMENTS,
-                       THRESHOLD_FIELDS, category_policy, request_json, request_journal)
+                       THRESHOLD_FIELDS, category_policy, request_json, request_journal, request_batch)
 from .workdays import due_minimums, LEAD_DAYS
 from .workflow_setup import DEFAULT_THRESHOLDS
 
@@ -63,13 +63,13 @@ def can_edit(u, r):
 STAGE_ROLE = {'check': 'accountant', 'finance': 'finance', 'director': 'director'}
 
 
-def request_actions(s, u, r):
+def request_actions(s, u, r, batch=None):
     """Действия, которые сервер примет от этого пользователя. Интерфейс только показывает их."""
     perms = perms_of(u)
     account = s.get(Account, r.account_id)
     stage = approval_stage(r)
     from .cash_funding import funding_for,capabilities
-    funding=funding_for(s,r.id)
+    funding=batch['fundings'].get(r.id) if batch is not None else funding_for(s,r.id)
     # Без прав согласующего, проверяющего или финансового руководителя сотрудник действует только в своих заявках.
     own_only = not ({'approve', 'request_edit', 'request_check'} & perms)
     actions = ['delete'] if 'request_delete' in perms else []
@@ -80,7 +80,7 @@ def request_actions(s, u, r):
         actions.append('submit')
     if editable and r.status in OPEN_STATUSES:
         actions.append('documents')
-    if stage and has_role(u, STAGE_ROLE[stage]) and u.id not in round_participants(s, r) and ('approve' in perms or stage == 'check'):
+    if stage and has_role(u, STAGE_ROLE[stage]) and u.id not in round_participants(s, r, batch=batch) and ('approve' in perms or stage == 'check'):
         actions.append('check' if stage == 'check' else 'approve')
     if (('approve' in perms and r.status in ('pending', 'approved')) or (stage == 'check' and has_role(u, 'accountant'))) and not own_only:
         actions.append('return')
@@ -90,10 +90,10 @@ def request_actions(s, u, r):
         actions.append('close')
     if 'request_edit' in perms and r.status in ('pending', 'approved'):
         actions.append('reschedule')
-    if r.status == 'approved' and pay_right(account) in perms and route_complete(r) and u.id not in all_participants(s, r, include_check=account.kind!='bank') and (funding is None or funding.state=='received'):
+    if r.status == 'approved' and pay_right(account) in perms and route_complete(r) and u.id not in all_participants(s, r, include_check=account.kind!='bank', batch=batch) and (funding is None or funding.state=='received'):
         actions.append('pay')
     if funding:
-        allowed=capabilities(s,u,r,funding)
+        allowed=capabilities(s,u,r,funding,batch=batch)
         if allowed['can_withdraw']:actions.append('cash_withdraw')
         if allowed['can_receive']:actions.append('cash_receive')
         if funding.state!='unfunded':
@@ -107,12 +107,12 @@ def request_view(s, u, r, batch=None):
     if data.get('cash_funding'):
         from .cash_funding import funding_for,capabilities
         funding=batch['fundings'].get(r.id) if batch else funding_for(s,r.id)
-        data['cash_funding'].update(capabilities(s,u,r,funding))
+        data['cash_funding'].update(capabilities(s,u,r,funding,batch=batch))
     # Без права просмотра реестра (заявитель, закупки, кассир, плательщик) прежний блок бюджета скрыт;
     # по выбранной статье и периоду остаётся карточка budget_card (лимит, использовано, резерв, доступно, после заявки).
     if 'view' not in perms_of(u):
         data['budget'] = {'limit': None, 'hidden': True, 'over': data['budget']['over'], 'mode': data['budget']['mode']}
-    data['actions'] = [] if (getattr(u,'_sections',None) or {}).get('requests')=='view' else request_actions(s, u, r)
+    data['actions'] = [] if (getattr(u,'_sections',None) or {}).get('requests')=='view' else request_actions(s, u, r, batch=batch)
     return data
 
 
@@ -136,7 +136,7 @@ def request_card(id: int, request: Request):
     with unit() as s:
         u, _ = session_user(s, request)
         r = visible(s, u, id)
-        data = request_view(s, u, r)
+        data = request_view(s, u, r, batch=request_batch(s,[r]))
         docs = list(s.scalars(select(RequestDocument).where(RequestDocument.request_id == id)
                               .order_by(RequestDocument.kind, RequestDocument.version, RequestDocument.id)))
         rows = list(s.scalars(select(Audit).where(request_journal(id)).order_by(Audit.id)))
