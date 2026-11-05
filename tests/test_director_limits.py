@@ -5,6 +5,11 @@ import tests.test_site as base
 from app.db import Category, Company, Ledger, PaymentRequest, Setting, unit, engine, initialize
 from app.director_limits import TABLE_LIMITS, migrate_director_limits
 
+TABLE_NAMES = {'12': 'Расходы на маркетинг (бонус)',
+               '65': 'Расчеты по предоставленным займам 4720 (Моддий ёрдам тарикасидаги туловлар)',
+               '70': 'Долгосрочные займы 7820', '78': 'Само учун карз',
+               '98': 'Девидент', '17': 'Закуп основных средств'}
+
 
 class DirectorLimitTests(base.SiteTests):
     def set_limit(self, category=None, uzs=None, usd=None, eur=None, client=None, headers=None):
@@ -22,7 +27,7 @@ class DirectorLimitTests(base.SiteTests):
             companies = list(s.scalars(select(Company)))
             for company in companies:
                 for code in [*TABLE_LIMITS, '8', '101', '53', '999']:
-                    s.add(Category(company_id=company.id, code=code, name='Synthetic code ' + code,
+                    s.add(Category(company_id=company.id, code=code, name=TABLE_NAMES.get(code, 'Synthetic code ' + code),
                                    type='outcome', activity='operating'))
             s.delete(s.get(Setting, 'director_upper_limits_v1'))
         migrate_director_limits(engine)
@@ -51,23 +56,28 @@ class DirectorLimitTests(base.SiteTests):
             self.assertEqual(after[key], before[key], key)
 
     def test_legacy_codes_in_names_are_migrated_for_every_company(self):
+        expected = {}
         with unit(True) as s:
             for company in s.scalars(select(Company).where(Company.code != 'UNASSIGNED')):
                 for separator in ('·', '|', '—'):
                     for code in TABLE_LIMITS:
-                        s.add(Category(company_id=company.id, name=f'{code} {separator} Synthetic legacy {code}',
-                                       type='outcome', activity='operating'))
-                s.add(Category(company_id=company.id, code='other', name='17 · Explicit code wins', type='outcome'))
-                s.add(Category(company_id=company.id, name='Synthetic 17 · not a code prefix', type='outcome'))
+                        category = Category(company_id=company.id, name=f'{code} {separator} {TABLE_NAMES[code]}', type='outcome')
+                        s.add(category);s.flush();expected[category.id] = TABLE_LIMITS[code]
+                # Numbers belong to a company's own catalog. A matching number
+                # cannot cap an unrelated article, and another number cannot
+                # hide the same actual expense type in a different company.
+                for code, name, limit in [('17', '17 · Other expense', None), ('65', '65 · Refund expense', None),
+                        ('70', '70 · Other financing', None), ('other', '271 · Закуп основных средств', 10_000_000_000),
+                        ('other2', '273 · Дивиденды', 0), ('98', '98 · Двидент', 0),
+                        (None, 'Synthetic 17 · not a code prefix', None)]:
+                    category = Category(company_id=company.id, code=code, name=name, type='outcome')
+                    s.add(category);s.flush();expected[category.id] = limit
             s.delete(s.get(Setting, 'director_upper_limits_v1'))
         migrate_director_limits(engine)
         with unit() as s:
-            for category in s.scalars(select(Category).where(Category.name.contains('Synthetic legacy'))):
-                self.assertEqual(category.director_limit_uzs, TABLE_LIMITS[category.name.split()[0]])
-                self.assertIsNotNone(category.director_limit_changed_at)
-            for name in ('17 · Explicit code wins', 'Synthetic 17 · not a code prefix'):
-                for category in s.scalars(select(Category).where(Category.name == name)):
-                    self.assertIsNone(category.director_limit_uzs)
+            for category in s.scalars(select(Category).where(Category.id.in_(expected))):
+                self.assertEqual(category.director_limit_uzs, expected[category.id], category.name)
+                self.assertEqual(category.director_limit_changed_at is not None, expected[category.id] is not None)
 
     def test_exact_cap_allowed_above_cap_rejected_and_transaction_unchanged(self):
         self.assertEqual(self.set_limit(uzs='100000000').status_code, 200)
