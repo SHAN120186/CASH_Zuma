@@ -42,6 +42,8 @@ export default {
   'Проверяем утверждённые выплаты…': 'Tasdiqlangan toʻlovlar tekshirilmoqda…',
   'Рисков по {currency} не видно: остаток выше резерва, бюджеты в пределах лимитов, просрочек нет.':
     '{currency} boʻyicha xavflar koʻrinmaydi: qoldiq zaxiradan yuqori, byudjetlar limit doirasida, muddati oʻtganlar yoʻq.',
+  'Рисков по {currency} не видно: остаток выше резерва, бюджеты в пределах лимитов.':
+    '{currency} boʻyicha xavflar koʻrinmaydi: qoldiq zaxiradan yuqori, byudjetlar limit doirasida.',
   'Минимальный резерв:': 'Minimal zaxira:',
 
   // Month figures

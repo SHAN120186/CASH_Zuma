@@ -164,7 +164,7 @@ test('accepted funding commit reloads full detail instead of losing documents, p
 
 test('forecast includes fee in one original request event and removes the caption after withdrawal',async t=>{
   const previous=lang.value;setLang('ru');t.after(()=>setLang(previous));
-  const view=mount(overview,{companyId:3,company:{id:3,name:'Synthetic'},currency:'UZS',today:'2026-11-04',has:()=>false,canDecide:()=>false,api:()=>new Promise(()=>{})});t.after(view.unmount);await settle();
+  const view=mount(overview,{showRequestPanels:true,companyId:3,company:{id:3,name:'Synthetic'},currency:'UZS',today:'2026-11-04',has:()=>false,canDecide:()=>false,api:()=>new Promise(()=>{})});t.after(view.unmount);await settle();
   const event={kind:'out',id:42,name:'Synthetic payee',amount:'1000000.00',cash_amount:'990000.00',cash_funding_fee:'10000.00'};
   view.state.s={...view.state.s,loading:false,dashLoading:false,requestsLoading:false,approved:[],pending:[],pendingAll:[],dash:{forecast:[{date:'2026-11-05',events:[event]}]}};await settle();
   assert.equal(view.state.upcoming.length,1);assert.equal(view.state.upcoming[0].id,42);assert.equal(view.state.upcoming[0].amount,'1000000.00');
