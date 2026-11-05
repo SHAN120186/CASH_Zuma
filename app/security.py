@@ -40,6 +40,11 @@ PERMS = {
  'sales': {'overview','receipts','receipt_edit','receipt_delete'},
 }
 
+# Viewing the compact home page does not grant financial or calendar access.
+# Company scoping still gives employees rights only after an explicit assignment.
+for rights in PERMS.values():
+    rights.add('home_view')
+
 # Holding admin operates across all companies without separate financial assignments.
 PERMS['admin'] |= set().union(*(rights for role,rights in PERMS.items() if role != 'founder'))
 

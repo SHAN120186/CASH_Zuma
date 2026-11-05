@@ -1,7 +1,7 @@
 import {test} from 'node:test';
 import assert from 'node:assert/strict';
 import {compileComponent, mount, settle, text, all, find} from './helpers/mountVue.js';
-import {canSeeFullOverview} from '../src/overview/rights.js';
+import {canOpenOverview,canSeeFullOverview} from '../src/overview/rights.js';
 import {lang, setLang} from '../src/i18n/index.js';
 
 const overview = await compileComponent(new URL('../src/overview/OverviewPage.vue', import.meta.url));
@@ -25,6 +25,27 @@ const heading = (view, id) => find(view.container, node => node.tag === 'h2' && 
 const h2s = view => all(view.container, node => node.tag === 'h2').map(text);
 const requestCalls = calls => calls.filter(url => new URL(url, 'https://synthetic.test').pathname === '/api/requests');
 const broadGrants = ['view', 'overview', 'ledger', 'export', 'requests-view', 'approve', 'request_check', 'pay_bank', 'pay_cash'];
+
+test('the dedicated overview right opens every employee home without selecting the full overview', () => {
+  for (const role of lowerRoles) {
+    for (const sections of [null, {home: 'view', accounts: 'hidden', requests: 'hidden', calendar: 'hidden'}]) {
+      const user = {...ownRole(role), permissions: ['home_view'], sections};
+      assert.equal(canOpenOverview(user), true, `${role}: home opens`);
+      assert.equal(canSeeFullOverview(user), false, `${role}: compact format`);
+      assert.deepEqual(user.permissions, ['home_view']);
+    }
+  }
+});
+
+test('the overview entry respects a hidden home and does not mistake other duties for home access', () => {
+  assert.equal(canOpenOverview(null), false);
+  assert.equal(canOpenOverview({...ownRole('cashier'), permissions: ['request', 'ledger', 'pay_cash']}), false);
+  assert.equal(canOpenOverview({...ownRole('cashier'), permissions: ['home_view'], sections: {home: 'hidden'}}), false);
+  assert.equal(canOpenOverview({...ownRole('employee'), permissions: []}), false);
+  for (const right of ['view', 'overview']) {
+    assert.equal(canOpenOverview({...ownRole('sales'), permissions: [right]}), true);
+  }
+});
 
 function apiFixture(calls, {delayFull, delayRequests} = {}) {
   return async url => {

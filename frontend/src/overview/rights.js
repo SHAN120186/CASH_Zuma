@@ -8,6 +8,12 @@ export const payRight = r => (r.account_kind === 'cash' ? 'pay_cash' : 'pay_bank
 
 export const canPayAny = has => PAY_RIGHTS.some(right => has(right));
 
+// Opening the overview does not grant general financial or calendar access.
+export function canOpenOverview(user) {
+  if (!user || user.sections && !['view', 'edit'].includes(user.sections.home)) return false;
+  return ['home_view', 'view', 'overview'].some(right => user.permissions?.includes(right));
+}
+
 // The full financial overview is reserved for the company's financial leadership.
 // A grant or a temporary approval/payment duty does not change the employee's role.
 export function canSeeFullOverview(user) {
