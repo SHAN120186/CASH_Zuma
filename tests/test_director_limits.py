@@ -159,6 +159,97 @@ class DirectorLimitTests(base.SiteTests):
             blocked = next(item for item in self.row(rid)['director_limit']['items'] if item['exceeded'])
             self.assertEqual(blocked['amount'], '1000000.00' if fee_category == self.cat else '10000.00')
 
+    def company_approval_fixture(self, code):
+        company = self.company_ids()[code]
+        headers = {**self.h, 'X-Company-ID': str(company)}
+        account = self.account('Synthetic limit verification ' + code, headers=headers)
+        actors = {}
+        for role in ('accountant', 'finance', 'director'):
+            actors[role] = self.user_in(company, role, 'cap_matrix_' + code.lower() + '_' + role)
+            self.addCleanup(actors[role][0].close)
+        return headers, account, actors
+
+    def company_director_stage(self, amount, category, headers, account, actors):
+        created = self.request(amount, headers=headers, account=account, category=category)
+        self.assertEqual(created.status_code, 200, created.text)
+        rid = created.json()['id']
+        for role, action in (('accountant', 'check'), ('finance', 'approve')):
+            result = self.post(f'/api/requests/{rid}/decision',
+                               {'action': action, 'note': 'Synthetic independent stage verification'}, *actors[role])
+            self.assertEqual(result.status_code, 200, result.text)
+        self.assertEqual(self.row(rid, headers)['approval_stage'], 'director')
+        return rid
+
+    def test_equipment_boundary_and_forged_approval_payload_in_each_company(self):
+        # Expected values come from the owner's table, independently of TABLE_LIMITS.
+        for code in ('UZGERMED', 'ZUMA'):
+            headers, account, actors = self.company_approval_fixture(code)
+            created = self.post('/api/categories', {'name': '17 · Закуп основных средств',
+                                'type': 'outcome', 'activity': 'investing'}, headers=headers)
+            self.assertEqual(created.status_code, 200, created.text)
+            category = created.json()['id']
+            self.assertEqual(self.set_policy(category, 'always', headers=headers).status_code, 200)
+            for amount, expected in (('99999999.99', 200), ('100000000', 200), ('100000000.01', 409)):
+                with self.subTest(company=code, amount=amount):
+                    rid = self.company_director_stage(amount, category, headers, account, actors)
+                    before = self.row(rid, headers)
+                    self.assertEqual(before['director_limit']['items'][0]['limit'], '100000000.00')
+                    director, dh = actors['director']
+                    actions = director.get(f'/api/requests/{rid}', headers=dh).json()['actions']
+                    self.assertEqual('approve' in actions, expected == 200)
+                    # Direct HTTP, even with a forged lower amount / another category,
+                    # cannot substitute the stored request values at approval time.
+                    forged = director.post(f'/api/requests/{rid}/decision', headers=dh, json={
+                        'action': 'approve', 'version': before['version'], 'note': 'Synthetic direct approval check',
+                        'amount': '0.01', 'category_id': self.cat, 'director_limit_uzs': None})
+                    self.assertEqual(forged.status_code, 422, forged.text)
+                    unchanged = self.row(rid, headers)
+                    self.assertEqual((unchanged['status'], unchanged['version']), ('pending', before['version']))
+                    result = director.post(f'/api/requests/{rid}/decision', headers=dh, json={
+                        'action': 'approve', 'version': before['version'], 'note': 'Synthetic direct approval check'})
+                    self.assertEqual(result.status_code, expected, result.text)
+                    after = self.row(rid, headers)
+                    self.assertEqual(after['amount'], before['amount'])
+                    self.assertEqual(after['category_id'], category)
+                    if expected == 409:
+                        self.assertIn('100 000 000,01 UZS', result.json()['detail'])
+                        self.assertEqual((after['status'], after['version'], after['approved_by']),
+                                         ('pending', before['version'], None))
+                    else:
+                        self.assertEqual(after['status'], 'approved')
+        with unit() as s:
+            self.assertEqual(list(s.scalars(select(Ledger).execution_options(company_unscoped=True))), [])
+
+    def test_all_zero_articles_and_unlimited_article_in_each_company(self):
+        zero_names = ('12 · Расходы на маркетинг (бонус)',
+                      '65 · Расчеты по предоставленным займам 4720',
+                      '70 · Долгосрочные займы 7820', '78 · Само учун карз', '98 · Двидент')
+        for code in ('UZGERMED', 'ZUMA'):
+            headers, account, actors = self.company_approval_fixture(code)
+            for name in (*zero_names, '18 · Закуп услуг по Лабораторным анализам (QC)'):
+                zero = name in zero_names
+                with self.subTest(company=code, article=name):
+                    created = self.post('/api/categories', {'name': name, 'type': 'outcome',
+                                        'activity': 'operating'}, headers=headers)
+                    self.assertEqual(created.status_code, 200, created.text)
+                    category = created.json()['id']
+                    self.assertEqual(self.set_policy(category, 'always', headers=headers).status_code, 200)
+                    rid = self.company_director_stage('0.01' if zero else '100000000.01',
+                                                      category, headers, account, actors)
+                    before = self.row(rid, headers)
+                    self.assertEqual(before['director_limit']['items'][0]['limit'], '0.00' if zero else None)
+                    result = self.post(f'/api/requests/{rid}/decision',
+                                       {'action': 'approve', 'note': 'Synthetic table amount verification'}, *actors['director'])
+                    self.assertEqual(result.status_code, 409 if zero else 200, result.text)
+                    after = self.row(rid, headers)
+                    if zero:
+                        self.assertEqual((after['status'], after['version'], after['approved_by']),
+                                         ('pending', before['version'], None))
+                    else:
+                        self.assertEqual(after['status'], 'approved')
+        with unit() as s:
+            self.assertEqual(list(s.scalars(select(Ledger).execution_options(company_unscoped=True))), [])
+
 
 def load_tests(loader, tests, pattern):
     return unittest.TestSuite(DirectorLimitTests(name) for name in DirectorLimitTests.__dict__ if name.startswith('test_'))

@@ -33,7 +33,8 @@ jobs:
       - run: python -m unittest tests.test_request_due_order -q
       - run: python -m unittest tests.test_request_form_rules -q
       - run: python -m unittest tests.test_company_category_catalog -q
-      - run: python -m unittest tests.test_request_batch_performance tests.test_request_batch_history -q
+      - run: python -m unittest tests.test_request_batch_performance -q
+      - run: python -m unittest tests.test_request_batch_history -q
       - run: python -m unittest tests.test_http_audit -q
       - run: python -m unittest tests.test_request_document_limit -q
       - run: python -m unittest tests.test_counterparty_name_migration -q
@@ -116,7 +117,7 @@ jobs:
       - run: python -m unittest tests.test_company_category_catalog -q
       - run: python -m unittest tests.test_request_batch_performance -q
       - run: python -m unittest tests.test_director_limits -q
-      - run: python -m unittest tests.test_request_batch_performance tests.test_request_batch_history -q
+      - run: python -m unittest tests.test_request_batch_history -q
       - run: python -m unittest tests.test_http_audit -q
       - run: python -m unittest tests.test_request_document_limit -q
       - run: python -m unittest tests.test_counterparty_name_migration -q
