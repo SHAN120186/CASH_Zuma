@@ -3,6 +3,7 @@
 Проверяются актуальные полномочия при окончательном согласовании, включая
 заявки, отправленные до введения лимитов. Уже утверждённые оплаты не меняются.
 """
+import re
 from sqlalchemy import select, text
 from sqlalchemy.orm import Session
 from fastapi import HTTPException
@@ -22,10 +23,14 @@ NAME_CODES = {
 
 
 def apply_default_director_limit(category):
-    """Код 1С имеет приоритет; точные старые имена — только для статей без кода."""
+    """Код 1С имеет приоритет, затем старый код в названии и точное имя."""
     if category.type != 'outcome' or category.director_limit_changed_at is not None:
         return
-    code = (category.code or '').strip() or NAME_CODES.get(category.name)
+    code = (category.code or '').strip()
+    if not code:
+        # Тот же прежний формат, который поддерживает импорт бюджета.
+        prefix = re.match(r'^(\d+)\s*[·|—]\s*', category.name)
+        code = prefix.group(1) if prefix else NAME_CODES.get(category.name)
     if code in TABLE_LIMITS:
         category.director_limit_uzs = TABLE_LIMITS[code]
         category.director_limit_changed_at = now()

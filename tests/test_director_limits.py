@@ -50,6 +50,25 @@ class DirectorLimitTests(base.SiteTests):
         for key in ('amount', 'status', 'version', 'route', 'checked_by', 'finance_approved_by', 'approved_by'):
             self.assertEqual(after[key], before[key], key)
 
+    def test_legacy_codes_in_names_are_migrated_for_every_company(self):
+        with unit(True) as s:
+            for company in s.scalars(select(Company).where(Company.code != 'UNASSIGNED')):
+                for separator in ('·', '|', '—'):
+                    for code in TABLE_LIMITS:
+                        s.add(Category(company_id=company.id, name=f'{code} {separator} Synthetic legacy {code}',
+                                       type='outcome', activity='operating'))
+                s.add(Category(company_id=company.id, code='other', name='17 · Explicit code wins', type='outcome'))
+                s.add(Category(company_id=company.id, name='Synthetic 17 · not a code prefix', type='outcome'))
+            s.delete(s.get(Setting, 'director_upper_limits_v1'))
+        migrate_director_limits(engine)
+        with unit() as s:
+            for category in s.scalars(select(Category).where(Category.name.contains('Synthetic legacy'))):
+                self.assertEqual(category.director_limit_uzs, TABLE_LIMITS[category.name.split()[0]])
+                self.assertIsNotNone(category.director_limit_changed_at)
+            for name in ('17 · Explicit code wins', 'Synthetic 17 · not a code prefix'):
+                for category in s.scalars(select(Category).where(Category.name == name)):
+                    self.assertIsNone(category.director_limit_uzs)
+
     def test_exact_cap_allowed_above_cap_rejected_and_transaction_unchanged(self):
         self.assertEqual(self.set_limit(uzs='100000000').status_code, 200)
         exact = self.request('100000000').json()['id'];self.after_finance(exact)
