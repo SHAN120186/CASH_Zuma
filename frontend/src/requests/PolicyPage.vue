@@ -84,7 +84,7 @@ onMounted(load);
     <div class="table-card rsp-wrap"><table class="rsp policy-table"><thead><tr><th>{{ tx('Статья') }}</th><th>{{ tx('Политика') }}</th><th class="num">UZS</th><th class="num">USD</th><th class="num">EUR</th><th>{{ tx('Лимит директора') }}</th><th>{{ tx('Изменено') }}</th><th></th></tr></thead><tbody>
       <template v-for="c in data.categories" :key="c.id">
         <tr>
-          <td :data-l="tx('Статья')"><b>{{ c.code ? c.code + ' · ' : '' }}{{ c.name }}</b><small v-if="c.skip_allowed">{{ tx('Регулярный платёж: разрешено без директора') }}</small></td>
+          <td :data-l="tx('Статья')"><b>{{ c.name }}</b><small v-if="c.skip_allowed">{{ tx('Регулярный платёж: разрешено без директора') }}</small></td>
           <td :data-l="tx('Политика')">{{ tx(POLICIES[c.policy]) }}</td>
           <td class="num" data-l="UZS">{{ threshold(c, 'UZS') }}</td><td class="num" data-l="USD">{{ threshold(c, 'USD') }}</td><td class="num" data-l="EUR">{{ threshold(c, 'EUR') }}</td>
           <td :data-l="tx('Лимит директора')"><small v-for="cur in currencies" :key="cur">{{ cur }}: {{ limitLabel(c, cur) }}</small><small v-if="c.limit_changed_at">{{ when(c.limit_changed_at) }} {{ c.limit_changed_by }}</small></td>
