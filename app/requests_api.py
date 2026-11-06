@@ -12,10 +12,10 @@ from .db import (unit, now, User, Account, Category, PaymentRequest, RequestDocu
 from .security import (session_user, perms_of, has_role, payment_channels, pay_right, ROLES, COMPANY_ROLES)
 from .services import (get, log, money, amount, today, approval_stage, round_participants, all_participants, route_complete,
                        DOCUMENT_KINDS, REQUIRED_DOCUMENTS, REQUIRED_DOCUMENTS_BY_CHANNEL, REQUEST_DEPARTMENTS,
-                       THRESHOLD_FIELDS, category_policy, request_json, request_journal, requires_director, request_batch)
+                       THRESHOLD_FIELDS, category_policy, request_json, request_journal, request_batch)
 from .workdays import due_minimums, LEAD_DAYS
 from .workflow_setup import DEFAULT_THRESHOLDS
-from .director_limits import LIMIT_FIELDS, limits_json, request_director_limit
+from .director_limits import limits_json
 
 router = APIRouter()
 MAX_DOCUMENT = 10 * 1024 * 1024
@@ -83,9 +83,6 @@ def request_actions(s, u, r, batch=None, director_limit=None):
         actions.append('documents')
     if stage and has_role(u, STAGE_ROLE[stage]) and u.id not in round_participants(s, r, batch=batch) and ('approve' in perms or stage == 'check'):
         actions.append('check' if stage == 'check' else 'approve')
-    if 'approve' in actions and (stage == 'director' or not requires_director(r)):
-        if (director_limit if director_limit is not None else request_director_limit(s, r, account.currency, batch=batch))['exceeded']:
-            actions.remove('approve')
     if (('approve' in perms and r.status in ('pending', 'approved')) or (stage == 'check' and has_role(u, 'accountant'))) and not own_only:
         actions.append('return')
     if r.status == 'approved' and pay_right(account) in perms:
@@ -171,6 +168,7 @@ def request_rules(request: Request):
 def policy_json(c, names):
     effective = {cur: category_policy(c, cur) for cur in ('UZS', 'USD', 'EUR')}
     return {'id': c.id, 'name': c.name, 'policy': c.director_policy or 'always', 'skip_allowed': c.skip_allowed,
+            'policies': {cur: getattr(c, 'director_policy_' + cur.lower()) for cur in ('UZS', 'USD', 'EUR')},
             'code': c.code, 'director_limits': limits_json(c),
             'limit_changed_at': str(c.director_limit_changed_at) if c.director_limit_changed_at else None,
             'limit_changed_by': names.get(c.director_limit_changed_by, '') if c.director_limit_changed_by else '',
@@ -189,7 +187,7 @@ def approval_policy(request: Request):
         return {'categories': [policy_json(c, names) for c in cats],
                 'defaults': {cur: money(v) if v is not None else None for cur, v in DEFAULT_THRESHOLDS.items()},
                 'can_edit_skip_list': 'users' in perms_of(u),
-                'can_edit_director_limits': 'users' in perms_of(u),
+                'can_edit_director_limits': False,
                 'rule': 'Директор участвует по политике статьи на момент отправки заявки. Нет политики или порога валюты — директор утверждает любую сумму.'}
 
 
@@ -201,7 +199,10 @@ def set_approval_policy(request: Request):
 
 
 class PolicyIn(Input):
-    policy: Literal['always', 'threshold', 'skip']
+    policy: Optional[Literal['always', 'threshold', 'skip']] = None
+    policy_uzs: Optional[Literal['always', 'threshold', 'skip']] = None
+    policy_usd: Optional[Literal['always', 'threshold', 'skip']] = None
+    policy_eur: Optional[Literal['always', 'threshold', 'skip']] = None
     threshold_uzs: Optional[str] = None
     threshold_usd: Optional[str] = None
     threshold_eur: Optional[str] = None
@@ -221,19 +222,8 @@ def set_director_limits(id: int, data: DirectorLimitsIn, request: Request):
         u, _ = session_user(s, request, 'approval_policy')
         if 'users' not in perms_of(u):
             raise HTTPException(403, 'Лимит директора изменяет только администратор холдинга.')
-        c = get(s, Category, id)
-        if c.type != 'outcome':
-            raise HTTPException(422, 'Лимит директора задаётся только для расходных статей.')
-        before = limits_json(c)
-        for cur, field in LIMIT_FIELDS.items():
-            value = getattr(data, 'limit_' + cur.lower())
-            setattr(c, field, None if value in (None, '') else amount(value, allow_zero=True))
-        c.director_limit_changed_at = now()
-        c.director_limit_changed_by = u.id
-        s.flush()
-        log(s, u, 'Изменён лимит директора по статье', 'category', c.id,
-            json.dumps({'before': before, 'after': limits_json(c), 'reason': data.reason}, ensure_ascii=False))
-        return policy_json(c, names_of(s, [u.id, c.director_policy_changed_by]))
+        get(s, Category, id)
+        raise HTTPException(409, 'Верхний лимит директора больше не используется. Настройте порог участия.')
 
 
 @router.put('/api/categories/{id}/director-policy')
@@ -243,17 +233,38 @@ def set_director_policy(id: int, data: PolicyIn, request: Request):
         c = get(s, Category, id)
         if c.type != 'outcome':
             raise HTTPException(422, 'Политика директора задаётся только для расходных статей.')
-        if data.policy == 'skip' and not c.skip_allowed:
+        legacy = data.policy is not None
+        currencies = ('UZS', 'USD', 'EUR')
+        selected = currencies if legacy else tuple(cur for cur in currencies
+            if {'policy_' + cur.lower(), 'threshold_' + cur.lower()} & data.model_fields_set)
+        if not selected:
+            raise HTTPException(422, 'Укажите политику или порог хотя бы для одной валюты.')
+        if (data.policy == 'skip' or any(getattr(data, 'policy_' + cur.lower()) == 'skip' for cur in selected)) and not c.skip_allowed:
             raise HTTPException(409, 'Без директора можно проводить только статьи из утверждённого перечня регулярных платежей.')
-        values = {f: amount(getattr(data, f)) if getattr(data, f) not in (None, '') else None
-                  for f in ('threshold_uzs', 'threshold_usd', 'threshold_eur')}
-        if data.policy == 'threshold' and not any(v is not None for v in values.values()):
-            raise HTTPException(422, 'Для политики «выше порога» задайте порог хотя бы для одной валюты.')
         names = names_of(s, [c.director_policy_changed_by, c.director_limit_changed_by])
         before = policy_json(c, names)
-        c.director_policy = data.policy
-        for field, value in values.items():
-            setattr(c, 'director_' + field, value if data.policy == 'threshold' else None)
+        if legacy:
+            values = {f: amount(getattr(data, f), allow_zero=True) if getattr(data, f) not in (None, '') else None
+                      for f in ('threshold_uzs', 'threshold_usd', 'threshold_eur')}
+            if data.policy == 'threshold' and not any(v is not None for v in values.values()):
+                raise HTTPException(422, 'Для политики «выше порога» задайте порог хотя бы для одной валюты.')
+            c.director_policy = data.policy
+            for cur in currencies:
+                setattr(c, 'director_policy_' + cur.lower(), None)
+            for field, value in values.items():
+                setattr(c, 'director_' + field, value if data.policy == 'threshold' else None)
+        else:
+            for cur in selected:
+                suffix = cur.lower()
+                policy_field, threshold_field = 'policy_' + suffix, 'threshold_' + suffix
+                if policy_field in data.model_fields_set:
+                    setattr(c, 'director_' + policy_field, getattr(data, policy_field))
+                if threshold_field in data.model_fields_set:
+                    value = getattr(data, threshold_field)
+                    setattr(c, 'director_' + threshold_field, None if value in (None, '') else amount(value, allow_zero=True))
+                if (getattr(c, 'director_' + policy_field) == 'threshold'
+                        and getattr(c, 'director_' + threshold_field) is None):
+                    raise HTTPException(422, 'Для политики «выше порога» задайте порог хотя бы для одной валюты.')
         c.director_policy_changed_at = now()
         c.director_policy_changed_by = u.id
         s.flush()
@@ -276,7 +287,8 @@ def set_skip_allowed(id: int, data: SkipListIn, request: Request):
         c = get(s, Category, id)
         if c.type != 'outcome':
             raise HTTPException(422, 'Перечень составляется только из расходных статей.')
-        if not data.allowed and c.director_policy == 'skip':
+        if not data.allowed and (c.director_policy == 'skip' or any(
+                getattr(c, 'director_policy_' + cur.lower()) == 'skip' for cur in ('UZS', 'USD', 'EUR'))):
             raise HTTPException(409, 'Сначала смените политику статьи: сейчас директор по ней не участвует.')
         before = c.skip_allowed
         c.skip_allowed = data.allowed

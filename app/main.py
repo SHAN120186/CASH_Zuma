@@ -644,9 +644,6 @@ def decide(id:int,data:DecisionIn,request:Request):
             if not act_as(u,'finance' if stage=='finance' else 'director'):
                 raise HTTPException(403,'Сначала требуется проверка финансового директора компании.' if stage=='finance' else 'Требуется отдельное подтверждение директора компании.')
             ensure_new_participant(s,u,r)
-            if stage=='director' or not requires_director(r):
-                from .director_limits import enforce_director_limit
-                enforce_director_limit(s,r,a.currency)
             b=enforce_budget(s,r.category_id,r.due_date,a.currency,r.amount,note,r.id)
             from .cash_funding import fee_budget
             fee_budget(s,r,note,final=stage=='director' or not requires_director(r))

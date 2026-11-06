@@ -1,6 +1,12 @@
 // Uzbek (Latin) translations: requests/*.
 // Key: the exact Russian text; value: the Uzbek text with the same {placeholders}.
 export default {
+  'Пороги участия директора по статьям': 'Moddalar bo‘yicha direktor ishtiroki chegaralari',
+  'Участие директора {currency}': 'Direktor ishtiroki {currency}',
+  'Порог участия {currency}': 'Ishtirok chegarasi {currency}',
+  'Выше {amount} {currency}': '{amount} {currency} dan yuqori',
+  'Директор согласует заявку только при сумме строго выше порога. Ровно порог — согласование завершает финансовый директор. Порог 0 — директор участвует при любой положительной сумме. «Директор не участвует» — согласование завершает финансовый директор. Верхнего ограничения суммы для директора нет.': 'Direktor arizani faqat summa chegaradan qat’iy yuqori bo‘lganda kelishadi. Summa chegaraga teng bo‘lsa, kelishishni moliyaviy direktor yakunlaydi. Chegara 0 bo‘lsa, direktor har qanday musbat summada ishtirok etadi. «Direktor ishtirok etmaydi» tanlansa, kelishishni moliyaviy direktor yakunlaydi. Direktor uchun summaning yuqori chegarasi yo‘q.',
+  'Верхний лимит директора больше не используется. Настройте порог участия.': 'Direktorning yuqori limiti endi ishlatilmaydi. Ishtirok chegarasini sozlang.',
   'Лимит директора': 'Direktor limiti',
   'Директор участвует всегда': 'Direktor doimo ishtirok etadi',
   'Без лимита': 'Cheklovsiz',

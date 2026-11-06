@@ -13,7 +13,6 @@ const POLICIES = {always: N_('Директор участвует всегда')
 const data = ref(null), error = ref(''), notice = ref(''), noticeParams = ref(null), busy = ref(false), editing = ref(null), form = ref({});
 const year = ref(new Date().getFullYear()), days = ref([]), dayForm = ref({day: '', kind: 'holiday', name: ''});
 const skipForm = ref(null);
-const limitEditing = ref(null), limitForm = ref({});
 const currencies = ['UZS', 'USD', 'EUR'];
 
 async function load() {
@@ -28,36 +27,45 @@ async function run(fn, message, params = null) {
 }
 const json = (method, body) => ({method, headers: {'Content-Type': 'application/json'}, body: JSON.stringify(body)});
 
+function effective(c, cur) {
+  if (c.effective?.[cur]) return c.effective[cur];
+  const policy = c.policy || 'always', threshold = c.thresholds?.[cur] ?? null;
+  return {policy: policy === 'threshold' && threshold == null ? 'always' : policy, threshold};
+}
 function edit(c) {
   editing.value = c.id;
-  form.value = {policy: c.policy, threshold_uzs: c.thresholds.UZS || '', threshold_usd: c.thresholds.USD || '', threshold_eur: c.thresholds.EUR || '', reason: ''};
+  const values = {reason: ''};
+  for (const cur of currencies) {
+    const rule = effective(c, cur), suffix = cur.toLowerCase();
+    values['policy_' + suffix] = rule.policy;
+    values['threshold_' + suffix] = rule.threshold ?? '';
+  }
+  form.value = values;
 }
-function save(c) {
-  const f = form.value, blank = v => (v === '' || v == null ? null : String(v));
-  run(() => props.api(`/api/categories/${c.id}/director-policy`, json('PUT', {policy: f.policy, threshold_uzs: blank(f.threshold_uzs),
-    threshold_usd: blank(f.threshold_usd), threshold_eur: blank(f.threshold_eur), reason: f.reason})), N_('Политика статьи «{name}» сохранена.'), {name: c.name})
-    .then(() => { if (!error.value) editing.value = null; });
+async function save(c) {
+  const body = {reason: form.value.reason};
+  for (const cur of currencies) {
+    const suffix = cur.toLowerCase(), policy = form.value['policy_' + suffix], value = form.value['threshold_' + suffix];
+    body['policy_' + suffix] = policy;
+    body['threshold_' + suffix] = policy === 'threshold' && value !== '' && value != null ? String(value) : null;
+  }
+  await run(() => props.api(`/api/categories/${c.id}/director-policy`, json('PUT', body)), N_('Политика статьи «{name}» сохранена.'), {name: c.name});
+  if (!error.value) editing.value = null;
 }
 function toggleSkip(c) {
   run(() => props.api(`/api/categories/${c.id}/skip-allowed`, json('PUT', {allowed: !c.skip_allowed, reason: skipForm.value.reason})),
       c.skip_allowed ? N_('Статья исключена из перечня.') : N_('Статья добавлена в перечень регулярных платежей.'))
     .then(() => { if (!error.value) skipForm.value = null; });
 }
-function editLimit(c) {
-  limitEditing.value = c.id;
-  limitForm.value = {limit_uzs: c.director_limits?.UZS ?? '', limit_usd: c.director_limits?.USD ?? '', limit_eur: c.director_limits?.EUR ?? '', reason: ''};
-}
-async function saveLimit(c) {
-  const body = {...limitForm.value};
-  for (const cur of currencies) { const key = 'limit_' + cur.toLowerCase(); body[key] = body[key] === '' || body[key] == null ? null : String(body[key]); }
-  await run(() => props.api(`/api/categories/${c.id}/director-limits`, json('PUT', body)), N_('Лимит директора по статье «{name}» сохранён.'), {name: c.name});
-  if (!error.value) limitEditing.value = null;
-}
-const limitLabel = (c, cur) => c.director_limits?.[cur] == null ? tx('Без лимита') : props.money(c.director_limits[cur]) + ' ' + cur;
 function addDay() { run(() => props.api('/api/calendar-days', json('POST', dayForm.value)), N_('Календарь обновлён.')).then(() => { if (!error.value) dayForm.value = {day: '', kind: 'holiday', name: ''}; }); }
 function removeDay(d) { run(() => props.api(`/api/calendar-days/${d.day}`, {method: 'DELETE'}), N_('Запись календаря удалена.')); }
 
-const threshold = (c, cur) => c.policy !== 'threshold' ? '—' : c.thresholds[cur] ? props.money(c.thresholds[cur]) + ' ' + cur : tx('любая сумма');
+const participation = (c, cur) => {
+  const rule = effective(c, cur);
+  return rule.policy === 'threshold' && rule.threshold != null
+    ? tx('Выше {amount} {currency}', {amount: props.money(rule.threshold), currency: cur})
+    : tx(POLICIES[rule.policy] || POLICIES.always);
+};
 const dateRu = d => d ? d.split('-').reverse().join('.') : '';
 const when = s => s ? formatDate(new Date(s.replace(' ', 'T') + 'Z'), {timeZone: 'Asia/Tashkent', day: '2-digit', month: '2-digit', year: 'numeric'}) : '';
 const holidays = computed(() => days.value.filter(d => d.kind === 'holiday').length);
@@ -78,41 +86,29 @@ onMounted(load);
   <p v-if="notice" class="notice" role="status">{{ tx(notice, noticeParams) }}</p>
   <p v-if="error" class="error" role="alert">{{ tx(error) }}</p>
 
-  <section v-if="data" class="card"><div class="card-h"><h3>{{ tx('Политика директора по статьям') }}</h3>
+  <section v-if="data" class="card"><div class="card-h"><h3>{{ tx('Пороги участия директора по статьям') }}</h3>
     <span class="sub">{{ tx('Порог по умолчанию для обычных статей: {uzs} UZS и {usd} USD; EUR без порога — директор всегда.', {uzs: money(data.defaults.UZS), usd: money(data.defaults.USD)}) }}</span></div>
-    <div class="card-b"><p class="sub">{{ tx('Лимит директора — максимальная сумма окончательного согласования по статье. Пустое поле — без лимита, 0 — согласование запрещено. Лимит проверяется на момент утверждения; изменить его может администратор холдинга.') }}</p></div>
-    <div class="table-card rsp-wrap"><table class="rsp policy-table"><thead><tr><th>{{ tx('Статья') }}</th><th>{{ tx('Политика') }}</th><th class="num">UZS</th><th class="num">USD</th><th class="num">EUR</th><th>{{ tx('Лимит директора') }}</th><th>{{ tx('Изменено') }}</th><th></th></tr></thead><tbody>
+    <div class="card-b"><p class="sub">{{ tx('Директор согласует заявку только при сумме строго выше порога. Ровно порог — согласование завершает финансовый директор. Порог 0 — директор участвует при любой положительной сумме. «Директор не участвует» — согласование завершает финансовый директор. Верхнего ограничения суммы для директора нет.') }}</p></div>
+    <div class="table-card rsp-wrap"><table class="rsp policy-table"><thead><tr><th>{{ tx('Статья') }}</th><th>UZS</th><th>USD</th><th>EUR</th><th>{{ tx('Изменено') }}</th><th></th></tr></thead><tbody>
       <template v-for="c in data.categories" :key="c.id">
         <tr>
           <td :data-l="tx('Статья')"><b>{{ c.name }}</b><small v-if="c.skip_allowed">{{ tx('Регулярный платёж: разрешено без директора') }}</small></td>
-          <td :data-l="tx('Политика')">{{ tx(POLICIES[c.policy]) }}</td>
-          <td class="num" data-l="UZS">{{ threshold(c, 'UZS') }}</td><td class="num" data-l="USD">{{ threshold(c, 'USD') }}</td><td class="num" data-l="EUR">{{ threshold(c, 'EUR') }}</td>
-          <td :data-l="tx('Лимит директора')"><small v-for="cur in currencies" :key="cur">{{ cur }}: {{ limitLabel(c, cur) }}</small><small v-if="c.limit_changed_at">{{ when(c.limit_changed_at) }} {{ c.limit_changed_by }}</small></td>
+          <td v-for="cur in currencies" :key="cur" :data-l="cur">{{ participation(c, cur) }}</td>
           <td :data-l="tx('Изменено')">{{ when(c.changed_at) }}<small>{{ c.changed_by }}</small></td>
           <td data-l=""><div class="actions"><button v-if="canEdit" class="secondary tiny" :disabled="busy" @click="edit(c)">{{ tx('Изменить') }}</button>
-            <button v-if="canEdit&&data.can_edit_director_limits" class="secondary tiny" :disabled="busy" @click="editLimit(c)">{{ tx('Лимит директора') }}</button>
             <button v-if="canEdit&&data.can_edit_skip_list" class="ghost tiny" :disabled="busy" @click="skipForm = {id: c.id, reason: ''}">{{ c.skip_allowed ? tx('Убрать из перечня') : tx('В перечень без директора') }}</button></div></td>
         </tr>
-        <tr v-if="limitEditing === c.id" class="detail-row"><td colspan="8" class="detail-cell">
-          <form class="form-grid" @submit.prevent="saveLimit(c)">
-            <label v-for="cur in currencies" :key="cur">{{ tx('Лимит директора {currency}', {currency: cur}) }}<input v-model="limitForm['limit_' + cur.toLowerCase()]" inputmode="decimal" pattern="[0-9]+([.][0-9]{1,2})?" :placeholder="tx('Без лимита')"></label>
-            <label class="wide">{{ tx('Причина изменения') }}<textarea v-model="limitForm.reason" minlength="10" maxlength="1000" required></textarea></label>
-            <div class="form-actions wide"><button type="button" class="secondary" @click="limitEditing = null">{{ tx('Отмена') }}</button><button :disabled="busy">{{ tx('Сохранить') }}</button></div>
-          </form>
-        </td></tr>
-        <tr v-if="editing === c.id" class="detail-row"><td colspan="8" class="detail-cell">
+        <tr v-if="editing === c.id" class="detail-row"><td colspan="6" class="detail-cell">
           <form class="form-grid" @submit.prevent="save(c)">
-            <label>{{ tx('Политика') }}<select v-model="form.policy"><option v-for="(label, k) in POLICIES" :key="k" :value="k" :disabled="k === 'skip' && !c.skip_allowed">{{ tx(label) }}</option></select></label>
-            <template v-if="form.policy === 'threshold'">
-              <label>{{ tx('Порог {currency}', {currency: 'UZS'}) }}<input v-model="form.threshold_uzs" inputmode="decimal" pattern="[0-9]+([.][0-9]{1,2})?" :placeholder="tx('нет — любая сумма')"></label>
-              <label>{{ tx('Порог {currency}', {currency: 'USD'}) }}<input v-model="form.threshold_usd" inputmode="decimal" pattern="[0-9]+([.][0-9]{1,2})?" :placeholder="tx('нет — любая сумма')"></label>
-              <label>{{ tx('Порог {currency}', {currency: 'EUR'}) }}<input v-model="form.threshold_eur" inputmode="decimal" pattern="[0-9]+([.][0-9]{1,2})?" :placeholder="tx('нет — любая сумма')"></label>
+            <template v-for="cur in currencies" :key="cur">
+              <label>{{ tx('Участие директора {currency}', {currency: cur}) }}<select v-model="form['policy_' + cur.toLowerCase()]"><option v-for="(label, k) in POLICIES" :key="k" :value="k" :disabled="k === 'skip' && !c.skip_allowed">{{ tx(label) }}</option></select></label>
+              <label v-if="form['policy_' + cur.toLowerCase()] === 'threshold'">{{ tx('Порог участия {currency}', {currency: cur}) }}<input v-model="form['threshold_' + cur.toLowerCase()]" inputmode="decimal" pattern="[0-9]+([.][0-9]{1,2})?" required></label>
             </template>
             <label class="wide">{{ tx('Причина изменения') }}<textarea v-model="form.reason" minlength="10" required></textarea></label>
             <div class="form-actions wide"><button type="button" class="secondary" @click="editing = null">{{ tx('Отмена') }}</button><button :disabled="busy">{{ tx('Сохранить') }}</button></div>
           </form>
         </td></tr>
-        <tr v-if="skipForm && skipForm.id === c.id" class="detail-row"><td colspan="8" class="detail-cell">
+        <tr v-if="skipForm && skipForm.id === c.id" class="detail-row"><td colspan="6" class="detail-cell">
           <form class="rq-inline" @submit.prevent="toggleSkip(c)"><input v-model="skipForm.reason" minlength="10" required :aria-label="tx('Причина')" :placeholder="tx('Причина, не короче 10 символов')">
             <button class="tiny" :disabled="busy">{{ tx('Подтвердить') }}</button><button type="button" class="ghost tiny" @click="skipForm = null">{{ tx('Отмена') }}</button></form>
         </td></tr>
@@ -142,13 +138,10 @@ onMounted(load);
 <style scoped>
 @media (min-width:701px) {
   .policy-table {table-layout:fixed}
-  .policy-table th:nth-child(1) {width:20%}
-  .policy-table th:nth-child(2) {width:14%}
-  .policy-table th:nth-child(3) {width:10%}
-  .policy-table th:nth-child(4),.policy-table th:nth-child(5) {width:7%}
-  .policy-table th:nth-child(6) {width:15%}
-  .policy-table th:nth-child(7) {width:9%}
-  .policy-table th:nth-child(8) {width:18%}
+  .policy-table th:nth-child(1) {width:28%}
+  .policy-table th:nth-child(2),.policy-table th:nth-child(3),.policy-table th:nth-child(4) {width:16%}
+  .policy-table th:nth-child(5) {width:10%}
+  .policy-table th:nth-child(6) {width:14%}
   .policy-table td {overflow-wrap:anywhere}
   .policy-table th,.policy-table td {padding-left:8px;padding-right:8px}
   .policy-table th,.policy-table td.num {white-space:normal}

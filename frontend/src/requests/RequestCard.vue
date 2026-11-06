@@ -161,13 +161,11 @@ onUnmounted(() => document.removeEventListener('keydown', onKey));
         <div class="trk" :aria-label="tx('Этапы заявки')"><template v-for="(s, i) in steps(r)" :key="i"><span v-if="i" class="ln"></span>
           <span class="st" :class="s.c === 'skip' ? 'skip' : s.c"><u>{{ MK[s.c] }}</u>{{ s.l }}</span></template></div>
         <p class="sub rq-route">{{ tx('Маршрут: проверка бухгалтера → финансовый директор → директор по политике статьи → оплата.') }} {{ tx(r.route?.reason) }}</p>
-        <p v-if="r.status === 'pending' && r.director_limit?.exceeded" class="error" role="alert">{{ tx(r.director_limit.reason) }}</p>
 
         <dl class="kv rq-kv">
           <template v-if="r.counterparty_inn"><dt>{{ tx('ИНН контрагента') }}</dt><dd>{{ r.counterparty_inn }}</dd></template>
           <template v-if="r.department"><dt>{{ tx('Отдел') }}</dt><dd>{{lang==='uz'&&r.department_name_uz?r.department_name_uz:(r.department_label||tx(DEPARTMENTS[r.department]||r.department))}}</dd></template>
           <dt>{{ tx('Статья') }}</dt><dd>{{ r.category }}</dd>
-          <template v-for="item in (r.director_limit?.items || []).filter(item => item.limit != null)" :key="item.category_id"><dt>{{ tx('Лимит директора') }} · {{ item.category }}</dt><dd>{{ money(item.limit) }} {{ r.currency }}</dd></template>
           <dt>{{ tx('Канал и счёт') }}</dt><dd>{{ tx(CHANNELS[r.channel] || r.channel) }} · {{ r.account }}</dd>
           <dt>{{ tx('Плановая дата') }}</dt><dd>{{ dateRu(r.date) }} · {{ tx('{priority} приоритет', {priority: tx(PRIORITIES[r.priority])}) }}</dd>
           <dt>{{ tx('Назначение платежа') }}</dt><dd>{{ r.purpose }}</dd>
