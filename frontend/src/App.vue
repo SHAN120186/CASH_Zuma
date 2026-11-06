@@ -188,7 +188,8 @@ const sortedForecast=computed(()=>calendarOrder.value==='desc'?[...forecastRows.
 const amountFields=['amount','opening','limit','spent','reserved','remaining','balance'];
 const dateFrom=ref(''),dateTo=ref(''),listPage=ref(1),listTotal=ref(0),requestStatus=ref(''),requestArchive=ref('active'),showArchive=ref(false),showDeletedOperations=ref(false),expandedRequest=ref(null);
 const visibleRows=computed(()=>['ledger','requests'].includes(page.value)?rows.value:rows.value.filter(r=>(!r.currency||r.currency===currency.value)&&JSON.stringify(r).toLowerCase().includes(search.value.toLowerCase())));
-const listPages=computed(()=>Math.max(1,Math.ceil(listTotal.value/10)));
+const listPageSize=computed(()=>page.value==='requests'?15:10);
+const listPages=computed(()=>Math.max(1,Math.ceil(listTotal.value/listPageSize.value)));
 const requestStatuses=computed(()=>Object.fromEntries(Object.entries(status).filter(([key])=>!['expected','received'].includes(key))));
 watch(currency,()=>{listPage.value=1},{flush:'sync'});
 async function applyPeriod(v){dateFrom.value=v.from;dateTo.value=v.to;listPage.value=1;await load()}
@@ -300,7 +301,7 @@ async function load(options={}){if(!companyReady.value)return;const epoch=compan
  if(['pnl','balance','rating'].includes(page.value))statementRefresh.value++;
  if(requestedPage==='calendar'){const horizon=days.value,data=await api(`/api/dashboard?currency=${requestedCurrency}&days=${horizon}`);if(current()&&days.value===horizon)dash.value=data;}
  if(requestedPage==='accounts'){const archived=showArchive.value,data=await api('/api/accounts?archived='+archived);if(current()&&showArchive.value===archived)rows.value=data;}
- if(['ledger','requests'].includes(requestedPage)){const requestId=++listRequestId;const params=new URLSearchParams({paginated:'true',page:String(listPage.value),currency:requestedCurrency,q:search.value});if(dateFrom.value)params.set('date_from',dateFrom.value);if(dateTo.value)params.set('date_to',dateTo.value);if(requestedPage==='ledger'&&showDeletedOperations.value)params.set('include_deleted','true');if(requestedPage==='requests')params.set('archive',dateFrom.value||dateTo.value?'all':requestArchive.value);if(requestedPage==='requests'&&requestStatus.value)params.set('state',requestStatus.value);const data=await api(`/api/${requestedPage}?${params}`);if(current()&&requestId===listRequestId){rows.value=data.items;listTotal.value=data.total;}}
+ if(['ledger','requests'].includes(requestedPage)){const requestId=++listRequestId;const params=new URLSearchParams({paginated:'true',page:String(listPage.value),page_size:String(listPageSize.value),currency:requestedCurrency,q:search.value});if(dateFrom.value)params.set('date_from',dateFrom.value);if(dateTo.value)params.set('date_to',dateTo.value);if(requestedPage==='ledger'&&showDeletedOperations.value)params.set('include_deleted','true');if(requestedPage==='requests')params.set('archive',dateFrom.value||dateTo.value?'all':requestArchive.value);if(requestedPage==='requests'&&requestStatus.value)params.set('state',requestStatus.value);const data=await api(`/api/${requestedPage}?${params}`);if(current()&&requestId===listRequestId){rows.value=data.items;listTotal.value=data.total;}}
  if(!current())return;
  if(requestedPage==='budgets'){const selectedMonth=month.value,data=await api(`/api/budgets?currency=${requestedCurrency}&month=${selectedMonth}`);if(current()&&month.value===selectedMonth)rows.value=data;}
  if(!current())return;
