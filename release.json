@@ -1,7 +1,8 @@
 {
-  "version": "2.35.16",
-  "date": "2026-11-06",
+  "version": "2.35.17",
+  "date": "2026-11-07",
   "changes": [
+    "Упрощён блок «Наличные через банк»: показаны текущий шаг, исполнитель и передача от расчётного бухгалтера кассиру. Форма и кнопки прямо называют списание банка или получение в кассу. Отдельные подтверждения, комиссия, права и защита от повторного проведения сохранены.",
     "В заявке на групповое получение наличных фактический остаток кассы показан крупной карточкой с названием кассы и валютой. План после банковской комиссии и уже полученная сумма показаны отдельно. Подтверждённые остатки, права просмотра и проведение денег не меняются.",
     "По подтверждению владельца действие «Закрыть без оплаты» полностью удаляет неоплаченную заявку, её вложения и историю после явного предупреждения. Денежные операции, фактическое получение наличных и связи банковской выписки защищены от удаления. Заявки на согласовании, на доработке и утверждённые неоплаченные остаются в основном списке; оплаченные сразу переходят в архив.",
     "В разделе «Заявки» на одной странице показывается до 15 строк вместо 10. Количество страниц, основной список, архив и поиск используют новый размер страницы.",
@@ -117,6 +118,7 @@
     "Длинные названия файлов и кнопки выбора шаблона переносятся на узком экране. В ТЭО дата архива отдельно обозначена и не подменяет начало финансового прогноза."
   ],
   "changes_uz": [
+    "«Bank orqali naqd pul» bloki soddalashtirildi: joriy bosqich, masʼul xodim va hisob-kitob buxgalteridan kassirga oʻtish koʻrsatiladi. Shakl va tugmalar bankdan yechish yoki kassaga olish amalini aniq nomlaydi. Alohida tasdiqlar, komissiya, huquqlar va takroriy qayd etishdan himoya saqlangan.",
     "Guruh uchun naqd pul olish arizasida kassadagi haqiqiy qoldiq kassa nomi va valyutasi bilan yirik kartada koʻrsatiladi. Bank komissiyasidan keyingi reja va amalda olingan summa alohida koʻrsatiladi. Tasdiqlangan qoldiqlar, koʻrish huquqlari va pul operatsiyalari oʻzgarmaydi.",
     "Egasi tasdigʻiga koʻra «Toʻlovsiz yopish» amali ogohlantirishdan soʻng toʻlanmagan arizani, uning fayllari va tarixini butunlay oʻchiradi. Pul operatsiyalari, amalda olingan naqd pul va bank koʻchirmasi bogʻlanishlari oʻchirishdan himoyalangan. Kelishishdagi, qayta ishlashdagi va tasdiqlangan toʻlanmagan arizalar asosiy roʻyxatda qoladi; toʻlanganlar darhol arxivga oʻtadi.",
     "«Arizalar» boʻlimida bir sahifada 10 ta oʻrniga 15 tagacha qator koʻrsatiladi. Sahifalar soni, asosiy roʻyxat, arxiv va qidiruv yangi sahifa hajmidan foydalanadi.",

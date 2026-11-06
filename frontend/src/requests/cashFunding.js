@@ -46,8 +46,9 @@ export function cashFundingBody(value) {
 
 export function fundingActionAvailable(request, action) {
   const funding = request?.cash_funding;
+  const expected = {withdraw: 'unfunded', receive: 'in_transit'}[action];
   return !!funding && request.status === 'approved' && (request.actions || []).includes(`cash_${action}`)
-    && funding[`can_${action}`] === true;
+    && !!expected && funding.state === expected && funding[`can_${action}`] === true;
 }
 
 export function fundingStatus(request) {

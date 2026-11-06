@@ -136,7 +136,7 @@ test('cash receipt is a distinct signed action and paid/read-only requests hide 
   const previous=lang.value;t.after(()=>setLang(previous));setLang('uz');const calls=[];
   const row=request({actions:['cash_receive'],cash_funding:funding({state:'in_transit',can_withdraw:false,can_receive:true,withdraw_date:'2026-11-04'})});
   const view=mountPanel(t,async(url,options)=>{calls.push({url,options});return checkedPreview(JSON.parse(options.body),'receive');},{request:row});await settle();
-  assert.ok(button(view,'Kassaga olinganini tasdiqlash'));view.state.start('receive');view.state.form.reference='SYN-CASH-1';await settle();await view.state.check();assert.match(calls[0].url,/\/receive\/preview$/);
+  assert.ok(button(view,'Naqd pulni kassaga qabul qilish'));view.state.start('receive');view.state.form.reference='SYN-CASH-1';await settle();await view.state.check();assert.match(calls[0].url,/\/receive\/preview$/);
   view.app._instance.props.request=request({status:'paid',actions:[],cash_funding:funding({state:'received',can_withdraw:false,can_receive:false})});await settle();
   assert.match(text(view.container),/Naqd pul bilan to‘langan/);assert.equal(all(view.container,node=>node.tag==='form').length,0);
 });
@@ -184,4 +184,126 @@ test('forecast includes fee in one original request event and removes the captio
   view.state.s.dash.forecast[0].events=[{...event,amount:'990000.00',cash_funding_fee:'0.00'}];await settle();
   assert.equal(view.state.upcoming.length,1);assert.equal(view.state.upcoming[0].id,42);assert.doesNotMatch(text(view.container),/Shu jumladan komissiya/);
   assert.equal(hasCashFundingFee({}),false);assert.equal(hasCashFundingFee({cash_funding_fee:'0.00'}),false);
+});
+
+const currentStep=view=>find(view.container,node=>String(node.props?.class||'').split(' ').includes('cash-funding-step'));
+
+test('before approval the current task names the actual agreement stage and offers no money action',async t=>{
+  const calls=[];const view=mountPanel(t,async(...args)=>calls.push(args));await settle();
+  for(const [status,approval_stage,actor,instruction] of[
+    ['draft',null,'Автор заявки','Автор отправляет заявку'],
+    ['returned',null,'Автор заявки','Автор отправляет заявку'],
+    ['pending','check','Расчётный бухгалтер','Проверьте реквизиты и вложения'],
+    ['pending','finance','Финансовый директор','проверяет бюджет и дату'],
+    ['pending','director','Директор','по сохранённому маршруту'],
+  ]){
+    view.app._instance.props.request=request({status,approval_stage});await settle();
+    assert.match(text(currentStep(view)),new RegExp(`Шаг 1 из 4 · ${actor}`));assert.ok(text(currentStep(view)).includes(instruction));
+    assert.match(text(currentStep(view)),/После утверждения расчётный бухгалтер/);
+    assert.equal(button(view,'Зафиксировать списание банка'),undefined);assert.equal(button(view,'Принять наличные в кассу'),undefined);
+    view.state.start('withdraw');await view.state.check();await view.state.commit();assert.equal(calls.length,0);
+  }
+});
+
+test('one cash request moves from accountant bank debit to cashier receipt and separate cash issue',async t=>{
+  const calls=[],events=[];let view;
+  const afterWithdrawal=request({version:10,actions:[],cash_funding:funding({state:'in_transit',version:2,can_withdraw:false,withdraw_date:'2026-11-04',withdraw_reference:'SYN-BANK-6'})});
+  const afterReceipt=request({version:11,actions:['pay'],cash_funding:funding({state:'received',version:3,can_withdraw:false,can_receive:false,withdraw_date:'2026-11-04',receive_date:'2026-11-04'})});
+  const api=async(url,options)=>{
+    const data=JSON.parse(options.body),which=url.includes('/withdraw/')?'withdraw':'receive';calls.push({url,data});
+    return url.endsWith('/preview')?checkedPreview(data,which):which==='withdraw'?afterWithdrawal:afterReceipt;
+  };
+  view=mountPanel(t,api,{onChanged:row=>{events.push(row);view.app._instance.props.request=row;}});await settle();
+  assert.match(text(currentStep(view)),/Шаг 2 из 4 · Расчётный бухгалтер/);
+  assert.match(text(currentStep(view)),/Далее кассир подтверждает получение/);
+  assert.equal(all(view.container,node=>node.tag==='form').length,0,'the action initially stays compact');
+  button(view,'Зафиксировать списание банка').props.onClick();await settle();
+  assert.match(text(view.container),/Дата списания банка.*Номер банковского документа/);
+  const firstDate=find(view.container,node=>node.tag==='input'&&node.props.type==='date');
+  assert.equal(firstDate.props.min,'2026-11-04');assert.ok(firstDate.props.max);assert.ok(Object.hasOwn(firstDate.props,'required'));
+  view.state.form.reference='SYN-BANK-6';await settle();await view.state.check();await settle();
+  assert.match(text(view.container),/Проверено списание банка: 1000000.00 UZS, комиссия 10000.00, наличные 990000.00/);
+  assert.equal(button(view,'Подтвердить списание банка').props.disabled,true);await view.state.commit();assert.equal(calls.length,1);
+  view.state.confirmed=true;await view.state.commit();await settle();
+  assert.match(text(currentStep(view)),/Шаг 3 из 4 · Кассир.*Списание банка учтено.*Передайте этот этап кассиру/);
+  assert.equal(button(view,'Зафиксировать списание банка'),undefined);assert.equal(button(view,'Принять наличные в кассу'),undefined,'accountant cannot perform the cashier step');
+  assert.equal(events[0].status,'approved','withdrawal does not mark the expense paid');
+  view.app._instance.props.request={...afterWithdrawal,actions:['cash_receive'],cash_funding:{...afterWithdrawal.cash_funding,can_receive:true}};await settle();
+  assert.match(text(currentStep(view)),/Подтвердите фактическое получение наличных в кассу/);
+  assert.doesNotMatch(text(currentStep(view)),/Передайте этот этап кассиру/,'the receiving cashier sees their own task');
+  button(view,'Принять наличные в кассу').props.onClick();await settle();
+  assert.match(text(view.container),/Дата получения в кассу.*Номер приходного кассового документа/);
+  assert.equal(find(view.container,node=>node.tag==='input'&&node.props.type==='date').props.min,'2026-11-04');
+  view.state.form.reference='SYN-CASH-6';await settle();await view.state.check();await settle();
+  assert.match(text(view.container),/Проверено получение в кассу: 990000.00 UZS/);
+  assert.equal(button(view,'Подтвердить получение в кассу').props.disabled,true);
+  view.state.confirmed=true;await view.state.commit();await settle();
+  assert.match(text(currentStep(view)),/Шаг 4 из 4 · Кассир.*«Факт оплаты»/);assert.equal(events[1].status,'approved');
+  assert.deepEqual(calls.map(call=>call.url.split('/').slice(-2).join('/')),['withdraw/preview','withdraw/commit','receive/preview','receive/commit']);
+  assert.ok(calls.filter(call=>call.url.endsWith('/commit')).every(call=>call.data.confirm===true&&call.data.token==='signed-preview'));
+  view.app._instance.props.request={...afterReceipt,status:'paid',actions:[]};await settle();
+  assert.match(text(currentStep(view)),/Выдача наличных завершена.*Оплата заявки подтверждена/);assert.ok(String(currentStep(view).props.class).includes('complete'));
+  assert.equal(all(view.container,node=>node.tag==='form').length,0);
+});
+
+test('same-version permission revocation destroys the signed preview and restoring rights requires a fresh check',async t=>{
+  const calls=[];let previews=0;
+  const view=mountPanel(t,async(url,options)=>{const data=JSON.parse(options.body);calls.push(url);return {...checkedPreview(data),token:`signed-${++previews}`};});await settle();
+  view.state.start('withdraw');view.state.form.reference='SYN-BANK-7';await settle();await view.state.check();view.state.confirmed=true;await settle();
+  assert.equal(view.state.preview.token,'signed-1');
+  view.app._instance.props.request=request({actions:[],cash_funding:funding({can_withdraw:false})});await settle();
+  assert.equal(view.state.preview,null);assert.equal(view.state.confirmed,false);assert.equal(view.state.action,'');
+  view.app._instance.props.request=request();await settle();
+  view.state.confirmed=true;await view.state.commit();assert.equal(calls.length,1);
+  view.state.start('withdraw');view.state.form.reference='SYN-BANK-7';await settle();
+  assert.equal(view.state.preview,null);assert.equal(view.state.confirmed,false);
+  await view.state.check();assert.equal(view.state.preview.token,'signed-2');assert.ok(calls.every(url=>url.endsWith('/preview')));
+  view.state.confirmed=true;view.state.form.note='Changed after preview';await settle();
+  assert.equal(view.state.preview,null);assert.equal(view.state.confirmed,false);await view.state.commit();assert.equal(calls.length,2);
+});
+
+test('permission flags and state must agree; unknown funding never offers a financial form',async t=>{
+  const calls=[];const view=mountPanel(t,async(...args)=>calls.push(args));await settle();
+  for(const extra of[{actions:[]},{cash_funding:funding({can_withdraw:false})},{cash_funding:funding({state:'unknown'})}]){
+    view.app._instance.props.request=request(extra);await settle();
+    assert.equal(button(view,'Зафиксировать списание банка'),undefined);view.state.start('withdraw');await view.state.check();assert.equal(calls.length,0);
+  }
+  assert.match(text(currentStep(view)),/Проверить результат операции/);assert.ok(button(view,'Проверить состояние заявки'));
+  assert.doesNotMatch(text(currentStep(view)),/Списание банка учтено|Выдача наличных завершена/);
+  view.app._instance.props.request=request({actions:['cash_withdraw','cash_receive'],cash_funding:funding({can_receive:true})});await settle();
+  assert.ok(button(view,'Зафиксировать списание банка'));assert.equal(button(view,'Принять наличные в кассу'),undefined);
+});
+
+test('batch receipt hands over issuance without inferring hidden balances, remaining funds or completion',async t=>{
+  const view=mountPanel(t,async()=>{}, {request:request({actions:[],cash_funding:funding({mode:'batch',state:'received',can_withdraw:false,can_receive:false,cash_balance:null,remaining_amount:null,allocated_amount:null})})});await settle();
+  assert.match(text(currentStep(view)),/Шаг 4 из 4 · Кассир.*Кассир проводит и отслеживает выдачу.*ниже/);
+  assert.doesNotMatch(text(currentStep(view)),/завершена|ещё не|остаток|полностью|0.00/);assert.equal(all(view.container,node=>node.tag==='form').length,0);
+  assert.equal(button(view,'Зафиксировать списание банка'),undefined);assert.equal(button(view,'Принять наличные в кассу'),undefined);
+  assert.match(text(view.container),/Пополнение кассы для нескольких заявок/);assert.match(text(view.container),/990000.00/);
+});
+
+test('rejected cash commit stops at state verification and its retry never repeats a monetary write',async t=>{
+  const calls=[],events=[];const after=request({actions:[],cash_funding:funding({state:'in_transit',version:2,can_withdraw:false})});
+  const view=mountPanel(t,async(url,options={})=>{
+    calls.push({url,options});if(url.endsWith('/preview'))return checkedPreview(JSON.parse(options.body));
+    if(url.endsWith('/commit'))throw Object.assign(new Error('Synthetic stale funds'),{status:409});return after;
+  },{onChanged:row=>events.push(row)});await settle();
+  view.state.start('withdraw');view.state.form.reference='SYN-BANK-8';await settle();await view.state.check();view.state.confirmed=true;await view.state.commit();await settle();
+  assert.equal(view.state.uncertain,true);assert.equal(view.state.notice,'');assert.deepEqual(events,[]);
+  assert.match(text(currentStep(view)),/Проверить результат операции/);assert.match(text(view.container),/Состояние уточняется/);
+  assert.equal(button(view,'Зафиксировать списание банка'),undefined);await view.state.commit();view.state.start('withdraw');
+  await button(view,'Проверить состояние заявки').props.onClick();await settle();
+  assert.equal(calls.at(-1).options.method,undefined);assert.equal(calls.filter(call=>call.url.endsWith('/commit')).length,1);assert.equal(events[0].cash_funding.state,'in_transit');
+});
+
+test('current steps and operation-specific fields follow Uzbek without translating account names',async t=>{
+  const previous=lang.value;t.after(()=>setLang(previous));setLang('uz');
+  const view=mountPanel(t,async(url,options)=>checkedPreview(JSON.parse(options.body)));await settle();
+  assert.match(text(currentStep(view)),/4 bosqichdan 2-si · Hisob-kitob buxgalteri/);assert.doesNotMatch(text(view.container),/[А-Яа-яЁё]/);
+  button(view,'Bankdan yechilganini qayd etish').props.onClick();await settle();
+  assert.match(text(view.container),/Bankdan pul yechilgan sana.*Bank hujjati raqami.*Izoh \(ixtiyoriy\)/);
+  view.state.form.reference='SYN-BANK-UZ';await settle();await view.state.check();await settle();assert.ok(button(view,'Bankdan pul yechilganini tasdiqlash'));
+  assert.match(text(view.container),/Synthetic bank/);assert.match(text(view.container),/Synthetic cash/);
+  view.app._instance.props.request=request({actions:[],cash_funding:funding({state:'in_transit',can_withdraw:false})});await settle();
+  assert.match(text(currentStep(view)),/4 bosqichdan 3-si · Kassir/);assert.doesNotMatch(text(view.container),/[А-Яа-яЁё]/);
 });
