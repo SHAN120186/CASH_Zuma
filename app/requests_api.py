@@ -81,9 +81,9 @@ def request_actions(s, u, r, batch=None, director_limit=None):
         actions.append('submit')
     if editable and r.status in OPEN_STATUSES:
         actions.append('documents')
-    if stage and has_role(u, STAGE_ROLE[stage]) and u.id not in round_participants(s, r, batch=batch) and ('approve' in perms or stage == 'check'):
+    if stage and has_role(u, STAGE_ROLE[stage]) and u.id not in round_participants(s, r, batch=batch) and (('approve' in perms and stage!='check') or (stage=='check' and 'request_check' in perms)):
         actions.append('check' if stage == 'check' else 'approve')
-    if (('approve' in perms and r.status in ('pending', 'approved')) or (stage == 'check' and has_role(u, 'accountant'))) and not own_only:
+    if (('approve' in perms and r.status in ('pending', 'approved')) or (stage == 'check' and 'request_check' in perms and has_role(u, 'accountant'))) and not own_only:
         actions.append('return')
     if r.status == 'approved' and pay_right(account) in perms:
         actions.append('return_finance')

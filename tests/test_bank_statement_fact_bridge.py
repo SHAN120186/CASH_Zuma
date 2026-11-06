@@ -23,10 +23,10 @@ class StatementFactBridgeTests(SavedStatementTests):
 
     def test_reopened_confirmation_updates_reports_movement_and_fact_exactly_once(self):
         rid = self.approved()
-        preview = self.preview(self.statement(), self.cat)
+        preview = self.payment_preview(self.statement(), self.cat)
         self.assertEqual(preview.status_code, 200, preview.text)
         bid = preview.json()['id']
-        reopened = self.resume(bid, self.cat)
+        reopened = self.resume(bid, self.cat, *self.accountant)
         self.assertEqual(reopened.status_code, 200, reopened.text)
         report, dashboard, movement = self.facts()
         month = int(self.date[5:7]) - 1
@@ -34,7 +34,7 @@ class StatementFactBridgeTests(SavedStatementTests):
         self.assertEqual((dashboard['fact_in'], dashboard['fact_out']), ('0.00', '0.00'))
         self.assertEqual((movement['income_day'], movement['expense_day']), ('0.00', '0.00'))
 
-        result = self.confirmed(reopened.json(), self.cat)
+        result = self.payment_confirmed(reopened.json(), self.cat)
         self.assertEqual(result.status_code, 200, result.text)
         self.assertTrue(result.json()['full_reconciliation'])
         report, dashboard, movement = self.facts()
@@ -52,9 +52,9 @@ class StatementFactBridgeTests(SavedStatementTests):
 
         # Retries after a lost response, opening old drafts and reuploading the
         # same file must not count the bank total on top of the posted ledger.
-        self.assertEqual(self.confirmed(reopened.json(), self.cat).status_code, 409)
-        self.assertEqual(self.resume(bid, self.cat).status_code, 409)
-        self.assertEqual(self.preview(self.statement(), self.cat).status_code, 409)
+        self.assertEqual(self.payment_confirmed(reopened.json(), self.cat).status_code, 409)
+        self.assertEqual(self.resume(bid, self.cat, *self.accountant).status_code, 409)
+        self.assertEqual(self.payment_preview(self.statement(), self.cat).status_code, 409)
         self.assertEqual(self.facts(), (report, dashboard, movement))
         with unit() as s:
             self.assertEqual(len(list(s.scalars(select(BankStatementBatch)))), 1)

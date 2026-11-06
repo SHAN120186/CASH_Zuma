@@ -21,6 +21,7 @@ const props = defineProps({
   categories: {type: Array, default: () => []},
   canImport: {type: Boolean, default: false},
   canReview: {type: Boolean, default: false},
+  canLinkExistingBankFacts: {type: Boolean, default: false},
   canPost: {type: Boolean, default: false},
   canManageFee: {type: Boolean, default: false},
   canAllocate: {type: Boolean, default: false},
@@ -30,6 +31,7 @@ const props = defineProps({
   canViewHistory: {type: Boolean, default: false},
 });
 const emit = defineEmits(['changed','cash-flow']);
+const canLinkExisting = computed(() => props.canReview || props.canLinkExistingBankFacts);
 const accountId = ref(''), currency = ref(''), preview = ref(null), busy = ref(false), error = ref(''), notice = ref('');
 const confirmAccount = ref(false), confirmCurrency = ref(false), reviews = ref([]), reviewError = ref('');
 const reviewActions = ref({}), matchActions = ref({}), duplicateActions = ref({}), transferActions = ref({}), reviewBusy = ref(null);
@@ -123,7 +125,7 @@ const categoryRuleLabel = row => {
   return row.category_source==='bank_rule'?tx('Статья определена правилом'):'';
 };
 const reviewErrorMessage = e => e?.status && e.message ? e.message : N_('Не удалось выполнить проверку. Обновите список и повторите.');
-let generation = 0, reviewGeneration = 0, reviewOperation = 0, allocationGeneration = 0, allocationOperation = 0, outgoingGeneration = 0, outgoingOperation = 0, batchGeneration = 0, settingsGeneration = 0, reprocessGeneration = 0, feeTouched = false;
+let generation = 0, reviewGeneration = 0, reviewOperation = 0, existingLinkGeneration = 0, allocationGeneration = 0, allocationOperation = 0, outgoingGeneration = 0, outgoingOperation = 0, batchGeneration = 0, settingsGeneration = 0, reprocessGeneration = 0, feeTouched = false;
 let adminGeneration = 0, resumeGeneration = 0, applyingResumeSelection = false, feeSettingsPending = Promise.resolve();
 
 function invalidate() {
@@ -139,6 +141,7 @@ function categoryRulesChanged(){
 watch(() => [accountId.value, currency.value, feeCategoryId.value], () => { if (!applyingResumeSelection) invalidate(); reprocessGeneration += 1; reprocessBusy.value = false; reprocessPreview.value = null; reprocessResult.value = null; reprocessError.value = ''; reprocessNotice.value = ''; });
 watch(() => props.companyId, () => { resumeGeneration += 1; invalidate(); reviewGeneration += 1; reviewOperation += 1; allocationGeneration += 1; allocationOperation += 1; outgoingGeneration += 1; outgoingOperation += 1; batchGeneration += 1; settingsGeneration += 1; reprocessGeneration += 1; feeTouched = false; feeSettingsError.value = ''; reviewBusy.value = allocationBusy.value = outgoingBusy.value = null; reprocessBusy.value = false; reviewActions.value = {}; matchActions.value = {}; duplicateActions.value = {}; transferActions.value = {}; allocationActions.value = {}; outgoingActions.value = {}; accountId.value = currency.value = feeCategoryId.value = selectedOldBatch.value = ''; reviews.value = []; unallocated.value = []; outgoingUnallocated.value = []; oldBatches.value = []; reprocessPreview.value = null; reviewsLoaded.value = allocationLoaded.value = outgoingLoaded.value = oldBatchesLoaded.value = false; loadReviews(); loadUnallocated(); loadUnallocatedOutgoing(); loadOldBatches(); feeSettingsPending = loadFeeSettings(); });
 watch(() => props.canImport, () => {resumeGeneration += 1; invalidate();});
+watch(canLinkExisting, () => {existingLinkGeneration += 1; duplicateActions.value = {}; transferActions.value = {};});
 watch(() => [account.value?.id, account.value?.currency], () => {
   if (preview.value && (!validSelection.value || String(preview.value.account?.id)!==String(accountId.value) || preview.value.account?.currency!==currency.value)) {
     resumeGeneration += 1; invalidate(); error.value = tx('Счёт сохранённой выписки недоступен. Обновите список счетов и проверьте доступ.');
@@ -378,57 +381,57 @@ async function matchRequest(row) {
   finally {if (operation === reviewOperation) reviewBusy.value = null;}
 }
 async function findDuplicateCandidates(row) {
-  if (!props.canReview || reviewBusy.value !== null || row.status !== 'ambiguous_duplicate') return;
-  const current = reviewGeneration, operation = ++reviewOperation;
+  if (!canLinkExisting.value || reviewBusy.value !== null || row.status !== 'ambiguous_duplicate') return;
+  const current = reviewGeneration, correction = existingLinkGeneration, operation = ++reviewOperation;
   reviewBusy.value = row.id; reviewError.value = '';
   try {
     const result = await props.api(`/api/bank-statements/lines/${encodeURIComponent(row.id)}/duplicate-candidates`);
-    if (current !== reviewGeneration) return;
+    if (current !== reviewGeneration || correction !== existingLinkGeneration || !canLinkExisting.value) return;
     duplicateActions.value[row.id] = {items: Array.isArray(result.items) ? result.items : [], selected: '', note: '', confirm: false};
-  } catch (e) {if (current === reviewGeneration) reviewError.value = reviewErrorMessage(e);}
+  } catch (e) {if (current === reviewGeneration && correction === existingLinkGeneration && canLinkExisting.value) reviewError.value = reviewErrorMessage(e);}
   finally {if (operation === reviewOperation) reviewBusy.value = null;}
 }
 async function resolveDuplicate(row) {
   const action = duplicateActions.value[row.id];
   const candidate = action?.items.find(item => String(item.line_id) === String(action.selected));
-  if (!props.canReview || row.status !== 'ambiguous_duplicate' || reviewBusy.value !== null || !candidate || !candidate.token || !candidate.ledger_id || !action.confirm || (action.note || '').trim().length < 10) return;
-  const current = reviewGeneration, company = props.companyId, operation = ++reviewOperation;
+  if (!canLinkExisting.value || row.status !== 'ambiguous_duplicate' || reviewBusy.value !== null || !candidate || !candidate.token || !candidate.ledger_id || !action.confirm || (action.note || '').trim().length < 10) return;
+  const current = reviewGeneration, correction = existingLinkGeneration, company = props.companyId, operation = ++reviewOperation;
   reviewBusy.value = row.id; reviewError.value = '';
   try {
     await props.api(`/api/bank-statements/lines/${encodeURIComponent(row.id)}/duplicate-resolve`, {
       method: 'POST', headers: {'Content-Type': 'application/json'},
       body: JSON.stringify({prior_line_id: candidate.line_id, token: candidate.token, reason: action.note.trim(), confirm: true}),
     });
-    if (current !== reviewGeneration) return;
+    if (current !== reviewGeneration || correction !== existingLinkGeneration || !canLinkExisting.value) return;
     delete duplicateActions.value[row.id]; await loadReviews(); if (props.companyId === company) emit('changed');
-  } catch (e) {if (current === reviewGeneration) {delete duplicateActions.value[row.id]; reviewError.value = reviewErrorMessage(e);}}
+  } catch (e) {if (current === reviewGeneration && correction === existingLinkGeneration && canLinkExisting.value) {delete duplicateActions.value[row.id]; reviewError.value = reviewErrorMessage(e);}}
   finally {if (operation === reviewOperation) reviewBusy.value = null;}
 }
 async function findTransferCandidates(row) {
-  if (!props.canReview || reviewBusy.value !== null || !['review', 'reviewed'].includes(row.status)) return;
-  const current = reviewGeneration, operation = ++reviewOperation;
+  if (!canLinkExisting.value || reviewBusy.value !== null || !['review', 'reviewed'].includes(row.status)) return;
+  const current = reviewGeneration, correction = existingLinkGeneration, operation = ++reviewOperation;
   reviewBusy.value = row.id; reviewError.value = '';
   try {
     const result = await props.api(`/api/bank-statements/lines/${encodeURIComponent(row.id)}/transfer-candidates`);
-    if (current !== reviewGeneration) return;
+    if (current !== reviewGeneration || correction !== existingLinkGeneration || !canLinkExisting.value) return;
     transferActions.value[row.id] = {items: Array.isArray(result.items) ? result.items : [], selected: '', note: '', confirm: false};
-  } catch (e) {if (current === reviewGeneration) reviewError.value = reviewErrorMessage(e);}
+  } catch (e) {if (current === reviewGeneration && correction === existingLinkGeneration && canLinkExisting.value) reviewError.value = reviewErrorMessage(e);}
   finally {if (operation === reviewOperation) reviewBusy.value = null;}
 }
 async function linkTransfer(row) {
   const action = transferActions.value[row.id];
   const candidate = selectedTransfer(row);
-  if (!props.canReview || !['review', 'reviewed'].includes(row.status) || reviewBusy.value !== null || !candidate?.ledger_id || !candidate.token || !action.confirm || (action.note || '').trim().length < 10) return;
-  const current = reviewGeneration, company = props.companyId, operation = ++reviewOperation;
+  if (!canLinkExisting.value || !['review', 'reviewed'].includes(row.status) || reviewBusy.value !== null || !candidate?.ledger_id || !candidate.token || !action.confirm || (action.note || '').trim().length < 10) return;
+  const current = reviewGeneration, correction = existingLinkGeneration, company = props.companyId, operation = ++reviewOperation;
   reviewBusy.value = row.id; reviewError.value = '';
   try {
     await props.api(`/api/bank-statements/lines/${encodeURIComponent(row.id)}/transfer-link`, {
       method: 'POST', headers: {'Content-Type': 'application/json'},
       body: JSON.stringify({ledger_id: candidate.ledger_id, token: candidate.token, reason: action.note.trim(), confirm: true}),
     });
-    if (current !== reviewGeneration) return;
+    if (current !== reviewGeneration || correction !== existingLinkGeneration || !canLinkExisting.value) return;
     delete transferActions.value[row.id]; await loadReviews(); if (props.companyId === company) emit('changed');
-  } catch (e) {if (current === reviewGeneration) {delete transferActions.value[row.id]; reviewError.value = reviewErrorMessage(e);}}
+  } catch (e) {if (current === reviewGeneration && correction === existingLinkGeneration && canLinkExisting.value) {delete transferActions.value[row.id]; reviewError.value = reviewErrorMessage(e);}}
   finally {if (operation === reviewOperation) reviewBusy.value = null;}
 }
 async function saveReview(row) {
@@ -657,12 +660,13 @@ async function commit() {
 
       <div class="review-list">
         <h3>{{tx('Операции для проверки бухгалтера')}}</h3>
-        <button v-if="canReview" type="button" class="secondary tiny" :disabled="reviewBusy !== null" @click="loadReviews">{{tx('Обновить список')}}</button>
+        <p v-if="canLinkExistingBankFacts && !canReview" class="sub">{{tx('Администратор может связать повтор или перевод с уже проведённой операцией. Новая оплата не создаётся.')}}</p>
+        <button v-if="canLinkExisting" type="button" class="secondary tiny" :disabled="reviewBusy !== null" @click="loadReviews">{{tx('Обновить список')}}</button>
         <p v-if="reviewError" class="error" role="alert">{{tx(reviewError)}}</p>
         <p v-else-if="reviewsLoaded && !reviews.length" class="sub">{{tx('Нет операций, ожидающих проверки.')}}</p>
         <div v-else-if="reviews.length" class="table-scroll"><table><thead><tr><th>{{tx('Дата')}}</th><th>{{tx('Контрагент / документ')}}</th><th>{{tx('Назначение')}}</th><th>{{tx('Движение')}}</th><th>{{tx('Результат сверки')}}</th></tr></thead><tbody>
           <tr v-for="row in reviews" :key="row.id"><td>{{formatShortDate(row.date)}}</td><td>{{row.correspondent_name}}<small>{{row.correspondent_inn || '—'}} · {{row.document_number}}</small></td><td>{{row.purpose}}</td><td>{{directionLabel(row.direction)}}<small>{{money(row.amount,row.currency)}} {{row.currency}}</small></td><td>{{label(row.status)}}<small v-if="row.reason">{{tx(row.reason)}}</small><small v-if="row.status === 'ambiguous_duplicate'">{{tx('Классификация сама не устраняет возможный повтор. Сопоставьте строку с ранее проведённой операцией.')}}</small>
-            <div v-if="canReview && row.status === 'ambiguous_duplicate'" class="review-actions">
+            <div v-if="canLinkExisting && row.status === 'ambiguous_duplicate'" class="review-actions">
               <button type="button" class="secondary" :disabled="reviewBusy !== null" @click="findDuplicateCandidates(row)">{{tx('Найти ранее проведённую операцию')}}</button>
               <template v-if="duplicateActions[row.id]">
                 <p v-if="!duplicateActions[row.id].items.length">{{tx('Подходящие проведённые строки не найдены. Повтор остаётся на проверке.')}}</p>
@@ -675,7 +679,7 @@ async function commit() {
                 </template>
               </template>
             </div>
-            <div v-if="canReview && ['review','reviewed'].includes(row.status)" class="review-actions">
+            <div v-if="canLinkExisting && ['review','reviewed'].includes(row.status)" class="review-actions">
               <button type="button" class="secondary" :disabled="reviewBusy !== null" @click="findTransferCandidates(row)">{{tx('Найти оформленный перевод')}}</button>
               <template v-if="transferActions[row.id]">
                 <p v-if="!transferActions[row.id].items.length">{{tx('Подходящий оформленный перевод не найден. Строка остаётся на проверке.')}}</p>

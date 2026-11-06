@@ -7,8 +7,9 @@ from sqlalchemy import select
 from tests.test_bank_statement_incoming import IncomingTests
 from app.bank_statement_unallocated_out import classify_unallocated_out, process_unallocated_out
 from app.cash_report import report
-from app.db import Budget, Category, Ledger, PaymentRequest, engine, unit
+from app.db import Budget, Category, Ledger, PaymentRequest, User, engine, unit
 from app.services import account_balance
+from app.security import scope_user
 
 
 class UnallocatedOutTests(IncomingTests):
@@ -50,9 +51,11 @@ class UnallocatedOutTests(IncomingTests):
             self.assertEqual(len(list(s.scalars(select(Ledger)))),2)
 
     def test_bank_payer_cannot_post_without_reviewed_decision(self):
+        self.stage_user('check')
         with unit(True) as s:
             batch,lines,account,user,cat=self.prepare_out(s)
-            user._permissions=frozenset({'ledger','pay_bank'})
+            user=s.scalar(select(User).where(User.username=='checker'))
+            scope_user(user,'accountant')
             self.assertEqual(classify_unallocated_out(s,batch,lines,account,user,cat.id)[lines[0].id]['status'],'outgoing_candidate')
             self.assertEqual(process_unallocated_out(s,batch,lines,account,user,cat.id)['review'],1)
             self.assertIsNone(s.scalar(select(Ledger.id)))

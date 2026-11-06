@@ -82,6 +82,30 @@ test('privacy-masked draft ownership is valid and never invents financial zeroes
   assert.equal(button(view,'Оплатить несколько заявок'),undefined);
 });
 
+test('a fresh card object revalidates payment capability even when financial versions stay the same',async t=>{
+  let allowed=true;
+  const {view,calls}=await fixture(t,()=>state({can_pay:allowed,candidates:allowed?state().candidates:[],blocked_reason:allowed?'':'Synthetic administrative oversight'}));
+  await selectBoth(view);assert.equal(view.state.canPay,true);
+  allowed=false;view.app._instance.props.request=parent();await settle();
+  assert.equal(view.state.canPay,false);assert.equal(view.state.preview,null);assert.equal(view.state.opened,false);
+  assert.equal(button(view,'Оплатить несколько заявок'),undefined);assert.equal(calls.filter(call=>call.method==='POST').length,0);
+  assert.equal(calls.filter(call=>call.method==='GET').length,2,'one fresh capability read follows the replacement');
+});
+
+test('permission refresh after a lost payout keeps the attempt until readable history resolves it',async t=>{
+  let paid=false,masked=false;
+  const {view,calls,events}=await fixture(t,(url,body)=>{
+    if(url.endsWith('/preview'))return preview(body);
+    if(url.endsWith('/commit')){paid=true;throw new Error('Synthetic lost response');}
+    return masked?state({can_pay:false,allocated_amount:null,remaining_amount:null,cash_balance:null,candidates:[],groups:[]}):state();
+  });
+  await selectBoth(view);await view.state.check();view.state.confirmed=true;await view.state.commit();
+  const originalKey=view.state.attempt.key;assert.equal(paid,true);
+  masked=true;view.app._instance.props.request=parent();await settle();
+  assert.equal(view.state.uncertain,true);assert.equal(view.state.attempt.key,originalKey);assert.equal(view.state.canPay,false);
+  assert.equal(events.length,0);assert.equal(calls.filter(call=>call.url.endsWith('/commit')).length,1);
+});
+
 test('masked history cannot declare a lost committed group absent or unlock another payment',async t=>{
   let result;
   const {view,calls,events}=await fixture(t,(url,body)=>{

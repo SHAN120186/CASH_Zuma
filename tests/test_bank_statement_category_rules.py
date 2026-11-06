@@ -308,11 +308,11 @@ class CategoryRuleTests(unittest.TestCase):
             self.row('REQUEST-OUT', 'out', '600', '300000002', 'Supplier', 'Synthetic order'),
             self.row('FEE-OUT', 'out', '20', '300000001', 'Synthetic bank', '00011 Погаш. ком. SWIFT - synthetic'),
             self.row('INTEREST-OUT', 'out', '30', '300000001', 'Synthetic bank', '01014кредит фоизи учун толов', account='16309000000000000001')]
-        checked = self.upload(rows, fee=self.cat)
+        checked = self.upload(rows, fee=self.cat, client=self.accountant[0], headers=self.accountant[1])
         self.assertEqual([row['status'] for row in checked['rows']], ['income_candidate', 'auto_pay_candidate', 'fee_candidate', 'interest_candidate'])
         self.assertEqual(checked['rows'][0]['category_id'], self.other_income)
         self.assertTrue(all(row.get('category_source') != 'bank_rule' for row in checked['rows']))
-        done = self.confirm(checked, fee=self.cat)
+        done = self.confirm(checked, fee=self.cat, client=self.accountant[0], headers=self.accountant[1])
         self.assertEqual(done.status_code, 200, done.text);self.assertTrue(done.json()['full_reconciliation'])
         self.assertEqual(self.ledger_for('PLAN-IN').category_id, self.other_income)
         self.assertEqual(self.ledger_for('REQUEST-OUT').category_id, self.cat)

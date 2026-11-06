@@ -25,19 +25,21 @@ class PartialPostingTests(AutoBankIntegrationTests):
             f'<tr><td>Итоговый оборот</td><td>{debit}'.encode('cp1251'),
             unresolved + f'<tr><td>Итоговый оборот</td><td>{new_debit}'.encode('cp1251'))
 
-    def partial_preview(self, raw=None):
-        result = self.preview(raw or self.partial_statement(), self.cat)
+    def partial_preview(self, raw=None, actor=None):
+        result = self.preview(raw or self.partial_statement(), self.cat, *(actor or ()))
         self.assertEqual(result.status_code, 200, result.text)
         return result.json()
 
-    def recheck(self, bid):
-        result = self.client.post(f'/api/bank-statements/{bid}/reprocess/preview',
-            json={'fee_category_id': self.cat}, headers=self.h)
+    def recheck(self, bid, actor=None):
+        client, headers = actor or (self.client, self.h)
+        result = client.post(f'/api/bank-statements/{bid}/reprocess/preview',
+            json={'fee_category_id': self.cat}, headers=headers)
         self.assertEqual(result.status_code, 200, result.text)
         return result.json()
 
-    def reprocess(self, bid, checked):
-        return self.client.post(f'/api/bank-statements/{bid}/reprocess/commit', headers=self.h,
+    def reprocess(self, bid, checked, actor=None):
+        client, headers = actor or (self.client, self.h)
+        return client.post(f'/api/bank-statements/{bid}/reprocess/commit', headers=headers,
             json={'fee_category_id': self.cat, 'preview_token': checked['preview_token'], 'confirm': True})
 
     def assert_hold(self, expected):
@@ -186,17 +188,17 @@ class PartialPostingTests(AutoBankIntegrationTests):
                 date=date.fromisoformat(self.date), counterparty='Synthetic prior unexplained entry',
                 reference='SYNTH-PARTIAL-APPROVED-DIFF', note='Synthetic correction before recheck', creator_id=user.id)
             s.add(extra);s.flush();extra_id = extra.id
-        checked = self.partial_preview(self.partial_statement(True))
+        checked = self.partial_preview(self.partial_statement(True), actor=self.accountant)
         self.assertFalse(checked['posting_summary']['partial_allowed'])
-        result = self.confirmed(checked, self.cat)
+        result = self.payment_confirmed(checked, self.cat)
         self.assertEqual(result.status_code, 200, result.text)
         with unit(True) as s:
             payment = s.scalar(select(BankStatementLine).where(BankStatementLine.document_number == 'PAY001'))
             self.assertEqual((payment.status, payment.request_id, payment.ledger_id), ('review', None, None))
             s.delete(s.get(Ledger, extra_id))  # Remove only the synthetic setup discrepancy.
-        rechecked = self.recheck(checked['id'])
+        rechecked = self.recheck(checked['id'], actor=self.accountant)
         self.assertEqual(next(row for row in rechecked['rows'] if row['document_number'] == 'PAY001')['status'], 'auto_pay_candidate')
-        result = self.reprocess(checked['id'], rechecked)
+        result = self.reprocess(checked['id'], rechecked, actor=self.accountant)
         self.assertEqual(result.status_code, 200, result.text)
         self.assertEqual(result.json()['posted'], 3)
         self.assert_hold(5000)

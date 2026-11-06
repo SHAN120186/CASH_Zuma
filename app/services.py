@@ -222,6 +222,8 @@ def category_policy(c,currency):
 
 def snapshot_route(s,r,currency):
     """Снимок политики статьи при отправке: поздние правки справочника маршрут не меняют."""
+    from .finance_author import snapshot_finance_author
+    snapshot_finance_author(s,r)
     c=s.get(Category,r.category_id)
     r.route_policy,r.route_threshold=category_policy(c,currency)
     # The fee is part of the same funding decision. It may strengthen, never
@@ -238,18 +240,21 @@ def snapshot_route(s,r,currency):
 
 def requires_director(r):
     """Нужен ли директор по снимку. Заявки без снимка (до 2.13) — директор обязателен."""
+    if bool(getattr(r,'finance_author',False)):return True
     if r.route_policy is None or r.route_policy=='always':return True
     if r.route_policy=='skip':return False
     return r.route_threshold is None or r.amount>r.route_threshold
 
 def needs_director(s,r):return requires_director(r)
 
+def finance_required(r):return not bool(getattr(r,'finance_author',False))
+
 def approval_stage(r):
     if r.status!='pending':return None
     # Проверка реквизитов — этап маршрута 2.14.0. Заявка, отправленная раньше (без снимка политики),
     # проходит прежний маршрут: финансовый директор, затем директор (так же считают route_complete и оплата).
-    if r.checked_by is None and r.route_policy is not None:return 'check'
-    if r.finance_approved_by is None:return 'finance'
+    if r.checked_by is None and (r.route_policy is not None or bool(r.finance_author)):return 'check'
+    if finance_required(r) and r.finance_approved_by is None:return 'finance'
     return 'director'
 
 def current_documents(s,request_id):
@@ -337,7 +342,9 @@ def round_participants(s,r,*,batch=None):
 
 def route_complete(r):
     """Все нужные этапы пройдены: проверка (для заявок со снимком), финансовый директор и директор по снимку."""
-    if r.finance_approved_by is None or (r.route_policy is not None and r.checked_by is None):return False
+    if finance_required(r) and r.finance_approved_by is None:return False
+    if (r.route_policy is not None or bool(r.finance_author)) and r.checked_by is None:return False
+    if bool(r.finance_author) and r.approved_by in (None,r.creator_id,r.last_editor_id,r.checked_by):return False
     return not requires_director(r) or (r.approved_by is not None and r.approved_by!=r.finance_approved_by)
 
 def check_payer(s,u,req):
@@ -391,7 +398,7 @@ def enforce_payment_budget(s,req,account,paid_on):
             detail+=' Лимит жёсткий: сначала нужно пересмотреть бюджет статьи на этот месяц.'
         elif not same_month:
             detail+=(f' Срок заявки {req.due_date}: финансовому директору нужно перенести срок на месяц оплаты;'
-                     ' после переноса заявку проверяет другой финансист или администратор и утверждает директор.')
+                     ' после переноса требуется повторное согласование по маршруту заявки.')
         raise HTTPException(409,f'{detail} {RETURN_HINT}')
     return b
 
@@ -403,13 +410,15 @@ def amount_label(n):
 def route_json(r,currency):
     """Маршрут по снимку: участвует ли директор и почему."""
     required=requires_director(r)
-    if r.route_policy is None:reason='Директор утверждает заявку.'
+    if bool(r.finance_author):reason='Автор заявки — финансовый директор. После проверки бухгалтера заявку утверждает директор компании.'
+    elif r.route_policy is None:reason='Директор утверждает заявку.'
     elif r.route_policy=='always':reason='Политика статьи: директор утверждает любую сумму.'
     elif r.route_policy=='skip':reason='Политика статьи: после финансового директора заявка готова к исполнению.'
     elif required:reason=f'Сумма выше порога статьи {amount_label(r.route_threshold)} {currency}: нужен директор.'
     else:reason=f'Сумма не выше порога статьи {amount_label(r.route_threshold)} {currency}: директор не участвует.'
     return {'policy':r.route_policy,'threshold':money(r.route_threshold) if r.route_threshold is not None else None,
-            'at':str(r.route_at) if r.route_at else None,'director_required':required,'reason':reason}
+            'at':str(r.route_at) if r.route_at else None,'director_required':required,
+            'finance_required':finance_required(r),'finance_author':bool(r.finance_author),'reason':reason}
 
 def backdated_flags(s,r):
     """Признаки «с датой задним числом» для списка заявок.
@@ -603,7 +612,7 @@ def post_ledger(s,u,data,*,bank_statement_fact=False,bank_statement_import=False
             raise HTTPException(409,'Получатель платежа берётся из утверждённой заявки и не может быть заменён.')
         # Маршрут проверяется по снимку политики статьи. Заявки без снимка (утверждённые до 2.13)
         # оплачиваются только с отдельным подтверждением директора, как раньше.
-        if req.finance_approved_by is None or (req.route_policy is not None and req.checked_by is None):
+        if (finance_required(req) and req.finance_approved_by is None) or ((req.route_policy is not None or bool(req.finance_author)) and req.checked_by is None) or (bool(req.finance_author) and not route_complete(req)):
             raise HTTPException(409,f'Заявка не прошла все этапы согласования. {RETURN_HINT}')
         if requires_director(req) and (req.approved_by is None or req.approved_by==req.finance_approved_by):
             raise HTTPException(409,f'Заявка утверждена без отдельного подтверждения директора. {RETURN_HINT} После проверки её утвердит директор.')

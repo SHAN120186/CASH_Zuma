@@ -14,8 +14,8 @@ from sqlalchemy import select
 
 from .bank_statement_models import BankStatementBatch, BankStatementLine
 from .db import Account, Ledger, now, unit
-from .section_access import can_edit_section
 from .security import jwt_key, session_user
+from .bank_statement_permissions import require_existing_bank_fact_link
 from .services import deleted_ledger_ids, effective_cashflows, get, log, money
 from .bank_statement_cash_funding import MATCHED as FUNDING_MATCHED, binding as funding_binding, accounted_funding_line_ids
 
@@ -32,6 +32,13 @@ class DuplicateResolution(BaseModel):
     token: str = Field(pattern=r'^[0-9a-f]{64}$')
     reason: str = Field(min_length=10, max_length=1000)
     confirm: bool
+
+
+def _reviewer(s, request):
+    """Link existing evidence; this grants no request payment or approval right."""
+    user, _ = session_user(s, request)
+    require_existing_bank_fact_link(user, 'Для разрешения повтора нужен доступ к изменению операций.')
+    return user
 
 
 def _target(s, line_id):
@@ -126,9 +133,7 @@ def _token(user, target, batch, prior, prior_batch, entry):
 @router.get('/api/bank-statements/lines/{id}/duplicate-candidates')
 def duplicate_candidates(id: int, request: Request):
     with unit() as s:
-        user, _ = session_user(s, request, 'pay_bank')
-        if not can_edit_section(user, 'ledger'):
-            raise HTTPException(403, 'Для разрешения повтора нужен доступ к изменению операций.')
+        user = _reviewer(s, request)
         target, batch, account = _target(s, id)
         items = []
         for prior, prior_batch, entry in _matches(s, target, batch, account):
@@ -144,9 +149,7 @@ def duplicate_resolve(id: int, data: DuplicateResolution, request: Request):
     if not data.confirm:
         raise HTTPException(422, 'Подтвердите связь повторной строки с операцией.')
     with unit(True) as s:
-        user, _ = session_user(s, request, 'pay_bank')
-        if not can_edit_section(user, 'ledger'):
-            raise HTTPException(403, 'Для разрешения повтора нужен доступ к изменению операций.')
+        user = _reviewer(s, request)
         target, batch, account = _target(s, id)
         matches = [item for item in _matches(s, target, batch, account) if item[0].id == data.prior_line_id]
         if len(matches) != 1:

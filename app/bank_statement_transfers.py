@@ -14,8 +14,8 @@ from sqlalchemy import select
 
 from .bank_statement_models import BankStatementBatch, BankStatementLine
 from .db import Account, Ledger, now, unit
-from .section_access import can_edit_section
 from .security import jwt_key, session_user
+from .bank_statement_permissions import require_existing_bank_fact_link
 from .services import deleted_ledger_ids, effective_cashflows, get, log, money
 
 router = APIRouter()
@@ -96,9 +96,8 @@ def _token(user, line, batch, account, entry, other, confirmed):
 @router.get('/api/bank-statements/lines/{id}/transfer-candidates')
 def transfer_candidates(id: int, request: Request):
     with unit() as s:
-        user, _ = session_user(s, request, 'pay_bank')
-        if not can_edit_section(user, 'ledger'):
-            raise HTTPException(403, 'Для сверки перевода нужен доступ к изменению операций.')
+        user, _ = session_user(s, request)
+        require_existing_bank_fact_link(user, 'Для сверки перевода нужен доступ к изменению операций.')
         line, batch, account = _target(s, id)
         items = []
         for entry, other, confirmed in _candidates(s, line, batch, account):
@@ -116,9 +115,8 @@ def transfer_link(id: int, data: TransferLink, request: Request):
     if not data.confirm:
         raise HTTPException(422, 'Подтвердите связь строки с переводом.')
     with unit(True) as s:
-        user, _ = session_user(s, request, 'pay_bank')
-        if not can_edit_section(user, 'ledger'):
-            raise HTTPException(403, 'Для сверки перевода нужен доступ к изменению операций.')
+        user, _ = session_user(s, request)
+        require_existing_bank_fact_link(user, 'Для сверки перевода нужен доступ к изменению операций.')
         line, batch, account = _target(s, id)
         matches = [item for item in _candidates(s, line, batch, account) if item[0].id == data.ledger_id]
         if len(matches) != 1:

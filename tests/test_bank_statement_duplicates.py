@@ -1,4 +1,5 @@
 """Synthetic HTTP tests for audited overlapping-statement resolution."""
+import json
 import unittest
 from datetime import date, timedelta
 from sqlalchemy import select
@@ -6,9 +7,10 @@ from sqlalchemy import select
 from tests.test_site import SiteTests
 from app.bank_statement_duplicates import router
 from app.bank_statement_models import BankStatementBatch, BankStatementLine
-from app.db import Account, Audit, Company, Ledger, User, engine, now, unit
+from app.db import Account, Audit, Company, Ledger, Setting, User, engine, now, unit
 from app.main import app
 from app.services import account_balance
+from app.security import ADMIN_WORKFLOW_RIGHTS, perms_of
 
 if not any(getattr(route, 'path', None) == '/api/bank-statements/lines/{id}/duplicate-candidates' for route in app.routes):
     app.include_router(router)
@@ -63,6 +65,10 @@ class DuplicateResolutionTests(SiteTests):
                                             json=body,headers=headers or self.h)
 
     def test_confirmation_links_without_second_ledger_and_corrects_daily(self):
+        # Administrative evidence correction must not restore operational rights.
+        with unit() as s:
+            admin=s.scalar(select(User).where(User.username=='admin'))
+            self.assertTrue(ADMIN_WORKFLOW_RIGHTS.isdisjoint(perms_of(admin)))
         before=self.client.get('/api/bank-statements/daily',headers=self.h,params={'date':self.date,'currency':'UZS'})
         self.assertEqual(before.status_code,200,before.text)
         self.assertEqual(before.json()['credit_total'],'400.00'); self.assertTrue(before.json()['uncertain'])
@@ -115,6 +121,22 @@ class DuplicateResolutionTests(SiteTests):
             self.assertEqual(result.status_code,200,result.text)
             accepted=self.resolve(result.json()['items'][0],client=accountant,headers=headers)
             self.assertEqual(accepted.status_code,200,accepted.text)
+        finally:
+            accountant.close()
+
+    def test_accountant_with_view_only_operations_cannot_link_duplicate(self):
+        item=self.candidates().json()['items'][0]
+        accountant,headers=self.make_user('accountant','synthetic_readonly_accountant')
+        try:
+            with unit(True) as s:
+                uid=s.scalar(select(User.id).where(User.username=='synthetic_readonly_accountant'))
+                s.add(Setting(key=f'sections:{self.company}:{uid}',
+                    value=json.dumps({'version':1,'sections':{'ledger':'view'}})))
+            self.assertEqual(self.candidates(client=accountant,headers=headers).status_code,403)
+            self.assertEqual(self.resolve(item,client=accountant,headers=headers).status_code,403)
+            with unit() as s:
+                self.assertEqual(s.get(BankStatementLine,self.target_id).status,'ambiguous_duplicate')
+                self.assertEqual(len(list(s.scalars(select(Ledger)))),1)
         finally:
             accountant.close()
 

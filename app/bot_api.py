@@ -731,6 +731,7 @@ def roles_in(user, company, members, acting):
     Замещение считается только там, куда сотрудник может войти на сайте: назначение ВрИО проверяет
     это при создании (requests_api.add_delegation), но потом сотрудника могли назначить во вторую
     компанию или убрать из этой, и сайт закрывает ему доступ раньше, чем истекает срок ВрИО."""
+    if user.role=='admin':return {'admin'}
     own = company_role_of(user, company, members)
     roles = {own} if own else set()
     if own == 'sales' and user.role not in ('admin', 'founder'):
@@ -781,7 +782,7 @@ def responsible(r, account, company, users, members, acting=None, past=None, fun
 
 def funding_reminder_sections(s,user,company,members,acting):
     """Match the cash-funding HTTP guard without mutating a shared bot user."""
-    if user.role=='admin':return True
+    if user.role=='admin':return False
     if user.role=='founder':return False
     from .section_access import defaults,stored
     permissions=set().union(*(PERMS.get(role,set()) for role in roles_in(user,company,members,acting)))

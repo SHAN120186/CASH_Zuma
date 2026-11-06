@@ -24,7 +24,7 @@ class ReprocessPaymentTests(AutoBankIntegrationTests):
 
     def context(self,s):
         s.info['company_id']=self.company
-        user=s.scalar(select(User).where(User.username=='admin'));scope_user(user,'finance')
+        user=s.scalar(select(User).where(User.username=='bank_synthetic_accountant'));scope_user(user,'accountant')
         batch=s.get(BankStatementBatch,self.batch_id);account=s.get(Account,self.acc)
         lines=list(s.scalars(select(BankStatementLine).where(BankStatementLine.batch_id==batch.id)
                              .order_by(BankStatementLine.line)))
@@ -105,13 +105,14 @@ class ReprocessPaymentTests(AutoBankIntegrationTests):
             self.assertEqual(classify_reprocess_payments(s,batch,lines,account,accountant),{})
 
     def test_http_reprocess_uses_incoming_before_exact_payment_and_fee_atomically(self):
-        p=self.client.post(f'/api/bank-statements/{self.batch_id}/reprocess/preview',headers=self.h,
+        client,headers=self.accountant
+        p=client.post(f'/api/bank-statements/{self.batch_id}/reprocess/preview',headers=headers,
                            json={'fee_category_id':self.cat})
         self.assertEqual(p.status_code,200,p.text);self.assertTrue(p.json()['full_reconciliation'],p.text)
         payment=next(row for row in p.json()['rows'] if row['document_number']=='PAY001')
         self.assertEqual((payment['status'],payment['request_id']),('auto_pay_candidate',self.rid))
         self.assertGreater(payment['request_version'],0)
-        done=self.client.post(f'/api/bank-statements/{self.batch_id}/reprocess/commit',headers=self.h,
+        done=client.post(f'/api/bank-statements/{self.batch_id}/reprocess/commit',headers=headers,
             json={'fee_category_id':self.cat,'preview_token':p.json()['preview_token'],'confirm':True})
         self.assertEqual(done.status_code,200,done.text);self.assertTrue(done.json()['full_reconciliation'],done.text)
         with unit() as s:
@@ -120,7 +121,7 @@ class ReprocessPaymentTests(AutoBankIntegrationTests):
             self.assertEqual(sum(entry.amount if entry.kind=='in' else -entry.amount for entry in entries),-42000)
             self.assertEqual(s.get(PaymentRequest,self.rid).status,'paid')
             self.assertEqual(len([entry for entry in entries if entry.request_id==self.rid]),1)
-        again=self.client.post(f'/api/bank-statements/{self.batch_id}/reprocess/commit',headers=self.h,
+        again=client.post(f'/api/bank-statements/{self.batch_id}/reprocess/commit',headers=headers,
             json={'fee_category_id':self.cat,'preview_token':p.json()['preview_token'],'confirm':True})
         self.assertEqual(again.status_code,409,again.text)
 
@@ -159,12 +160,13 @@ class ReprocessPaymentTests(AutoBankIntegrationTests):
             self.assertEqual(sorted(entry.kind for entry in s.scalars(select(Ledger))),['in','out'])
 
     def test_http_reprocess_rejects_changed_request_after_preview(self):
-        p=self.client.post(f'/api/bank-statements/{self.batch_id}/reprocess/preview',headers=self.h,
+        client,headers=self.accountant
+        p=client.post(f'/api/bank-statements/{self.batch_id}/reprocess/preview',headers=headers,
                            json={'fee_category_id':self.cat})
         self.assertEqual(p.status_code,200,p.text);self.assertTrue(p.json()['full_reconciliation'],p.text)
         with unit(True) as s:
             request=s.get(PaymentRequest,self.rid);request.purpose='Synthetic changed approval request'
-        done=self.client.post(f'/api/bank-statements/{self.batch_id}/reprocess/commit',headers=self.h,
+        done=client.post(f'/api/bank-statements/{self.batch_id}/reprocess/commit',headers=headers,
             json={'fee_category_id':self.cat,'preview_token':p.json()['preview_token'],'confirm':True})
         self.assertEqual(done.status_code,409,done.text)
         with unit() as s:
@@ -182,13 +184,14 @@ class ReprocessPaymentTests(AutoBankIntegrationTests):
             self.assertEqual(classify_reprocess_payments(s,batch,lines,account,user),{})
 
     def test_reprocess_does_not_bypass_separation_of_duties(self):
+        client,headers=self.accountant
         with unit(True) as s:
-            actor=s.scalar(select(User).where(User.username=='admin'))
+            actor=s.scalar(select(User).where(User.username=='bank_synthetic_accountant'))
             s.get(PaymentRequest,self.rid).finance_approved_by=actor.id
-        p=self.client.post(f'/api/bank-statements/{self.batch_id}/reprocess/preview',headers=self.h,
+        p=client.post(f'/api/bank-statements/{self.batch_id}/reprocess/preview',headers=headers,
                            json={'fee_category_id':self.cat})
         self.assertEqual(p.status_code,200,p.text)
-        done=self.client.post(f'/api/bank-statements/{self.batch_id}/reprocess/commit',headers=self.h,
+        done=client.post(f'/api/bank-statements/{self.batch_id}/reprocess/commit',headers=headers,
             json={'fee_category_id':self.cat,'preview_token':p.json()['preview_token'],'confirm':True})
         self.assertEqual(done.status_code,200,done.text);self.assertFalse(done.json()['full_reconciliation'])
         self.assertEqual(done.json()['posted'],2)
