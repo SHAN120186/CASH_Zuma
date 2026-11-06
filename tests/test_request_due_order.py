@@ -72,7 +72,7 @@ class RequestDueOrderTests(SiteTests):
     def test_period_archive_status_currency_and_deleted_filters_keep_existing_behavior(self):
         old = self.seed(-7, status='approved', approved_age=48)
         current = self.seed(0, status='approved', approved_age=2)
-        paid = self.seed(7, status='paid', approved_age=48)
+        paid = self.seed(7, status='paid', approved_age=2)
         draft = self.seed(-3)
         removed = self.seed(-30, status='deleted')
         usd = self.seed(1, status='pending', currency='USD', tag='Synthetic USD search target')
@@ -84,8 +84,10 @@ class RequestDueOrderTests(SiteTests):
             return [row['id'] for row in self.listing(**params)]
         with patch('app.main.now', return_value=self.stamp):
             self.assertEqual(ids(), [old, cancelled, draft, current, usd, paid])
-            self.assertEqual(ids(archive='active'), [draft, current, usd])
-            self.assertEqual(ids(archive='archived'), [old, cancelled, paid])
+            # Approved-but-unpaid requests remain active regardless of age;
+            # paid requests are archived immediately under the retention policy.
+            self.assertEqual(ids(archive='active'), [old, draft, current, usd])
+            self.assertEqual(ids(archive='archived'), [cancelled, paid])
             # Selecting a period retains both archived and active rows, as before.
             self.assertEqual(ids(archive='active', date_from=str(self.day - timedelta(days=7)), date_to=str(self.day)),
                              [old, cancelled, draft, current])

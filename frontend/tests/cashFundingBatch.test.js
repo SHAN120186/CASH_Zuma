@@ -37,7 +37,9 @@ test('changing selected rows, date or reference invalidates the signed preview a
   const {view}=await fixture(t);await selectBoth(view);await view.state.check();view.state.confirmed=true;
   view.state.choose(view.state.snapshot.candidates[1],false);await settle();assert.equal(view.state.preview,null);assert.equal(view.state.confirmed,false);
   await view.state.check();assert.ok(view.state.preview);view.state.form.reference='SYN-CHANGED';await settle();assert.equal(view.state.preview,null);
-  await view.state.check();view.state.form.date='2026-11-07';await settle();assert.equal(view.state.preview,null);
+  await view.state.check();
+  const changedDate=new Date(view.state.form.date+'T00:00:00Z');changedDate.setUTCDate(changedDate.getUTCDate()+1);
+  view.state.form.date=changedDate.toISOString().slice(0,10);await settle();assert.equal(view.state.preview,null);
 });
 
 test('lost commit response is recovered by a group-key GET without a repeated POST',async t=>{
