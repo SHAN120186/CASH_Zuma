@@ -249,7 +249,7 @@ const upcoming = computed(() => {
   if (props.requestsOnly) {
     if (!props.canOpenRequests) return [];
     const until = addDays(props.today, horizon.value - 1);
-    return [...(s.value.approved || [])].filter(r => r.date > props.today && r.date <= until).sort(byDue).slice(0, 5)
+    return [...(s.value.approved || [])].filter(r => r.cash_funding?.mode !== 'batch' && r.date > props.today && r.date <= until).sort(byDue).slice(0, 5)
       .map(r => ({id: r.id, date: r.date, name: r.counterparty, amount: r.amount}));
   }
   const out = [];
@@ -266,7 +266,7 @@ const hasUnreconciledBalance = computed(() => accountList.value.some(a => a.curr
 const pendingPreview = computed(() => props.showRequestPanels ? [...(s.value.pendingAll || [])].sort(byDue).slice(0, PENDING_PREVIEW) : []);
 
 const byDue = (a, b) => a.date.localeCompare(b.date) || a.id - b.id;
-const payments = computed(() => props.showRequestPanels ? (s.value.approved || []).filter(r => r.date <= props.today).sort(byDue) : []);
+const payments = computed(() => props.showRequestPanels ? (s.value.approved || []).filter(r => r.cash_funding?.mode !== 'batch' && r.date <= props.today).sort(byDue) : []);
 const decisions = computed(() => props.showRequestPanels ? [...(s.value.pending || [])].sort(byDue) : []);
 // Решения по заявкам принимают согласующие и расчётный бухгалтер (проверка реквизитов).
 const approver = computed(() => props.showRequestPanels && (!props.requestsOnly || props.canOpenRequests) && (props.has('approve') || props.has('request_check')));
@@ -431,7 +431,7 @@ const signedLedger = t => (t.kind === 'out' ? -1 : t.kind === 'in' ? 1 : 0) * (t
     <ul v-else-if="pendingPreview.length" class="rows">
      <li v-for="r in pendingPreview" :key="r.id">
       <component :is="canOpenRequests ? 'button' : 'div'" :type="canOpenRequests ? 'button' : undefined" class="row" :class="{static: !canOpenRequests}" @click="showRequest(r)">
-       <span class="row-main"><b>{{r.number}} · {{r.counterparty}}</b><small>{{r.purpose}}</small><small>{{tx('до {date}', {date: formatShortDate(r.date)})}}</small>
+       <span class="row-main"><b>{{r.number}} · {{r.counterparty}}</b><small>{{r.purpose}}</small><small v-if="r.cash_funding?.mode==='batch'">{{tx('Пополнение кассы для группы заявок')}}</small><small>{{tx('до {date}', {date: formatShortDate(r.date)})}}</small>
         <span v-if="track" class="trk"><template v-for="(st, i) in track(r)" :key="i"><span v-if="i" class="ln"></span><span class="st" :class="st.c === 'skip' ? '' : st.c"><u>{{marks[st.c]}}</u>{{tx(st.l)}}</span></template></span></span>
        <span class="row-amt">{{formatCents(toCents(r.amount), r.currency)}} <small>{{r.currency}}</small></span>
       </component>

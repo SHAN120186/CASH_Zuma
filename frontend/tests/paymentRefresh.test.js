@@ -41,6 +41,25 @@ async function fixture(t,handle){
 const posted=calls=>calls.filter(call=>call.method==='POST'&&call.url==='/api/ledger');
 const visibleErrors=view=>all(view.container,node=>node.tag==='p'&&String(node.props.class||'').split(' ').includes('error')).map(text);
 
+test('an accepted batch clears every stale child pay action even when both refresh reads fail',async t=>{
+ const {view,calls}=await fixture(t,async()=>denied(503,'Synthetic refresh unavailable'));
+ view.state.modal=null;view.state.rows=[{...request},{...request,id:42,number:'CF-00042'}];view.state.listTotal=2;
+ await view.state.batchPaymentsRecorded([41,42]);await settle();
+ assert.deepEqual(view.state.rows.map(row=>row.status),['paid','paid']);
+ assert.ok(view.state.rows.every(row=>row.actions.length===0));
+ assert.match(view.state.error,/Групповая выдача записана/);
+ assert.equal(posted(calls).length,0,'refresh never submits one or several ledger writes');
+ assert.equal(view.state.canPayRequest({...request,cash_funding:{mode:'batch'}}),false,'a funding-only parent is never a direct expense');
+});
+
+test('request cards and table rows visibly distinguish a funding pool from an expense',async t=>{
+ const {view}=await fixture(t,async()=>reply({items:[],total:0}));
+ view.state.modal=null;view.state.rows=[{...request,cash_funding:{mode:'batch'}}];view.state.listTotal=1;await settle();
+ assert.match(text(view.container),/Пополнение кассы для группы заявок/);
+ view.state.rows=Array.from({length:5},(_,i)=>({...request,id:41+i,number:`SYN-${i}`,cash_funding:i===0?{mode:'batch'}:null}));view.state.listTotal=5;await settle();
+ assert.match(text(view.container),/Пополнение кассы для группы заявок/);
+});
+
 test('linked payment completes once and disappears from the approved filter',async t=>{
  let paid=false;
  const {view,calls}=await fixture(t,async(url,options)=>{

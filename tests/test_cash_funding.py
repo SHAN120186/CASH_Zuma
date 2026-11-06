@@ -166,7 +166,12 @@ class CashFundingTests(base.SiteTests):
         with unit() as s:self.assertEqual(s.scalar(select(func.count()).select_from(Ledger)),3)
 
     def test_additive_table_initialization_preserves_existing_data(self):
-        # Simulate pre-feature DB: only the new empty table is absent.
+        # Simulate a schema before funding existed. Its later group/item
+        # tables cannot exist in that historical schema either; PostgreSQL
+        # correctly protects their foreign key to the funding table.
+        from app.db import CashFundingPaymentItem,CashFundingPaymentGroup
+        CashFundingPaymentItem.__table__.drop(engine)
+        CashFundingPaymentGroup.__table__.drop(engine)
         CashFunding.__table__.drop(engine)
         initialize()
         self.assertIn('request_cash_fundings',inspect(engine).get_table_names())

@@ -6,6 +6,7 @@ import {PRIORITIES, CHANNELS, DEPARTMENTS, DOC_KINDS, requiredDocs, SINGLE_DOCS,
 import {RETRY_REASON} from './saveFlow.js';
 import {tx, N_, formatDate, lang} from '../i18n/index.js';
 import CashFundingPanel from './CashFundingPanel.vue';
+import CashFundingBatchPanel from './CashFundingBatchPanel.vue';
 
 const props = defineProps({
   api: {type: Function, required: true},
@@ -14,14 +15,14 @@ const props = defineProps({
   money: {type: Function, required: true},
   dues: {type: Object, default: () => ({})},
 });
-const emit = defineEmits(['close', 'changed', 'edit', 'record-payment']);
+const emit = defineEmits(['close', 'changed', 'edit', 'record-payment', 'payments-recorded']);
 
 const r = ref(null), error = ref(''), busy = ref(false), notice = ref(''), dialog = ref(null), rules = ref(props.dues);
 const decision = ref({action: '', note: '', date: ''}), showHistory = ref({}), removing = ref(null), removeReason = ref('');
 const MK = {done: '✓', now: '●', bad: '✕', skip: '–', '': ''};
 const PILL = {pending: 'warn', approved: 'good', paid: 'fact', returned: 'warn', cancelled: 'gray', draft: 'gray', rejected: 'bad'};
 
-const can = a => (r.value?.actions || []).includes(a);
+const can = a => !(a === 'pay' && r.value?.cash_funding?.mode === 'batch') && (r.value?.actions || []).includes(a);
 const options = computed(() => r.value ? decisionOptions(r.value) : []);
 const needsComment = computed(() => COMMENT_REQUIRED.includes(decision.value.action));
 const byKind = computed(() => {
@@ -89,6 +90,14 @@ async function fundingChanged(row) {
   // empty set of attachments after a successful money fact.
   await load(true);
   emit('changed');
+}
+
+async function batchPaymentsRecorded(result) {
+  // Clear every child's stale payment action before any network refresh.
+  emit('payments-recorded', result.paid_request_ids);
+  error.value = '';
+  await load(true);
+  if (error.value) error.value = N_('Групповая выдача записана. Не удалось обновить карточку; оплату повторять не нужно.');
 }
 
 async function decide() {
@@ -181,8 +190,9 @@ onUnmounted(() => document.removeEventListener('keydown', onKey));
         </dl>
 
         <CashFundingPanel v-if="r.cash_funding" :api="api" :request="r" :money="money" @busy="busy = $event" @changed="fundingChanged" />
+        <CashFundingBatchPanel v-if="r.cash_funding?.mode === 'batch'" :api="api" :request="r" :money="money" @busy="busy = $event" @paid="batchPaymentsRecorded" />
 
-        <section v-if="r.budget_card" class="budget-check" :class="r.budget_card.status" :aria-label="tx('Бюджет статьи')">
+        <section v-if="r.budget_card && r.cash_funding?.mode !== 'batch'" class="budget-check" :class="r.budget_card.status" :aria-label="tx('Бюджет статьи')">
           <strong>{{ tx('Бюджет статьи «{category}» · {period}', {category: r.category, period: periodLabel(r.budget_card.period)}) }}</strong>
           <dl v-if="r.budget_card.budget_set" class="budget-grid">
             <template v-for="[label, value] in budgetRows(r.budget_card)" :key="label"><dt>{{ label }}</dt><dd><b>{{ money(value) }}</b> {{ r.currency }}</dd></template>

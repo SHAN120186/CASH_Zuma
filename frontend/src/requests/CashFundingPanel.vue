@@ -8,6 +8,7 @@ const emit = defineEmits(['busy', 'changed']);
 const action = ref(''), form = ref({date: '', reference: '', note: ''}), preview = ref(null), confirmed = ref(false);
 const busy = ref(false), error = ref(''), notice = ref(''), uncertain = ref(false);
 const funding = computed(() => props.request.cash_funding);
+const batch = computed(() => funding.value?.mode === 'batch');
 const canWithdraw = computed(() => fundingActionAvailable(props.request, 'withdraw'));
 const canReceive = computed(() => fundingActionAvailable(props.request, 'receive'));
 const minimum = computed(() => action.value === 'receive' ? funding.value?.withdraw_date : props.request.approved_on);
@@ -70,7 +71,7 @@ async function commit() {
       || row.cash_funding.gross_amount !== funding.value.gross_amount || row.cash_funding.net_amount !== funding.value.net_amount
       || row.cash_funding.fee_amount !== funding.value.fee_amount) throw new Error(tx('Ответ о проведении не получен. Проверьте состояние заявки перед дальнейшими действиями.'));
     action.value = ''; emit('changed', row);
-    notice.value = which === 'withdraw' ? N_('Списание банка и комиссия учтены. Заявка ещё не оплачена.') : N_('Наличные получены в кассу. Заявка готова к оплате по прежним правилам.');
+    notice.value = which === 'withdraw' ? batch.value ? N_('Списание банка и комиссия учтены. Выдача по выбранным заявкам ещё не проведена.') : N_('Списание банка и комиссия учтены. Заявка ещё не оплачена.') : batch.value ? N_('Наличные получены в кассу. Выберите заявки для групповой выдачи.') : N_('Наличные получены в кассу. Заявка готова к оплате по прежним правилам.');
   } catch (failure) {
     if (!alive || current !== generation) return;
     if (failure.status == null || failure.status >= 502) {
@@ -88,12 +89,13 @@ onUnmounted(() => { alive = false; generation++; emit('busy', false); });
 <template>
   <section v-if="funding" class="cash-funding-panel" :aria-label="tx('Наличные через банк')">
     <div class="section-head"><h3>{{ tx('Наличные через банк') }}</h3><span class="pill" :class="funding.state === 'received' ? 'good' : 'warn'">{{ fundingStatus(request) }}</span></div>
+    <p v-if="batch" class="sub"><b>{{ tx('Пополнение кассы для нескольких заявок') }}</b></p>
     <dl class="kv">
       <dt>{{ tx('Банковский счёт') }}</dt><dd>{{ funding.bank_account }}</dd>
       <dt>{{ tx('Касса') }}</dt><dd>{{ request.account }}</dd>
       <dt>{{ tx('Всего списать с банка') }}</dt><dd class="num">{{ money(funding.gross_amount) }} {{ request.currency }}</dd>
       <dt>{{ tx('Комиссия') }} · {{ funding.fee_percent }}%</dt><dd class="num">{{ money(funding.fee_amount) }} {{ request.currency }}<small v-if="funding.fee_category_name"> · {{ funding.fee_category_name }}</small></dd>
-      <dt>{{ tx('Сумма наличной заявки') }}</dt><dd class="num"><b>{{ money(funding.net_amount) }} {{ request.currency }}</b></dd>
+      <dt>{{ batch ? tx('Сумма пополнения кассы') : tx('Сумма наличной заявки') }}</dt><dd class="num"><b>{{ money(funding.net_amount) }} {{ request.currency }}</b></dd>
       <template v-if="funding.withdraw_date"><dt>{{ tx('Списание банка') }}</dt><dd>{{ funding.withdraw_date }} · {{ funding.withdraw_reference }}</dd></template>
       <template v-if="funding.receive_date"><dt>{{ tx('Получение в кассу') }}</dt><dd>{{ funding.receive_date }} · {{ funding.receive_reference }}</dd></template>
     </dl>
@@ -111,7 +113,7 @@ onUnmounted(() => { alive = false; generation++; emit('busy', false); });
         <label>{{ tx('Номер документа') }}<input v-model="form.reference" maxlength="120" :disabled="busy" required></label>
         <label class="wide">{{ tx('Основание / комментарий') }}<textarea v-model="form.note" maxlength="1000" :disabled="busy"></textarea></label>
       </div>
-      <p v-if="action === 'withdraw'" class="sub">{{ tx('Учитывается выполненное списание. Команда в банк не отправляется; выдача по заявке остаётся отдельным действием.') }}</p>
+      <p v-if="action === 'withdraw'" class="sub">{{ batch ? tx('Учитывается выполненное списание. После получения наличных выдача по выбранным заявкам подтверждается отдельно.') : tx('Учитывается выполненное списание. Команда в банк не отправляется; выдача по заявке остаётся отдельным действием.') }}</p>
       <template v-if="preview">
         <p class="notice">{{ tx('Проверено: банк {gross}, комиссия {fee}, наличными {net} {currency}.', {gross: money(funding.gross_amount), fee: money(funding.fee_amount), net: money(funding.net_amount), currency: request.currency}) }}</p>
         <label class="cash-funding-attest"><input v-model="confirmed" type="checkbox" :disabled="busy">{{ tx(statement) }}</label>

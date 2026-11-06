@@ -230,6 +230,7 @@ class CashFunding(Base):
     id = Column(Integer, primary_key=True)
     company_id = Column(Integer, ForeignKey('companies.id'), nullable=False)
     request_id = Column(Integer, ForeignKey('payment_requests.id'), nullable=False, unique=True)
+    mode = Column(String(12), nullable=False, default='single', server_default='single')
     bank_account_id = Column(Integer, ForeignKey('accounts.id'), nullable=False)
     cash_account_id = Column(Integer, ForeignKey('accounts.id'), nullable=False)
     transit_account_id = Column(Integer, ForeignKey('accounts.id'), nullable=True)
@@ -252,6 +253,35 @@ class CashFunding(Base):
     created_by = Column(Integer, ForeignKey('users.id'), nullable=False)
     created_at = Column(DateTime, nullable=False, default=now)
     __mapper_args__ = {'version_id_col': version}
+
+class CashFundingPaymentGroup(Base):
+    """Immutable receipt of one atomic cash issue; never another net expense."""
+    __tablename__ = 'cash_funding_payment_groups'
+    id = Column(Integer, primary_key=True)
+    company_id = Column(Integer, ForeignKey('companies.id'), nullable=False)
+    funding_id = Column(Integer, ForeignKey('request_cash_fundings.id'), nullable=False)
+    key = Column(String(80), nullable=False)
+    payload_hash = Column(String(64), nullable=False)
+    total_amount = Column(BigInteger, nullable=False)
+    remaining_amount = Column(BigInteger, nullable=False)
+    cash_balance = Column(BigInteger, nullable=False)
+    funding_version = Column(Integer, nullable=False)
+    request_version = Column(Integer, nullable=False)
+    date = Column(Date, nullable=False)
+    reference = Column(String(120), nullable=False)
+    note = Column(Text, nullable=False, default='')
+    creator_id = Column(Integer, ForeignKey('users.id'), nullable=False)
+    created_at = Column(DateTime, nullable=False, default=now)
+    __table_args__ = (UniqueConstraint('company_id','key'),)
+
+class CashFundingPaymentItem(Base):
+    __tablename__ = 'cash_funding_payment_items'
+    id = Column(Integer, primary_key=True)
+    company_id = Column(Integer, ForeignKey('companies.id'), nullable=False)
+    group_id = Column(Integer, ForeignKey('cash_funding_payment_groups.id'), nullable=False)
+    request_id = Column(Integer, ForeignKey('payment_requests.id'), nullable=False, unique=True)
+    ledger_id = Column(Integer, ForeignKey('ledger.id'), nullable=False, unique=True)
+    amount = Column(BigInteger, nullable=False)
 
 class Ledger(Base):
     __tablename__ = 'ledger'
@@ -637,6 +667,9 @@ def initialize():
         receipt_columns={c['name'] for c in inspect(conn).get_columns('expected_receipts')}
         if 'inn' not in receipt_columns:conn.execute(text("ALTER TABLE expected_receipts ADD COLUMN inn VARCHAR(20) NOT NULL DEFAULT ''"))
         if 'version' not in receipt_columns:conn.execute(text('ALTER TABLE expected_receipts ADD COLUMN version INTEGER NOT NULL DEFAULT 1'))
+        funding_columns={c['name'] for c in inspect(conn).get_columns('request_cash_fundings')}
+        if 'mode' not in funding_columns:
+            conn.execute(text("ALTER TABLE request_cash_fundings ADD COLUMN mode VARCHAR(12) NOT NULL DEFAULT 'single'"))
         columns={c['name'] for c in inspect(conn).get_columns('categories')}
         if 'code' not in columns:conn.execute(text('ALTER TABLE categories ADD COLUMN code VARCHAR(40)'))
         if 'cost_group' not in columns:conn.execute(text("ALTER TABLE categories ADD COLUMN cost_group VARCHAR(12) NOT NULL DEFAULT 'other'"))

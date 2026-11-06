@@ -38,6 +38,7 @@ export const hasCashFundingFee = event => {const fee=units(event?.cash_funding_f
 export function cashFundingBody(value) {
   if (!value) return null;
   return {bank_account_id: value.bank_account_id == null ? null : Number(value.bank_account_id),
+    mode: value.mode || 'single',
     gross_amount: ungroupAmount(value.gross_amount), fee_percent: ungroupAmount(value.fee_percent),
     fee_category_id: value.fee_category_id == null ? null : Number(value.fee_category_id)};
 }

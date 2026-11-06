@@ -97,7 +97,7 @@ export function steps(r) {
     { c: check, l: legacy ? tx('Проверка · не требовалась') : tx('Проверка') },
     { c: finance, l: tx('Фин. директор') },
     { c: dir, l: director ? tx('Директор') : tx('Директор · не участвует') },
-    { c: paid, l: tx('Оплата') },
+    { c: paid, l: r.cash_funding?.mode === 'batch' ? tx('Выдача по заявкам') : tx('Оплата') },
   ];
 }
 
