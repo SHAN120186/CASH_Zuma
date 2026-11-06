@@ -390,6 +390,7 @@ export default {
   'Статус заявки': 'Ariza holati',
   'Статус: все': 'Holat: barchasi',
   'Поиск заявки': 'Arizani qidirish',
+  'Номер заявки, контрагент или назначение': 'Ariza raqami, kontragent yoki maqsad',
   'Создать заявку': 'Ariza yaratish',
   'Найдено': 'Topildi',
   'До 4 заявок — карточки': '4 tagacha ariza — kartochkalar',
