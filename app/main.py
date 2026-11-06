@@ -464,11 +464,11 @@ def requests_list(request:Request,date_from:Optional[date]=None,date_to:Optional
             cutoff=now()-timedelta(days=1)
             closed_at=select(func.max(Audit.created_at)).where(
                 Audit.entity=='request', Audit.entity_id==cast(PaymentRequest.id,String),
-                or_(and_(PaymentRequest.status=='cancelled',Audit.action=='Действие по заявке: cancel'),
+                or_(and_(PaymentRequest.status=='cancelled',Audit.action.in_(['Действие по заявке: cancel','Действие по заявке: close'])),
                     and_(PaymentRequest.status=='rejected',Audit.action=='Действие по заявке: reject'))
             ).correlate(PaymentRequest).scalar_subquery()
             archived=or_(
-                and_(PaymentRequest.status.in_(['approved','paid']),PaymentRequest.approved_at<=cutoff),
+                PaymentRequest.status=='paid',
                 and_(PaymentRequest.status.in_(['cancelled','rejected']),closed_at<=cutoff))
             query=query.where(func.coalesce(archived,False) if archive=='archived' else ~func.coalesce(archived,False))
         if date_from:query=query.where(PaymentRequest.due_date>=date_from)
@@ -526,7 +526,8 @@ def add_request(data:RequestIn,request:Request):
             message='Сначала сохраните черновик и приложите «Внутренняя заявка / Индент», затем отправьте заявку.' if a.kind=='cash' else 'Сначала сохраните черновик и приложите «Внутренняя заявка / Индент» и «Договор / Счёт на оплату», затем отправьте заявку.'
             raise HTTPException(422,message)
         from .finance_author import new_finance_author
-        r=PaymentRequest(creator_id=u.id,last_editor_id=u.id,category_id=c.id,account_id=a.id,counterparty=data.counterparty,counterparty_inn=data.counterparty_inn,amount=n,due_date=data.date,purpose=data.purpose,project=data.project,department=data.department,status='draft',priority=data.priority,
+        from .request_retention import next_request_id
+        r=PaymentRequest(id=next_request_id(s),creator_id=u.id,last_editor_id=u.id,category_id=c.id,account_id=a.id,counterparty=data.counterparty,counterparty_inn=data.counterparty_inn,amount=n,due_date=data.date,purpose=data.purpose,project=data.project,department=data.department,status='draft',priority=data.priority,
                          finance_author=new_finance_author(u))
         remember_counterparty(s,data.counterparty,data.counterparty_inn)
         s.add(r);s.flush()
@@ -683,7 +684,8 @@ def decide(id:int,data:DecisionIn,request:Request):
             if r.status=='rejected':raise HTTPException(409,'Отклонённая заявка хранится только для чтения.')
             if r.status not in ('draft','pending','approved','returned'):raise HTTPException(409,'Оплаченную или уже закрытую заявку закрыть нельзя.')
             if len(note)<10:raise HTTPException(422,'Укажите причину закрытия не короче 10 символов.')
-            r.status='cancelled';clear_approval(r)
+            from .request_retention import permanently_delete_unpaid_request
+            return permanently_delete_unpaid_request(s,u,r)
         elif data.action=='reschedule':
             if 'request_edit' not in perms or r.status not in ('pending','approved'):raise HTTPException(403,'Перенос недоступен.')
             act_with_right(u,'request_edit')

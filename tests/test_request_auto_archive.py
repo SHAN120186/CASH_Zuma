@@ -15,22 +15,24 @@ class RequestAutoArchiveTests(base.SiteTests):
         return {x['id'] for x in data['items']},data['total']
 
     def test_boundary_period_and_financial_reserve(self):
-        ids=[self.request('10',submit=False).json()['id'] for _ in range(5)]
+        ids=[self.request('10',submit=False).json()['id'] for _ in range(6)]
         stamp=now()
         with unit(True) as s:
-            for rid,status,age in zip(ids,['approved','approved','paid','pending','approved'],[24,23,48,48,None]):
+            for rid,status,age in zip(ids,['approved','approved','paid','pending','returned','paid'],[24*30,23,48,48,48,0]):
                 r=s.get(PaymentRequest,rid);r.status=status
                 r.approved_at=stamp-timedelta(hours=age) if age is not None else None
             before=budget_state(s,self.cat,self.month,'UZS')['reserved']
         with patch('app.main.now',return_value=stamp):
-            self.assertEqual(self.listing(archive='active'),({ids[1],ids[3],ids[4]},3))
-            self.assertEqual(self.listing(archive='archived'),({ids[0],ids[2]},2))
-            self.assertEqual(self.listing(),(set(ids),5))  # Existing API clients retain all rows.
-            self.assertEqual(self.listing(archive='active',date_from=self.date,date_to=self.date),(set(ids),5))
-            self.assertEqual(self.listing(archive='archived',date_from=self.date),(set(ids),5))
-            self.assertEqual(self.listing(archive='archived',state='approved'),({ids[0]},1))
-        with patch('app.main.now',return_value=stamp+timedelta(hours=1)):
-            self.assertEqual(self.listing(archive='archived'),({ids[0],ids[1],ids[2]},3))
+            self.assertEqual(self.listing(archive='active'),({ids[0],ids[1],ids[3],ids[4]},4))
+            self.assertEqual(self.listing(archive='archived'),({ids[2],ids[5]},2))
+            self.assertEqual(self.listing(),(set(ids),6))  # Existing API clients retain all rows.
+            self.assertEqual(self.listing(archive='active',date_from=self.date,date_to=self.date),(set(ids),6))
+            self.assertEqual(self.listing(archive='archived',date_from=self.date),(set(ids),6))
+            self.assertEqual(self.listing(archive='archived',state='approved'),(set(),0))
+            self.assertEqual(self.listing(archive='archived',state='paid'),({ids[2],ids[5]},2))
+        with patch('app.main.now',return_value=stamp+timedelta(days=1)):
+            self.assertEqual(self.listing(archive='active'),({ids[0],ids[1],ids[3],ids[4]},4))
+            self.assertEqual(self.listing(archive='archived'),({ids[2],ids[5]},2))
         self.assertEqual(self.row(ids[0])['status'],'approved')
         with unit() as s:
             self.assertEqual(budget_state(s,self.cat,self.month,'UZS')['reserved'],before)
@@ -41,8 +43,8 @@ class RequestAutoArchiveTests(base.SiteTests):
         with unit(True) as s:
             for rid in ids:
                 r=s.get(PaymentRequest,rid);r.status='cancelled';r.created_at=stamp-timedelta(days=30)
-            for rid,age in [(ids[0],24),(ids[1],23)]:
-                s.add(Audit(company_id=self.company,entity='request',entity_id=str(rid),action='Действие по заявке: cancel',created_at=stamp-timedelta(hours=age)))
+            for rid,age,action in [(ids[0],24,'close'),(ids[1],23,'cancel')]:
+                s.add(Audit(company_id=self.company,entity='request',entity_id=str(rid),action='Действие по заявке: '+action,created_at=stamp-timedelta(hours=age)))
         with patch('app.main.now',return_value=stamp):
             self.assertEqual(self.listing(archive='active'),({ids[1],ids[2]},2))
             self.assertEqual(self.listing(archive='archived'),({ids[0]},1))
@@ -72,7 +74,7 @@ class RequestAutoArchiveTests(base.SiteTests):
     def test_archive_does_not_bypass_company_or_deletion(self):
         rid=self.request('10',submit=False).json()['id']
         with unit(True) as s:
-            r=s.get(PaymentRequest,rid);r.status='approved';r.approved_at=now()-timedelta(days=2)
+            r=s.get(PaymentRequest,rid);r.status='paid';r.approved_at=now()-timedelta(days=2)
             other=s.scalar(select(Company.id).where(Company.id!=self.company,Company.code!='UNASSIGNED'))
         response=self.client.get('/api/requests?archive=archived',headers={**self.h,'X-Company-ID':str(other)})
         self.assertEqual(response.status_code,200,response.text)

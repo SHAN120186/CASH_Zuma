@@ -67,7 +67,7 @@ test('request cards and paginated table retain the server due-date order in each
  const prior=lang.value;t.after(()=>setLang(prior));setLang('ru');
  const request=(id,date)=>({id,number:`CF-${String(id).padStart(5,'0')}`,date,status:'approved',currency:'UZS',amount:'10.00',counterparty:`Synthetic supplier ${id}`,purpose:'Synthetic expense',account:'Synthetic bank',priority:'normal',actions:[]});
  const cards=[request(91,'2026-10-05'),request(3,'2026-10-10'),request(70,'2026-10-13')];
- const table=Array.from({length:16},(_,index)=>request(100-index,`2026-10-${String(index+1).padStart(2,'0')}`));
+ const table=Array.from({length:16},(_,index)=>({...request(100-index,`2026-10-${String(index+1).padStart(2,'0')}`),status:'paid'}));
  const calls=[];let mode='cards';
  const {view}=await fixture(t,async(url,options)=>{
   assert.ok(url.startsWith('/api/requests?'));const params=new URL(url,'https://isolated.test').searchParams,page=Number(params.get('page')),size=Number(params.get('page_size'));
@@ -82,11 +82,11 @@ test('request cards and paginated table retain the server due-date order in each
   view.state.companyId=companyId;view.state.listPage=1;await view.state.load();await settle();
   assert.deepEqual(cardNumbers(),cards.map(row=>row.number));assert.match(text(view.container),/Сначала ранние сроки оплаты: просроченные, затем сегодняшние и ближайшие/);assert.equal(calls.at(-1).company,String(companyId));
  }
- mode='table';view.state.requestArchive='archived';view.state.requestStatus='approved';await view.state.load();await settle();assert.deepEqual(tableNumbers(),table.slice(0,15).map(row=>row.number));
+ mode='table';view.state.requestArchive='archived';view.state.requestStatus='paid';await view.state.load();await settle();assert.deepEqual(tableNumbers(),table.slice(0,15).map(row=>row.number));
  assert.equal(view.state.listPages,2);
  const next=()=>find(view.container,node=>node.tag==='button'&&text(node).trim()==='Далее →');
  assert.ok(next());assert.equal(next().props.disabled,false);
- await next().props.onClick();await settle();assert.deepEqual(tableNumbers(),[table[15].number]);assert.equal(view.state.listPage,2);assert.equal(next().props.disabled,true);assert.equal(calls.at(-1).params.get('page_size'),'15');assert.equal(calls.at(-1).params.get('archive'),'archived');assert.equal(calls.at(-1).params.get('state'),'approved');
+ await next().props.onClick();await settle();assert.deepEqual(tableNumbers(),[table[15].number]);assert.equal(view.state.listPage,2);assert.equal(next().props.disabled,true);assert.equal(calls.at(-1).params.get('page_size'),'15');assert.equal(calls.at(-1).params.get('archive'),'archived');assert.equal(calls.at(-1).params.get('state'),'paid');
  assert.equal(calls.some(call=>call.params.has('sort')||call.params.has('order')),false);
  setLang('uz');await settle();assert.match(text(view.container),/Avval eng erta to‘lov muddatlari: muddati o‘tgan, so‘ng bugungi va yaqin kunlardagi arizalar/);
 });

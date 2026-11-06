@@ -69,11 +69,11 @@ class RequestNumberSearchTests(base.SiteTests):
         self.assert_matches('95',[])
 
     def test_number_search_preserves_archive_status_period_and_currency(self):
-        self.insert_request(93,status='approved',approved_at=now()-timedelta(days=2))
+        self.insert_request(93,status='paid',approved_at=now()-timedelta(days=2))
         self.assert_matches('CF-00093',[],archive='active')
         self.assert_matches('CF-00093',[93],archive='archived')
         self.assert_matches('93',[],state='pending')
-        self.assert_matches('93',[93],state='approved')
+        self.assert_matches('93',[93],state='paid')
         day=date.fromisoformat(self.date)
         self.assert_matches('93',[],date_from=str(day+timedelta(days=1)))
         self.assert_matches('93',[],date_to=str(day-timedelta(days=1)))

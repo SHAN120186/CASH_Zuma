@@ -4,6 +4,20 @@
 // stages, states, document kinds), audit action names and business-plan diagnostics.
 // Telegram bot messages, Excel/PDF/Word contents and parsing keywords are not translated.
 export default {
+  'Исчерпан диапазон номеров заявок.': 'Ariza raqamlari diapazoni tugadi.',
+  'По заявке есть денежная операция. Удаление не должно менять или разрывать денежные факты.':
+    'Ariza boʻyicha pul operatsiyasi mavjud. Oʻchirish pul harakati faktlarini oʻzgartirmasligi yoki ular orasidagi bogʻlanishni uzmasligi kerak.',
+  'По заявке учтено снятие или получение наличных. Денежные операции и комиссия должны сохраняться.':
+    'Ariza boʻyicha naqd pul yechish yoki olish hisobga olingan. Pul operatsiyalari va komissiya saqlanishi kerak.',
+  'Заявка связана с неизменяемой группой наличной оплаты.':
+    'Ariza naqd toʻlovning oʻzgartirib boʻlmaydigan guruhi bilan bogʻlangan.',
+  'Заявка связана со строкой банковской выписки. Сначала разберите эту связь в выписке; денежные факты не удаляются.':
+    'Ariza bank koʻchirmasi satri bilan bogʻlangan. Avval koʻchirmadagi shu bogʻlanishni tekshirib hal qiling; pul harakati faktlari oʻchirilmaydi.',
+  'Полностью удалить можно только неоплаченную заявку.': 'Faqat toʻlanmagan arizani butunlay oʻchirish mumkin.',
+  'Для очистки явно выберите одну компанию.': 'Tozalash uchun bitta kompaniyani aniq tanlang.',
+  'Состав или версии закрытых заявок изменились. Повторите предварительную проверку.':
+    'Yopilgan arizalar tarkibi yoki versiyalari oʻzgardi. Dastlabki tekshiruvni takrorlang.',
+  'Полностью удалена неоплаченная заявка': 'Toʻlanmagan ariza butunlay oʻchirildi',
   // Private reusable report templates and confirmed new input values.
   'Подтвердите валюту, единицы, период и базу цен выбранных документов.': 'Tanlangan hujjatlarning valyutasi, birliklari, davri va narx asosini tasdiqlang.',
   'UZS/упаковка': 'UZS/qadoq',

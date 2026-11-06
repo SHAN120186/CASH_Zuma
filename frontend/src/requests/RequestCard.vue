@@ -102,9 +102,28 @@ async function batchPaymentsRecorded(result) {
 }
 
 async function decide() {
+  if (busy.value) return;
   const {action, note, date} = decision.value;
+  if (action === 'close') {
+    error.value = ''; notice.value = '';
+    if (note.trim().length < 10) { error.value = N_('Укажите причину закрытия не короче 10 символов.'); return; }
+    if (!window.confirm(tx('Безвозвратно удалить заявку {number} без оплаты? Будут удалены сама заявка, все её файлы и история. Восстановить их будет невозможно.', {number: r.value.number}))) return;
+    busy.value = true;
+    try {
+      const result = await props.api(`/api/requests/${r.value.id}/decision`, json({action, note, date: null, version: r.value.version}));
+      if (result?.deleted !== true || result?.permanent !== true || result.id !== r.value.id) {
+        error.value = N_('Сервер не подтвердил удаление заявки. Обновите список перед повторным действием.'); return;
+      }
+      // The request and its history no longer exist: there is no card to reload.
+      emit('changed'); emit('close');
+    } catch (e) {
+      error.value = tx(e.message) + ([409, 428].includes(e.status) ? ' ' + tx('Карточка обновлена.') : '');
+      if ([409, 428].includes(e.status)) await load();
+    } finally { busy.value = false; }
+    return;
+  }
   const ok = await run(() => props.api(`/api/requests/${r.value.id}/decision`, json({action, note, date: action === 'reschedule' ? date : null, version: r.value.version})),
-    action === 'close' ? N_('Заявка закрыта без оплаты.') : action === 'return' ? N_('Заявка возвращена на доработку.') : N_('Решение сохранено.'));
+    action === 'return' ? N_('Заявка возвращена на доработку.') : N_('Решение сохранено.'));
   if (ok) decision.value = {action: options.value[0]?.[0] || '', note: '', date: r.value?.date || ''};
 }
 
@@ -239,7 +258,7 @@ onUnmounted(() => document.removeEventListener('keydown', onKey));
             <label v-if="decision.action === 'reschedule'">{{ tx('Новая дата') }}<input v-model="decision.date" type="date" :min="minDue(rules, r.priority)" required></label>
             <label class="wide">{{ needsComment ? tx('Комментарий (обязательно, от 10 символов)') : tx('Комментарий') }}<textarea v-model="decision.note" :minlength="needsComment ? 10 : 0" :required="needsComment" maxlength="2000"></textarea></label>
           </div>
-          <p v-if="decision.action === 'close'" class="sub">{{ tx('Заявка завершится без оплаты и останется в истории со статусом «Закрыта без оплаты».') }}</p>
+          <p v-if="decision.action === 'close'" class="sub">{{ tx('Закрытие без оплаты безвозвратно удалит заявку, все её файлы и историю. Восстановление невозможно. Сначала укажите причину, затем подтвердите удаление.') }}</p>
           <div class="form-actions"><button type="submit" :disabled="busy">{{ busy ? tx('Сохраняем…') : tx('Подтвердить решение') }}</button></div>
         </form>
 

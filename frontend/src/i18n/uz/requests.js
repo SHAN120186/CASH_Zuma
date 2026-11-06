@@ -29,7 +29,8 @@ export default {
   "Основной список": "Asosiy ro‘yxat",
   "Архив заявок": "Arizalar arxivi",
   "За выбранный период показаны все заявки, включая архивные.": "Tanlangan davr uchun barcha arizalar, jumladan arxivdagilar ham ko‘rsatiladi.",
-  "Через 24 часа после утверждения, закрытия или отклонения заявка переходит в архив. Статус и возможность оплаты сохраняются.": "Tasdiqlangandan, yopilgandan yoki rad etilgandan 24 soat o‘tgach ariza arxivga o‘tadi. Holati va to‘lov imkoniyati saqlanadi.",
+  'Основной список и архив': 'Asosiy roʻyxat va arxiv',
+  'На согласовании, на доработке и утверждённые неоплаченные заявки остаются в основном списке. Оплаченные сразу переходят в архив.': 'Kelishuvdagi, qayta ishlashdagi va tasdiqlangan, lekin toʻlanmagan arizalar asosiy roʻyxatda qoladi. Toʻlangan arizalar darhol arxivga oʻtadi.',
   "Индент обязателен всегда. Для банка нужен также договор или счёт; для кассы остальные документы — при наличии. Срок оплаты: обычная заявка — 7 рабочих дней, высокий приоритет — 3 рабочих дня, срочная — сегодня.": "Indent har doim majburiy. Bank uchun shartnoma yoki hisob-faktura ham kerak; kassa uchun qolgan hujjatlar — mavjud bo‘lsa. To‘lov muddati: oddiy ariza — 7 ish kuni, yuqori ustuvorlik — 3 ish kuni, shoshilinch — bugun.",
   "Плановая дата заявки не может быть прошедшей.": "Arizaning reja sanasi o‘tgan kun bo‘lishi mumkin emas.",
   "Для срочной заявки дата — сегодня, включая выходной.": "Shoshilinch ariza sanasi — bugun, dam olish kuni bo‘lsa ham.",
@@ -256,8 +257,12 @@ export default {
   'Решение': 'Qaror',
   'Новая дата': 'Yangi sana',
   'Комментарий (обязательно, от 10 символов)': 'Izoh (majburiy, kamida 10 ta belgi)',
-  'Заявка завершится без оплаты и останется в истории со статусом «Закрыта без оплаты».':
-    'Ariza toʻlovsiz yakunlanadi va tarixda «Toʻlovsiz yopilgan» holati bilan qoladi.',
+  'Закрытие без оплаты безвозвратно удалит заявку, все её файлы и историю. Восстановление невозможно. Сначала укажите причину, затем подтвердите удаление.':
+    'Toʻlovsiz yopish arizani, uning barcha fayllari va tarixini qaytarib boʻlmaydigan tarzda oʻchiradi. Tiklashning iloji yoʻq. Avval sababini yozing, soʻng oʻchirishni tasdiqlang.',
+  'Безвозвратно удалить заявку {number} без оплаты? Будут удалены сама заявка, все её файлы и история. Восстановить их будет невозможно.':
+    '{number} arizani toʻlovsiz butunlay oʻchirasizmi? Arizaning oʻzi, barcha fayllari va tarixi oʻchiriladi. Ularni tiklashning iloji boʻlmaydi.',
+  'Сервер не подтвердил удаление заявки. Обновите список перед повторным действием.':
+    'Server ariza oʻchirilganini tasdiqlamadi. Amalni takrorlashdan oldin roʻyxatni yangilang.',
   'Подтвердить решение': 'Qarorni tasdiqlash',
   'История': 'Tarix',
 

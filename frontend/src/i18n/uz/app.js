@@ -236,8 +236,8 @@ export default {
   'Обычная заявка — не раньше 7 рабочих дней, высокий приоритет — 3, срочная — 1. Сегодняшняя дата недоступна; праздники берутся из календаря холдинга.':
     'Oddiy ariza — kamida 7 ish kuni, yuqori ustuvorlik — 3, shoshilinch — 1. Bugungi sanani tanlab boʻlmaydi; bayramlar xolding kalendaridan olinadi.',
   'Возврат и закрытие': 'Qaytarish va yopish',
-  '«Вернуть на доработку» — автор исправляет ту же заявку и отправляет снова. «Закрыть без оплаты» завершает заявку окончательно. Оба действия требуют комментария. Автор, редактор и согласующие заявку не согласуют и не оплачивают.':
-    '«Qayta ishlashga qaytarish» — muallif oʻsha arizani tuzatadi va qayta yuboradi. «Toʻlovsiz yopish» arizani butunlay yakunlaydi. Ikkala amal ham izoh talab qiladi. Muallif, tahrirlovchi va kelishuvchilar arizani kelishmaydi va toʻlamaydi.',
+  '«Вернуть на доработку» — автор исправляет ту же заявку и отправляет снова. «Закрыть без оплаты» безвозвратно удаляет заявку, все её файлы и историю. Восстановление невозможно. Оба действия требуют комментария; удаление — дополнительного подтверждения. Автор, редактор и согласующие заявку не согласуют и не оплачивают.':
+    '«Qayta ishlashga qaytarish» — muallif oʻsha arizani tuzatadi va qayta yuboradi. «Toʻlovsiz yopish» arizani, uning barcha fayllari va tarixini qaytarib boʻlmaydigan tarzda oʻchiradi. Tiklashning iloji yoʻq. Ikkala amal ham izoh, oʻchirish esa qoʻshimcha tasdiqlash talab qiladi. Muallif, tahrirlovchi va kelishuvchilar arizani kelishmaydi va toʻlamaydi.',
 
   // Help: calendar and budgets
   'Сценарии': 'Ssenariylar',
@@ -279,8 +279,8 @@ export default {
   'Календарь и сроки': 'Kalendar va muddatlar',
   'Суббота и воскресенье — выходные; праздники и рабочие выходные задаёт администратор холдинга. Минимальный срок оплаты: обычная заявка — от 7 рабочих дней, высокий приоритет — от 3, срочная — от 1; сегодняшняя дата недоступна.':
     'Shanba va yakshanba — dam olish kunlari; bayramlar va ish kuniga aylantirilgan dam olish kunlarini xolding administratori belgilaydi. Eng qisqa toʻlov muddati: oddiy ariza — kamida 7 ish kuni, yuqori ustuvorlik — kamida 3, shoshilinch — kamida 1; bugungi sanani tanlab boʻlmaydi.',
-  '«Вернуть на доработку» — автор исправляет ту же заявку и отправляет снова. «Закрыть без оплаты» завершает заявку окончательно, она остаётся в истории со статусом «Закрыта без оплаты». Оба действия требуют комментария.':
-    '«Qayta ishlashga qaytarish» — muallif oʻsha arizani tuzatadi va qayta yuboradi. «Toʻlovsiz yopish» arizani butunlay yakunlaydi, u tarixda «Toʻlovsiz yopilgan» holati bilan qoladi. Ikkala amal ham izoh talab qiladi.',
+  '«Вернуть на доработку» — автор исправляет ту же заявку и отправляет снова. «Закрыть без оплаты» безвозвратно удаляет заявку, все её файлы и историю. Восстановление невозможно. Оба действия требуют комментария; удаление — дополнительного подтверждения.':
+    '«Qayta ishlashga qaytarish» — muallif oʻsha arizani tuzatadi va qayta yuboradi. «Toʻlovsiz yopish» arizani, uning barcha fayllari va tarixini qaytarib boʻlmaydigan tarzda oʻchiradi. Tiklashning iloji yoʻq. Ikkala amal ham izoh, oʻchirish esa qoʻshimcha tasdiqlash talab qiladi.',
 
   // Help: users, acting employees and Telegram groups
   'Одна компания': 'Bitta kompaniya',
