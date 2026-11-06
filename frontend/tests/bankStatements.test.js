@@ -336,6 +336,37 @@ test('duplicate tools are never shown or executed without review permission',asy
  assert.deepEqual(calls.map(([url])=>url),['/api/bank-statements/reviews']);
 });
 
+test('admin existing-fact correction links duplicates and transfers without enabling payment or classification',async t=>{
+ const calls=[],duplicate={id:88,status:'ambiguous_duplicate',date:'2026-10-30',direction:'out',amount:'10.00',currency:'UZS'},transfer={id:91,status:'review',date:'2026-10-30',direction:'out',amount:'10.00',currency:'UZS'};
+ const prior={line_id:45,ledger_id:21,token:'duplicate-token'},existing={ledger_id:51,token:'transfer-token',from_account:'Bank A',to_account:'Bank B',currency:'UZS',amount:'10.00'};
+ const api=async(url,options={})=>{calls.push([url,options]);if(url==='/api/bank-statements/reviews')return {items:[duplicate,transfer]};if(url.endsWith('/duplicate-candidates'))return {items:[prior]};if(url.endsWith('/transfer-candidates'))return {items:[existing]};if(url.endsWith('/duplicate-resolve')||url.endsWith('/transfer-link'))return {ok:true};throw Error('unexpected endpoint '+url)};
+ const view=mount(component,{api,companyId:1,accounts,canLinkExistingBankFacts:true});t.after(view.unmount);await settle();
+ assert.match(text(view.container),/Новая оплата не создаётся/);assert.match(text(view.container),/Найти ранее проведённую операцию/);assert.match(text(view.container),/Найти оформленный перевод/);assert.doesNotMatch(text(view.container),/Найти заявку для сопоставления|Подтвердить сопоставление/);
+ await view.state.findDuplicateCandidates(duplicate);Object.assign(view.state.duplicateActions[88],{selected:'45',note:'Existing duplicate checked',confirm:true});await view.state.resolveDuplicate(duplicate);
+ await view.state.findTransferCandidates(transfer);Object.assign(view.state.transferActions[91],{selected:'51',note:'Existing transfer checked',confirm:true});await view.state.linkTransfer(transfer);
+ view.state.matchActions[91]={items:[{id:17,version:3}],selected:'17',note:'Must not pay request',confirm:true};view.state.reviewActions[91]={classification:'bank_fee',note:'Must not classify'};
+ await view.state.findCandidates(transfer);await view.state.matchRequest(transfer);await view.state.saveReview(transfer);
+ const posts=calls.filter(([,options])=>options.method==='POST');assert.deepEqual(posts.map(([url])=>url),['/api/bank-statements/lines/88/duplicate-resolve','/api/bank-statements/lines/91/transfer-link']);
+ assert.deepEqual(JSON.parse(posts[0][1].body),{prior_line_id:45,token:'duplicate-token',reason:'Existing duplicate checked',confirm:true});assert.deepEqual(JSON.parse(posts[1][1].body),{ledger_id:51,token:'transfer-token',reason:'Existing transfer checked',confirm:true});
+});
+
+test('revoking existing-fact correction clears signed choices and discards an in-flight candidate response',async t=>{
+ let finish;const calls=[],duplicate={id:88,status:'ambiguous_duplicate'},transfer={id:91,status:'review'};
+ const api=async(url,options={})=>{calls.push([url,options]);if(url.endsWith('/duplicate-candidates'))return new Promise(resolve=>{finish=resolve});return {items:[]}};
+ const view=mount(component,{api,companyId:1,accounts,canLinkExistingBankFacts:true});t.after(view.unmount);await settle();
+ view.state.transferActions[91]={items:[{ledger_id:51,token:'old-token'}],selected:'51',note:'Previously checked transfer',confirm:true};
+ const pending=view.state.findDuplicateCandidates(duplicate);await settle();view.app._instance.props.canLinkExistingBankFacts=false;await settle();
+ assert.deepEqual(Object.keys(view.state.transferActions),[]);assert.deepEqual(Object.keys(view.state.duplicateActions),[]);
+ finish({items:[{line_id:45,ledger_id:21,token:'late-token'}]});await pending;await settle();assert.equal(view.state.duplicateActions[88],undefined);assert.equal(view.state.reviewBusy,null);
+ await view.state.resolveDuplicate(duplicate);await view.state.findTransferCandidates(transfer);await view.state.linkTransfer(transfer);assert.equal(calls.some(([,options])=>options.method==='POST'),false);assert.doesNotMatch(text(view.container),/Найти ранее проведённую операцию|Найти оформленный перевод/);
+});
+
+test('admin existing-fact correction explanation is translated into Uzbek',async t=>{
+ const previous=lang.value;setLang('uz');t.after(()=>setLang(previous));
+ const view=mount(component,{api:async()=>({items:[]}),companyId:1,accounts,canLinkExistingBankFacts:true});t.after(view.unmount);await settle();
+ assert.match(text(view.container),/Administrator takror yoki o‘tkazmani avval qayd etilgan operatsiya bilan bog‘lashi mumkin/);assert.match(text(view.container),/Yangi to‘lov yaratilmaydi/);assert.doesNotMatch(text(view.container),/Новая оплата/);
+});
+
 test('a late duplicate-candidate response cannot leak across a company change',async t=>{
  let finish;const row={id:88,status:'ambiguous_duplicate'};
  const api=async(url)=>{if(url==='/api/bank-statements/reviews')return {items:[]};if(url.endsWith('/duplicate-candidates'))return new Promise(resolve=>{finish=resolve});throw Error('unexpected')};

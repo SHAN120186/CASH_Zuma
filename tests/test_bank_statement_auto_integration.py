@@ -67,15 +67,22 @@ class AutoBankIntegrationTests(SiteTests):
         return (client or self.client).post(f"/api/bank-statements/{preview['id']}/commit", json=body,
                                              headers=headers or self.h)
 
+    def payment_preview(self, raw, category=None):
+        """A company accountant, rather than the administrator, processes request payments."""
+        return self.preview(raw, category, *self.accountant)
+
+    def payment_confirmed(self, preview, category=None, token=True):
+        return self.confirmed(preview, category, *self.accountant, token=token)
+
     def test_mixed_statement_posts_receipt_approved_request_and_fee_once(self):
         rid = self.approved(); raw = self.statement()
-        response = self.preview(raw, self.cat); self.assertEqual(response.status_code,200,response.text)
+        response = self.payment_preview(raw, self.cat); self.assertEqual(response.status_code,200,response.text)
         p=response.json(); self.assertTrue(p['opening_matches'])
         self.assertEqual([r['status'] for r in p['rows']], ['income_candidate','auto_pay_candidate','fee_candidate'])
         with unit() as s:
             self.assertEqual(len(list(s.scalars(select(Ledger)))),0)
             self.assertEqual(s.get(PaymentRequest,rid).status,'approved')
-        result=self.confirmed(p,self.cat); self.assertEqual(result.status_code,200,result.text)
+        result=self.payment_confirmed(p,self.cat); self.assertEqual(result.status_code,200,result.text)
         self.assertEqual((result.json()['auto_income'],result.json()['auto_paid'],result.json()['auto_fee']),(1,1,1))
         with unit() as s:
             entries=list(s.scalars(select(Ledger)))
@@ -88,8 +95,8 @@ class AutoBankIntegrationTests(SiteTests):
         unknown=next(r for r in data['rows'] if r['activity']=='unclassified' and r['kind']=='in')
         expense=next(r for r in data['rows'] if r['category_id']==self.cat and r['kind']=='out')
         self.assertEqual((unknown['values'][month],expense['values'][month],data['totals'][month]),('200.00','-620.00','-420.00'))
-        self.assertEqual(self.confirmed(p,self.cat).status_code,409)
-        self.assertEqual(self.preview(raw,self.cat).status_code,409)
+        self.assertEqual(self.payment_confirmed(p,self.cat).status_code,409)
+        self.assertEqual(self.payment_preview(raw,self.cat).status_code,409)
         with unit() as s:self.assertEqual(len(list(s.scalars(select(Ledger)))),3)
 
     def test_old_confirmed_statement_can_be_reprocessed_without_duplicate(self):
@@ -191,10 +198,10 @@ class AutoBankIntegrationTests(SiteTests):
         rid=self.approved()
         # The other debit has the company INN and may be an internal transfer.
         raw=self.statement(external=True).replace(b'<td>300000005</td>',b'<td>300000001</td>')
-        response=self.preview(raw,self.cat);self.assertEqual(response.status_code,200,response.text)
+        response=self.payment_preview(raw,self.cat);self.assertEqual(response.status_code,200,response.text)
         p=response.json();self.assertFalse(p['full_reconciliation'])
         self.assertIn('auto_pay_candidate',[r['status'] for r in p['rows']])
-        result=self.confirmed(p,self.cat);self.assertEqual(result.status_code,200,result.text)
+        result=self.payment_confirmed(p,self.cat);self.assertEqual(result.status_code,200,result.text)
         self.assertFalse(result.json()['full_reconciliation'])
         self.assertEqual((result.json()['auto_paid'],result.json()['auto_income'],result.json()['auto_fee']),(1,1,1))
         with unit() as s:
@@ -205,7 +212,7 @@ class AutoBankIntegrationTests(SiteTests):
             self.assertEqual(s.get(PaymentRequest,rid).status,'paid')
             self.assertEqual(account_balance(s,s.get(Account,self.acc)),99958000)
             self.assertEqual(funds_state(s,s.get(Account,self.acc),date.fromisoformat(self.date))['available'],99950500)
-        self.assertEqual(self.confirmed(p,self.cat).status_code,409)
+        self.assertEqual(self.payment_confirmed(p,self.cat).status_code,409)
         with unit() as s:self.assertEqual(len(list(s.scalars(select(Ledger)))),3)
 
     def test_closing_mismatch_cannot_leak_an_exact_approved_payment(self):
@@ -214,9 +221,9 @@ class AutoBankIntegrationTests(SiteTests):
         # candidate checks pass, but the closing reconciliation must fail.
         existing=self.ledger('50','out',reference='SYN-OTHER')
         self.assertEqual(existing.status_code,200,existing.text)
-        response=self.preview(self.statement(),self.cat);self.assertEqual(response.status_code,200,response.text)
+        response=self.payment_preview(self.statement(),self.cat);self.assertEqual(response.status_code,200,response.text)
         p=response.json();self.assertFalse(p['full_reconciliation'])
-        result=self.confirmed(p,self.cat);self.assertEqual(result.status_code,200,result.text)
+        result=self.payment_confirmed(p,self.cat);self.assertEqual(result.status_code,200,result.text)
         self.assertFalse(result.json()['full_reconciliation'])
         self.assertEqual((result.json()['auto_paid'],result.json()['auto_income'],result.json()['auto_fee']),(0,0,0))
         with unit() as s:
@@ -226,7 +233,7 @@ class AutoBankIntegrationTests(SiteTests):
             self.assertEqual(payments,[])
             self.assertEqual(s.get(PaymentRequest,rid).status,'approved')
             self.assertEqual(account_balance(s,s.get(Account,self.acc)),99995000)
-        self.assertEqual(self.confirmed(p,self.cat).status_code,409)
+        self.assertEqual(self.payment_confirmed(p,self.cat).status_code,409)
         with unit() as s:self.assertEqual(len(list(s.scalars(select(Ledger)))),1)
 
     def test_accountant_reconciles_incoming_funded_request_without_general_write(self):

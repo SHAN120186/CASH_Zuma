@@ -10,9 +10,9 @@ from app.db import Account, Company, Ledger, PaymentRequest, Setting, User, engi
 class StatementHistoryTests(AutoBankIntegrationTests):
     def posted(self, payment=False):
         if payment:self.approved()
-        preview=self.preview(self.statement(payment),self.cat)
+        preview=(self.payment_preview if payment else self.preview)(self.statement(payment),self.cat)
         self.assertEqual(preview.status_code,200,preview.text)
-        committed=self.confirmed(preview.json(),self.cat)
+        committed=(self.payment_confirmed if payment else self.confirmed)(preview.json(),self.cat)
         self.assertEqual(committed.status_code,200,committed.text)
         self.assertTrue(committed.json()['full_reconciliation'])
         return preview.json()['id']

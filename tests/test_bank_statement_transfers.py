@@ -10,6 +10,7 @@ from app.bank_statement_guard import set_statement_reconciliation, unreconciled_
 from app.db import Account, Audit, Company, Ledger, User, engine, now, unit
 from app.main import app
 from app.services import account_balance
+from app.security import ADMIN_WORKFLOW_RIGHTS, perms_of
 
 if not any(getattr(r, 'path', None) == '/api/bank-statements/lines/{id}/transfer-candidates' for r in app.routes):
     app.include_router(router)
@@ -57,6 +58,8 @@ class TransferLinkTests(SiteTests):
 
     def test_link_both_opposite_sides_without_new_financial_operations(self):
         with unit() as s:
+            admin=s.scalar(select(User).where(User.username=='admin'))
+            self.assertTrue(ADMIN_WORKFLOW_RIGHTS.isdisjoint(perms_of(admin)))
             before=[account_balance(s,s.get(Account,i)) for i in (self.acc,self.other)]
         candidate=self.candidates();self.assertEqual(candidate.status_code,200,candidate.text)
         item=candidate.json()['items'][0];self.assertTrue(item['counterparty_account_confirmed'])
