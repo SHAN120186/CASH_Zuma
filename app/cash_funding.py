@@ -284,18 +284,12 @@ def _context(s,user,request_id,action,data):
 
 def _checks(s,request,funding,bank,cash,action,data):
     if action=='withdraw':
-        from .bank_statement_guard import require_reconciled_for_manual_payment
-        require_reconciled_for_manual_payment(s,bank)
+        # Record the completed withdrawal independently of statement review.
+        # The journal is the balance source; _context still rejects a bank
+        # document already posted through an imported statement.
         for day in {data.date,today()}:
             if account_balance(s,bank,day)<funding.gross_amount:
                 raise HTTPException(409,'На банковском счёте не хватает фактических денег на сумму снятия вместе с комиссией.')
-        # Funding is tied to an approved request; other unpaid requests remain
-        # forecasts just as with the ordinary final payment. Pending bank debits
-        # are never ignored.
-        from .bank_statement_guard import pending_bank_debit_hold
-        for day in {data.date,today()}:
-            if account_balance(s,bank,day)-pending_bank_debit_hold(s,bank,day)<funding.gross_amount:
-                raise HTTPException(409,'Недостаточно средств с учётом банковских списаний на проверке.')
         if funding.fee_amount:
             state=budget_state(s,funding.fee_category_id,str(data.date)[:7],bank.currency,funding.fee_amount,request.id)
             if funding.fee_category_id==request.category_id and str(request.due_date)[:7]==str(data.date)[:7]:
@@ -335,20 +329,17 @@ def _require_active_legs(s,funding):
 
 
 def _signature(s,user,request,funding,bank,cash,action,data):
-    # All journal states relevant to funds, budget, approvals and bank holds are
+    # All journal states relevant to funds, budget and approvals are
     # bound to this user-specific preview. Reads never allocate a transit account.
     entries=[(x.id,x.account_id,x.to_account_id,x.kind,x.amount,str(x.date),x.category_id,x.reversal_of,x.reference)
              for x in s.scalars(select(Ledger).order_by(Ledger.id))]
     budgets=[(x.id,x.category_id,x.month,x.currency,x.amount,x.mode) for x in s.scalars(select(Budget).order_by(Budget.id))]
     accounts=[(x.id,x.name,x.kind,x.currency,x.opening,str(x.opening_date),x.archived) for x in s.scalars(select(Account).order_by(Account.id))]
     approvals=[(x.id,x.version,x.status,x.amount,str(x.due_date)) for x in s.scalars(select(PaymentRequest).order_by(PaymentRequest.id))]
-    from .bank_statement_models import BankStatementBatch,BankStatementLine
-    bankrows=[(x.id,x.status,x.ledger_id) for x in s.scalars(select(BankStatementLine).order_by(BankStatementLine.id))]
-    batches=[(x.id,x.status) for x in s.scalars(select(BankStatementBatch).order_by(BankStatementBatch.id))]
     payload={'user':user.id,'company':funding.company_id,'action':action,'request':(request.id,request.version),
              'funding':funding_json(s,funding),'fee_acceptance':(funding.approved_fee_overrun,funding.approved_fee_month),
              'data':data.model_dump(mode='json',exclude={'token','confirm'}),
-             'entries':entries,'budgets':budgets,'accounts':accounts,'approvals':approvals,'bankrows':bankrows,'batches':batches}
+             'entries':entries,'budgets':budgets,'accounts':accounts,'approvals':approvals}
     encoded=json.dumps(payload,ensure_ascii=False,sort_keys=True,separators=(',',':')).encode()
     return hmac.new(jwt_key().encode(),encoded,sha256).hexdigest()
 
