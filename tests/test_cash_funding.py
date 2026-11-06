@@ -54,6 +54,103 @@ class CashFundingTests(base.SiteTests):
     def report(self):
         return self.client.get('/api/report',headers=self.h,params={'year':today().year,'currency':'UZS','company_id':self.company,'as_of':self.date}).json()
 
+    def unresolved_bank_review(self,reference='UNRELATED-REVIEW'):
+        from app.bank_statement_models import BankStatementBatch,BankStatementLine
+        from app.bank_statement_guard import pending_bank_debit_hold,set_statement_reconciliation
+        from app.db import now
+        with unit(True) as s:
+            s.info['company_id']=self.company
+            bank=s.get(Account,self.acc)
+            admin=s.scalar(select(User).where(User.username=='admin'))
+            batch=BankStatementBatch(company_id=self.company,account_id=bank.id,created_by=admin.id,
+                filename='Synthetic unresolved bank review.xls',sha256='c'*64,
+                account_number='20208000000000000001',owner_name='Synthetic company',owner_inn='123456789',
+                currency='UZS',period_from=today(),period_to=today(),opening=bank.opening,
+                closing=bank.opening-5000,debit_total=5000,credit_total=0,balance_matches=True,
+                declared_totals_match=True,source_ready=True,status='committed',committed_at=now())
+            s.add(batch);s.flush()
+            line=BankStatementLine(company_id=self.company,batch_id=batch.id,account_id=bank.id,line=1,
+                date=today(),direction='out',amount=5000,document_number=reference,correspondent_mfo='00001',
+                correspondent_account='20208000000000000002',correspondent_name='Synthetic unresolved debit',
+                correspondent_inn='123456789',purpose='Unrelated bank movement needs review',fingerprint='d'*64,
+                status='review',classification='unresolved',include_in_daily=True)
+            s.add(line);s.flush()
+            set_statement_reconciliation(s,batch,False,admin)
+            self.assertEqual(pending_bank_debit_hold(s,bank),5000)
+            return batch.id,line.id
+
+    def test_withdrawal_ignores_statement_review_and_hold_but_bank_payment_stays_blocked(self):
+        from app.bank_statement_models import BankStatementBatch,BankStatementLine
+        from app.bank_statement_guard import pending_bank_debit_hold,unreconciled_statements
+        rid=self.cash_request()
+        bank_request=self.request('10')
+        self.assertEqual(bank_request.status_code,200,bank_request.text)
+        bank_id=bank_request.json()['id']
+        self.assertEqual(self.approve(bank_id).status_code,200)
+        batch_id,line_id=self.unresolved_bank_review()
+        checker=self.stage_user('check')
+        denied=self.post('/api/ledger',self.pay_body(bank_id,amount='10'),*checker)
+        self.assertEqual(denied.status_code,409,denied.text)
+        self.assertIn('Счёт ожидает сверки банковской выписки',denied.json()['detail'])
+        with unit() as s:
+            s.info['company_id']=self.company
+            bank=s.get(Account,self.acc)
+            self.assertEqual(account_balance(s,bank),100000000)
+            self.assertLess(account_balance(s,bank)-pending_bank_debit_hold(s,bank),100000000)
+            markers={m.key:m.value for m in unreconciled_statements(s,bank)}
+            self.assertTrue(markers)
+        payload={'version':self.row(rid)['cash_funding']['version'],'date':self.date,
+            'reference':'Independent synthetic withdrawal'}
+        path=f'/api/requests/{rid}/cash-funding/withdraw'
+        checked=self.post(path+'/preview',payload,*checker)
+        self.assertEqual(checked.status_code,200,checked.text)
+        with unit(True) as s:
+            s.get(BankStatementLine,line_id).status='ambiguous_duplicate'
+        # A change in unrelated statement review neither signs nor performs a withdrawal.
+        again=self.post(path+'/preview',payload,*checker)
+        self.assertEqual(again.status_code,200,again.text)
+        self.assertEqual(again.json()['token'],checked.json()['token'])
+        with unit() as s:self.assertEqual(s.scalar(select(func.count()).select_from(Ledger)),0)
+        committed=self.post(path+'/commit',{**payload,'token':checked.json()['token'],'confirm':True},*checker)
+        self.assertEqual(committed.status_code,200,committed.text)
+        self.assertEqual(committed.json()['cash_funding']['state'],'in_transit')
+        self.assertEqual(committed.json()['status'],'approved')
+        self.assertEqual(self.funding_balances(),{'bank':0,'cash':0,'transit':99000000})
+        with unit() as s:
+            s.info['company_id']=self.company
+            funding=s.scalar(select(CashFunding).where(CashFunding.request_id==rid))
+            transfer=s.get(Ledger,funding.transfer_ledger_id);fee=s.get(Ledger,funding.fee_ledger_id)
+            self.assertEqual((transfer.kind,transfer.amount,transfer.to_account_id),('transfer',99000000,funding.transit_account_id))
+            self.assertEqual((fee.kind,fee.amount,fee.category_id),('out',1000000,self.fee_cat))
+            self.assertEqual(s.scalar(select(func.count()).select_from(Ledger)),2)
+            self.assertIsNone(funding.receipt_ledger_id)
+            self.assertEqual({m.key:m.value for m in unreconciled_statements(s,s.get(Account,self.acc))},markers)
+            batch=s.get(BankStatementBatch,batch_id);line=s.get(BankStatementLine,line_id)
+            self.assertEqual((batch.status,batch.source_ready,line.status,line.ledger_id),('committed',True,'ambiguous_duplicate',None))
+            self.assertEqual(pending_bank_debit_hold(s,s.get(Account,self.acc)),5000)
+            self.assertEqual(s.get(PaymentRequest,bank_id).status,'approved')
+
+    def test_new_imported_document_after_preview_still_blocks_withdrawal_commit(self):
+        from app.bank_statement_models import BankStatementLine
+        rid=self.cash_request()
+        _,line_id=self.unresolved_bank_review()
+        checker=self.stage_user('check')
+        payload={'version':self.row(rid)['cash_funding']['version'],'date':self.date,
+            'reference':'Newly imported synthetic withdrawal'}
+        path=f'/api/requests/{rid}/cash-funding/withdraw'
+        checked=self.post(path+'/preview',payload,*checker)
+        self.assertEqual(checked.status_code,200,checked.text)
+        with unit(True) as s:s.get(BankStatementLine,line_id).document_number=payload['reference']
+        denied=self.post(path+'/commit',{**payload,'token':checked.json()['token'],'confirm':True},*checker)
+        self.assertEqual(denied.status_code,409,denied.text)
+        self.assertIn('документ уже есть в операциях',denied.json()['detail'])
+        with unit() as s:
+            self.assertEqual(s.scalar(select(func.count()).select_from(Ledger)),0)
+            funding=s.scalar(select(CashFunding).where(CashFunding.request_id==rid))
+            self.assertEqual(funding.state,'unfunded')
+            self.assertIsNone(funding.transfer_ledger_id);self.assertIsNone(funding.fee_ledger_id)
+            self.assertEqual(account_balance(s,s.get(Account,self.acc)),100000000)
+
     def test_full_cycle_cashflow_and_no_duplicate_facts(self):
         rid=self.cash_request()
         checker=self.stage_user('check')
