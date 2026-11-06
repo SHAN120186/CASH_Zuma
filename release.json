@@ -1,7 +1,8 @@
 {
-  "version": "2.35.13",
+  "version": "2.35.14",
   "date": "2026-11-06",
   "changes": [
+    "В разделе «Заявки» на одной странице показывается до 15 строк вместо 10. Количество страниц, основной список, архив и поиск используют новый размер страницы.",
     "Администратор холдинга наблюдает и администрирует без участия в проверке, согласовании и оплате заявок. Заявку финансового директора после независимой проверки бухгалтера утверждает директор компании; самосогласование запрещено. Незавершённые согласования отделены от ожидания снятия наличных, прежние утверждённые маршруты и проведённые суммы сохранены.",
     "В разделе «Заявки» работает поиск по номеру: можно ввести 93 или CF-00093, в том числе строчными буквами. Номер виден в результатах и карточке. Поиск сохраняет выбранную компанию, права доступа и фильтры.",
     "Добавлен отдельный режим получения наличных для нескольких согласованных заявок. После подтверждённого получения денег кассир выбирает заявки одной компании, кассы и валюты, проверяет общую сумму и остаток и фиксирует выдачу одним подтверждением. Каждая заявка оплачивается по своей статье; документ пополнения кассы не создаёт повторного расхода, комиссия учитывается отдельно. Повторное подтверждение не создаёт дублей.",
@@ -114,6 +115,7 @@
     "Длинные названия файлов и кнопки выбора шаблона переносятся на узком экране. В ТЭО дата архива отдельно обозначена и не подменяет начало финансового прогноза."
   ],
   "changes_uz": [
+    "«Arizalar» boʻlimida bir sahifada 10 ta oʻrniga 15 tagacha qator koʻrsatiladi. Sahifalar soni, asosiy roʻyxat, arxiv va qidiruv yangi sahifa hajmidan foydalanadi.",
     "Bir nechta tasdiqlangan ariza uchun bankdan naqd pul olishning alohida rejimi qo‘shildi. Pul kassaga olingani tasdiqlangach, kassir bir kompaniya, kassa va valyutadagi arizalarni tanlab, jami summa va qoldiqni tekshiradi hamda berishni bitta tasdiq bilan qayd etadi. Har bir ariza o‘z moddasi bo‘yicha to‘lanadi; kassani to‘ldirish hujjati takroriy xarajat yaratmaydi, komissiya alohida hisobga olinadi. Takroriy tasdiq dublikat yaratmaydi.",
     "Egasi aniqlashtirgan qoidaga ko‘ra faqat direktor ishtiroki chegarasi o‘rnatildi: direktor moliyaviy direktor limitidan qat’iy yuqori summalarni tasdiqlaydi. Chegaraga teng summa moliyaviy direktorda yakunlanadi; nol har qanday musbat summa uchun direktorni talab qiladi, «cheklovsiz» esa direktorni talab qilmaydi. Yuqori taqiq bekor qilindi. UZS: odatiy moddalar 5 mln, marketing va mijoz bonuslari 100 mln, asosiy vositalar 20 mln, Azot ITO 25 mln. USD/EUR va avval yuborilgan arizalar yo‘nalishi saqlandi.",
     "Kelishish sahifasida eski moddalarning asl nomlari raqamni qayta qo‘shmasdan saqlanadi; direktorning yuqori limitlari va avvalgi kelishish chegaralari saqlanadi.",
