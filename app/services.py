@@ -214,7 +214,7 @@ DOCUMENT_KINDS={'internal':'Внутренняя заявка / Индент','c
 
 def category_policy(c,currency):
     """Действующая политика статьи для валюты. Нет политики или порога валюты — директор всегда."""
-    policy=c.director_policy or 'always'
+    policy=getattr(c,'director_policy_'+currency.lower(),None) or c.director_policy or 'always'
     if policy=='skip' and not c.skip_allowed:policy='always'
     threshold=getattr(c,THRESHOLD_FIELDS[currency]) if policy=='threshold' else None
     if policy=='threshold' and threshold is None:policy='always'

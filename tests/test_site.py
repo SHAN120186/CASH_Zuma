@@ -43,7 +43,9 @@ class SiteTests(unittest.TestCase):
             for c in s.scalars(select(Company).where(Company.code!='UNASSIGNED')):s.add(CompanyUser(company_id=c.id,user_id=admin.id,role='finance'))
             # Прежние проверки написаны для маршрута «директор утверждает всё»;
             # политики статей и их первоначальные пороги проверяются отдельными тестами.
-            for c in s.scalars(select(Category)):c.director_policy='always'
+            for c in s.scalars(select(Category)):
+                c.director_policy='always'
+                for currency in ('uzs','usd','eur'):setattr(c,'director_policy_'+currency,None)
         self.client=TestClient(app)
         r=self.client.post('/api/login',json={'username':'admin','password':PASSWORD});self.assertEqual(r.status_code,200,r.text)
         self.h={'X-CSRF-Token':r.json()['csrf']}

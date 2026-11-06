@@ -83,6 +83,10 @@ class Category(Base):
     cost_group = Column(String(12), nullable=False, default='other')
     # Участие директора в заявках статьи: always / threshold / skip. Пусто — always.
     director_policy = Column(String(10), nullable=True)
+    # Валютное переопределение; NULL наследует прежнюю общую политику.
+    director_policy_uzs = Column(String(10), nullable=True)
+    director_policy_usd = Column(String(10), nullable=True)
+    director_policy_eur = Column(String(10), nullable=True)
     # Пороги в сотых долях валюты; пусто для валюты — директор утверждает любую сумму.
     director_threshold_uzs = Column(BigInteger, nullable=True)
     director_threshold_usd = Column(BigInteger, nullable=True)
@@ -676,7 +680,9 @@ def initialize():
         if 'type' not in columns:
             conn.execute(text("ALTER TABLE categories ADD COLUMN type VARCHAR(12) NOT NULL DEFAULT 'outcome'"))
             conn.execute(text("UPDATE categories SET type='income' WHERE name IN ('Поступления от покупателей','Получение кредита')"))
-        for name,definition in [('director_policy','VARCHAR(10)'),('director_threshold_uzs','BIGINT'),('director_threshold_usd','BIGINT'),
+        for name,definition in [('director_policy','VARCHAR(10)'),('director_policy_uzs','VARCHAR(10)'),
+                                ('director_policy_usd','VARCHAR(10)'),('director_policy_eur','VARCHAR(10)'),
+                                ('director_threshold_uzs','BIGINT'),('director_threshold_usd','BIGINT'),
                                 ('director_threshold_eur','BIGINT'),('director_policy_changed_at','TIMESTAMP'),
                                 ('director_limit_uzs','BIGINT'),('director_limit_usd','BIGINT'),('director_limit_eur','BIGINT'),
                                 ('director_limit_changed_at','TIMESTAMP'),('director_limit_changed_by','INTEGER REFERENCES users(id)'),
@@ -748,5 +754,5 @@ def initialize():
     # открывала сотрудникам все компании из старой миграции. Пустая связь доступа не даёт.
     from .workflow_setup import migrate_workflow
     migrate_workflow(engine)
-    from .director_limits import migrate_director_limits
-    migrate_director_limits(engine)
+    from .director_thresholds import migrate_director_thresholds
+    migrate_director_thresholds(engine)
