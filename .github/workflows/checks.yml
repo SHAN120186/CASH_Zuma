@@ -32,6 +32,7 @@ jobs:
       - run: python -m unittest tests.test_bank_cash_funding -q
       - run: python -m unittest tests.test_request_auto_archive -q
       - run: python -m unittest tests.test_request_due_order -q
+      - run: python -m unittest tests.test_request_number_search -q
       - run: python -m unittest tests.test_request_form_rules -q
       - run: python -m unittest tests.test_company_category_catalog -q
       - run: python -m unittest tests.test_request_batch_performance -q
@@ -116,6 +117,7 @@ jobs:
       - run: python -m unittest tests.test_bank_cash_funding -q
       - run: python -m unittest tests.test_request_auto_archive -q
       - run: python -m unittest tests.test_request_due_order -q
+      - run: python -m unittest tests.test_request_number_search -q
       - run: python -m unittest tests.test_request_form_rules -q
       - run: python -m unittest tests.test_company_category_catalog -q
       - run: python -m unittest tests.test_director_limits -q
