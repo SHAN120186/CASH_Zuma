@@ -587,7 +587,7 @@ class BotApiTests(unittest.TestCase):
         self.link(finance,1001)
         returned=self.new_request(author,'100');self.check(returned);self.decide(finance,returned,'return','Нужны документы от поставщика')
         # «Закрыта без оплаты» (прежнее «cancel»).
-        cancelled=self.new_request(author,'100');self.check(cancelled);self.decide(self.me(),cancelled,'close','Больше не требуется оплата')
+        cancelled=self.new_request(author,'100');self.check(cancelled);self.decide(author,cancelled,'close','Больше не требуется оплата')
         rejected=self.new_request(author,'100');self.check(rejected)
         with unit(True) as s:s.get(PaymentRequest,rejected).status='rejected'  # legacy closed request
         draft=self.post('/api/requests',self.request_body('100','Черновик заявки'),author['client'],author['h'])
@@ -603,8 +603,9 @@ class BotApiTests(unittest.TestCase):
         zuma_finance=self.make_user('finance','zumafin',headers=self.zuma())
         for user,tg in ((finance,1001),(other,1002),(zuma_finance,1003)):self.link(user,tg)
         own=self.new_request(finance,'100');self.check(own)  # the financier cannot approve their own request
+        director=self.make_user('director','author_director');self.link(director,1007)
         founder=self.make_user('founder','owner');self.link(founder,1006)  # reads everything, acts on nothing
-        self.assertEqual([i['assignee_user_id'] for i in self.pending() if i['request_id']==own],[other['id']])
+        self.assertEqual([(i['stage'],i['assignee_user_id']) for i in self.pending() if i['request_id']==own],[('director',director['id'])])
         admin2=self.make_user('admin','admin2');self.link(admin2,1004)
         zuma_acc=self.account('Zuma bank','bank','UZS','1000.00',headers=self.zuma())
         zuma_author=self.make_user('employee','zumaauthor',headers=self.zuma())
@@ -615,10 +616,10 @@ class BotApiTests(unittest.TestCase):
         self.check(zid,zuma_book,self.zuma(zuma_book['h']))
         self.assertEqual([i['assignee_user_id'] for i in self.pending() if i['request_id']==zid],[zuma_finance['id']])
         with unit(True) as s:s.get(User,zuma_finance['id']).active=False
-        # An administrator acts only through a role assigned in that company (security.scope_user).
+        # Holding administrators never enter a company's workflow, even with a legacy finance assignment.
         self.assertEqual([i['assignee_user_id'] for i in self.pending() if i['request_id']==zid],[])
         with unit(True) as s:s.merge(CompanyUser(company_id=self.companies['ZUMA'],user_id=admin2['id'],role='finance'))
-        self.assertEqual([i['assignee_user_id'] for i in self.pending() if i['request_id']==zid],[admin2['id']])
+        self.assertEqual([i['assignee_user_id'] for i in self.pending() if i['request_id']==zid],[])
 
     def test_the_role_assigned_in_the_company_decides(self):
         author=self.make_user('employee','author');finance=self.make_user('finance','checker')
@@ -734,9 +735,10 @@ class BotApiTests(unittest.TestCase):
         # The same rows and rules as pending-requests; the financier never checks their own request.
         self.assertEqual(data['items'],[i for i in self.pending() if i['assignee_user_id']==finance['id']])
         self.assertEqual([i['request_id'] for i in data['items']],[first,second])
-        self.assertEqual([i['request_id'] for i in self.tg_user(555102).json()['items']],[first,second,own])
+        self.assertEqual([i['request_id'] for i in self.tg_user(555102).json()['items']],[first,second])
         self.link(self.me(),555100)
         admin=self.tg_user(555100).json();self.assertEqual((admin['linked'],admin['is_admin']),(True,True))
+        self.assertEqual(admin['items'],[])
         with unit() as s:
             rows=self.audit_rows('Бот: заявки пользователя')
             self.assertEqual({a.user_id for a in rows},{finance['id'],other['id'],admin['user_id']})
