@@ -190,13 +190,20 @@ onUnmounted(() => { alive = false; generation++; readGeneration++; emit('busy', 
     <p v-if="notice" class="notice" role="status">{{ tx(notice) }}</p>
     <p v-if="error" class="error" role="alert">{{ tx(error) }}</p>
     <template v-if="snapshot">
-      <dl class="batch-summary">
-        <div><dt>{{ tx('Получено по пополнению') }}</dt><dd>{{ money(snapshot.received_amount) }} {{ request.currency }}</dd></div>
-        <template v-if="hasTotals"><div><dt>{{ tx('Выдано ранее') }}</dt><dd>{{ money(snapshot.allocated_amount) }} {{ request.currency }}</dd></div>
-        <div><dt>{{ tx('Выбрано к оплате') }}</dt><dd>{{ money(decimal(total)) }} {{ request.currency }}</dd></div>
-        <div><dt>{{ tx('Останется от пополнения') }}</dt><dd>{{ money(decimal(remaining)) }} {{ request.currency }}</dd></div></template>
+      <dl class="cash-overview">
+        <div v-if="snapshot.cash_balance != null" class="cash-overview-balance" :class="{negative: cashBalance < 0n}">
+          <dt>{{ tx('Фактический остаток кассы') }}</dt>
+          <dd>{{ money(snapshot.cash_balance) }} <small>{{ request.currency }}</small></dd>
+          <small class="cash-account">{{ request.account }}</small>
+        </div>
+        <div><dt>{{ tx('Планируется получить') }}</dt><dd>{{ money(funding.net_amount) }} <small>{{ request.currency }}</small></dd></div>
+        <div><dt>{{ tx('Уже поступило') }}</dt><dd>{{ money(snapshot.received_amount) }} <small>{{ request.currency }}</small></dd></div>
       </dl>
-      <p v-if="snapshot.cash_balance != null" class="sub">{{ tx('Фактический остаток кассы: {amount} {currency}.', {amount: money(snapshot.cash_balance), currency: request.currency}) }}</p>
+      <dl v-if="hasTotals" class="batch-summary">
+        <div><dt>{{ tx('Выдано ранее') }}</dt><dd>{{ money(snapshot.allocated_amount) }} {{ request.currency }}</dd></div>
+        <div><dt>{{ tx('Выбрано к оплате') }}</dt><dd>{{ money(decimal(total)) }} {{ request.currency }}</dd></div>
+        <div><dt>{{ tx('Останется от пополнения') }}</dt><dd>{{ money(decimal(remaining)) }} {{ request.currency }}</dd></div>
+      </dl>
       <p v-if="!canPay" class="sub">{{ tx(snapshot.blocked_reason || N_('Групповая выдача доступна после согласования и получения наличных пользователю с правом кассовой оплаты.')) }}</p>
       <button v-if="canPay && !opened && !uncertain" type="button" :disabled="busy || !snapshot.candidates.length" @click="start">{{ tx('Оплатить несколько заявок') }}</button>
       <p v-if="canPay && !snapshot.candidates.length" class="sub">{{ tx('Нет подходящих согласованных заявок для этой кассы.') }}</p>
@@ -228,6 +235,7 @@ onUnmounted(() => { alive = false; generation++; readGeneration++; emit('busy', 
 
 <style scoped>
 .cash-batch-panel{border:1px solid var(--line);border-radius:14px;padding:16px;margin:16px 0;min-width:0;background:var(--surface-muted)}
+.cash-overview{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px;margin:16px 0}.cash-overview>div{min-width:0;padding:16px;border:1px solid var(--line);border-radius:12px;background:var(--surface)}.cash-overview dt{font-size:13px;font-weight:600;color:var(--muted);line-height:1.5}.cash-overview dd{margin:7px 0 0;font-size:24px;line-height:1.25;font-weight:800;font-variant-numeric:tabular-nums;overflow-wrap:anywhere;color:var(--text)}.cash-overview dd small{display:inline;font-size:13px;font-weight:600;color:var(--muted);white-space:nowrap}.cash-overview .cash-overview-balance{grid-column:1/-1;padding:20px;border-color:var(--primary);background:var(--primary-soft)}.cash-overview-balance dt{color:var(--text)}.cash-overview-balance dd{font-size:32px}.cash-overview .negative dd{color:var(--bad)}.cash-account{display:block;margin-top:7px;font-size:12px;color:var(--muted);overflow-wrap:anywhere}
 .cash-batch-panel .section-head{flex-wrap:wrap;gap:8px}.cash-batch-panel h3,.cash-batch-panel h4{margin:0}.batch-summary{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px;margin:14px 0}.batch-summary>div{border:1px solid var(--line);border-radius:10px;padding:10px;background:var(--surface)}.batch-summary dt{font-size:12px;color:var(--muted)}.batch-summary dd{margin:5px 0 0;font-weight:700;font-variant-numeric:tabular-nums;overflow-wrap:anywhere}.batch-form{margin-top:14px}.batch-table-wrap{overflow:auto;max-height:380px;margin:12px 0;max-width:100%}.batch-table-wrap table{min-width:580px;width:100%}.batch-table-wrap th{position:sticky;top:0;background:var(--surface-muted);z-index:1}.batch-table-wrap small{display:block;margin-top:4px;max-width:190px;white-space:normal;overflow-wrap:anywhere}.batch-table-wrap input[type=checkbox],.batch-attest input{width:auto;flex:none}.batch-attest{display:flex;align-items:flex-start;gap:8px;margin:12px 0}.batch-attest input{margin-top:3px}.batch-history{margin-top:16px}.batch-history ul{padding-left:18px;overflow-wrap:anywhere}.batch-history li{margin:7px 0}
-@media(max-width:520px){.cash-batch-panel{padding:12px}.batch-summary{grid-template-columns:1fr}.batch-form .form-actions{flex-wrap:wrap}}
+@media(max-width:520px){.cash-batch-panel{padding:12px}.cash-overview,.batch-summary{grid-template-columns:1fr}.cash-overview>div{padding:14px}.cash-overview .cash-overview-balance{padding:16px}.cash-overview-balance dd{font-size:28px}.batch-form .form-actions{flex-wrap:wrap}}
 </style>
