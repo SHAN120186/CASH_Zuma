@@ -8,6 +8,7 @@ import hmac
 import json
 from datetime import date
 from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
+from typing import Literal
 from hashlib import sha256
 
 from fastapi import APIRouter, HTTPException, Request
@@ -29,6 +30,7 @@ class CashFundingIn(BaseModel):
     gross_amount:str
     fee_percent:str
     fee_category_id:int=Field(ge=1)
+    mode:Literal['single','batch']='single'
 
 
 class FundingPreview(BaseModel):
@@ -46,6 +48,15 @@ class FundingCommit(FundingPreview):
 
 def funding_for(s,request_id):
     return s.scalar(select(CashFunding).where(CashFunding.request_id==request_id))
+
+
+def batch_request_ids():
+    return select(CashFunding.request_id).where(CashFunding.mode=='batch')
+
+
+def expense_amount(s,request,*,batch=None):
+    funding=batch['fundings'].get(request.id) if batch is not None else funding_for(s,request.id)
+    return 0 if funding is not None and funding.mode=='batch' else request.amount
 
 
 def calculate(gross_value,percent_value):
@@ -102,6 +113,9 @@ def save_plan(s,user,request,data,*,provided=True):
                             cash_account_id=cash.id,created_by=user.id)
         s.add(current)
     current.bank_account_id=bank.id;current.cash_account_id=cash.id
+    if current.mode=='batch' and 'mode' not in data.model_fields_set:
+        raise HTTPException(409,'В документе выбран групповой режим. Обновите форму перед изменением получения наличных.')
+    current.mode=data.mode
     current.gross_amount=gross;current.fee_percent=percent;current.fee_amount=fee
     current.net_amount=net;current.fee_category_id=category.id
     # Touch the request too: stale approval/document actions cannot use a plan
@@ -130,7 +144,7 @@ def fee_budget(s,request,note='',*,final=False,check_only=False):
     funding=funding_for(s,request.id)
     if funding is None or not funding.fee_amount:return None
     bank=get(s,Account,funding.bank_account_id)
-    extra=funding.fee_amount+(request.amount if funding.fee_category_id==request.category_id else 0)
+    extra=funding.fee_amount+(expense_amount(s,request) if funding.fee_category_id==request.category_id else 0)
     if check_only:
         state=budget_state(s,funding.fee_category_id,str(request.due_date)[:7],bank.currency,extra,request.id)
         if state['over'] and state['mode']=='hard':
@@ -153,7 +167,8 @@ def accepted_fee_overrun(s,funding,month,currency):
 
 
 def protected_ledger_ids(s):
-    return {id for funding in s.scalars(select(CashFunding)) for id in
+    from .db import CashFundingPaymentItem
+    return set(s.scalars(select(CashFundingPaymentItem.ledger_id)))|{id for funding in s.scalars(select(CashFunding)) for id in
             (funding.transfer_ledger_id,funding.fee_ledger_id,funding.receipt_ledger_id) if id is not None}
 
 
@@ -198,7 +213,7 @@ def funding_json(s,funding,user=None,request=None,accounts=None,categories=None)
     if not funding:return None
     bank=(accounts or {}).get(funding.bank_account_id) or get(s,Account,funding.bank_account_id)
     fee=(categories or {}).get(funding.fee_category_id) or get(s,Category,funding.fee_category_id)
-    result={key:getattr(funding,key) for key in ('id','version','bank_account_id','cash_account_id','fee_category_id','state',
+    result={key:getattr(funding,key) for key in ('id','version','mode','bank_account_id','cash_account_id','fee_category_id','state',
         'transit_account_id','transfer_ledger_id','fee_ledger_id','receipt_ledger_id')}
     result.update({key:money(getattr(funding,key)) for key in ('gross_amount','fee_amount','net_amount')})
     result.update({'fee_percent':funding.fee_percent,'bank_account':bank.name,'bank_account_currency':bank.currency,
@@ -220,7 +235,7 @@ def _context(s,user,request_id,action,data):
     bank=get(s,Account,funding.bank_account_id);cash=get(s,Account,funding.cash_account_id)
     if action=='withdraw':
         validate_plan(s,cash,request.amount,CashFundingIn(bank_account_id=bank.id,gross_amount=money(funding.gross_amount),
-                      fee_percent=funding.fee_percent,fee_category_id=funding.fee_category_id))
+                      fee_percent=funding.fee_percent,fee_category_id=funding.fee_category_id,mode=funding.mode))
     else:
         # No new fee or expense is created on receipt. Retiring the historical
         # fee article must not strand money already withdrawn from the bank.
@@ -284,7 +299,7 @@ def _checks(s,request,funding,bank,cash,action,data):
         if funding.fee_amount:
             state=budget_state(s,funding.fee_category_id,str(data.date)[:7],bank.currency,funding.fee_amount,request.id)
             if funding.fee_category_id==request.category_id and str(request.due_date)[:7]==str(data.date)[:7]:
-                state=budget_state(s,funding.fee_category_id,str(data.date)[:7],bank.currency,funding.fee_amount+request.amount,request.id)
+                state=budget_state(s,funding.fee_category_id,str(data.date)[:7],bank.currency,funding.fee_amount+expense_amount(s,request),request.id)
             allowed=funding.approved_fee_overrun if funding.approved_fee_month==str(data.date)[:7] else None
             if allowed is not None:allowed=max(allowed,accepted_fee_overrun(s,funding,str(data.date)[:7],bank.currency))
             if state['over'] and (state['mode']=='hard' or allowed is None or overrun(state)>allowed):

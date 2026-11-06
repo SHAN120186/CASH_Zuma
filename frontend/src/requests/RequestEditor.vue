@@ -47,6 +47,7 @@ const departmentCatalog=ref(props.boot.department_catalog?.items||Object.entries
 const departmentOptions=computed(()=>departmentCatalog.value.filter(x=>x.active||x.code===form.value.department));
 const openedCompanyId = props.company?.id;
 const fundingFrozen = computed(() => !!r?.cash_funding && r.cash_funding.state !== 'unfunded');
+const batchFunding = computed(() => form.value.cash_funding?.mode === 'batch');
 const fundingAccounts = computed(() => fundingBankAccounts(props.boot.accounts, form.value.currency, props.company?.id));
 const paymentMethod = computed({get: () => form.value.cash_funding ? 'cash_bank' : form.value.channel, set: value => {
   if (fundingFrozen.value) return;
@@ -54,7 +55,7 @@ const paymentMethod = computed({get: () => form.value.cash_funding ? 'cash_bank'
   const gross = form.value.cash_funding?.gross_amount ?? form.value.amount;
   form.value.channel = value === 'cash_bank' ? 'cash' : value;
   form.value.amount = gross;
-  form.value.cash_funding = value === 'cash_bank' ? {bank_account_id: fundingAccounts.value[0]?.id ?? null, gross_amount: gross || '', fee_percent: '1', fee_category_id: null} : null;
+  form.value.cash_funding = value === 'cash_bank' ? {mode: 'single', bank_account_id: fundingAccounts.value[0]?.id ?? null, gross_amount: gross || '', fee_percent: '1', fee_category_id: null} : null;
 }});
 const fundingAmounts = computed(() => form.value.cash_funding ? cashFundingAmounts(form.value.cash_funding.gross_amount, form.value.cash_funding.fee_percent) : null);
 const fundingProblem = computed(() => {
@@ -153,10 +154,10 @@ watch(() => form.value.priority, () => {
 
 // Бюджет выбранной статьи на период: лимит, использовано, резерв, доступно и остаток после заявки.
 let timer = null, key = '';
-watch(() => [form.value.account_id, form.value.category_id, form.value.amount, form.value.date].join('|'), value => {
+watch(() => [form.value.account_id, form.value.category_id, form.value.amount, form.value.date, batchFunding.value].join('|'), value => {
   clearTimeout(timer); key = value; card.value = null;
   const {account_id, category_id, amount, date} = form.value;
-  if (!account_id || !category_id || !(Number(amount) > 0) || !date) return;
+  if (batchFunding.value || !account_id || !category_id || !(Number(amount) > 0) || !date) return;
   timer = setTimeout(async () => {
     try {
       const result = await props.api('/api/budget-check?' + new URLSearchParams({account_id, category_id, amount: String(amount), date}));
@@ -275,17 +276,18 @@ onUnmounted(() => { document.removeEventListener('keydown', onKey); clearTimeout
           <small v-if="!accountOptions.length" class="field-error">{{ tx('Нет счёта для выбранного канала и валюты.') }}</small></label>
         <label>{{ tx('Отдел') }}<select v-model="form.department"><option value="">{{ tx('Выберите отдел') }}</option><option v-for="item in departmentOptions" :key="item.code" :value="item.code">{{lang==='uz'&&item.name_uz?item.name_uz:tx(item.name_ru)}}</option></select></label>
         <label>{{ tx('Статья расходов') }}<select v-model="form.category_id" required><option v-for="c in outcomeCategories" :key="c.id" :value="c.id">{{ c.name }}</option></select></label>
-        <label>{{ form.cash_funding ? tx('Сумма наличной заявки') : tx('Сумма') }}<MoneyInput v-if="form.cash_funding" v-model="form.amount" readonly required /><input v-else v-model="form.amount" type="text" inputmode="decimal" pattern="[0-9]+([.][0-9]{1,2})?" required autocomplete="off"></label>
+        <label>{{ batchFunding ? tx('Сумма пополнения кассы') : form.cash_funding ? tx('Сумма наличной заявки') : tx('Сумма') }}<MoneyInput v-if="form.cash_funding" v-model="form.amount" readonly required /><input v-else v-model="form.amount" type="text" inputmode="decimal" pattern="[0-9]+([.][0-9]{1,2})?" required autocomplete="off"></label>
         <section v-if="form.cash_funding" class="wide cash-funding-editor" :aria-label="tx('Получение наличных из банка')">
           <div class="form-grid">
+            <label class="wide">{{ tx('Назначение наличных') }}<select v-model="form.cash_funding.mode" :disabled="fundingFrozen" required><option value="single">{{ tx('Оплата одной заявки') }}</option><option value="batch">{{ tx('Пополнение кассы для нескольких заявок') }}</option></select></label>
             <label>{{ tx('Банковский счёт') }}<select v-model="form.cash_funding.bank_account_id" :disabled="fundingFrozen" required><option v-for="account in fundingAccounts" :key="account.id" :value="account.id">{{ account.name }}</option></select></label>
             <label>{{ tx('Всего списать с банка') }} · {{ form.currency }}<MoneyInput v-model="form.cash_funding.gross_amount" :disabled="fundingFrozen" required /></label>
             <label>{{ tx('Комиссия от суммы списания, %') }}<input v-model="form.cash_funding.fee_percent" inputmode="decimal" pattern="[0-9]+([.,][0-9]{1,2})?" :disabled="fundingFrozen" required></label>
             <label>{{ tx('Статья комиссии') }}<select v-model="form.cash_funding.fee_category_id" :disabled="fundingFrozen" required><option :value="null" disabled>{{ tx('Выберите статью комиссии') }}</option><option v-for="category in feeCategories" :key="category.id" :value="category.id">{{ category.name }}</option></select></label>
           </div>
-          <p v-if="fundingAmounts && !fundingAmounts.error" class="notice" aria-live="polite">{{ tx('Комиссия: {fee}. Наличная заявка: {net} {currency}.', {fee: money(fundingAmounts.fee_amount), net: money(fundingAmounts.net_amount), currency: form.currency}) }}</p>
+          <p v-if="fundingAmounts && !fundingAmounts.error" class="notice" aria-live="polite">{{ tx(batchFunding ? N_('Комиссия: {fee}. В кассу: {net} {currency}.') : N_('Комиссия: {fee}. Наличная заявка: {net} {currency}.'), {fee: money(fundingAmounts.fee_amount), net: money(fundingAmounts.net_amount), currency: form.currency}) }}</p>
           <p v-if="fundingProblem" class="field-error" role="status">{{ tx(fundingProblem) }}</p>
-          <small class="sub">{{ tx('Комиссия входит в списание банка. Заявка оплачивается из кассы после подтверждения получения наличных.') }}</small>
+          <small class="sub">{{ batchFunding ? tx('Пополнение не является отдельным расходом. После получения наличных выберите согласованные заявки; расходы учитываются по их статьям, комиссия — отдельно.') : tx('Комиссия входит в списание банка. Заявка оплачивается из кассы после подтверждения получения наличных.') }}</small>
         </section>
         <label>{{ foreignBank ? tx('ИНН контрагента (необязательно)') : tx('ИНН контрагента') }}<input v-model.trim="partyInn" inputmode="numeric" pattern="[0-9]*" maxlength="20" autocomplete="off" aria-describedby="rq-inn-hint">
           <small id="rq-inn-hint" class="sub">{{ foreignBank ? tx('ИНН необязателен для USD и EUR. Для иностранного контрагента без ИНН введите название вручную.') : tx('Введите ИНН для поиска контрагента.') }}</small>
@@ -304,7 +306,7 @@ onUnmounted(() => { document.removeEventListener('keydown', onKey); clearTimeout
         <label v-if="needsReason" class="wide">{{ tx('Причина изменения') }}<textarea v-model="form.reason" minlength="10" maxlength="1000" required></textarea></label>
       </div>
 
-      <section v-if="card" class="budget-check" :class="card.status" aria-live="polite">
+      <section v-if="card && !batchFunding" class="budget-check" :class="card.status" aria-live="polite">
         <strong>{{ tx('Бюджет статьи · {period}', {period: periodLabel(card.period)}) }}</strong>
         <p v-if="card.error">{{ tx(card.error) }}</p>
         <dl v-else-if="card.budget_set" class="budget-grid">

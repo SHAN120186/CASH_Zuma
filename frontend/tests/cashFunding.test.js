@@ -51,10 +51,21 @@ test('funding and manual selectors never expose transit, foreign-company, archiv
 
 test('request payload carries funding exact strings and explicit removal without changing old clients',()=>{
   const value={bank_account_id:'1',gross_amount:'1 000 000',fee_percent:'1,00',fee_category_id:'11'};
-  assert.deepEqual(cashFundingBody(value),{bank_account_id:1,gross_amount:'1000000',fee_percent:'1.00',fee_category_id:11});
+  assert.deepEqual(cashFundingBody(value),{bank_account_id:1,mode:'single',gross_amount:'1000000',fee_percent:'1.00',fee_category_id:11});
   assert.deepEqual(requestBody({cash_funding:value,channel:'cash',amount:'990000.00'},3).cash_funding,cashFundingBody(value));
   assert.equal(requestBody({cash_funding:null},3).cash_funding,null);
   assert.equal(Object.hasOwn(requestBody({},3),'cash_funding'),false);
+});
+
+test('editor explicitly chooses batch funding while preserving legacy single requests',async t=>{
+  const view=mountEditor(t);await settle();view.state.form.amount='1000000';view.state.paymentMethod='cash_bank';await settle();
+  assert.equal(view.state.form.cash_funding.mode,'single');
+  view.state.form.cash_funding.mode='batch';view.state.form.cash_funding.fee_category_id=11;await settle();
+  assert.equal(view.state.batchFunding,true);assert.equal(view.state.form.amount,'990000.00');
+  assert.match(text(view.container),/Пополнение не является отдельным расходом/);
+  assert.equal(requestBody(view.state.form,3).cash_funding.mode,'batch');
+  assert.equal(cashFundingBody(funding()).mode,'single');
+  assert.equal(all(view.container,node=>node.tag==='section'&&String(node.props.class).includes('budget-check')).length,0);
 });
 
 test('editor cash-bank mode calculates net, keeps cash documents and clears funding on ordinary channel',async t=>{

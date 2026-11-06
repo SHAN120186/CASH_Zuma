@@ -216,7 +216,7 @@ const scenario=ref('approved');
 const forecastRows=computed(()=>(dash.value?.forecast||[]).map(d=>scenario.value==='all'?{...d,opening:d.requested_opening,outgoing:d.requested_outgoing,balance:d.requested_balance,risk:d.requested_risk,account_shortfalls:d.requested_account_shortfalls,events:[...d.events,...d.pending_events]}:d));
 // Доступные действия по заявке вычисляет сервер (r.actions); интерфейс только показывает их.
 // Оплату проводит плательщик канала (банк — pay_bank, касса — pay_cash), не участвовавший в заявке; сервер проверяет то же.
-const canPayRequest=r=>(r.actions||[]).includes('pay')&&canPayFor(r,user.value?.id,has);
+const canPayRequest=r=>r.cash_funding?.mode!=='batch'&&(r.actions||[]).includes('pay')&&canPayFor(r,user.value?.id,has);
 const editor=ref(null),cardId=ref(null);
 watch(()=>[page.value,modal.value,editor.value,documents.value,companyId.value,!!user.value],clearFieldFeedback);
 // Выход, истёкшая сессия или смена компании закрывают форму и карточку заявки.
@@ -343,6 +343,18 @@ function requestPaid(id){
   else rows.value=rows.value.map(r=>r.id===id?{...r,status:'paid',actions:[],overdue:false}:r);
  }
  dash.value=null;
+}
+async function batchPaymentsRecorded(ids){
+ if(!Array.isArray(ids)||!ids.length||ids.some(id=>!Number.isInteger(id)||id<=0)||new Set(ids).size!==ids.length)return;
+ const epoch=companyEpoch,selectedCompany=companyId.value;
+ const current=()=>epoch===companyEpoch&&companyId.value===selectedCompany&&companyReady.value&&!!user.value;
+ for(const id of ids)requestPaid(id);
+ flash(N_('Выбранные заявки оплачены. Повторная выдача не требуется.'));
+ let refreshFailed=false;
+ try{await bootstrap();}catch{if(!current())return;refreshFailed=true;}
+ if(!current())return;
+ await load();
+ if(current()&&(refreshFailed||error.value))error.value=N_('Групповая выдача записана. Не удалось обновить данные; оплату повторять не нужно.');
 }
 async function save(){
  if(saving.value||!modal.value)return;
@@ -602,15 +614,15 @@ onMounted(async()=>{try{const r=await api('/api/me');user.value=r.user;csrf.valu
      <p class="sumline"><span>{{tx('Найдено')}} <b>{{listTotal}}</b></span><span>{{listTotal<=4?tx('До 4 заявок — карточки'):tx('С 5 заявок — таблица со страницами')}}</span></p>
      <div v-if="listTotal<=4&&visibleRows.length" class="rq-grid"><section v-for="r in visibleRows" :key="r.id" class="card rq-card" :class="{backdated: isBackdated(r)}" :title="isBackdated(r)?tx(BACKDATED_HINT):null">
       <div class="rq-top"><span>{{r.number}}</span><span class="pill" :class="statusClass(r)">{{stageLabel(r)}}</span></div>
-      <h3>{{r.counterparty}}</h3><p class="cp">{{r.purpose}}</p>
+      <h3>{{r.counterparty}}</h3><p class="cp">{{r.purpose}}</p><small v-if="r.cash_funding?.mode==='batch'" class="sub">{{tx('Пополнение кассы для группы заявок')}}</small>
       <div class="amt num">{{money(r.amount)}}<small>{{r.currency}}</small></div>
       <div class="meta"><span>{{tx('до {date}',{date:r.date})}}</span><span>{{r.account}}</span><span>{{tx(priorities[r.priority])}}</span></div>
       <div class="trk"><template v-for="(s,i) in trkSteps(r)" :key="i"><span v-if="i" class="ln"></span><span class="st" :class="s.c==='skip'?'':s.c"><u>{{MK[s.c]}}</u>{{s.l}}</span></template></div>
-      <p v-if="r.decision_note" class="note">{{r.decision_note}}</p><p v-if="r.budget_card?.budget_set" class="note">{{tx('Доступно по бюджету статьи: {amount} {currency}',{amount:money(r.budget_card.available),currency:r.currency})}}</p>
+      <p v-if="r.decision_note" class="note">{{r.decision_note}}</p><p v-if="r.budget_card?.budget_set&&r.cash_funding?.mode!=='batch'" class="note">{{tx('Доступно по бюджету статьи: {amount} {currency}',{amount:money(r.budget_card.available),currency:r.currency})}}</p>
       <div class="actions"><button class="secondary tiny" @click="openRequest(r)">{{tx('Открыть заявку')}}</button><button v-if="canPayRequest(r)" class="tiny" @click="transaction(r)">{{tx('Факт оплаты')}}</button></div>
      </section></div>
      <div v-if="listTotal>4" class="table-card rsp-wrap"><table class="rsp"><thead><tr><th>{{tx('Заявка')}}</th><th class="num">{{tx('Сумма')}}</th><th>{{tx('Оплатить до')}}</th><th>{{tx('Этапы')}}</th><th>{{tx('Статус')}}</th><th></th></tr></thead><tbody><template v-for="r in visibleRows" :key="r.id">
-      <tr :class="{backdated: isBackdated(r)}" :title="isBackdated(r)?tx(BACKDATED_HINT):null"><td :data-l="tx('Заявка')"><b class="nowrap">{{r.number}}</b>&nbsp;· {{r.counterparty}}<small>{{r.account}}</small></td><td class="num" :data-l="tx('Сумма')"><b>{{money(r.amount)}}</b> {{r.currency}}</td><td :data-l="tx('Оплатить до')">{{r.date}}</td><td :data-l="tx('Этапы')"><span class="mini"><template v-for="(s,i) in trkSteps(r)" :key="i"><i v-if="i"></i><u :class="s.c" :title="s.l">{{[tx('З'),tx('П'),tx('Ф'),tx('Д'),tx('О')][i]}}</u></template></span></td><td :data-l="tx('Статус')"><span class="pill" :class="statusClass(r)">{{stageLabel(r)}}</span></td><td data-l=""><div class="actions"><button class="secondary tiny" @click="openRequest(r)">{{tx('Открыть')}}</button><button v-if="canPayRequest(r)" class="tiny" @click="transaction(r)">{{tx('Факт оплаты')}}</button></div></td></tr>
+      <tr :class="{backdated: isBackdated(r)}" :title="isBackdated(r)?tx(BACKDATED_HINT):null"><td :data-l="tx('Заявка')"><b class="nowrap">{{r.number}}</b>&nbsp;· {{r.counterparty}}<small>{{r.account}}</small><small v-if="r.cash_funding?.mode==='batch'">{{tx('Пополнение кассы для группы заявок')}}</small></td><td class="num" :data-l="tx('Сумма')"><b>{{money(r.amount)}}</b> {{r.currency}}</td><td :data-l="tx('Оплатить до')">{{r.date}}</td><td :data-l="tx('Этапы')"><span class="mini"><template v-for="(s,i) in trkSteps(r)" :key="i"><i v-if="i"></i><u :class="s.c" :title="s.l">{{[tx('З'),tx('П'),tx('Ф'),tx('Д'),tx('О')][i]}}</u></template></span></td><td :data-l="tx('Статус')"><span class="pill" :class="statusClass(r)">{{stageLabel(r)}}</span></td><td data-l=""><div class="actions"><button class="secondary tiny" @click="openRequest(r)">{{tx('Открыть')}}</button><button v-if="canPayRequest(r)" class="tiny" @click="transaction(r)">{{tx('Факт оплаты')}}</button></div></td></tr>
      </template></tbody></table></div>
      <section v-if="!visibleRows.length&&!busy" class="empty card"><b>{{tx('Заявок не найдено')}}</b><br>{{tx('Измените период, статус или поисковый запрос.')}}</section>
     </template>
@@ -723,7 +735,7 @@ onMounted(async()=>{try{const r=await api('/api/me');user.value=r.user;csrf.valu
 
  <!-- Заявка: форма и карточка -->
  <RequestEditor v-if="editor" :api="api" :boot="boot" :company="company" :request="editor.request" :currency="currency" :money="money" :company-url="companyUrl" @close="editorClosed" @saved="editorSaved" @open-card="editorOpenCard"/>
- <RequestCard v-if="cardId" :key="cardId" :id="cardId" :api="api" :company-url="companyUrl" :money="money" :dues="boot.due_minimums" @close="cardId=null" @changed="load" @edit="cardEdit" @record-payment="cardPay"/>
+ <RequestCard v-if="cardId" :key="cardId" :id="cardId" :api="api" :company-url="companyUrl" :money="money" :dues="boot.due_minimums" @close="cardId=null" @changed="load" @edit="cardEdit" @record-payment="cardPay" @payments-recorded="batchPaymentsRecorded"/>
 
  <!-- Формы -->
  <div v-if="modal&&!modal.inlineDay" class="modal-backdrop"><form v-modal-focus class="modal" role="dialog" aria-modal="true" aria-labelledby="modal-title" @submit.prevent="save" @keydown.esc="!saving&&(modal=null)"><div class="section-head"><h2 id="modal-title">{{tx(modal.title,modal.titleParams)}}</h2><button type="button" class="ghost icon-btn" :aria-label="tx('Закрыть')" @click="modal=null" :disabled="saving"><AppIcon name="x"/></button></div><p v-if="modal.note" class="form-note">{{tx(modal.note,modal.noteParams)}}</p><div class="form-grid"><label v-for="f in modalFields" :key="f.key" :class="{wide:f.type==='textarea'}">{{tx(f.label)}}<select v-if="f.type==='select'" v-model="form[f.key]" :required="f.required" :disabled="f.disabled"><option v-for="o in f.options" :key="o[0]" :value="o[0]">{{o[1]}}</option></select><textarea v-else-if="f.type==='textarea'" v-model="form[f.key]" :required="f.required" :minlength="f.minlength"  :maxlength="f.maxlength||3000"></textarea><MoneyInput v-else-if="modal.receipt&&f.key==='amount'" v-model="form[f.key]" :required="f.required" :disabled="f.disabled"/><input v-else v-model="form[f.key]" :type="amountFields.includes(f.key)?'text':f.type" :inputmode="f.inputmode||(amountFields.includes(f.key)?'decimal':undefined)" :pattern="f.pattern||(amountFields.includes(f.key)?'[0-9]+([.][0-9]{1,2})?':undefined)" :maxlength="f.maxlength" :required="f.required" :disabled="f.disabled" :min="f.min" :max="f.max" :minlength="f.minlength" :list="f.key==='counterparty'&&modal.receipt?'receipt-counterparties':undefined" @input="f.key==='counterparty'&&receiptPartyChanged()" :step="f.step||'0.01'"></label></div><div v-if="modal?.receipt && receiptPartyStatus === 'ambiguous'" class="form-note" role="status">{{tx('Найдено несколько контрагентов с таким названием. Выберите ИНН или введите его вручную.')}} <button v-for="item in receiptPartyMatches" :key="item.id" type="button" class="secondary tiny" @click="chooseReceiptParty(item)">{{item.name}} · {{item.inn || '—'}}</button></div><p v-if="modal?.receipt && receiptPartyStatus === 'error'" class="warning" role="status">{{tx('Не удалось найти ИНН. Введите его вручную.')}}</p><p v-if="categoryHint" class="warning category-hint" role="status">{{categoryHint}}</p><p v-if="formError" class="error">{{tx(formError)}}</p><datalist v-if="modal.receipt" id="receipt-counterparties"><option v-for="c in boot.counterparties" :key="c.name" :value="c.name">{{c.inn}}</option></datalist><div class="form-actions"><button type="button" class="secondary" @click="modal=null" :disabled="saving">{{tx('Отмена')}}</button><button :disabled="saving">{{saving?tx('Сохраняем…'):modal.saveLabel?tx(modal.saveLabel):tx('Сохранить')}}</button></div></form></div>

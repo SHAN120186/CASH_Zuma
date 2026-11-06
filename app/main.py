@@ -27,7 +27,7 @@ from .bot_api import drop_groups_of, drop_orphan_groups, drop_shadowed_groups, j
 from .workdays import enforce_lead_time, due_minimums
 from .requests_api import request_view, can_view_request, MAX_DOCUMENT
 from .bank_statement_guard import CREATED_BANK_STATUSES
-from .cash_funding import CashFundingIn
+from .cash_funding import CashFundingIn, expense_amount
 from .http_audit import persist_http_audit
 
 SECURE=os.getenv('COOKIE_SECURE','0')=='1'
@@ -577,7 +577,8 @@ def edit_request(id:int,data:RequestEdit,request:Request):
         save_plan(s,u,r,data.cash_funding,provided='cash_funding' in data.model_fields_set)
         s.flush()
         if data.status=='pending':
-            enforce_documents(s,r);enforce_budget(s,r.category_id,r.due_date,a.currency,n,data.purpose,r.id)
+            enforce_documents(s,r)
+            if expense_amount(s,r):enforce_budget(s,r.category_id,r.due_date,a.currency,expense_amount(s,r),data.purpose,r.id)
             from .cash_funding import fee_budget
             fee_budget(s,r,data.purpose)
             if not was_pending or route_changed:snapshot_route(s,r,a.currency)
@@ -621,7 +622,7 @@ def decide(id:int,data:DecisionIn,request:Request):
             if r.status not in ('draft','returned') or (r.creator_id!=u.id and 'request_edit' not in perms):raise HTTPException(403,'Отправить можно свой черновик или возвращённую заявку.')
             act_with_right(u,'request' if r.creator_id==u.id else 'request_edit')
             enforce_lead_time(s,r.priority,r.due_date,today());enforce_documents(s,r)
-            enforce_budget(s,r.category_id,r.due_date,a.currency,r.amount,r.purpose,r.id)
+            if expense_amount(s,r):enforce_budget(s,r.category_id,r.due_date,a.currency,expense_amount(s,r),r.purpose,r.id)
             from .cash_funding import fee_budget
             fee_budget(s,r,r.purpose)
             clear_approval(r);r.status='pending';snapshot_route(s,r,a.currency)
@@ -633,8 +634,8 @@ def decide(id:int,data:DecisionIn,request:Request):
             enforce_documents(s,r)
             from .cash_funding import fee_budget
             fee_budget(s,r,check_only=True)
-            b=budget_state(s,r.category_id,str(r.due_date)[:7],a.currency,r.amount,r.id)
-            if b['over'] and b['mode']=='hard':raise HTTPException(409,'Жёсткий лимит статьи превышен. Верните заявку на доработку или дождитесь пересмотра бюджета.')
+            b=budget_state(s,r.category_id,str(r.due_date)[:7],a.currency,expense_amount(s,r),r.id)
+            if expense_amount(s,r) and b['over'] and b['mode']=='hard':raise HTTPException(409,'Жёсткий лимит статьи превышен. Верните заявку на доработку или дождитесь пересмотра бюджета.')
             r.checked_by=u.id;r.checked_at=now()
         elif data.action=='approve':
             if 'approve' not in perms:raise HTTPException(403,'Недостаточно прав для согласования.')
@@ -644,7 +645,8 @@ def decide(id:int,data:DecisionIn,request:Request):
             if not act_as(u,'finance' if stage=='finance' else 'director'):
                 raise HTTPException(403,'Сначала требуется проверка финансового директора компании.' if stage=='finance' else 'Требуется отдельное подтверждение директора компании.')
             ensure_new_participant(s,u,r)
-            b=enforce_budget(s,r.category_id,r.due_date,a.currency,r.amount,note,r.id)
+            b=(enforce_budget(s,r.category_id,r.due_date,a.currency,expense_amount(s,r),note,r.id) if expense_amount(s,r)
+               else budget_state(s,r.category_id,str(r.due_date)[:7],a.currency,0,r.id))
             from .cash_funding import fee_budget
             fee_budget(s,r,note,final=stage=='director' or not requires_director(r))
             if stage=='finance':r.finance_approved_by=u.id
@@ -1312,6 +1314,8 @@ app.include_router(bot_router)
 from .requests_api import router as requests_router
 app.include_router(requests_router)
 from .cash_funding import router as cash_funding_router
+from .cash_funding_payments import router as cash_funding_payments_router
+app.include_router(cash_funding_payments_router)
 app.include_router(cash_funding_router)
 
 from .report_archives import router as report_archives_router

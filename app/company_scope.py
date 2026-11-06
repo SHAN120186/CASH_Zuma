@@ -15,14 +15,15 @@ from .db import (Company, CompanyUser, User, Account, Category, Counterparty,
                  Document, ImportBatch, PlanImportBatch, BudgetImportBatch, Audit, ModelVersion,
                  ReportSchedule, Setting, RequestDocument, Delegation, ReportArchive, ReportArchiveFile,
                  BusinessProject, BusinessSourceFile, BusinessGeneration, FinancialStatementSource, IfrsRatingSource,
-                 CashFlowOsvSource, CashFlowOsvPreview, CashFunding)
+                 CashFlowOsvSource, CashFlowOsvPreview, CashFunding, CashFundingPaymentGroup, CashFundingPaymentItem)
 from .bank_statement_models import BankStatementBatch, BankStatementLine
 
 # Вложения заявок принадлежат компании через свою заявку (criteria ниже), а не собственным полем.
 DIRECT = (Account, Category, Counterparty, CashPlan, PlanNote, PlanImportBatch, BudgetImportBatch,
           ImportBatch, Audit, ModelVersion, ReportSchedule, Delegation, ReportArchive, ReportArchiveFile,
           BusinessProject, BusinessSourceFile, BusinessGeneration, FinancialStatementSource, IfrsRatingSource,
-          CashFlowOsvSource, CashFlowOsvPreview, BankStatementBatch, BankStatementLine, CashFunding)
+          CashFlowOsvSource, CashFlowOsvPreview, BankStatementBatch, BankStatementLine, CashFunding,
+          CashFundingPaymentGroup, CashFundingPaymentItem)
 
 
 def active_delegations(s, user_id, company_id=None):
@@ -147,6 +148,9 @@ def check_object(s, obj):
         refs.extend([(PaymentRequest,obj.request_id),(Account,obj.bank_account_id),
                      (Account,obj.cash_account_id),(Category,obj.fee_category_id)])
         if obj.transit_account_id is not None:refs.append((Account,obj.transit_account_id))
+    if isinstance(obj, CashFundingPaymentGroup):refs.append((CashFunding,obj.funding_id))
+    if isinstance(obj, CashFundingPaymentItem):
+        refs.extend([(CashFundingPaymentGroup,obj.group_id),(PaymentRequest,obj.request_id),(Ledger,obj.ledger_id)])
     if isinstance(obj, ReportArchiveFile):
         refs.append((ReportArchive, obj.archive_id))
     if isinstance(obj, (BusinessSourceFile, BusinessGeneration)):
@@ -162,6 +166,8 @@ def check_object(s, obj):
 
 @event.listens_for(Session, 'before_flush')
 def restrict_writes(s, *_):
+    if any(isinstance(o,(CashFundingPaymentGroup,CashFundingPaymentItem)) for o in list(s.dirty)+list(s.deleted)):
+        raise HTTPException(409,'Группа наличной оплаты и её связи хранятся без изменений.')
     if any(isinstance(o, (FinancialStatementSource,CashFlowOsvSource)) for o in list(s.dirty) + list(s.deleted)):
         raise HTTPException(409, 'Исходники финансовых отчётов не изменяются. Загрузите новую версию.')
     # Журнал аудита только дополняется: записи не изменяются и не удаляются.

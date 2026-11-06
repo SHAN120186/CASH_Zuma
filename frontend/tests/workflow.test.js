@@ -17,6 +17,12 @@ test('the track shows the accountant check, finance, the director by policy and 
   assert.equal(steps({status: 'returned', route: {}})[0].c, 'now');
 });
 
+test('a funding-only parent names its last stage as issue by requests without changing its workflow',()=>{
+  const row={status:'approved',checked_by:1,finance_approved_by:2,approved_by:3,route:{policy:'always',director_required:true},cash_funding:{mode:'batch'}};
+  assert.equal(steps(row).at(-1).l,'Выдача по заявкам');assert.equal(steps(row).at(-1).c,'now');
+  assert.equal(stageLabel(row),'Утверждена');assert.equal(steps({...row,cash_funding:{mode:'single'}}).at(-1).l,'Оплата');
+});
+
 test('only return and close remain as negative actions, and both need a comment', () => {
   assert.equal(STATUS.cancelled, 'Закрыта без оплаты');
   for (const banned of ['reject', 'stop', 'cancel']) assert.ok(!(banned in ACTION_LABELS), banned);

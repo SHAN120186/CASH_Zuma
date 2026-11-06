@@ -274,6 +274,7 @@ def morning_summary(request: Request, chat_id: int, report_date: date, today: da
 
         requests = list(s.scalars(select(PaymentRequest).where(
             PaymentRequest.account_id.in_(list(all_accounts)),
+            PaymentRequest.id.not_in(select(CashFunding.request_id).where(CashFunding.mode=='batch')),
             PaymentRequest.status.in_(['approved', 'pending'])).order_by(PaymentRequest.due_date, PaymentRequest.id)))
         fundings={f.request_id:f for f in s.scalars(select(CashFunding).where(CashFunding.company_id.in_(list(companies))))}
 
@@ -431,7 +432,8 @@ def daily_summary_payload(s, chat_id, report_date, companies, codes, scope_id, c
     open_requests = []
     fundings={f.request_id:f for f in s.scalars(select(CashFunding).where(CashFunding.company_id.in_(list(companies))))}
     for r in s.scalars(select(PaymentRequest).where(
-        PaymentRequest.account_id.in_(list(accounts)), PaymentRequest.status.in_(['pending', 'approved']))
+        PaymentRequest.account_id.in_(list(accounts)), PaymentRequest.status.in_(['pending', 'approved']),
+        PaymentRequest.id.not_in(select(CashFunding.request_id).where(CashFunding.mode=='batch')))
                        .order_by(PaymentRequest.due_date, PaymentRequest.id)):
         a = accounts[r.account_id]
         label = STAGE_LABELS[approval_stage(r)] if r.status == 'pending' else (
@@ -610,7 +612,8 @@ def group_statement_reconciliation(request: Request, chat_id: int, report_date: 
         account_ids = list(request_accounts)
         unpaid = []
         for item in s.scalars(select(PaymentRequest).where(PaymentRequest.account_id.in_(account_ids),
-                PaymentRequest.due_date == report_date, PaymentRequest.status.in_(['pending', 'approved']))
+                PaymentRequest.due_date == report_date, PaymentRequest.status.in_(['pending', 'approved']),
+                PaymentRequest.id.not_in(select(CashFunding.request_id).where(CashFunding.mode=='batch')))
                 .order_by(PaymentRequest.id)):
             account = request_accounts[item.account_id]
             has_link = s.scalar(select(Ledger.id).where(Ledger.request_id == item.id).limit(1)) is not None
@@ -757,6 +760,8 @@ def responsible(r, account, company, users, members, acting=None, past=None, fun
     elif r.status == 'approved':
         if not route_complete(r):
             return None, []
+        if funding and funding.mode=='batch' and funding.state=='received':
+            return None, []  # funding envelope has no independent cash expense
         # The payment channel decides the payer: bank - settlement accountant, cash - cashier.
         if funding and funding.state=='unfunded':
             right='pay_bank';stage='bank_payment'

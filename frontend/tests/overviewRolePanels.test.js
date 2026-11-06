@@ -79,6 +79,13 @@ function propsFor(company, api, user, rights = broadGrants, options = {}) {
     canOpenRequests: rights.includes('requests-view'), ...options};
 }
 
+test('compact payment and upcoming lists exclude funding-only parent totals',async t=>{
+ const view=mount(overview,propsFor(companies[0],apiFixture([]),ownRole('cashier')));t.after(view.unmount);await settle();
+ view.state.s.approved=[overdue,future,{...overdue,id:900,cash_funding:{mode:'batch'},amount:'990000.00'},{...future,id:901,cash_funding:{mode:'batch'},amount:'990000.00'}];await settle();
+ assert.deepEqual(view.state.payments.map(row=>row.id),[overdue.id]);
+ assert.deepEqual(view.state.upcoming.map(row=>row.id),[future.id]);
+});
+
 function assertCompact(view) {
   assert.deepEqual(h2s(view), ['На согласовании', 'Платежи']);
   assert.equal(section(view, 'ov-risks'), undefined);
