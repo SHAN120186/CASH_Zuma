@@ -169,7 +169,9 @@ async function commit() {
     } else attempt.value = null;
   } finally { if (alive) working(false); }
 }
-watch(scope, () => {
+// A refreshed request can carry new effective permissions without a financial
+// version change. Revalidate the API capability on that replacement as well.
+watch(() => [scope(), props.request, props.request.actions?.join('|')], () => {
   generation++; readGeneration++; snapshot.value = null; selected.value = []; invalidate(); opened.value = false;
   const recovering = attempt.value?.identity === identity();
   uncertain.value = recovering;

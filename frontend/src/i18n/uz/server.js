@@ -898,8 +898,8 @@ export const patterns = [
   [/^Недостаточно средств на счёте «(.+)» на (\S+): (\S+) (\S+)\.$/, '«$1» hisobida $2 holatiga mablagʻ yetarli emas: $3 $4.'],
   [anchored(BUDGET + ' Лимит жёсткий: сначала нужно пересмотреть бюджет статьи на этот месяц\\.' + RETURN),
     BUDGET_UZ + ' Limit qatʼiy: avval moddaning shu oy uchun byudjetini qayta koʻrib chiqish kerak.' + RETURN_UZ],
-  [anchored(BUDGET + ' Срок заявки (\\S+): финансовому директору нужно перенести срок на месяц оплаты; после переноса заявку проверяет другой финансист или администратор и утверждает директор\\.' + RETURN),
-    BUDGET_UZ + ' Ariza muddati $4: moliya direktori muddatni toʻlov oyiga koʻchirishi kerak; koʻchirilgandan keyin arizani boshqa moliyachi yoki administrator tekshiradi va direktor tasdiqlaydi.' + RETURN_UZ],
+  [anchored(BUDGET + ' Срок заявки (\\S+): финансовому директору нужно перенести срок на месяц оплаты; после переноса требуется повторное согласование по маршруту заявки\\.' + RETURN),
+    BUDGET_UZ + ' Ariza muddati $4: moliya direktori muddatni toʻlov oyiga koʻchirishi kerak; koʻchirilgandan keyin ariza o‘z jarayoni bo‘yicha qayta tasdiqlanishi kerak.' + RETURN_UZ],
   [anchored(BUDGET + RETURN), BUDGET_UZ + RETURN_UZ],
   // Any other known message followed by the payment hint
   [anchored('(.+)' + RETURN), '$1' + RETURN_UZ, [1]],

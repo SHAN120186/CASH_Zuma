@@ -1,5 +1,6 @@
 import {N_, tx} from '../i18n/index.js';
 import {ungroupAmount} from '../amountInput.js';
+import {stageLabel} from './workflow.js';
 
 export const CASH_FUNDING_STATES = {
   unfunded: N_('Ожидает снятия из банка'),
@@ -51,6 +52,8 @@ export function fundingActionAvailable(request, action) {
 
 export function fundingStatus(request) {
   if (request?.status === 'paid') return tx('Оплачена наличными');
+  if (['draft', 'returned'].includes(request?.status)) return tx('Документ ещё не согласован.');
+  if (request?.status && request.status !== 'approved') return stageLabel(request);
   return tx(CASH_FUNDING_STATES[request?.cash_funding?.state] || N_('Наличные через банк'));
 }
 

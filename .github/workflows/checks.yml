@@ -49,6 +49,7 @@ jobs:
       - run: python -m unittest tests.test_ledger_delete -q
       - run: python -m unittest tests.test_approval_funding -q
       - run: python -m unittest tests.test_director_limits -q
+      - run: python -m unittest tests.test_finance_author_workflow -q
       - run: python -m unittest tests.test_cashflow_osv -q
       - run: python -m unittest tests.test_bank_statement_parser -q
       - run: python -m unittest tests.test_bank_statement_category_rules -q
@@ -118,6 +119,7 @@ jobs:
       - run: python -m unittest tests.test_request_form_rules -q
       - run: python -m unittest tests.test_company_category_catalog -q
       - run: python -m unittest tests.test_director_limits -q
+      - run: python -m unittest tests.test_finance_author_workflow -q
       - run: python -m unittest tests.test_request_batch_performance -q
       - run: python -m unittest tests.test_request_batch_history -q
       - run: python -m unittest tests.test_http_audit -q

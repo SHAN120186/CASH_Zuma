@@ -1,7 +1,7 @@
 import {test} from 'node:test';
 import assert from 'node:assert/strict';
 import {STATUS, ACTION_LABELS, COMMENT_REQUIRED, DOC_KINDS, REQUIRED_DOCS, LEAD_DAYS, steps, stageLabel, decisionOptions,
-        canDecide, accountsFor, budgetRows, budgetNote, minDue, missingDocs, periodLabel, fileProblem, MAX_DOC_BYTES, DOC_ACCEPT} from '../src/requests/workflow.js';
+        canDecide, accountsFor, budgetRows, budgetNote, minDue, missingDocs, periodLabel, fileProblem, MAX_DOC_BYTES, DOC_ACCEPT, financeAuthorRoute} from '../src/requests/workflow.js';
 
 const pending = (stage, extra) => ({status: 'pending', approval_stage: stage, route: {policy: 'always', director_required: true}, ...extra});
 
@@ -21,6 +21,22 @@ test('a funding-only parent names its last stage as issue by requests without ch
   const row={status:'approved',checked_by:1,finance_approved_by:2,approved_by:3,route:{policy:'always',director_required:true},cash_funding:{mode:'batch'}};
   assert.equal(steps(row).at(-1).l,'Выдача по заявкам');assert.equal(steps(row).at(-1).c,'now');
   assert.equal(stageLabel(row),'Утверждена');assert.equal(steps({...row,cash_funding:{mode:'single'}}).at(-1).l,'Оплата');
+});
+
+test('the persisted finance-author route skips self-approval and waits for the director after check',()=>{
+  const route={policy:'threshold',finance_author:true,finance_required:false,director_required:true};
+  const checking=pending('check',{route,finance_approved_by:null});
+  assert.equal(financeAuthorRoute(checking),true);
+  assert.deepEqual(steps(checking).map(s=>s.c),['done','now','skip','','']);
+  const director={...checking,approval_stage:'director',checked_by:7};
+  assert.equal(stageLabel(director),'Ожидает: директор');
+  assert.deepEqual(steps(director).map(s=>s.c),['done','done','skip','now','']);
+  assert.equal(steps(director)[2].l,'Фин. директор · автор заявки');
+  assert.equal(decisionOptions({...director,actions:['approve']})[0][1],'Утвердить оплату');
+  const approved={...director,status:'approved',approved_by:8,finance_approved_by:null};
+  assert.deepEqual(steps(approved).map(s=>s.c),['done','done','skip','done','now']);
+  assert.equal(approved.finance_approved_by,null);
+  assert.equal(financeAuthorRoute({...approved,route:{policy:'threshold',director_required:false}}),false,'old snapshots do not infer a new route from an author name or role');
 });
 
 test('only return and close remain as negative actions, and both need a comment', () => {

@@ -39,7 +39,8 @@ class SiteTests(unittest.TestCase):
         Base.metadata.drop_all(engine);initialize()
         with unit(True) as s:
             admin=User(username='admin',name='Test Admin',role='admin',password_hash=HASH);s.add(admin);s.flush()
-            # Администратор холдинга работает с финансами только по отдельному назначению в компании.
+            # Legacy finance assignments must never grant the holding admin
+            # workflow checks, approvals or payments; CRUD/oversight remains.
             for c in s.scalars(select(Company).where(Company.code!='UNASSIGNED')):s.add(CompanyUser(company_id=c.id,user_id=admin.id,role='finance'))
             # Прежние проверки написаны для маршрута «директор утверждает всё»;
             # политики статей и их первоначальные пороги проверяются отдельными тестами.
@@ -2157,7 +2158,8 @@ class SiteTests(unittest.TestCase):
                 response=cl.get('/api/bootstrap',headers=hh)
                 self.assertEqual(response.status_code,200,response.text)
                 me=response.json()['user']
-                self.assertTrue({'write','request','approve','budget','pay_bank','pay_cash','audit'}<=set(me['permissions']))
+                self.assertTrue({'write','request','request_edit','request_delete','budget','audit','catalog','users'}<=set(me['permissions']))
+                self.assertFalse({'approve','request_check','pay_bank','pay_cash'}&set(me['permissions']))
             self.assertEqual(self.post('/api/accounts',{'name':'Full admin','kind':'bank','currency':'UZS','opening':'0','opening_date':self.date},cl,h).status_code,200)
             self.assertEqual(self.post('/api/company-users',{'username':'admin2','role':'finance'},cl,h).status_code,409)
         finally:cl.close()

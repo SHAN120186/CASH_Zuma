@@ -2,7 +2,7 @@
 // Карточка заявки: маршрут, бюджет статьи, документы с версиями, решения из r.actions и история.
 import {ref, computed, onMounted, onUnmounted, nextTick} from 'vue';
 import {PRIORITIES, CHANNELS, DEPARTMENTS, DOC_KINDS, requiredDocs, SINGLE_DOCS, DOC_ACCEPT, COMMENT_REQUIRED, stageLabel, steps, decisionOptions,
-        missingDocs, budgetRows, budgetNote, periodLabel, minDue, historyLabel, historyNote, historyFile, fileProblem} from './workflow.js';
+        missingDocs, budgetRows, budgetNote, periodLabel, minDue, historyLabel, historyNote, historyFile, fileProblem, financeAuthorRoute} from './workflow.js';
 import {RETRY_REASON} from './saveFlow.js';
 import {tx, N_, formatDate, lang} from '../i18n/index.js';
 import CashFundingPanel from './CashFundingPanel.vue';
@@ -24,6 +24,7 @@ const PILL = {pending: 'warn', approved: 'good', paid: 'fact', returned: 'warn',
 
 const can = a => !(a === 'pay' && r.value?.cash_funding?.mode === 'batch') && (r.value?.actions || []).includes(a);
 const options = computed(() => r.value ? decisionOptions(r.value) : []);
+const financeAuthor = computed(() => financeAuthorRoute(r.value));
 const needsComment = computed(() => COMMENT_REQUIRED.includes(decision.value.action));
 const byKind = computed(() => {
   const all = r.value?.documents_list || [];
@@ -169,7 +170,7 @@ onUnmounted(() => document.removeEventListener('keydown', onKey));
         </div>
         <div class="trk" :aria-label="tx('Этапы заявки')"><template v-for="(s, i) in steps(r)" :key="i"><span v-if="i" class="ln"></span>
           <span class="st" :class="s.c === 'skip' ? 'skip' : s.c"><u>{{ MK[s.c] }}</u>{{ s.l }}</span></template></div>
-        <p class="sub rq-route">{{ tx('Маршрут: проверка бухгалтера → финансовый директор → директор по политике статьи → оплата.') }} {{ tx(r.route?.reason) }}</p>
+        <p class="sub rq-route">{{ financeAuthor ? tx('Маршрут: проверка бухгалтера → директор → оплата.') : tx('Маршрут: проверка бухгалтера → финансовый директор → директор по политике статьи → оплата.') }} {{ tx(r.route?.reason) }}</p>
 
         <dl class="kv rq-kv">
           <template v-if="r.counterparty_inn"><dt>{{ tx('ИНН контрагента') }}</dt><dd>{{ r.counterparty_inn }}</dd></template>
@@ -183,6 +184,7 @@ onUnmounted(() => document.removeEventListener('keydown', onKey));
           <template v-if="r.people?.last_editor_id && r.last_editor_id !== r.creator_id"><dt>{{ tx('Последний редактор') }}</dt><dd>{{ r.people.last_editor_id }}</dd></template>
           <template v-if="r.people?.checked_by"><dt>{{ tx('Проверил') }}</dt><dd>{{ r.people.checked_by }}</dd></template>
           <template v-if="r.people?.finance_approved_by"><dt>{{ tx('Фин. директор') }}</dt><dd>{{ r.people.finance_approved_by }}</dd></template>
+          <template v-else-if="financeAuthor"><dt>{{ tx('Фин. директор') }}</dt><dd>{{ tx('Автор заявки · не согласует') }}</dd></template>
           <template v-if="r.people?.approved_by && r.approved_by !== r.finance_approved_by"><dt>{{ tx('Директор') }}</dt><dd>{{ r.people.approved_by }}</dd></template>
           <template v-if="r.decision_note"><dt>{{ tx('Комментарий') }}</dt><dd>{{ r.decision_note }}</dd></template>
         </dl>

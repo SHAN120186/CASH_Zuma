@@ -129,3 +129,13 @@ test('request payment shortage explains retry after funding in Uzbek', () => {
     assert.doesNotMatch(text,/[А-Яа-яЁё]/);
   } finally { setLang(previous); }
 });
+
+test('moving a payment month requests route reapproval without assigning financial approval to admin',()=>{
+ const previous=lang.value;
+ try{
+  setLang('uz');
+  const translated=tx('Бюджет статьи на 2026-11 превышен на 100.00 UZS сверх утверждённого. Срок заявки 2026-10-31: финансовому директору нужно перенести срок на месяц оплаты; после переноса требуется повторное согласование по маршруту заявки. Оплата не проведена. Верните заявку финансовому директору с комментарием.');
+  assert.doesNotMatch(translated,/[А-Яа-яЁё]/);assert.match(translated,/2026-11/);assert.match(translated,/2026-10-31/);
+  assert.match(translated,/jarayoni bo‘yicha qayta tasdiqlanishi kerak/);assert.doesNotMatch(translated,/administrator/);
+ }finally{setLang(previous);}
+});

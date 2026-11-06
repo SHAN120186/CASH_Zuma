@@ -47,6 +47,9 @@ for rights in PERMS.values():
 
 # Holding admin operates across all companies without separate financial assignments.
 PERMS['admin'] |= set().union(*(rights for role,rights in PERMS.items() if role != 'founder'))
+# Holding administrators manage and audit; company staff execute the workflow.
+ADMIN_WORKFLOW_RIGHTS=frozenset({'approve','request_check','pay_bank','pay_cash'})
+PERMS['admin']-=ADMIN_WORKFLOW_RIGHTS
 
 # Просмотр отчётов (export) и выдача файлов (download) проверяются отдельно.
 # Замещение не отменяет запрет скачивания для собственной роли сотрудника.
@@ -71,8 +74,8 @@ def payment_channels(permissions):
 def scope_user(user, assigned, acting=(), member=True):
     """Роль и права пользователя в выбранной компании.
 
-    Учредитель всегда только читает. Администратор холдинга получает финансовые
-    права роли лишь при отдельном назначении в этой компании. Сотрудник работает только
+    Учредитель всегда только читает. Администратор управляет и наблюдает во всех
+    компаниях, но назначение и ВрИО не дают ему проверку, согласование или оплату. Сотрудник работает только
     по явной роли назначения; без неё прав в компании нет.
     ``acting`` — действующие замещения (ВрИО) в этой компании: их роли добавляют права,
     а собственная роль пользователя не меняется. ``member`` оставлен для совместимости вызовов."""
@@ -97,6 +100,7 @@ def scope_user(user, assigned, acting=(), member=True):
             permissions |= PERMS[d['role']]
     if user.role not in HOLDING_ROLES and (role or user.role) in NO_DOWNLOAD_ROLES:
         permissions.discard('download')
+    if user.role=='admin':permissions-=ADMIN_WORKFLOW_RIGHTS
     user._company_role = role
     user._acting = delegated
     user._acted = None
@@ -122,6 +126,7 @@ def act_as(user, role):
 def act_with_right(user, right):
     """Отмечает роль, которая дала право: собственная роль в компании, замещение (ВрИО)
     или роль холдинга. Журнал записывает именно её и заменяемого сотрудника."""
+    if user.role=='admin' and right in ADMIN_WORKFLOW_RIGHTS:return False
     own = company_role(user)
     if own and right in PERMS[own]:
         return act_as(user, own)
@@ -136,9 +141,8 @@ def act_with_right(user, right):
 
 def perms_of(user):
     """Права в выбранной компании; до выбора компании — права собственной роли."""
-    if hasattr(user, '_permissions'):
-        return user._permissions
-    return frozenset(PERMS.get(user.role, set()))
+    permissions=getattr(user,'_permissions',PERMS.get(user.role,set()))
+    return frozenset(permissions)-ADMIN_WORKFLOW_RIGHTS if user.role=='admin' else frozenset(permissions)
 
 
 def require_permission(user, permission):
