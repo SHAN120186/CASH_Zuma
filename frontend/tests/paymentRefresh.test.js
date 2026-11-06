@@ -1,6 +1,7 @@
 import {test} from 'node:test';
 import assert from 'node:assert/strict';
 import {compileComponent,mount,settle,text,all} from './helpers/mountVue.js';
+import {lang,setLang} from '../src/i18n/index.js';
 
 const component=await compileComponent(new URL('../src/App.vue',import.meta.url));
 const reply=data=>({ok:true,status:200,json:async()=>data});
@@ -68,12 +69,24 @@ test('user administration help never offers approval or payment through an admin
  assert.doesNotMatch(help,/финансовые действия — только по отдельному назначению|или администратора холдинга/);
 });
 
+test('request and approval help explain immediate paid archive and irreversible close in Russian and Uzbek',async t=>{
+ const previous=lang.value;t.after(()=>setLang(previous));setLang('ru');
+ const{view}=await fixture(t,async()=>reply({items:[],total:0}));view.state.modal=null;await settle();
+ const help=()=>view.state.helpSections.map(section=>section.join(' ')).join(' ');
+ assert.match(help(),/На согласовании, на доработке и утверждённые неоплаченные заявки остаются в основном списке.*Оплаченные сразу переходят в архив/);
+ assert.match(help(),/безвозвратно удаляет заявку, все её файлы и историю.*Восстановление невозможно/);
+ assert.doesNotMatch(help(),/24 часа|остаётся в истории со статусом/);
+ assert.match(text(view.container),/Оплаченные сразу переходят в архив/);
+ view.state.page='approval';await settle();assert.match(help(),/безвозвратно удаляет заявку, все её файлы и историю/);
+ setLang('uz');await settle();assert.match(help(),/Tiklashning iloji yoʻq/);assert.doesNotMatch(help(),/[А-Яа-яЁё]/);
+ view.state.page='requests';await settle();assert.match(help(),/Toʻlangan arizalar darhol arxivga oʻtadi/);assert.doesNotMatch(help(),/[А-Яа-яЁё]/);
+});
+
 test('an accepted batch clears every stale child pay action even when both refresh reads fail',async t=>{
  const {view,calls}=await fixture(t,async()=>denied(503,'Synthetic refresh unavailable'));
  view.state.modal=null;view.state.rows=[{...request},{...request,id:42,number:'CF-00042'}];view.state.listTotal=2;
  await view.state.batchPaymentsRecorded([41,42]);await settle();
- assert.deepEqual(view.state.rows.map(row=>row.status),['paid','paid']);
- assert.ok(view.state.rows.every(row=>row.actions.length===0));
+ assert.deepEqual(view.state.rows,[]);assert.equal(view.state.listTotal,0);
  assert.match(view.state.error,/Групповая выдача записана/);
  assert.equal(posted(calls).length,0,'refresh never submits one or several ledger writes');
  assert.equal(view.state.canPayRequest({...request,cash_funding:{mode:'batch'}}),false,'a funding-only parent is never a direct expense');
@@ -93,20 +106,22 @@ test('linked payment completes once and disappears from the approved filter',asy
   if(url==='/api/ledger'){const body=JSON.parse(options.body);assert.equal(body.request_id,41);assert.equal(body.request_version,6);paid=true;return reply({id:83});}
   if(url==='/api/bootstrap')return reply(boot());
   assert.match(url,/^\/api\/requests\?/);
-  const state=new URL(url,'https://isolated.test').searchParams.get('state');
+  const params=new URL(url,'https://isolated.test').searchParams,state=params.get('state'),archive=params.get('archive');
   const row={...request,status:paid?'paid':'approved',actions:paid?[]:['pay']};
-  return reply({items:!state||state===row.status?[row]:[],total:!state||state===row.status?1:0});
+  const matches=(!state||state===row.status)&&(archive==='all'||(archive==='archived')===paid);
+  return reply({items:matches?[row]:[],total:matches?1:0});
  });
  view.state.requestStatus='approved';
  await view.state.save();await settle();
  assert.equal(view.state.modal,null);assert.equal(view.state.rows.length,0);assert.equal(view.state.listTotal,0);
  assert.equal(view.state.notice,'Заявка оплачена.');assert.equal(view.state.error,'');
- view.state.requestStatus='';await view.state.load();await settle();
+ view.state.requestStatus='';await view.state.load();await settle();assert.equal(view.state.rows.length,0);
+ view.state.requestArchive='archived';await view.state.load();await settle();
  assert.equal(view.state.rows[0].status,'paid');assert.equal(view.state.canPayRequest(view.state.rows[0]),false);
  assert.match(text(view.container),/Оплачена/);assert.equal(posted(calls).length,1);
 });
 
-test('accepted payment stays paid with a visible warning when bootstrap and list refresh fail; retry reads only',async t=>{
+test('accepted payment leaves the main list even when refresh fails and is found in the archive by reads only',async t=>{
  let failRefresh=true,paid=false;
  const {view,calls}=await fixture(t,async(url)=>{
   if(url==='/api/ledger'){paid=true;return reply({id:83});}
@@ -116,9 +131,9 @@ test('accepted payment stays paid with a visible warning when bootstrap and list
  });
  await view.state.save();await settle();
  assert.equal(paid,true);assert.equal(view.state.modal,null);assert.equal(view.state.formError,'');
- assert.equal(view.state.rows[0].status,'paid');assert.equal(view.state.canPayRequest(view.state.rows[0]),false);
+ assert.equal(view.state.rows.length,0);assert.equal(view.state.listTotal,0);
  assert.equal(view.state.error,paymentWarning);assert.ok(visibleErrors(view).includes(paymentWarning));
- failRefresh=false;const before=calls.length;await view.state.load();await settle();
+ failRefresh=false;view.state.requestArchive='archived';const before=calls.length;await view.state.load();await settle();
  assert.equal(view.state.error,'');assert.equal(view.state.rows[0].status,'paid');
  assert.ok(calls.slice(before).every(call=>call.method==='GET'),'refresh must not resubmit a recorded payment');
  assert.equal(posted(calls).length,1);
@@ -145,11 +160,11 @@ test('a read started before payment cannot restore approved status while the fol
  });
  const reading=view.state.load();await settle();
  const saving=view.state.save();await settle();
- assert.ok(calls.some(call=>call.url==='/api/bootstrap'));assert.equal(view.state.rows[0].status,'paid');
+ assert.ok(calls.some(call=>call.url==='/api/bootstrap'));assert.equal(view.state.rows.length,0);assert.equal(view.state.listTotal,0);
  oldRead.resolve(reply({items:[request],total:1}));await reading;await settle();
- assert.equal(view.state.rows[0].status,'paid');assert.equal(view.state.canPayRequest(view.state.rows[0]),false);
+ assert.equal(view.state.rows.length,0);assert.equal(view.state.listTotal,0);
  bootstrapRead.resolve(denied(503,'Synthetic bootstrap unavailable'));await saving;await settle();
- assert.equal(view.state.rows[0].status,'paid');assert.equal(view.state.error,paymentWarning);
+ assert.equal(view.state.rows.length,0);assert.equal(view.state.error,paymentWarning);
  assert.equal(posted(calls).length,1);
 });
 
@@ -163,11 +178,40 @@ test('midnight bootstrap failure cannot retain the old pay action after an accep
  view.state.bootstrapLocalDay='2000-01-01';
  await view.state.save();await settle();
  assert.equal(calls.filter(call=>call.url==='/api/bootstrap').length,2,'both explicit refresh and the business-day refresh failed');
- assert.equal(view.state.rows[0].status,'paid');assert.equal(view.state.canPayRequest(view.state.rows[0]),false);
+ assert.equal(view.state.rows.length,0);assert.equal(view.state.listTotal,0);
  assert.equal(view.state.error,paymentWarning);assert.ok(visibleErrors(view).includes(paymentWarning));
  failRefresh=false;const before=calls.length;await view.state.load();await settle();
  assert.equal(view.state.bootstrapLocalDay,day());assert.equal(view.state.error,'');
  assert.ok(calls.slice(before).every(call=>call.method==='GET'));assert.equal(posted(calls).length,1);
+});
+
+test('local payment removal preserves search and total and moves off an emptied last page only once',async t=>{
+ const{view}=await fixture(t,async()=>denied(503,'Synthetic refresh unavailable'));
+ Object.assign(view.state,{modal:null,listPage:2,listTotal:16,search:'CF-00041'});
+ view.state.requestPaid(41);await settle();
+ assert.deepEqual(view.state.rows,[]);assert.equal(view.state.listTotal,15);assert.equal(view.state.listPage,1);assert.equal(view.state.search,'CF-00041');
+ view.state.requestPaid(41);view.state.requestPaid(999);await settle();
+ assert.equal(view.state.listTotal,15,'unseen or already removed rows do not decrement a filtered server total');assert.equal(view.state.search,'CF-00041');
+});
+
+test('period payment stays visible with archive all, and a non-paid state filter still removes it',async t=>{
+ const{view,calls}=await fixture(t,async()=>reply({items:[],total:0}));
+ Object.assign(view.state,{modal:null,dateFrom:'2026-10-01',dateTo:'2026-10-31'});
+ view.state.requestPaid(41);await settle();
+ assert.equal(view.state.rows[0].status,'paid');assert.deepEqual(view.state.rows[0].actions,[]);assert.equal(view.state.listTotal,1);
+ await view.state.load();await settle();
+ const params=new URL(calls.at(-1).url,'https://isolated.test').searchParams;
+ assert.equal(params.get('archive'),'all');assert.equal(params.get('date_from'),'2026-10-01');assert.equal(params.get('date_to'),'2026-10-31');
+ Object.assign(view.state,{rows:[{...request}],listTotal:1,requestStatus:'approved'});
+ view.state.requestPaid(41);await settle();assert.deepEqual(view.state.rows,[]);assert.equal(view.state.listTotal,0);
+});
+
+test('archive payment update clears stale actions without adding unseen rows or changing the filtered total',async t=>{
+ const{view}=await fixture(t,async()=>reply({items:[],total:0}));
+ Object.assign(view.state,{modal:null,requestArchive:'archived',listTotal:23,listPage:2});
+ view.state.requestPaid(41);view.state.requestPaid(999);await settle();
+ assert.equal(view.state.rows.length,1);assert.equal(view.state.rows[0].status,'paid');assert.deepEqual(view.state.rows[0].actions,[]);
+ assert.equal(view.state.listTotal,23);assert.equal(view.state.listPage,2);
 });
 
 test('rejected payment keeps the form and approved state without a false success message',async t=>{

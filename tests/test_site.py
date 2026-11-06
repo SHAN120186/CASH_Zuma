@@ -655,16 +655,17 @@ class SiteTests(unittest.TestCase):
         # 'cancel' is gone: the approved request keeps its reserve until it is closed without payment.
         self.assertEqual(self.post(f'/api/requests/{rid}/decision',{'action':'cancel','note':'Поставка отменена поставщиком'}).status_code,422)
         self.assertEqual((self.row(rid)['status'],b()['reserved']),('approved','600.00'))
+        version=self.version_of(rid)
         closed=self.post(f'/api/requests/{rid}/decision',{'action':'close','note':'Поставка отменена поставщиком'})
-        self.assertEqual(closed.status_code,200,closed.text);self.assertEqual(closed.json()['status'],'cancelled')
+        self.assertEqual(closed.status_code,200,closed.text);self.assertEqual(closed.json(),{'deleted':True,'permanent':True,'id':rid})
         self.assertEqual(b()['reserved'],'0.00')
-        self.assertEqual(self.ledger('600','out',request_id=rid).status_code,409)
+        self.assertEqual(self.ledger('600','out',request_id=rid).status_code,404)
         cl,h=self.make_user()
         own=self.request('10',client=cl,headers=h);self.assertEqual(own.status_code,200,own.text)
-        data=self.request_body('10','Изменение чужого документа');data.update(version=self.version_of(rid),reason='Изменение чужого документа')
+        data=self.request_body('10','Изменение чужого документа');data.update(version=version,reason='Изменение чужого документа')
         # A requester does not even see another person's request (404), so it cannot be edited.
         self.assertEqual(cl.put(f'/api/requests/{rid}',json=data,headers=h).status_code,404)
-        after=self.row(rid);self.assertEqual((after['status'],after['amount'],after['version']),('cancelled','600.00',data['version']))
+        self.assertIsNone(self.row(rid))
         cl.close()
 
     def test_43_two_forecasts_balance_invariants(self):
@@ -941,7 +942,7 @@ class SiteTests(unittest.TestCase):
         self.assertEqual(accepted.status_code,200,accepted.text)
         self.assertEqual(self.row(second['id'])['status'],'approved')
         closed=self.post(f"/api/requests/{first['id']}/decision",{'action':'close','note':'Платёж отменён поставщиком'})
-        self.assertEqual(closed.status_code,200,closed.text);self.assertEqual(closed.json()['status'],'cancelled')
+        self.assertEqual(closed.status_code,200,closed.text);self.assertEqual(closed.json(),{'deleted':True,'permanent':True,'id':first['id']})
         # Наступил срок заявки: её деньги зарезервированы на день оплаты.
         with unit(True) as s:s.get(PaymentRequest,second['id']).due_date=today()
         # A manual payment cannot consume money reserved for another approved request.
@@ -1357,13 +1358,14 @@ class SiteTests(unittest.TestCase):
         self.assertEqual(state(returned)['status'],'returned')
         self.assertEqual(pay(returned,'STOP-RETURNED').status_code,409)
         cancelled=self.request('5000',client=author[0],headers=author[1]).json()['id']
-        # 'cancel' became 'close' («Закрыта без оплаты»): the author closes the request with a reason.
+        # 'cancel' is gone: closing an unpaid request permanently removes it.
         self.assertEqual(self.post(f'/api/requests/{cancelled}/decision',{'action':'cancel','note':'Закупка отменена'},*author).status_code,422)
         self.assertEqual(self.post(f'/api/requests/{cancelled}/decision',{'action':'close','note':'Нет'},*author).status_code,422)
         self.assertEqual(state(cancelled)['status'],'pending')
-        self.assertEqual(self.post(f'/api/requests/{cancelled}/decision',{'action':'close','note':'Закупка отменена'},*author).status_code,200)
-        self.assertEqual(state(cancelled)['status'],'cancelled')
-        self.assertEqual(pay(cancelled,'STOP-CANCELLED').status_code,409)
+        closed=self.post(f'/api/requests/{cancelled}/decision',{'action':'close','note':'Закупка отменена'},*author)
+        self.assertEqual(closed.status_code,200,closed.text);self.assertEqual(closed.json(),{'deleted':True,'permanent':True,'id':cancelled})
+        self.assertIsNone(self.row(cancelled))
+        self.assertEqual(pay(cancelled,'STOP-CANCELLED').status_code,404)
         self.assertEqual(self.client.get('/api/accounts').json()[0]['balance'],'1000000.00')
 
     def test_79_accountant_pays_approved_requests_only(self):
@@ -2514,11 +2516,12 @@ class SiteTests(unittest.TestCase):
         # Автор исправляет ту же заявку и отправляет заново: документы сохраняются.
         self.assertEqual(decide('submit').status_code,200);self.assertEqual(self.row(rid)['status'],'pending')
         self.assertEqual(decide('close').status_code,422)
-        self.assertEqual(decide('close','Закупка отменена поставщиком').status_code,200)
-        card=self.row(rid);self.assertEqual(card['status'],'cancelled');self.assertEqual(card['actions'],['delete'])
-        self.assertEqual(decide('submit').status_code,403)
-        self.assertEqual(decide('return','Повторный возврат закрытой').status_code,409)
-        self.assertEqual(self.upload(rid,'other').status_code,409)
+        closed=decide('close','Закупка отменена поставщиком')
+        self.assertEqual(closed.status_code,200,closed.text);self.assertEqual(closed.json(),{'deleted':True,'permanent':True,'id':rid})
+        self.assertIsNone(self.row(rid))
+        self.assertEqual(decide('submit').status_code,404)
+        self.assertEqual(decide('return','Повторный возврат закрытой').status_code,404)
+        self.assertEqual(self.upload(rid,'other').status_code,404)
         # Автор закрывает свою заявку, чужой заявитель — нет.
         cl,h=self.make_user('employee','closer');other=self.make_user('employee','stranger')
         try:
@@ -2526,7 +2529,7 @@ class SiteTests(unittest.TestCase):
             self.assertEqual(self.post(f'/api/requests/{own}/decision',{'action':'close','note':'Больше не требуется'},*other).status_code,404)
             self.assertEqual(self.post(f'/api/requests/{own}/decision',{'action':'close','note':'Больше не требуется'},cl,h).status_code,200)
         finally:cl.close();other[0].close()
-        self.assertEqual(self.post(f'/api/requests/{rid}/decision',{'action':'close','note':'Повторное закрытие'}).status_code,409)
+        self.assertEqual(self.post(f'/api/requests/{rid}/decision',{'action':'close','note':'Повторное закрытие'}).status_code,404)
 
     def test_123_acting_substitute_works_only_in_its_company_and_period(self):
         ids=self.company_ids();zuma=ids['ZUMA']
@@ -2705,7 +2708,9 @@ class SiteTests(unittest.TestCase):
             self.assertEqual(self.post(f'/api/requests/{other}/decision',{'action':'return','note':'Нужен счёт с печатью'},*sub).status_code,200)
             expect('Действие по заявке: return',('sub_user','Финансовый директор','fin_main'))
             self.assertEqual(self.post(f'/api/requests/{other}/decision',{'action':'close','note':'Закупка больше не нужна'},*sub).status_code,200)
-            expect('Действие по заявке: close',('sub_user','Финансовый директор','fin_main'))
+            self.assertIsNone(self.row(other))
+            with unit() as s:self.assertEqual(list(s.scalars(select(Audit).where(Audit.entity=='request',Audit.entity_id==str(other)))),[])
+            expect('Полностью удалена неоплаченная заявка',('sub_user','Финансовый директор','fin_main'))
             policy={'policy':'threshold','threshold_uzs':'1000','reason':'Политика согласована владельцем'}
             self.assertEqual(boss[0].put(f'/api/categories/{self.cat}/director-policy',json=policy,headers=boss[1]).status_code,200)
             expect('Изменена политика директора по статье',('sub_boss','Директор','dir_main'))

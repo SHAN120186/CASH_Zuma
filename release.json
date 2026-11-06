@@ -1,7 +1,8 @@
 {
-  "version": "2.35.14",
+  "version": "2.35.15",
   "date": "2026-11-06",
   "changes": [
+    "По подтверждению владельца действие «Закрыть без оплаты» полностью удаляет неоплаченную заявку, её вложения и историю после явного предупреждения. Денежные операции, фактическое получение наличных и связи банковской выписки защищены от удаления. Заявки на согласовании, на доработке и утверждённые неоплаченные остаются в основном списке; оплаченные сразу переходят в архив.",
     "В разделе «Заявки» на одной странице показывается до 15 строк вместо 10. Количество страниц, основной список, архив и поиск используют новый размер страницы.",
     "Администратор холдинга наблюдает и администрирует без участия в проверке, согласовании и оплате заявок. Заявку финансового директора после независимой проверки бухгалтера утверждает директор компании; самосогласование запрещено. Незавершённые согласования отделены от ожидания снятия наличных, прежние утверждённые маршруты и проведённые суммы сохранены.",
     "В разделе «Заявки» работает поиск по номеру: можно ввести 93 или CF-00093, в том числе строчными буквами. Номер виден в результатах и карточке. Поиск сохраняет выбранную компанию, права доступа и фильтры.",
@@ -115,6 +116,7 @@
     "Длинные названия файлов и кнопки выбора шаблона переносятся на узком экране. В ТЭО дата архива отдельно обозначена и не подменяет начало финансового прогноза."
   ],
   "changes_uz": [
+    "Egasi tasdigʻiga koʻra «Toʻlovsiz yopish» amali ogohlantirishdan soʻng toʻlanmagan arizani, uning fayllari va tarixini butunlay oʻchiradi. Pul operatsiyalari, amalda olingan naqd pul va bank koʻchirmasi bogʻlanishlari oʻchirishdan himoyalangan. Kelishishdagi, qayta ishlashdagi va tasdiqlangan toʻlanmagan arizalar asosiy roʻyxatda qoladi; toʻlanganlar darhol arxivga oʻtadi.",
     "«Arizalar» boʻlimida bir sahifada 10 ta oʻrniga 15 tagacha qator koʻrsatiladi. Sahifalar soni, asosiy roʻyxat, arxiv va qidiruv yangi sahifa hajmidan foydalanadi.",
     "Bir nechta tasdiqlangan ariza uchun bankdan naqd pul olishning alohida rejimi qo‘shildi. Pul kassaga olingani tasdiqlangach, kassir bir kompaniya, kassa va valyutadagi arizalarni tanlab, jami summa va qoldiqni tekshiradi hamda berishni bitta tasdiq bilan qayd etadi. Har bir ariza o‘z moddasi bo‘yicha to‘lanadi; kassani to‘ldirish hujjati takroriy xarajat yaratmaydi, komissiya alohida hisobga olinadi. Takroriy tasdiq dublikat yaratmaydi.",
     "Egasi aniqlashtirgan qoidaga ko‘ra faqat direktor ishtiroki chegarasi o‘rnatildi: direktor moliyaviy direktor limitidan qat’iy yuqori summalarni tasdiqlaydi. Chegaraga teng summa moliyaviy direktorda yakunlanadi; nol har qanday musbat summa uchun direktorni talab qiladi, «cheklovsiz» esa direktorni talab qilmaydi. Yuqori taqiq bekor qilindi. UZS: odatiy moddalar 5 mln, marketing va mijoz bonuslari 100 mln, asosiy vositalar 20 mln, Azot ITO 25 mln. USD/EUR va avval yuborilgan arizalar yo‘nalishi saqlandi.",

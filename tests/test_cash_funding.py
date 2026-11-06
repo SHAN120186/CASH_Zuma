@@ -151,7 +151,7 @@ class CashFundingTests(base.SiteTests):
         self.assertEqual(self.post(f'/api/requests/{rid}/delete',{'version':self.row(rid)['version'],'reason':'Do not orphan funds in transit'}).status_code,409)
         self.assertEqual(self.post(f'/api/requests/{rid}/decision',{'action':'close','note':'Do not orphan funds in transit'}).status_code,409)
 
-    def test_close_after_receipt_preserves_facts_and_no_generic_transit_use(self):
+    def test_close_after_receipt_is_blocked_and_no_generic_transit_use(self):
         rid=self.cash_request()
         self.funding_action(rid,'withdraw',*self.stage_user('check'))
         self.funding_action(rid,'receive',*self.cash_payer())
@@ -161,7 +161,9 @@ class CashFundingTests(base.SiteTests):
         archive=self.post(f'/api/accounts/{transit}/archive',{'archived':True,'reason':'Must remain system controlled'})
         self.assertEqual(archive.status_code,409,archive.text)
         closed=self.post(f'/api/requests/{rid}/decision',{'action':'close','note':'Cash remains in company cash desk'})
-        self.assertEqual(closed.status_code,200,closed.text)
+        self.assertEqual(closed.status_code,409,closed.text)
+        self.assertEqual(self.row(rid)['status'],'approved')
+        self.assertEqual(self.row(rid)['cash_funding']['state'],'received')
         self.assertEqual(self.funding_balances(),{'bank':0,'cash':99000000,'transit':0})
         with unit() as s:self.assertEqual(s.scalar(select(func.count()).select_from(Ledger)),3)
 
