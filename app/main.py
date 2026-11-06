@@ -474,7 +474,16 @@ def requests_list(request:Request,date_from:Optional[date]=None,date_to:Optional
         if date_from:query=query.where(PaymentRequest.due_date>=date_from)
         if date_to:query=query.where(PaymentRequest.due_date<=date_to)
         if state:query=query.where(PaymentRequest.status==state)
-        if q:query=query.where(or_(PaymentRequest.counterparty.ilike('%'+q+'%'),PaymentRequest.purpose.ilike('%'+q+'%'),Account.name.ilike('%'+q+'%')))
+        q=q.strip()
+        if q:
+            matches=[PaymentRequest.counterparty.ilike('%'+q+'%'),PaymentRequest.purpose.ilike('%'+q+'%'),Account.name.ilike('%'+q+'%')]
+            number=re.fullmatch(r'(?:CF-)?([0-9]+)',q,re.IGNORECASE)
+            if number:
+                digits=number.group(1).lstrip('0') or '0'
+                # Bound the ID before converting/binding arbitrary search input to SQL.
+                if len(digits)<19 or (len(digits)==19 and digits<='9223372036854775807'):
+                    matches.append(PaymentRequest.id==int(digits))
+            query=query.where(or_(*matches))
         total=s.scalar(select(func.count()).select_from(query.subquery()))
         query=query.order_by(PaymentRequest.due_date.asc(),PaymentRequest.id.asc())
         requests=list(s.scalars(query.offset((page-1)*page_size).limit(page_size) if paginated else query.limit(500)))
