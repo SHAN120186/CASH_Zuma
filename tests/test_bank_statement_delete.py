@@ -19,9 +19,9 @@ class StatementDeleteTests(AutoBankIntegrationTests):
         return (client or self.client).post(f"/api/bank-statements/{item['id']}/delete",json=payload,headers=headers or self.h)
 
     def import_statement(self, payment=False):
-        response=self.preview(self.statement(payment),self.cat)
+        response=(self.payment_preview if payment else self.preview)(self.statement(payment),self.cat)
         self.assertEqual(response.status_code,200,response.text)
-        result=self.confirmed(response.json(),self.cat)
+        result=(self.payment_confirmed if payment else self.confirmed)(response.json(),self.cat)
         self.assertEqual(result.status_code,200,result.text)
         self.assertTrue(result.json()['full_reconciliation'])
         return response.json()['id']
@@ -50,19 +50,19 @@ class StatementDeleteTests(AutoBankIntegrationTests):
             self.assertTrue(s.scalar(select(Audit).where(Audit.action=='Удалена банковская выписка')))
         self.assertNotIn(batch,[row['id'] for row in self.listing().json()['items']])
         self.assertEqual(self.remove(item).status_code,409)
-        repeat=self.preview(self.statement(True),self.cat)
+        repeat=self.payment_preview(self.statement(True),self.cat)
         self.assertEqual(repeat.status_code,200,repeat.text)
         self.assertFalse(repeat.json()['full_reconciliation'])
         with unit() as s:self.assertEqual(len(list(s.scalars(select(Ledger)))),6)
 
     def test_manual_paid_is_reversed_and_request_version_advances(self):
-        req=self.approved(); preview=self.preview(self.statement(True))
+        req=self.approved(); preview=self.payment_preview(self.statement(True))
         self.assertEqual(preview.status_code,200,preview.text)
         batch=preview.json()['id']; line=next(r for r in preview.json()['rows'] if r['status']=='auto_pay_candidate')
         with unit(True) as s:s.get(PaymentRequest,req).due_date+=timedelta(days=1)
-        accepted=self.confirmed(preview.json(),token=False);self.assertEqual(accepted.status_code,200,accepted.text)
+        accepted=self.payment_confirmed(preview.json(),token=False);self.assertEqual(accepted.status_code,200,accepted.text)
         with unit() as s:version=s.get(PaymentRequest,req).version
-        matched=self.client.post(f"/api/bank-statements/lines/{line['id']}/match",headers=self.h,
+        matched=self.accountant[0].post(f"/api/bank-statements/lines/{line['id']}/match",headers=self.accountant[1],
             json={'request_id':req,'request_version':version,'confirm':True,'note':'Synthetic manually checked match'})
         self.assertEqual(matched.status_code,200,matched.text);self.assertEqual(matched.json()['status'],'manual_paid')
         with unit() as s:paid_version=s.get(PaymentRequest,req).version

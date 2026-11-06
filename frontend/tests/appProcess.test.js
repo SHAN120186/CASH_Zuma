@@ -517,6 +517,24 @@ test('bank exception resolution is visible only for a holding admin with editabl
  assert.ok(calls.every(([,options])=>!options.method||options.method==='GET'));assert.equal(calls.some(([url])=>url.includes('/historical-')||url.includes('/distinct-income/')),false);
 });
 
+test('holding admin without payment rights can link existing bank facts only with editable ledger',async t=>{
+ const resolution=await compileComponent(new URL('../src/BankStatementResolution.vue',import.meta.url));
+ const statements=await compileComponent(new URL('../src/BankStatements.vue',import.meta.url),{'./BankStatementResolution.vue':resolution});
+ const app=await compileComponent(new URL('../src/App.vue',import.meta.url),{'./BankStatements.vue':statements});
+ const calls=[],rows=[{id:31,status:'ambiguous_duplicate',date:'2026-10-10',direction:'out',amount:'50.00',currency:'UZS'},{id:32,status:'review',date:'2026-10-10',direction:'out',amount:'10.00',currency:'UZS'}];
+ const {view}=await fixture(t,async(url,options)=>{calls.push([url,options]);return {ok:true,status:200,json:async()=>url==='/api/bank-statements/reviews'?{items:rows}:{items:[],total:0}};},app);
+ const admin={...user,role:'admin',holding_role:'admin',company_role:null,permissions:['view','ledger','write'],sections:{ledger:'edit'}};
+ Object.assign(view.state,{page:'ledger',user:admin,boot:bootstrapBody(admin)});await settle();
+ const duplicate=()=>find(view.container,n=>n.tag==='button'&&text(n)==='Найти ранее проведённую операцию'),transfer=()=>find(view.container,n=>n.tag==='button'&&text(n)==='Найти оформленный перевод');
+ assert.ok(duplicate());assert.ok(transfer());assert.doesNotMatch(text(view.container),/Найти заявку для сопоставления|Разобрать спорную строку/);
+ const child=mountedComponent(view.app._instance.subTree,statements);assert.ok(child);assert.equal(child.props.canReview,false);assert.equal(child.props.canResolveExceptions,false);assert.equal(child.props.canLinkExistingBankFacts,true);
+ view.state.user={...admin,sections:{ledger:'view'}};await settle();assert.equal(duplicate(),undefined);assert.equal(transfer(),undefined);
+ view.state.user={...admin,permissions:['view','ledger']};await settle();assert.equal(duplicate(),undefined);assert.equal(transfer(),undefined);
+ view.state.user={...admin,role:'director',holding_role:null,company_role:'director'};await settle();assert.equal(duplicate(),undefined);assert.equal(transfer(),undefined);
+ view.state.user={...admin,role:'founder',holding_role:'founder'};await settle();assert.equal(duplicate(),undefined);assert.equal(transfer(),undefined);
+ view.state.user=admin;await settle();assert.ok(duplicate());assert.ok(transfer());assert.doesNotMatch(text(view.container),/Найти заявку для сопоставления|Разобрать спорную строку/);assert.ok(calls.every(([,options])=>!options.method||options.method==='GET'));
+});
+
 test('statement link opens actual Cash Flow in the statement currency and month range',async t=>{
  const calls=[];const director={...user,role:'director',permissions:['view','ledger','export']};
  const {view}=await fixture(t,async(url,options)=>{calls.push({url,company:options.headers['X-Company-ID']});return {ok:true,status:200,json:async()=>url.startsWith('/api/report?')?{currency:'USD',year:2026,company_id:2,scenario:'A',as_of:'2026-06-20'}:{items:[],total:0}}},bankApp);

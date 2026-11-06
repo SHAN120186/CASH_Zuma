@@ -1,4 +1,5 @@
 export default {
+  'Администратор может связать повтор или перевод с уже проведённой операцией. Новая оплата не создаётся.': 'Administrator takror yoki o‘tkazmani avval qayd etilgan operatsiya bilan bog‘lashi mumkin. Yangi to‘lov yaratilmaydi.',
   'Статьи банковских операций обновлены. Данные выписки и отчётов обновляются.': 'Bank operatsiyalarining moddalari yangilandi. Ko‘chirma va hisobotlar maʼlumotlari yangilanmoqda.',
   'Изменены правила статей банковской выписки': 'Bank ko‘chirmasi modda qoidalari o‘zgartirildi',
   'Выберите действующую статью нужного направления этой компании для каждого правила.': 'Har bir qoida uchun shu kompaniyaning kerakli yo‘nalishdagi amaldagi moddasini tanlang.',

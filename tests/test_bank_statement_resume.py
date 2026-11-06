@@ -154,11 +154,11 @@ class SavedStatementTests(AutoBankIntegrationTests):
 
     def test_stale_request_approval_version_rejected_after_resume(self):
         rid = self.approved()
-        preview = self.preview(self.statement(), self.cat).json()
-        current = self.resume(preview['id'], self.cat).json()
+        preview = self.payment_preview(self.statement(), self.cat).json()
+        current = self.resume(preview['id'], self.cat, *self.accountant).json()
         with unit(True) as s:s.get(PaymentRequest, rid).version += 1
         before = self.finance_snapshot()
-        denied = self.confirmed(current, self.cat)
+        denied = self.payment_confirmed(current, self.cat)
         self.assertEqual(denied.status_code, 409, denied.text)
         self.assertEqual(self.finance_snapshot(), before)
 

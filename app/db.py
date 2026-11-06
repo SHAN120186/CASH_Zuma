@@ -206,6 +206,8 @@ class PaymentRequest(Base):
     route_policy = Column(String(10), nullable=True)
     route_threshold = Column(BigInteger, nullable=True)
     route_at = Column(DateTime, nullable=True)
+    # None marks old rows awaiting a safe, one-time author-role snapshot.
+    finance_author = Column(Boolean, nullable=True, default=None)
     __mapper_args__ = {'version_id_col': version}
 
 class Receipt(Base):
@@ -718,6 +720,7 @@ def initialize():
         for name,definition in [('version','INTEGER NOT NULL DEFAULT 1'),('last_editor_id','INTEGER REFERENCES users(id)'),('priority',"VARCHAR(12) NOT NULL DEFAULT 'normal'"),
                                 ('approved_at','TIMESTAMP'),('approved_overrun','BIGINT'),('checked_by','INTEGER REFERENCES users(id)'),
                                 ('checked_at','TIMESTAMP'),('route_policy','VARCHAR(10)'),('route_threshold','BIGINT'),('route_at','TIMESTAMP'),
+                                ('finance_author','BOOLEAN'),
                                 ('department',"VARCHAR(30) NOT NULL DEFAULT ''"),('counterparty_inn',"VARCHAR(20) NOT NULL DEFAULT ''")]:
             if name not in columns:conn.execute(text(f'ALTER TABLE payment_requests ADD COLUMN {name} {definition}'))
         audit_columns={c['name'] for c in inspect(conn).get_columns('audit_log')}
@@ -756,3 +759,5 @@ def initialize():
     migrate_workflow(engine)
     from .director_thresholds import migrate_director_thresholds
     migrate_director_thresholds(engine)
+    from .finance_author import migrate_finance_authors
+    migrate_finance_authors(engine)

@@ -72,22 +72,27 @@ export function decisionOptions(r) {
 
 export const canDecide = r => (r.actions || []).some(a => a === 'approve' || a === 'check');
 
+// Only the persisted server route may skip the author's financial approval.
+// Current user roles or the author's name cannot change an existing route.
+export const financeAuthorRoute = r => r?.route?.finance_author === true && r.route.finance_required === false;
+
 // Этапы для трека: Заявитель → Проверка → Фин. директор → Директор (по политике статьи) → Оплата.
 export function steps(r) {
   const order = ['check', 'finance', 'director'];
   const director = !r.route || r.route.director_required !== false;
+  const financeAuthor = financeAuthorRoute(r);
   // Заявка, отправленная до 2.14.0 (без снимка политики), идёт прежним маршрутом без проверки бухгалтера.
   const legacy = ['pending', 'approved', 'paid'].includes(r.status) && !!r.route && !r.route.policy;
-  let author = 'done', check = '', finance = '', dir = director ? '' : 'skip', paid = '';
+  let author = 'done', check = '', finance = financeAuthor ? 'skip' : '', dir = director ? '' : 'skip', paid = '';
   if (r.status === 'draft' || r.status === 'returned') author = 'now';
   else if (r.status === 'pending') {
     const at = order.indexOf(r.approval_stage);
     check = legacy ? 'skip' : at > 0 ? 'done' : 'now';
-    finance = at > 1 ? 'done' : at === 1 ? 'now' : '';
+    finance = financeAuthor ? 'skip' : at > 1 ? 'done' : at === 1 ? 'now' : '';
     if (director) dir = at === 2 ? 'now' : '';
   } else if (r.status === 'approved' || r.status === 'paid') {
     check = legacy ? 'skip' : r.checked_by ? 'done' : '';
-    finance = 'done';
+    finance = financeAuthor ? 'skip' : 'done';
     if (director) dir = r.approved_by != null && r.approved_by !== r.finance_approved_by ? 'done' : 'now';
     paid = r.status === 'paid' ? 'done' : 'now';
   } else if (r.status === 'rejected') check = 'bad';
@@ -95,7 +100,7 @@ export function steps(r) {
   return [
     { c: author, l: tx('Заявитель') },
     { c: check, l: legacy ? tx('Проверка · не требовалась') : tx('Проверка') },
-    { c: finance, l: tx('Фин. директор') },
+    { c: finance, l: financeAuthor ? tx('Фин. директор · автор заявки') : tx('Фин. директор') },
     { c: dir, l: director ? tx('Директор') : tx('Директор · не участвует') },
     { c: paid, l: r.cash_funding?.mode === 'batch' ? tx('Выдача по заявкам') : tx('Оплата') },
   ];

@@ -525,7 +525,9 @@ def add_request(data:RequestIn,request:Request):
         if data.status=='pending':
             message='Сначала сохраните черновик и приложите «Внутренняя заявка / Индент», затем отправьте заявку.' if a.kind=='cash' else 'Сначала сохраните черновик и приложите «Внутренняя заявка / Индент» и «Договор / Счёт на оплату», затем отправьте заявку.'
             raise HTTPException(422,message)
-        r=PaymentRequest(creator_id=u.id,last_editor_id=u.id,category_id=c.id,account_id=a.id,counterparty=data.counterparty,counterparty_inn=data.counterparty_inn,amount=n,due_date=data.date,purpose=data.purpose,project=data.project,department=data.department,status='draft',priority=data.priority)
+        from .finance_author import new_finance_author
+        r=PaymentRequest(creator_id=u.id,last_editor_id=u.id,category_id=c.id,account_id=a.id,counterparty=data.counterparty,counterparty_inn=data.counterparty_inn,amount=n,due_date=data.date,purpose=data.purpose,project=data.project,department=data.department,status='draft',priority=data.priority,
+                         finance_author=new_finance_author(u))
         remember_counterparty(s,data.counterparty,data.counterparty_inn)
         s.add(r);s.flush()
         from .cash_funding import save_plan
@@ -666,7 +668,7 @@ def decide(id:int,data:DecisionIn,request:Request):
                 # Фактическое покрытие проверяется атомарно при оплате.
                 r.status='approved';r.approved_at=now();r.approved_overrun=max(r.approved_overrun or 0,overrun(b))
         elif data.action=='return':
-            if not (('approve' in perms and act_with_right(u,'approve')) or act_as(u,'accountant')):raise HTTPException(403,'Недостаточно прав для возврата.')
+            if not (('approve' in perms and act_with_right(u,'approve')) or ('request_check' in perms and act_as(u,'accountant'))):raise HTTPException(403,'Недостаточно прав для возврата.')
             if r.status not in ('pending','approved'):raise HTTPException(409,'Вернуть можно заявку на согласовании или утверждённую заявку.')
             if 'approve' not in perms and stage!='check':raise HTTPException(403,'Расчётный бухгалтер возвращает заявку на этапе проверки реквизитов.')
             if len(note)<10:raise HTTPException(422,'Укажите причину возврата не короче 10 символов.')

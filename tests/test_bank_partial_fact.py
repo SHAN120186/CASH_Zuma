@@ -15,7 +15,7 @@ class PartialBankFactTests(AutoBankIntegrationTests):
         rid = self.approved()
         # The last debit might be an internal transfer; leave it unclassified.
         raw = self.statement(external=True).replace(b'<td>300000005</td>', b'<td>300000001</td>')
-        preview = self.preview(raw, self.cat)
+        preview = self.payment_preview(raw, self.cat)
         self.assertEqual(preview.status_code, 200, preview.text)
         self.assertFalse(preview.json()['full_reconciliation'])
         return rid, preview.json()
@@ -37,7 +37,7 @@ class PartialBankFactTests(AutoBankIntegrationTests):
 
     def test_partial_confirm_updates_fact_and_holds_unposted_debit_without_double_count(self):
         rid, preview = self.partial_statement()
-        committed = self.confirmed(preview, self.cat)
+        committed = self.payment_confirmed(preview, self.cat)
         self.assertEqual(committed.status_code, 200, committed.text)
         self.assertFalse(committed.json()['full_reconciliation'])
         self.assertEqual((committed.json()['auto_income'], committed.json()['auto_paid'], committed.json()['auto_fee']), (1, 1, 1))
@@ -61,7 +61,7 @@ class PartialBankFactTests(AutoBankIntegrationTests):
             self.assertEqual(s.get(PaymentRequest, rid).status, 'paid')
             self.assertEqual(len(list(s.scalars(select(Ledger)))), 3)
 
-        self.assertEqual(self.confirmed(preview, self.cat).status_code, 409)
+        self.assertEqual(self.payment_confirmed(preview, self.cat).status_code, 409)
         fresh = self.client.post(f"/api/bank-statements/{preview['id']}/reprocess/preview",
                                  json={'fee_category_id': self.cat}, headers=self.h)
         self.assertEqual(fresh.status_code, 200, fresh.text)
@@ -75,7 +75,7 @@ class PartialBankFactTests(AutoBankIntegrationTests):
 
     def test_generic_expense_and_transfer_cannot_spend_unposted_debit_hold(self):
         _, preview = self.partial_statement()
-        self.assertEqual(self.confirmed(preview, self.cat).status_code, 200)
+        self.assertEqual(self.payment_confirmed(preview, self.cat).status_code, 200)
         self.budget('2000000', mode='hard')
         before = self.reports()
         expense = self.ledger('999550', 'out', reference='SYN-BLOCK-HELD')

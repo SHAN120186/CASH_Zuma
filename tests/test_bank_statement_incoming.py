@@ -10,6 +10,7 @@ from app.bank_statement_models import BankStatementBatch, BankStatementLine
 from app.cash_report import report
 from app.db import Account, Category, Ledger, Receipt, User, engine, unit
 from app.services import account_balance
+from app.security import scope_user
 
 
 class IncomingTests(SiteTests):
@@ -73,9 +74,11 @@ class IncomingTests(SiteTests):
             self.assertEqual(process_incoming(s,batch,lines,account,user,cat.id)['auto_income_posted'],1)
 
     def test_bank_payer_cannot_post_without_reviewed_decision(self):
+        self.stage_user('check')
         with unit(True) as s:
             batch,lines,account,user,cat=self.prepared(s)
-            user._permissions=frozenset({'ledger','pay_bank'})
+            user=s.scalar(select(User).where(User.username=='checker'))
+            scope_user(user,'accountant')
             self.assertEqual(classify_incoming(s,batch,lines,account,user,cat.id)[lines[0].id]['status'],'income_candidate')
             self.assertEqual(process_incoming(s,batch,lines,account,user,cat.id)['review'],1)
             self.assertIsNone(s.scalar(select(Ledger.id)))

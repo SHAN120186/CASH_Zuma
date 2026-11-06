@@ -39,7 +39,8 @@ class SiteTests(unittest.TestCase):
         Base.metadata.drop_all(engine);initialize()
         with unit(True) as s:
             admin=User(username='admin',name='Test Admin',role='admin',password_hash=HASH);s.add(admin);s.flush()
-            # Администратор холдинга работает с финансами только по отдельному назначению в компании.
+            # Legacy finance assignments must never grant the holding admin
+            # workflow checks, approvals or payments; CRUD/oversight remains.
             for c in s.scalars(select(Company).where(Company.code!='UNASSIGNED')):s.add(CompanyUser(company_id=c.id,user_id=admin.id,role='finance'))
             # Прежние проверки написаны для маршрута «директор утверждает всё»;
             # политики статей и их первоначальные пороги проверяются отдельными тестами.
@@ -647,7 +648,7 @@ class SiteTests(unittest.TestCase):
         b=lambda:next(b for b in self.client.get('/api/budgets').json() if b['category_id']==self.cat)
         self.assertEqual(b()['reserved'],'600.00')
         card=self.row(rid)['budget_card'];self.assertEqual((card['limit'],card['after'],card['mode']),('1000.00','400.00','hard'))
-        response=self.post(f'/api/requests/{rid}/decision',{'action':'return','note':'Нужно уточнить условия оплаты'})
+        response=self.post(f'/api/requests/{rid}/decision',{'action':'return','note':'Нужно уточнить условия оплаты'},*self.stage_user('finance'))
         self.assertEqual(response.status_code,200,response.text);self.assertEqual(response.json()['status'],'returned');self.assertEqual(b()['reserved'],'0.00')
         self.assertEqual(self.post(f'/api/requests/{rid}/decision',{'action':'submit'}).status_code,200)
         self.assertEqual(self.approve(rid).status_code,200);self.assertEqual(b()['reserved'],'600.00')
@@ -766,7 +767,7 @@ class SiteTests(unittest.TestCase):
     def test_50_missing_limit_and_edit_reset(self):
         r=self.request('1').json();first=self.finance_approve(r['id']).json()
         self.assertEqual((first['status'],first['approval_stage']),('pending','director'))
-        ret=self.post(f"/api/requests/{r['id']}/decision",{'action':'return','note':'Возвращаем на уточнение'})
+        ret=self.post(f"/api/requests/{r['id']}/decision",{'action':'return','note':'Возвращаем на уточнение'},*self.stage_user('finance'))
         self.assertEqual(ret.status_code,200,ret.text)
         self.assertIsNone(ret.json()['finance_approved_by']);self.assertIsNone(ret.json()['checked_by'])
         self.assertEqual(self.post(f"/api/requests/{r['id']}/decision",{'action':'submit'}).status_code,200)
@@ -2157,7 +2158,8 @@ class SiteTests(unittest.TestCase):
                 response=cl.get('/api/bootstrap',headers=hh)
                 self.assertEqual(response.status_code,200,response.text)
                 me=response.json()['user']
-                self.assertTrue({'write','request','approve','budget','pay_bank','pay_cash','audit'}<=set(me['permissions']))
+                self.assertTrue({'write','request','request_edit','request_delete','budget','audit','catalog','users'}<=set(me['permissions']))
+                self.assertFalse({'approve','request_check','pay_bank','pay_cash'}&set(me['permissions']))
             self.assertEqual(self.post('/api/accounts',{'name':'Full admin','kind':'bank','currency':'UZS','opening':'0','opening_date':self.date},cl,h).status_code,200)
             self.assertEqual(self.post('/api/company-users',{'username':'admin2','role':'finance'},cl,h).status_code,409)
         finally:cl.close()
@@ -2383,7 +2385,7 @@ class SiteTests(unittest.TestCase):
         # Отправленная заявка идёт по снимку: директор не нужен, хотя статья уже «всегда».
         self.assertEqual(self.after_finance(small)['status'],'approved')
         # Возврат и повторная отправка делают новый снимок.
-        self.assertEqual(self.post(f'/api/requests/{big}/decision',{'action':'return','note':'Уточните назначение платежа'}).status_code,200)
+        self.assertEqual(self.post(f'/api/requests/{big}/decision',{'action':'return','note':'Уточните назначение платежа'},*self.stage_user('finance')).status_code,200)
         self.assertEqual(self.post(f'/api/requests/{big}/decision',{'action':'submit'}).status_code,200)
         self.assertEqual(self.row(big)['route']['policy'],'always');self.assertEqual(self.after_finance(big)['approval_stage'],'director')
         # И наоборот: заявка, отправленная при «всегда», требует директора после смягчения политики.
@@ -2503,7 +2505,9 @@ class SiteTests(unittest.TestCase):
 
     def test_122_only_return_and_close_remain_and_both_need_a_comment(self):
         rid=self.request('600').json()['id']
-        decide=lambda action,note='',client=None:self.post(f'/api/requests/{rid}/decision',{'action':action,'note':note},*(client or ()))
+        finance=self.stage_user('finance')
+        # Company finance returns; the unchanged default client is this request's author and may close it.
+        decide=lambda action,note='',client=None:self.post(f'/api/requests/{rid}/decision',{'action':action,'note':note},*(client or (finance if action=='return' else ())))
         for action in ('reject','cancel','stop'):self.assertEqual(decide(action,'Причина длиннее десяти').status_code,422,action)
         self.assertEqual(decide('return').status_code,422)
         self.assertEqual(decide('return','Уточните реквизиты').status_code,200);self.assertEqual(self.row(rid)['status'],'returned')
@@ -2654,7 +2658,7 @@ class SiteTests(unittest.TestCase):
     def test_127_checkers_of_earlier_rounds_can_pay(self):
         first=self.stage_user('check');second=self.make_user('accountant','checker2')
         rid=self.request('600').json()['id'];self.assertEqual(self.check(rid).status_code,200)
-        self.assertEqual(self.post(f'/api/requests/{rid}/decision',{'action':'return','note':'Уточните реквизиты получателя'}).status_code,200)
+        self.assertEqual(self.post(f'/api/requests/{rid}/decision',{'action':'return','note':'Уточните реквизиты получателя'},*self.stage_user('finance')).status_code,200)
         self.assertEqual(self.post(f'/api/requests/{rid}/decision',{'action':'submit'}).status_code,200)
         self.assertEqual(self.post(f'/api/requests/{rid}/decision',{'action':'check'},*second).status_code,200)
         self.assertEqual(self.approve(rid).status_code,200)

@@ -41,6 +41,33 @@ async function fixture(t,handle){
 const posted=calls=>calls.filter(call=>call.method==='POST'&&call.url==='/api/ledger');
 const visibleErrors=view=>all(view.container,node=>node.tag==='p'&&String(node.props.class||'').split(' ').includes('error')).map(text);
 
+test('payment list follows the server capability for the checking bank accountant and rejects absent capabilities',async t=>{
+ const {view}=await fixture(t,async()=>reply({items:[],total:0}));
+ view.state.modal=null;
+ const checkedBank={...request,checked_by:user.id,actions:['pay']};
+ assert.equal(view.state.canPayRequest(checkedBank),true,'checking the bank request does not contradict an authoritative pay capability');
+ view.state.rows=[checkedBank];view.state.listTotal=1;await settle();
+ assert.ok(all(view.container,node=>node.tag==='button'&&text(node)==='Факт оплаты').length);
+ for(const forbidden of [
+  {...checkedBank,account_kind:'cash',channel:'cash',actions:[]},
+  {...checkedBank,creator_id:user.id,actions:[]},
+  {...checkedBank,actions:[]},
+  {...checkedBank,status:'paid'}
+ ])assert.equal(view.state.canPayRequest(forbidden),false);
+ view.state.user={...user,role:'admin',permissions:['view','write','ledger']};
+ view.state.rows=[{...checkedBank,actions:['edit','delete']}];await settle();
+ assert.equal(all(view.container,node=>node.tag==='button'&&text(node)==='Факт оплаты').length,0,'administrator data actions are not payment capabilities');
+});
+
+test('user administration help never offers approval or payment through an admin assignment or delegation',async t=>{
+ const {view}=await fixture(t,async()=>reply({items:[],total:0}));view.state.modal=null;view.state.page='users';await settle();
+ const help=view.state.helpSections.map(section=>section.join(' ')).join(' ');
+ assert.match(help,/управляет данными, пользователями и доступами/);
+ assert.match(help,/Он не проверяет и не согласует заявки/);
+ assert.match(help,/Назначение и ВрИО не разрешают администратору холдинга проверку, согласование и оплату заявок/);
+ assert.doesNotMatch(help,/финансовые действия — только по отдельному назначению|или администратора холдинга/);
+});
+
 test('an accepted batch clears every stale child pay action even when both refresh reads fail',async t=>{
  const {view,calls}=await fixture(t,async()=>denied(503,'Synthetic refresh unavailable'));
  view.state.modal=null;view.state.rows=[{...request},{...request,id:42,number:'CF-00042'}];view.state.listTotal=2;
