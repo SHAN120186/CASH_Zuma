@@ -1,4 +1,52 @@
 export default {
+  'Шаг {step} из 4 · {actor}': '4 bosqichdan {step}-si · {actor}',
+  'Проверка состояния': 'Holatni tekshirish',
+  'Состояние уточняется': 'Holat aniqlanmoqda',
+  'Проверить результат операции': 'Operatsiya natijasini tekshirish',
+  'Сначала обновите состояние заявки. Повторно подтверждать денежный факт пока не нужно.':
+    'Avval ariza holatini yangilang. Pul harakati faktini hozircha qayta tasdiqlash kerak emas.',
+  'Выдача наличных завершена': 'Naqd pul berish yakunlandi',
+  'Оплата заявки подтверждена.': 'Ariza toʻlovi tasdiqlangan.',
+  'Автор заявки': 'Ariza muallifi',
+  'Подготовка и согласование': 'Tayyorlash va kelishish',
+  'Автор отправляет заявку; бухгалтер проверяет реквизиты, затем проходят нужные согласования.':
+    'Muallif arizani yuboradi; buxgalter rekvizitlarni tekshiradi, soʻng kerakli kelishuvlardan oʻtiladi.',
+  'После утверждения расчётный бухгалтер фиксирует списание банка.':
+    'Tasdiqlangach, hisob-kitob buxgalteri bankdan pul yechilganini qayd etadi.',
+  'Согласование заявки': 'Arizani kelishish',
+  'Согласующие заявки': 'Arizani kelishuvchi xodimlar',
+  'Проверьте реквизиты и вложения. Решение укажите внизу карточки заявки.':
+    'Rekvizitlar va biriktirilgan hujjatlarni tekshiring. Qarorni ariza kartasining pastki qismida kiriting.',
+  'Финансовый директор проверяет бюджет и дату заявки.': 'Moliyaviy direktor ariza budjeti va sanasini tekshiradi.',
+  'Директор подтверждает заявку по сохранённому маршруту согласования.': 'Direktor arizani saqlangan kelishuv jarayoni boʻyicha tasdiqlaydi.',
+  'Заявка проходит согласование. Денежные этапы начнутся после утверждения.':
+    'Ariza kelishuvdan oʻtmoqda. Pul harakati bosqichlari tasdiqlangandan keyin boshlanadi.',
+  'Списание денег из банка': 'Bankdan pul yechish',
+  'Расчётный бухгалтер фиксирует уже выполненное списание банка вместе с комиссией.':
+    'Hisob-kitob buxgalteri bankdan amalda yechilgan pulni komissiya bilan birga qayd etadi.',
+  'Далее кассир подтверждает получение наличных в кассу.': 'Keyin kassir naqd pul kassaga olinganini tasdiqlaydi.',
+  'Получение наличных в кассу': 'Naqd pulni kassaga olish',
+  'Списание банка учтено. Подтвердите фактическое получение наличных в кассу.':
+    'Bankdan pul yechish hisobga olingan. Naqd pul kassaga amalda olinganini tasdiqlang.',
+  'Списание банка учтено. Передайте этот этап кассиру: он подтверждает фактическое получение наличных.':
+    'Bankdan pul yechish hisobga olingan. Bu bosqichni kassirga topshiring: u naqd pul amalda olinganini tasdiqlaydi.',
+  'После приёма кассир отдельно подтверждает выдачу денег получателю.':
+    'Qabul qilgach, kassir pul oluvchiga berilganini alohida tasdiqlaydi.',
+  'Выдача денег получателю': 'Pulni oluvchiga berish',
+  'Кассир проводит и отслеживает выдачу в блоке «Оплата нескольких заявок» ниже.':
+    'Kassir pastdagi «Bir nechta arizani toʻlash» boʻlimida pul berishni qayd etadi va kuzatadi.',
+  'Кассир фиксирует фактическую выдачу получателю кнопкой «Факт оплаты» внизу карточки.':
+    'Kassir oluvchiga pul amalda berilganini kartaning pastidagi «Toʻlov fakti» tugmasi orqali qayd etadi.',
+  'Принять наличные в кассу': 'Naqd pulni kassaga qabul qilish',
+  'Дата списания банка': 'Bankdan pul yechilgan sana',
+  'Дата получения в кассу': 'Kassaga olingan sana',
+  'Номер банковского документа': 'Bank hujjati raqami',
+  'Номер приходного кассового документа': 'Kassa kirim hujjati raqami',
+  'Комментарий (необязательно)': 'Izoh (ixtiyoriy)',
+  'Проверено списание банка: {gross} {currency}, комиссия {fee}, наличные {net}.':
+    'Bankdan yechish tekshirildi: {gross} {currency}, komissiya {fee}, naqd pul {net}.',
+  'Проверено получение в кассу: {net} {currency}.': 'Kassaga olish tekshirildi: {net} {currency}.',
+  'Подтвердить списание банка': 'Bankdan pul yechilganini tasdiqlash',
   'Документ ещё не согласован.': 'Hujjat hali tasdiqlanmagan.',
   'Фин. директор · автор заявки': 'Moliyaviy direktor · ariza muallifi',
   'Маршрут: проверка бухгалтера → директор → оплата.': 'Jarayon: buxgalter tekshiruvi → direktor → to‘lov.',
