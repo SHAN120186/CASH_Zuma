@@ -150,6 +150,26 @@ def accounted_line_ids(s, lines, account):
     return result
 
 
+def read_pending_bank_debit_holds(s, accounts, upto=None, *, marker_counts=None):
+    """Skip empty marker lookups in one read response, without caching money.
+
+    Counts must come from this session's selected company, independently of any
+    role-based presentation filtering. Marked accounts retain the full scalar
+    reconciliation checks; payment/write callers continue using that helper.
+    """
+    accounts = list(accounts)
+    company_id = s.info.get('company_id')
+    if company_id is None:
+        return {a.id: pending_bank_debit_hold(s, a, upto) for a in accounts}
+    if any(a.company_id != company_id for a in accounts):
+        raise HTTPException(404, 'Счёт не найден в выбранной компании.')
+    if not accounts:
+        return {}
+    counts = unreconciled_account_counts(s) if marker_counts is None else marker_counts
+    return {a.id: pending_bank_debit_hold(s, a, upto) if counts.get(a.id, 0) else 0
+            for a in accounts}
+
+
 def pending_bank_debit_hold(s, account, upto=None):
     """Minor-unit hold for unaccounted bank debits, never credit pending income.
 
