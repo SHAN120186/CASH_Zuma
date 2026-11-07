@@ -1,19 +1,20 @@
 <script setup>
 import {ref,shallowRef,computed,onMounted,onUnmounted,nextTick,watch} from 'vue';
 import {lazyPage} from './lazyPage.js';
-const CashFlowReport = lazyPage(() => import('./CashFlowReport.vue'));
-const ImportedCashFlow = lazyPage(() => import('./ImportedCashFlow.vue'));
+const lazySection = loader => lazyPage(loader, {reload: refreshVersion});
+const CashFlowReport = lazySection(() => import('./CashFlowReport.vue'));
+const ImportedCashFlow = lazySection(() => import('./ImportedCashFlow.vue'));
 import DepartmentsPage from './DepartmentsPage.vue';
 import CounterpartiesPage from './CounterpartiesPage.vue';
 import BudgetImport from './BudgetImport.vue';
 import MoneyInput from './MoneyInput.vue';
-const ReportArchive = lazyPage(() => import('./ReportArchive.vue'));
-const FinancialStatements = lazyPage(() => import('./FinancialStatements.vue'));
-const IfrsRating = lazyPage(() => import('./IfrsRating.vue'));
+const ReportArchive = lazySection(() => import('./ReportArchive.vue'));
+const FinancialStatements = lazySection(() => import('./FinancialStatements.vue'));
+const IfrsRating = lazySection(() => import('./IfrsRating.vue'));
 import ReportLinks from './ReportLinks.vue';
 import {normalizeReportSelection} from './reportContext.js';
-const BusinessProjects = lazyPage(() => import('./BusinessProjects.vue'));
-const AuditHistory = lazyPage(() => import('./AuditHistory.vue'));
+const BusinessProjects = lazySection(() => import('./BusinessProjects.vue'));
+const AuditHistory = lazySection(() => import('./AuditHistory.vue'));
 import PeriodFilter from './PeriodFilter.vue';
 import AppIcon from './AppIcon.vue';
 import LanguageSwitch from './LanguageSwitch.vue';
@@ -27,7 +28,7 @@ import OverviewPage from './overview/OverviewPage.vue';
 import {canOpenOverview,canSeeFullOverview} from './overview/rights.js';
 import BankStatements from './BankStatements.vue';
 import BankStatementDaily from './overview/BankStatementDaily.vue';
-const AdminCenter = lazyPage(() => import('./admin/AdminCenter.vue'));
+const AdminCenter = lazySection(() => import('./admin/AdminCenter.vue'));
 import {groupCompanyInfo} from './admin/groupRegistration.js';
 import {loadRecentLogins,rememberLogin,matchingLogins,offerPasswordSave} from './loginPreferences.js';
 import {reportDateForYear,validReportDate} from './cashflow/planView.js';
@@ -46,7 +47,11 @@ async function checkRelease(){
  if(document.hidden)return;
  try{const response=await fetch('/version.json',{cache:'no-store'});if(!response.ok)return;const next=await response.json();if(typeof next.version==='string')availableRelease.value=next.version!==release.version?next:null}catch{}
 }
-function refreshVersion(){if(modal.value||editor.value||cardId.value){flash(N_('Сохраните или закройте текущую форму перед обновлением.'));return}location.reload()}
+function refreshVersion(){
+ if(busy.value||saving.value||pendingCalls.size){flash(N_('Дождитесь завершения текущей операции перед обновлением.'));return}
+ if(modal.value||documents.value||editor.value||cardId.value||reportEditing.value){flash(N_('Сохраните или закройте текущую форму перед обновлением.'));return}
+ location.reload();
+}
 onMounted(()=>{checkRelease();releaseTimer=setInterval(checkRelease,60000)});
 onUnmounted(()=>clearInterval(releaseTimer));
 let requestArchiveTimer;

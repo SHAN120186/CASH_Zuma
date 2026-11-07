@@ -1,7 +1,8 @@
 {
-  "version": "2.35.21",
+  "version": "2.35.22",
   "date": "2026-11-07",
   "changes": [
+    "При ошибке загрузки раздела после обновления сайта добавлена явная кнопка «Обновить страницу». Повтор загрузки сохранён. Открытые формы, редактирование отчётов и выполняющиеся операции защищены от перезагрузки; автоматического обновления страницы нет.",
     "Ускорен журнал операций: связанные счета, статьи и признаки сторнирования читаются только для текущей страницы. Поиск, порядок, количество строк, права, удалённые записи и защита денежных операций сохранены.",
     "Устранены повторные запросы банковских удержаний для счетов без незавершённой сверки. Данные читаются в пределах выбранной компании; скрытые показатели отдела продаж не влияют на расчёт. Проверки удержаний по спорным выпискам и правила оплаты сохранены.",
     "Ускорена загрузка разделов: тяжёлые страницы загружают свой код при открытии, с состоянием ожидания и повтором после ошибки. Остатки банков и обзора рассчитываются одним пакетным чтением вместо повторного просмотра операций для каждого счёта. Права, финансовые проверки и порядок оплаты сохранены.",
@@ -122,6 +123,7 @@
     "Длинные названия файлов и кнопки выбора шаблона переносятся на узком экране. В ТЭО дата архива отдельно обозначена и не подменяет начало финансового прогноза."
   ],
   "changes_uz": [
+    "Sayt yangilangandan keyin bo‘limni yuklash xatosida «Sahifani yangilash» tugmasi qo‘shildi. Qayta urinish saqlangan. Ochiq shakllar, hisobotni tahrirlash va bajarilayotgan amallar qayta yuklashdan himoyalangan; avtomatik qayta yuklash yo‘q.",
     "Operatsiyalar jurnali tezlashtirildi: bog‘liq hisoblar, moddalar va storno belgilari faqat joriy sahifa uchun o‘qiladi. Qidiruv, tartib, qatorlar soni, huquqlar, o‘chirilgan yozuvlar va pul operatsiyalari himoyasi saqlangan.",
     "Tugallanmagan solishtirish bo‘lmagan hisoblar uchun bank ushlanmalarining takroriy so‘rovlari olib tashlandi. Ma’lumotlar tanlangan kompaniya doirasida o‘qiladi; savdo bo‘limiga yashirilgan ko‘rsatkichlar hisob-kitobga ta’sir qilmaydi. Bahsli ko‘chirmalar tekshiruvlari va to‘lov qoidalari saqlangan.",
     "Bo‘limlar tezroq yuklanadi: og‘ir sahifalar kodi ochilganda olinadi, kutish va xatodan keyin qayta urinish ko‘rsatiladi. Bank va bosh sahifa qoldiqlari har bir hisob uchun takroriy o‘qish o‘rniga bitta paketli o‘qishda hisoblanadi. Huquqlar, moliyaviy tekshiruvlar va to‘lov tartibi saqlangan.",
