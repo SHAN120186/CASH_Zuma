@@ -252,7 +252,12 @@ class FutureReservationTests(unittest.TestCase):
         rid=self.approved_request()
         r=self.decision('author',rid,'close')
         self.assertEqual(r.status_code,200,r.text)
-        self.assertEqual(self.row(rid)['status'],'cancelled')
+        # Current close permanently removes an unpaid request, rather than
+        # retaining the legacy cancelled row. Its reservation must still release.
+        closed=self.clients['finance'].get(f'/api/requests/{rid}',headers=self.headers['finance'])
+        self.assertEqual(closed.status_code,404,closed.text)
+        with unit() as s:self.assertIsNone(s.get(PaymentRequest,rid))
+        self.assertEqual(self.funds()['reserved'],0)
         r=self.ledger('out','200')
         self.assertEqual(r.status_code,200,r.text)
 
