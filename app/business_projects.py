@@ -22,6 +22,7 @@ from fastapi import APIRouter, HTTPException, Path, Query, Request
 from fastapi.responses import Response
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 from sqlalchemy import func, or_, select
+from sqlalchemy.orm import defer
 
 from .section_access import can_edit_section
 from .db import (BusinessGeneration, BusinessProject, BusinessSourceFile, ReportArchive,
@@ -45,6 +46,34 @@ SOURCE_MIMES = {
     '.png': 'image/png', '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg',
 }
 GENERATOR_VERSION = '1.1'
+FINANCIAL_EXCEL_DISABLED = ('Импорт финансовых моделей Excel и пересчёт Excel отключены. '
+                            'Сохранённые файлы и отчёты доступны для скачивания; используйте ручной проект.')
+FINANCIAL_EXCEL_EXTENSIONS = {'.xlsx', '.xltx', '.xls', '.xlsm', '.xlsb'}
+
+
+def reject_financial_excel(filename):
+    if PurePosixPath(filename).suffix.lower() in FINANCIAL_EXCEL_EXTENSIONS:
+        raise HTTPException(410, FINANCIAL_EXCEL_DISABLED)
+
+
+def has_financial_excel(records):
+    """Inspect file names only, never open a financial workbook."""
+    for record in records:
+        if PurePosixPath(record.filename).suffix.lower() in FINANCIAL_EXCEL_EXTENSIONS:
+            return True
+        if record.filename.lower().endswith('.zip'):
+            checked_zip(record.content)
+            with ZipFile(io.BytesIO(record.content)) as archive:
+                if any(PurePosixPath(item.filename).suffix.lower() in FINANCIAL_EXCEL_EXTENSIONS
+                       for item in archive.infolist() if not item.is_dir()):
+                    return True
+    return False
+
+
+def require_manual_or_non_excel(extraction, records):
+    if extraction.get('native') or extraction.get('template_selected') or (
+            project_mode(extraction) != 'manual' and has_financial_excel(records)):
+        raise HTTPException(410, FINANCIAL_EXCEL_DISABLED)
 
 
 def dump(value):
@@ -147,9 +176,11 @@ def revision_ok(project, revision, expected_updated_at=None):
         raise HTTPException(409, 'Проект изменён, удалён или восстановлен во время расчёта. Обновите папку проекта.')
 
 
-def sources(s, project_id):
-    return list(s.scalars(select(BusinessSourceFile).where(BusinessSourceFile.project_id == project_id)
-                         .order_by(BusinessSourceFile.relative_path)))
+def sources(s, project_id, include_content=True):
+    query = select(BusinessSourceFile).where(BusinessSourceFile.project_id == project_id)
+    if not include_content:
+        query = query.options(defer(BusinessSourceFile.content))
+    return list(s.scalars(query.order_by(BusinessSourceFile.relative_path)))
 
 
 def manifest(records):
@@ -223,13 +254,16 @@ def detail(s, project, user):
     # Raw input documents are restricted to their author/importer. Published
     # financial results remain available through existing report permissions.
     editable = result['can_edit'] or result['can_restore']
-    records = sources(s, project.id)
+    records = sources(s, project.id, include_content=False)
     result['files'] = [{**m, 'id': f.id, 'uploaded_at': timestamp(f.uploaded_at),
                         **({'download_url': f'/api/business-projects/{project.id}/sources/{f.id}/download?company_id={project.company_id}'}
                            if editable and 'download' in perms_of(user) and f.company_id == project.company_id else {})}
                        for f, m in zip(records, manifest(records))]
     result['inputs'] = json.loads(project.inputs_json) if editable else {}
     result['extraction'] = json.loads(project.extraction_json) if editable else {}
+    result['capabilities'] = {'financial_excel_import': False, 'excel_recalculation': False,
+                              'manual_generation': result['mode'] == 'manual' and not bool(
+                                  result['extraction'].get('native') or result['extraction'].get('template_selected'))}
     if editable:
         from .native_projects import project_native_model
         result['native_model'] = project_native_model(records, result['extraction'])
@@ -327,10 +361,11 @@ def restore_project(request: Request, id: int = Path(gt=0), company_id: int = Qu
 
 @router.post('/api/business-projects')
 def create_project(data: ProjectIn, request: Request):
-    if data.template_id is not None and data.mode == 'manual':
-        raise HTTPException(422, 'Для выбранного оригинального шаблона используйте проект с файлами.')
     with unit(True) as s:
         user, company = authorize(s, request, 'import', company_id=data.company_id)
+        if data.template_id is not None:
+            from .business_templates import use_template
+            use_template(s, BusinessProject(company_id=company.id), data.template_id, user)
         project = s.scalar(select(BusinessProject).where(BusinessProject.request_key == str(data.request_key),
                                                         BusinessProject.company_id == company.id))
         if project and (project.title != data.title or project.created_by != user.id or
@@ -408,7 +443,7 @@ def safe_path(raw):
     return value, name
 
 
-def checked_zip(raw, office=None):
+def checked_zip(raw, office=None, reject_excel=False):
     try:
         with ZipFile(io.BytesIO(raw)) as archive:
             items = archive.infolist()
@@ -420,6 +455,8 @@ def checked_zip(raw, office=None):
                 raise ValueError('duplicate')
             for item in items:
                 name = item.filename.rstrip('/')
+                if reject_excel and not office and not item.is_dir():
+                    reject_financial_excel(name)
                 if (item.flag_bits & 1 or item.file_size > (30*1024*1024 if office else MAX_FILE) or
                         '\\' in name or name.startswith('/') or ':' in name or
                         any(p in ('', '.', '..') for p in name.split('/')) or
@@ -433,6 +470,8 @@ def checked_zip(raw, office=None):
             if office:
                 if '[Content_Types].xml' not in names or office not in names or any(n.lower().endswith('vbaproject.bin') for n in names):
                     raise ValueError('invalid Office')
+    except HTTPException:
+        raise
     except Exception as exc:
         # Office/ZIP errors include forbidden XML entities and CRC/decompression
         # failures. Do not expose parser details or paths from an uploaded file.
@@ -440,6 +479,7 @@ def checked_zip(raw, office=None):
 
 
 def validate_source(raw, filename):
+    reject_financial_excel(filename)
     if not raw:
         raise HTTPException(422, 'Пустой файл.')
     ext = PurePosixPath(filename).suffix.lower()
@@ -448,7 +488,7 @@ def validate_source(raw, filename):
     elif ext == '.docx':
         checked_zip(raw, 'word/document.xml')
     elif ext == '.zip':
-        checked_zip(raw)
+        checked_zip(raw, reject_excel=True)
     elif ext == '.png' and not raw.startswith(b'\x89PNG\r\n\x1a\n'):
         raise HTTPException(422, 'Содержимое не соответствует PNG.')
     elif ext in ('.jpg', '.jpeg') and not raw.startswith(b'\xff\xd8\xff'):
@@ -479,6 +519,9 @@ async def put_source(request: Request, id: int = Path(gt=0), company_id: int = Q
         project = get(s, BusinessProject, id)
         own(project, user)
         active(project)
+        if PurePosixPath(filename).suffix.lower() in FINANCIAL_EXCEL_EXTENSIONS:
+            revision_ok(project, expected_revision)
+        reject_financial_excel(filename)
         updated_at = project.updated_at
     raw = bytearray()
     async for chunk in request.stream():
@@ -536,7 +579,7 @@ def expanded_sources(records):
             checked_zip(record.content)
             with ZipFile(io.BytesIO(record.content)) as archive:
                 for part in archive.infolist():
-                    if part.is_dir():
+                    if part.is_dir() or PurePosixPath(part.filename).suffix.lower() in FINANCIAL_EXCEL_EXTENSIONS:
                         continue
                     total += part.file_size
                     if total > MAX_FOLDER or len(items) >= MAX_FILES:
@@ -546,6 +589,8 @@ def expanded_sources(records):
                     path = record.relative_path + '/' + part.filename
                     items.append({'name': path, 'path': path, 'content': raw})
         else:
+            if PurePosixPath(record.filename).suffix.lower() in FINANCIAL_EXCEL_EXTENSIONS:
+                continue
             total += record.size
             if total > MAX_FOLDER or len(items) >= MAX_FILES:
                 raise HTTPException(413, 'После распаковки в папке больше 100 файлов или 100 МБ.')
@@ -559,8 +604,9 @@ def snapshot(request, id, company_id, revision, allow_manual=False):
         project = get(s, BusinessProject, id)
         own(project, user)
         revision_ok(project, revision)
-        records = sources(s, id)
+        records = sources(s, id, include_content=False)
         extraction = json.loads(project.extraction_json)
+        require_manual_or_non_excel(extraction, records)
         if not records and not (allow_manual and project_mode(extraction) == 'manual'):
             raise HTTPException(422, 'Сначала загрузите исходные файлы в папку проекта.')
         return (expanded_sources(records), manifest(records), extraction,
@@ -575,14 +621,9 @@ def save_inputs(data: DraftIn, request: Request, id: int = Path(gt=0), company_i
         project = get(s, BusinessProject, id)
         own(project, user)
         active(project)
-        records, updated_at = sources(s, id), project.updated_at
-        files = expanded_sources(records)
+        records, updated_at = sources(s, id, include_content=False), project.updated_at
         stored_extraction = json.loads(project.extraction_json)
-    from .native_projects import native_candidate, require_template_candidate
-    candidate = native_candidate(files)
-    require_template_candidate(candidate, stored_extraction)
-    if candidate:
-        raise HTTPException(409, 'В папке есть оригинальная финансовая модель. Используйте её параметры и пересчёт, чтобы сохранить исходную методику.')
+        require_manual_or_non_excel(stored_extraction, records)
     with unit(True) as s:
         user, _ = authorize(s, request, 'import', company_id=company_id)
         project = get(s, BusinessProject, id)
@@ -699,28 +740,6 @@ def persist_generation(request, id, company_id, revision, inputs, extraction, so
 def analyse_project(data: AnalyseIn, request: Request, id: int = Path(gt=0), company_id: int = Query(gt=0)):
     files, source_manifest, stored_extraction, title, updated_at = snapshot(request, id, company_id, data.revision, allow_manual=True)
     mode = project_mode(stored_extraction)
-    from .native_projects import native_candidate, require_template_candidate, review_description
-    candidate = native_candidate(files)
-    require_template_candidate(candidate, stored_extraction)
-    if candidate:
-        # Keep the supplied workbook's assumptions and layout. Generic defaults
-        # cannot replace an established financial model merely because its
-        # sources contain similar labels.
-        with unit(True) as s:
-            user, _ = authorize(s, request, 'import', company_id=company_id)
-            project = get(s, BusinessProject, id)
-            own(project, user)
-            revision_ok(project, data.revision, updated_at)
-            profile = {**candidate['profile'], 'input_review': review_description(candidate, files)}
-            extraction = {'native': profile, 'issues': [], 'inputs': {}, 'mode': mode}
-            if stored_extraction.get('template_selected'):
-                extraction['template_selected'] = stored_extraction['template_selected']
-            project.extraction_json = dump(extraction)
-            if mode != 'manual':
-                project.inputs_json = dump({'title': title, **data.overrides})
-            project.status, project.updated_at = 'needs_data', now()
-            project.current_fingerprint = ''
-            return detail(s, project, user)
     from .business_sources import extract_sources
     extraction = manual_extraction(files) if mode == 'manual' else {**extract_sources(files), 'mode': 'files', 'sources_pending': False}
     if mode == 'manual':
@@ -741,11 +760,6 @@ def analyse_project(data: AnalyseIn, request: Request, id: int = Path(gt=0), com
 @router.post('/api/business-projects/{id}/generate')
 def generate_project(data: GenerateIn, request: Request, id: int = Path(gt=0), company_id: int = Query(gt=0)):
     files, source_manifest, extraction, _, updated_at = snapshot(request, id, company_id, data.revision, allow_manual=True)
-    from .native_projects import native_candidate, require_template_candidate
-    candidate = native_candidate(files)
-    require_template_candidate(candidate, extraction)
-    if candidate:
-        raise HTTPException(409, 'В папке есть оригинальная финансовая модель. Используйте «Пересчитать оригинал и проверить цифры», чтобы сохранить её формулы и оформление.')
     if project_mode(extraction) == 'manual':
         # Re-read optional attachments before publication so newly uploaded
         # source warnings cannot be skipped by directly calling generate.

@@ -24,12 +24,10 @@ const rule=row=>{
  if(row.direction==='mapping')return tx('Расхождение ≤ 1 исходной единицы: 10 баллов; иначе 2.');
  return row.bands.map(([limit,score])=>(row.direction==='higher'?'≥ ':'≤ ')+(row.unit==='%'?fmt(limit*100,0)+'%':fmt(limit,2))+' → '+score).join('; ')+'; '+tx('иначе 0');
 };
-async function load(sync=false){
+async function load(){
  const id=++generation,cid=props.company.id;
- error.value='';loading.value=true;syncing.value=sync;
- if(!sync)payload.value=null;
+ error.value='';loading.value=true;payload.value=null;
  try{
-  if(sync)await props.api('/api/ifrs-rating/sync?company_id='+cid,{method:'POST'});
   if(!active||generation!==id||props.company.id!==cid)return;
   const query=new URLSearchParams({company_id:String(cid)});
   if(endMonth.value)query.set('end_month',endMonth.value);
@@ -50,12 +48,11 @@ onUnmounted(()=>{active=false;generation++;});
    <div><p class="rating-eyebrow">{{company.name}}</p><h2>{{tx('Финансовый профиль')}}</h2><p class="muted">{{tx('Управленческая оценка финансов и качества данных')}}</p></div>
    <div class="rating-actions">
     <label v-if="report">{{tx('Период с начала года')}}<select v-model="endMonth" :disabled="loading" @change="load()"><option value="">{{tx('Последний доступный месяц')}}</option><option v-for="m in report.available_months" :key="m" :value="String(m)">{{monthName(m)}} {{report.year}}</option></select></label>
-    <button v-if="payload?.can_sync" class="secondary" :disabled="loading" @click="load(true)">{{tx(syncing?N_('Обновляем из Google Drive…'):N_('Обновить из Google Drive'))}}</button>
    </div>
   </header>
   <p v-if="error" class="error" role="alert">{{tx(error)}} <button type="button" class="secondary" :disabled="loading" @click="load()">{{tx('Повторить')}}</button></p>
-  <p v-if="loading" class="rating-loading" role="status">{{tx(syncing?N_('Обновляем из Google Drive…'):N_('Рассчитываем рейтинг…'))}}</p>
-  <section v-if="payload&&!report&&!loading" class="card rating-empty"><h3>{{tx('Подключите финансовую модель')}}</h3><p>{{tx('Обновите данные из Google Drive, чтобы рассчитать отчёт.')}}</p><a v-if="payload.source_url" :href="payload.source_url" target="_blank" rel="noopener noreferrer">{{tx('Открыть источник')}}</a></section>
+  <p v-if="loading" class="rating-loading" role="status">{{tx('Загружаем сохранённый отчёт…')}}</p>
+  <section v-if="payload&&!report&&!loading" class="card rating-empty"><h3>{{tx('Сохранённого отчёта пока нет.')}}</h3><p>{{tx('Импорт финансовых моделей Excel отключён.')}}</p><a v-if="payload.source_url" :href="payload.source_url" target="_blank" rel="noopener noreferrer">{{tx('Открыть источник')}}</a></section>
   <template v-if="report">
    <p v-if="payload.stale" class="error" role="status">{{tx('Google Drive недоступен. Показана последняя сохранённая версия; данные могут быть устаревшими.')}}</p>
    <div class="rating-source"><span>{{report.period.start}} — {{report.period.end}} · {{report.period.months}} {{tx('мес.')}}</span><span>{{tx('Синхронизация')}}: {{formatDate(payload.binding.synced_at,{dateStyle:'short',timeStyle:'short'})}}</span><a v-if="payload.source_url" :href="payload.source_url" target="_blank" rel="noopener noreferrer">Google Drive ↗</a></div>

@@ -111,7 +111,7 @@ test('manual project starts without files, saves missing values as a draft and e
   };
   const view=mount(component,{canDownload:true,api,company});t.after(view.unmount);await settle();
   await button(view.container,'Новый проект').props.onClick();await settle();
-  assert.equal(view.state.projectMode,'template');await button(view.container,'Создать проект вручную').props.onClick();await settle();
+  assert.equal(view.state.projectMode,'manual');
   assert.equal(view.state.projectMode,'manual');assert.equal(view.state.selected.length,0);
   view.state.header.title='Manual synthetic';
   await button(view.container,'Сохранить и перейти к данным').props.onClick();await settle();
@@ -266,33 +266,9 @@ test('explicit generation submits full canonical inputs, confirmation and curren
   assert.equal(sourceLocation({filename: 'a.xlsx', sheet: 'Input', cell: 'B2'}), 'a.xlsx · лист «Input» · B2');
 });
 
-test('mounted optional original import keeps the 36-month choice and exposes business PDF, one Excel and secondary TEO', async t => {
-  const service = backend(); let generated = 0;
-  const archive = id => ({id, company_id: 2, status: 'ready', formats: ['pdf', 'xlsx']});
-  const api = async (url, options) => {
-    if (!options) return {items: [], can_upload: true};
-    const response = await service.api(url, options);
-    return url.includes('/analyse') ? {...response, current_generation_id:1, inputs: completeInputs(), validation: [], extraction: {}, generations: [{id: 1, revision: response.revision, business_archive: archive(10), teo_archive: archive(11), metrics: {npv: '12.3'}}]} : response;
-  };
-  const view = mount(component, {canDownload:true, api, company, onGenerated: () => generated++}); t.after(view.unmount);
-  await settle(); await button(view.container, 'Новый проект').props.onClick(); await settle();
-  await button(view.container,'Создать проект вручную').props.onClick();await settle();
-  assert.equal(view.state.projectMode, 'manual');
-  await button(view.container, 'Импорт оригинальных Word и Excel').props.onClick(); await settle();
-  assert.equal(view.state.header.months, 36);
-  assert.equal(view.state.header.currency, '');
-  assert.ok(find(view.container, node => node.tag === 'input' && 'webkitdirectory' in node.props));
-  view.state.header.start = '2027-01-01'; view.state.header.title = header.title;
-  view.state.chooseSources({target: {files: [file('a.xlsx')], value: 'selected'}});
-  await view.state.upload(); await settle();
-  assert.equal(generated, 1);
-  const downloads = all(view.container, node => node.tag === 'a' && node.props.href?.includes('/files/'));
-  assert.equal(downloads.length, 3);
-  assert.deepEqual(downloads.map(node => node.props.href), ['/api/report-archives/10/files/pdf?company_id=2', '/api/report-archives/10/files/xlsx?company_id=2', '/api/report-archives/11/files/pdf?company_id=2']);
-  const teo = find(view.container,node=>node.tag==='details'&&node.children.some(child=>child.tag==='summary'&&text(child).includes('Дополнительно')));
-  assert.notEqual(teo.props.open,true);
-  assert.equal(view.state.flowStage,'report');
-  assert.match(text(view.container), /Бизнес-план готов\. Скачайте PDF и Excel/);
+test('manual workspace keeps parameters and rejects financial import: mounted optional original import',async t=>{
+ const calls=[];const view=mount(component,{company,canDownload:true,api:async(url,options)=>{calls.push({url,options});return{items:[],can_upload:true};}});t.after(view.unmount);await settle();view.state.newProject();view.state.header.title='Keep title';await view.state.upload();await settle();
+ assert.equal(view.state.header.months,36);assert.equal(view.state.header.title,'Keep title');assert.equal(all(view.container,n=>n.tag==='input'&&n.props.type==='file').length,0);assert.match(view.state.error,/Импорт финансовых моделей Excel отключён/);assert.equal(calls.filter(c=>c.options?.method).length,0);
 });
 
 test('mounted missing-data response keeps submitted financial values; source ambiguity requires review', async t => {
@@ -355,28 +331,9 @@ test('mounted reports follow the current calculation after restoring older param
   assert.equal(downloads[0].props.href, '/api/report-archives/10/files/pdf?company_id=2');
 });
 
-test('folder title is suggested only from a common selected folder and preflight errors never claim files were uploaded', async t => {
-  assert.equal(folderProjectTitle(prepareSources([file('a.xlsx', 12, 'Sample Folder/a.xlsx'), file('b.pdf', 12, 'Sample Folder/sub/b.pdf')]).files), 'Sample Folder');
-  assert.equal(folderProjectTitle([{relativePath: 'a.xlsx'}]), '');
-  assert.equal(folderProjectTitle([{relativePath: 'One/a.xlsx'}, {relativePath: 'Two/b.pdf'}]), '');
-  const service = backend();
-  const api = async (url, options) => options ? service.api(url, options) : {items: [], can_upload: true};
-  const view = mount(component, {canDownload:true, company, api}); t.after(view.unmount);
-  await settle(); view.state.newProject('files');
-  view.state.chooseSources({target: {files: [file('a.xlsx', 12, 'Sample Folder/a.xlsx')], value: 'selected'}});
-  assert.equal(view.state.header.title, 'Sample Folder');
-  assert.equal(view.state.header.start, '');
-  await view.state.upload(); await settle();
-  assert.equal(service.calls.length, 0);
-  assert.equal(view.state.error, 'Выберите первый месяц прогноза.');
-  assert.doesNotMatch(view.state.error, /файлы.*(?:остаются|сохранены)/i);
-  view.state.header.title = 'Chosen title';
-  view.state.chooseSources({target: {files: [file('b.pdf', 12, 'Other Folder/b.pdf')], value: 'selected'}});
-  assert.equal(view.state.header.title, 'Chosen title');
-  const pending = createBusinessState(); pending.sourceUploadStarted = true;
-  assert.doesNotMatch(uploadFailureMessage(lost(), pending), /файлы.*(?:остаются|сохранены)/i);
-  pending.uploaded.add('source');
-  assert.match(uploadFailureMessage(lost(), pending), /Уже загруженные файлы сохранены/);
+test('manual workspace keeps parameters and rejects financial import: folder title is suggested',async t=>{
+ const calls=[];const view=mount(component,{company,canDownload:true,api:async(url,options)=>{calls.push({url,options});return{items:[],can_upload:true};}});t.after(view.unmount);await settle();view.state.newProject();view.state.header.title='Keep title';await view.state.upload();await settle();
+ assert.equal(view.state.header.months,36);assert.equal(view.state.header.title,'Keep title');assert.equal(all(view.container,n=>n.tag==='input'&&n.props.type==='file').length,0);assert.match(view.state.error,/Импорт финансовых моделей Excel отключён/);assert.equal(calls.filter(c=>c.options?.method).length,0);
 });
 
 test('a forty-product source response keeps nine missing fields first, deduplicates history and collapses document notes', async t => {
@@ -634,18 +591,10 @@ test('opening draft, stale or unavailable reports stays in data and never announ
   }
 });
 
-test('source analysis lands on its actual current report and does not call older or missing archives generated',async t=>{
-  for(const native of [false,true])for(const ready of [false,true]){
-    let project=availableProject(native);project.status='draft';project.current_generation_id=null;project.generations=[];let generated=0;
-    const view=mount(reportsComponent,{canDownload:true,company,onGenerated:()=>generated++,api:async(url,options)=>{
-      if(!options)return url.includes('/41?')?project:{items:[project],can_upload:true};
-      if(options.method==='PUT'){project={...project,revision:7};return project;}
-      assert.match(url,/\/analyse\?/);project=availableProject(native);project.revision=7;project.generations[1].revision=ready?7:6;return project;
-    }});t.after(view.unmount);await settle();await view.state.openProject(project);await settle();
-    view.state.chooseSources({target:{files:[file('reference.txt')],value:'selected'}});await view.state.upload();await settle();assert.equal(view.state.flowStage,ready?'report':'data');assert.equal(generated,ready?1:0);
-    if(ready){assert.equal(visibleReportLinks(view.container).length,2);assert.match(view.state.notice,/Бизнес-план готов\. Скачайте PDF и Excel/);}
-    else{assert.deepEqual(visibleReportLinks(view.container),[]);assert.match(view.state.notice,/Для текущей версии нет доступного комплекта PDF и Excel/);assert.doesNotMatch(view.state.notice,/Бизнес-план готов|сформированы/);}
-  }
+test('disabled source analysis keeps the current saved report without mutation',async t=>{
+ const project=availableProject(true);const calls=[];let generated=0;
+ const view=mount(reportsComponent,{company,canDownload:true,onGenerated:()=>generated++,api:async(url,options)=>{calls.push({url,options});return url.includes('/41?')?project:{items:[project],can_upload:true};}});t.after(view.unmount);await settle();await view.state.openProject(project);await settle();await view.state.upload();
+ assert.equal(generated,0);assert.equal(view.state.current.revision,project.revision);assert.equal(calls.filter(c=>c.options?.method).length,0);assert.equal(visibleReportLinks(view.container).length,2);
 });
 
 test('cached generation with a deleted archive or stale revision never reports complete and explains how to recover files',async t=>{

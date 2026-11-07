@@ -5,14 +5,14 @@ import AppIcon from './AppIcon.vue';
 import OperationProgress from './OperationProgress.vue';
 import {createOperationProgress} from './operationProgress.js';
 import {normalizeReportSelection} from './reportContext.js';
-import {statementUrl,statementFileProblem,statementDeviation,statementNumber,statementStatuses,sourceScopeMatches,aggregateStatementRow,statementScaledNumber,statementScaledDeviation,statementReasonLabels,statementDisplayLabels,cellNumber} from './financialStatements.js';
+import {statementUrl,statementDeviation,statementNumber,statementStatuses,sourceScopeMatches,aggregateStatementRow,statementScaledNumber,statementScaledDeviation,statementReasonLabels,statementDisplayLabels,cellNumber} from './financialStatements.js';
 
 const props=defineProps({api:{type:Function,required:true},company:{type:Object,required:true},
   type:{type:String,default:'pnl'},canImport:{type:Boolean,default:false},canDownload:{type:Boolean,default:false},refresh:{type:Number,default:0},selection:{type:Object,default:null}});
 const emit=defineEmits(['editing','selection-change']);
 const payload=ref(null),selected=ref(''),month=ref(null),loading=ref(false),uploading=ref(false),error=ref('');
 const year=ref(null),per=ref('month'),start=ref(1),end=ref(1),mode=ref('compare'),unit=ref('x'),showMonths=ref(false),collapsed=ref([]);
-const helpOpen=ref(false),helpPanel=ref(null),uploadInput=ref(null),managementHelpPanel=ref(null);
+const helpOpen=ref(false),helpPanel=ref(null),managementHelpPanel=ref(null);
 const revenueBasis=ref('unconfirmed'),savingRevenueBasis=ref(false),revenuePolicyError=ref(''),revenuePolicyMessage=ref('');
 const confirmedRevenueBasis='gross_excluding_vat_before_returns_discounts';
 const helpId=computed(()=>'statement-help-'+props.company.id+'-'+props.type);
@@ -25,7 +25,7 @@ let active=true,requestId=0,lastSelection='';
 const source=computed(()=>payload.value?.source);
 const revenuePolicy=computed(()=>source.value?.revenue_policy || {basis:'unconfirmed',status:'unconfirmed',revision:0});
 const confirmedRevenuePolicy=computed(()=>revenuePolicy.value.status==='confirmed'&&revenuePolicy.value.basis===confirmedRevenueBasis&&source.value?.source_sha256&&revenuePolicy.value.source_sha256===source.value.source_sha256);
-const canConfirmRevenueBasis=computed(()=>props.canImport&&payload.value?.can_confirm_revenue_basis===true&&friendlyProfile.value&&Boolean(source.value?.source_sha256));
+const canConfirmRevenueBasis=computed(()=>false);
 const revenuePolicyChanged=computed(()=>revenueBasis.value!==revenuePolicy.value.basis);
 const report=computed(()=>source.value?.reports?.[props.type]);
 const profileUnrecognized=computed(()=>source.value?.calculation?.reason==='profile_unrecognized'||report.value?.calculation?.reason==='profile_unrecognized');
@@ -191,52 +191,6 @@ async function load(sourceId=selected.value) {
   }catch(e){if(active&&id===requestId&&props.company.id===companyId&&e.name!=='AbortError'){error.value=e.message;progressController.fail(ticket,e);}}
   finally{if(active&&id===requestId&&props.company.id===companyId)loading.value=false;}
 }
-async function upload(event) {
-  const file=event.target.files?.[0];event.target.value='';
-  if(!file || uploading.value || savingRevenueBasis.value || !props.canImport)return;
-  const problem=statementFileProblem(file);if(problem){error.value=problem;return;}
-  const id=++requestId,companyId=props.company.id;
-  uploading.value=true;loading.value=false;error.value='';
-  const ticket=progressController.begin(N_('Читаем исходную книгу и проверяем данные'),2);
-  try{
-    const result=await props.api('/api/financial-statements/upload?company_id='+encodeURIComponent(companyId),{
-      method:'POST',headers:{'Content-Type':'application/octet-stream','X-Filename':encodeURIComponent(file.name)},body:file});
-    if(!active||id!==requestId||props.company.id!==companyId)return;
-    assertScope(result,companyId);
-    const sourceId=result.id ?? result.source_id ?? result.source?.id;
-    if(sourceId==null)throw Error(N_('Сервер не подтвердил сохранение исходной книги. Обновите список источников.'));
-    progressController.advance(ticket,1,N_('Книга сохранена. Получаем результаты проверки'));
-    const value=await props.api(statementUrl(companyId,sourceId));
-    if(!active||id!==requestId||props.company.id!==companyId)return;
-    assertScope(value,companyId);payload.value=value;selected.value=String(value.selected ?? sourceId);resetMonth();publishSelection();
-    progressController.complete(ticket,N_('Проверка исходной книги загружена'));
-  }catch(e){if(active&&id===requestId&&props.company.id===companyId&&e.name!=='AbortError'){error.value=e.message;progressController.fail(ticket,e);}}
-  finally{if(active&&id===requestId&&props.company.id===companyId)uploading.value=false;}
-}
-async function saveRevenuePolicy() {
-  if(!canConfirmRevenueBasis.value||!revenuePolicyChanged.value||savingRevenueBasis.value||loading.value||uploading.value)return;
-  const id=++requestId,companyId=props.company.id,sourceId=source.value.id,sha256=source.value.source_sha256;
-  const basis=revenueBasis.value,revision=revenuePolicy.value.revision;
-  savingRevenueBasis.value=true;revenuePolicyError.value='';revenuePolicyMessage.value='';
-  const ticket=progressController.begin(N_('Сохраняем правило выручки'),2);
-  let saved=false;
-  try{
-    const result=await props.api('/api/financial-statements/'+encodeURIComponent(sourceId)+'/revenue-policy?company_id='+encodeURIComponent(companyId),{
-      method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({basis,expected_revision:revision,source_sha256:sha256})});
-    if(!active||id!==requestId||props.company.id!==companyId)return;
-    assertScope(result,companyId);
-    if(String(result.source_id)!==String(sourceId))throw Error(N_('Источник относится к другой компании. Обновите страницу.'));
-    saved=true;progressController.advance(ticket,1,N_('Правило сохранено. Обновляем расчёт'));
-    const value=await props.api(statementUrl(companyId,sourceId));
-    if(!active||id!==requestId||props.company.id!==companyId)return;
-    assertScope(value,companyId);
-    if(String(value.source?.id)!==String(sourceId)||value.source?.source_sha256!==sha256)throw Error(N_('Источник изменился. Обновите страницу и проверьте выбранную книгу.'));
-    payload.value=value;selected.value=String(sourceId);resetMonth();publishSelection();
-    revenuePolicyMessage.value=N_('Правило выручки сохранено. Отчёт пересчитан из Mapping.');
-    progressController.complete(ticket,N_('Расчёт выручки обновлён'));
-  }catch(e){if(active&&id===requestId&&props.company.id===companyId&&e.name!=='AbortError'){revenuePolicyError.value=saved?N_('Правило сохранено, но отчёт не обновлён. Обновите страницу.'):e.message;progressController.fail(ticket,e);}}
-  finally{if(active&&id===requestId&&props.company.id===companyId)savingRevenueBasis.value=false;}
-}
 watch(()=>[source.value?.id,source.value?.source_sha256,revenuePolicy.value.basis,revenuePolicy.value.revision],()=>{revenueBasis.value=revenuePolicy.value.basis;});
 watch([uploading,savingRevenueBasis],()=>emit('editing',uploading.value||savingRevenueBasis.value));
 watch(()=>props.company.id,()=>{requestId++;selected.value='';month.value=null;payload.value=null;helpOpen.value=false;uploading.value=false;savingRevenueBasis.value=false;revenuePolicyError.value='';revenuePolicyMessage.value='';progressController.reset();load('');});
@@ -305,13 +259,7 @@ onUnmounted(()=>{active=false;requestId++;progressController.reset();emit('editi
           <p v-else class="sub">{{tx('Состав выручки не подтверждён.')}}</p>
           <p v-if="confirmedRevenuePolicy||revenueBasis===confirmedRevenueBasis" class="sub">{{tx('Чистая выручка = выручка 9000 − возвраты 9040 − скидки 9050. Каждое уменьшение учитывается один раз; НДС повторно не вычитается.')}}</p>
           <p class="sub">{{tx('Правило действует только для выбранной компании и этой версии книги.')}}</p>
-          <form v-if="canConfirmRevenueBasis" class="statement-revenue-form" @submit.prevent="saveRevenuePolicy">
-            <label>{{tx('Состав выручки в Mapping')}}<select v-model="revenueBasis" :disabled="savingRevenueBasis||loading||uploading">
-              <option value="unconfirmed">{{tx('Не подтверждён')}}</option>
-              <option :value="confirmedRevenueBasis">{{tx('Без НДС, до возвратов и скидок')}}</option>
-            </select></label>
-            <button type="submit" :disabled="!revenuePolicyChanged||savingRevenueBasis||loading||uploading">{{tx('Сохранить правило выручки')}}</button>
-          </form>
+
           <p v-if="revenuePolicyError" class="error" role="alert">{{tx(revenuePolicyError)}}</p>
           <p v-if="revenuePolicyMessage" class="sub" role="status" aria-live="polite">{{tx(revenuePolicyMessage)}}</p>
         </section>
@@ -323,17 +271,17 @@ onUnmounted(()=>{active=false;requestId++;progressController.reset();emit('editi
           <div class="table-scroll" tabindex="0" role="region" :aria-label="tx('Факт исходной модели для сверки')"><table class="statement-table"><thead><tr><th>{{tx('Показатель')}}</th><th v-for="monthIndex in indices" :key="monthIndex">{{tx(monthNames[monthIndex-1])}}</th></tr></thead><tbody><tr v-for="row in report.source_actual.rows" :key="row.row"><th scope="row">{{tx(row.label)}}</th><td v-for="monthIndex in indices" :key="monthIndex" class="statement-value">{{formatCell(report.rows.find(item=>item.row===row.row)||{kind:'amount'},row.cells.find(item=>Number(item.month)===monthIndex)?.fact)}}</td></tr></tbody></table></div>
         </section>
         <section class="statement-help-section"><h4>{{tx('Данные и обновление')}}</h4>
-      <div class="statement-controls"><label v-if="sourceItems.length">{{tx('Исходная книга')}}<select v-model="selected" :disabled="loading||uploading||savingRevenueBasis" @change="load(selected)"><option v-for="item in sourceItems" :key="item.id" :value="String(item.id)">{{item.filename}} · {{dateLabel(item.created_at)}}</option></select></label><template v-if="canImport"><button type="button" class="secondary statement-upload" :disabled="uploading||loading||savingRevenueBasis" @click="uploadInput?.click()"><AppIcon name="import"/> {{source?tx('Обновить данные'):tx('Загрузить данные')}}</button><input ref="uploadInput" type="file" accept=".xlsx" hidden :disabled="uploading||loading||savingRevenueBasis" :aria-label="source?tx('Обновить данные'):tx('Загрузить данные')" @change="upload"></template></div>
-      <p v-if="source" class="sub">{{tx('Данные уже сохранены. Повторно загружать файл нужно только после появления новых данных.')}}</p>
-      <p v-if="!canImport" class="sub">{{tx('Пользователь с правом импорта должен добавить исходную книгу.')}}</p>
-      <template v-if="source"><p class="sub statement-source">{{source.filename}} · {{tx('Год')}}: {{source.year??tx('Не указан')}} · {{tx('Валюта источника')}}: {{source.currency||tx('Не указана')}} · {{tx('Единицы источника')}}: {{tx(source.unit||'')}} <span v-if="source.unit_status==='unknown'">· {{tx('Нужно подтвердить единицы')}}</span><span v-if="source.reviewed_as_of"> · {{tx('Дата проверки / среза')}}: {{dateLabel(source.reviewed_as_of)}}</span></p><p v-if="source.reviewed_as_of" class="sub">{{tx('Проверка обновляется из сохранённой книги. Для новых операций и месяцев загрузите новую версию источника; бюджет сохранённого снимка не меняется.')}}</p>
+      <div class="statement-controls"><label v-if="sourceItems.length">{{tx('Исходная книга')}}<select v-model="selected" :disabled="loading||uploading||savingRevenueBasis" @change="load(selected)"><option v-for="item in sourceItems" :key="item.id" :value="String(item.id)">{{item.filename}} · {{dateLabel(item.created_at)}}</option></select></label></div>
+      <p v-if="source" class="sub">{{tx('Показан сохранённый отчёт. Импорт финансовых моделей Excel отключён.')}}</p>
+      <p v-if="!source" class="sub">{{tx('Сохранённого отчёта пока нет.')}}</p>
+      <template v-if="source"><p class="sub statement-source">{{source.filename}} · {{tx('Год')}}: {{source.year??tx('Не указан')}} · {{tx('Валюта источника')}}: {{source.currency||tx('Не указана')}} · {{tx('Единицы источника')}}: {{tx(source.unit||'')}} <span v-if="source.unit_status==='unknown'">· {{tx('Нужно подтвердить единицы')}}</span><span v-if="source.reviewed_as_of"> · {{tx('Дата проверки / среза')}}: {{dateLabel(source.reviewed_as_of)}}</span></p><p v-if="source.reviewed_as_of" class="sub">{{tx('Показан сохранённый отчёт. Импорт финансовых моделей Excel отключён.')}}</p>
         <ul class="statement-coverage"><li v-for="item in selectedCoverage" :key="item.month">{{periodLabel(periods.find(period=>Number(period.month)===Number(item.month))||{month:item.month})}}: {{tx(coverageLabels[item.status]||'')}} · {{tx('Записей: {n}',{n:item.record_count??'—'})}}</li></ul></template>
         </section>
     <section v-if="source" class="statement-data-summary" :aria-label="tx('Данные отчёта')"><h4>{{tx('Источники и полнота данных')}}</h4>
       <div class="statement-summary-status"><span class="pill">{{tx('Найдено: {n}',{n:foundRequirements.length})}}</span><span class="pill" :class="clarificationRequirements.length?'warn':''">{{tx('Уточнить: {n}',{n:clarificationRequirements.length})}}</span><span class="pill">{{tx('Ожидают ОСВ: {n}',{n:pendingCoverage.length})}}</span></div>
       <p v-if="source.calculation?.profile" class="sub">{{tx('Факт: Mapping — ОСВ и счета выбранной компании.')}}</p>
       <p v-if="source.plan_source?.status==='cached_snapshot'" class="sub">{{tx('План: сохранённый снимок Macro из исходной книги. Обновление проверки не заменяет бюджет.')}} <span v-if="source.plan_source.as_of">{{dateLabel(source.plan_source.as_of)}}</span></p>
-      <p v-if="pendingCoverage.length" class="sub">{{tx('ОСВ ещё не загружена')}}: {{pendingCoverage.map(item=>periodLabel(periods.find(period=>Number(period.month)===Number(item.month))||{month:item.month})).join(', ')}}. {{tx('Эти месяцы ожидают загрузки и не считаются ошибками расчёта.')}}</p>
+      <p v-if="pendingCoverage.length" class="sub">{{tx('ОСВ ещё не загружена')}}: {{pendingCoverage.map(item=>periodLabel(periods.find(period=>Number(period.month)===Number(item.month))||{month:item.month})).join(', ')}}. {{tx('В сохранённом отчёте нет данных за эти месяцы.')}}</p>
     </section>
     <section v-if="issues.length||correctedIssues.length" class="statement-help-section"><h4>{{tx('Проверка и исправления')}} <span v-if="issues.length" class="pill warn">{{tx('Уточнить: {n}',{n:issues.length})}}</span><span v-if="correctedIssues.length" class="pill">{{tx('Исправлено: {n}',{n:correctedIssues.length})}}</span></h4><div class="statement-issues"><article v-for="(issue,index) in issues" :key="issue.code+'-'+index" class="statement-issue" :class="issue.severity"><strong>{{tx(issue.title)}}</strong><p>{{tx(issue.detail)}}</p><small>{{issue.source}}</small></article><article v-for="(issue,index) in correctedIssues" :key="'corrected-'+issue.code+'-'+index" class="statement-issue info"><span class="pill">{{tx('Исправлено при расчёте')}}</span> <strong>{{tx(issue.title)}}</strong><p>{{tx(issue.detail)}}</p><small>{{issue.source}}</small></article></div></section>
     <section v-if="requirements.length" class="statement-help-section"><h4>{{tx('Исходные данные для регулярного отчёта')}}</h4><div><p class="sub">{{tx('Найденные суммы берутся из Mapping. Ниже перечислены только необходимые уточнения и подтверждающие данные; повторно загружать найденные суммы не нужно.')}}</p><div class="statement-requirements"><article v-for="requirement in requirements" :key="requirement.key"><h4>{{tx(requirement.title)}}</h4><span v-if="requirement.status" class="pill" :class="requirement.status==='found'?'fact':'warn'">{{tx(requirementLabels[requirement.status]||N_('Нужно уточнить'))}}</span><ul v-if="requirement.evidence?.length" class="statement-evidence"><li v-for="field in requirement.evidence" :key="field">{{requirementEvidence(requirement,field)}}</li></ul><template v-if="requirement.missing_fields?.length"><p><b>{{tx('Нужно заполнить или подтвердить')}}</b></p><ul><li v-for="field in requirement.missing_fields" :key="field.key"><b>{{missingFieldLabel(field)}}</b><span v-if="field.reason">: {{tx(field.reason)}}</span></li></ul></template><ul v-else-if="!requirement.status"><li v-for="field in requirement.fields" :key="field">{{tx(field)}}</li></ul><p><b>{{tx('Когда обновлять')}}:</b> {{tx(requirement.frequency)}}</p><p class="sub">{{tx(requirement.reason)}}</p></article></div></div></section>

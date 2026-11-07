@@ -1,7 +1,6 @@
 <script setup>
 import {ref, computed, watch, nextTick, onMounted, onUnmounted} from 'vue';
 import AppIcon from './AppIcon.vue';
-import NativeWorkbook from './NativeWorkbook.vue';
 import OperationProgress from './OperationProgress.vue';
 import {createOperationProgress} from './operationProgress.js';
 import {archiveFileUrl, uploadLabel} from './reportArchive.js';
@@ -32,11 +31,8 @@ const nativeFlow=computed(()=>projectMode.value==='template'||!!current.value?.n
 const importOriginalPair=computed(()=>projectMode.value==='template'&&!current.value);
 const originalPairProblem=computed(()=>importOriginalPair.value&&(selected.value.filter(file=>/\.xlsx$/i.test(file.name)).length!==1||selected.value.filter(file=>/\.docx$/i.test(file.name)).length!==1)?N_('Выберите один оригинальный Excel (.xlsx) и один Word бизнес-плана (.docx).'):'' );
 const uploadRequirement = computed(() => projectMode.value === 'manual' || nativeFlow.value ? (!header.value.title.trim() ? N_('Укажите название проекта.') : originalPairProblem.value) : headerProblem(header.value));
-const canEdit = computed(() => !!current.value?.can_edit && current.value.company_id===props.company.id && current.value.status !== 'deleted');
-const canSaveTemplate=computed(()=>{
-  const words=(current.value?.files||[]).filter(file=>{const name=(file.filename||file.relative_path||'').split(/[\\/]/).pop();return /\.docx$/i.test(name)&&/лекарство_производство|бизнес|business/i.test(name);});
-  return canEdit.value&&!!current.value?.native_model&&new Set(words.map(file=>file.sha256||file.relative_path||file.filename)).size===1;
-});
+const canEdit = computed(() => !current.value?.native_model && !!current.value?.can_edit && current.value.company_id===props.company.id && current.value.status !== 'deleted');
+const canSaveTemplate=computed(()=>false);
 const visibleProjects = computed(() => projects.value.filter(project => showDeleted.value || project.status !== 'deleted'));
 const originalReports = computed(() => originalReportFiles(current.value, props.company.id));
 const review = computed(() => projectReview(current.value?.extraction, current.value?.validation));
@@ -99,7 +95,7 @@ async function loadProjects() {
     if (!active || request !== listRequest || companyId !== props.company.id) return;
     projects.value = (response.items || []).filter(project => project.company_id === companyId);
     canUpload.value = !!response.can_upload;
-    if(canUpload.value&&state.value&&projectMode.value==='template'&&!current.value)loadTemplates();else if(!canUpload.value){templates.value=[];templateRequest++;templatesLoading.value=false;}
+    if(!canUpload.value){templates.value=[];templateRequest++;templatesLoading.value=false;}
     if (ticket) operation.complete(ticket, N_('Проекты загружены'));
   } catch (e) {if (active && request === listRequest && e.name !== 'AbortError') {error.value = e.message; if(ticket)operation.fail(ticket,e.message);}}
   finally {if (active && request === listRequest) listLoading.value = false;}
@@ -135,6 +131,7 @@ function unavailableReportMessage(project) {
   return deletedReport(project) ? N_('Отчёт удалён из архива. Включите «Показать удалённые» в архиве отчётов и нажмите «Восстановить».') : N_('Для текущей версии нет доступного комплекта PDF и Excel. Проверьте архив отчётов или подготовьте отчёт заново.');
 }
 function newProject(mode = 'manual') {
+  mode = 'manual';
   if (busy.value) return;
   operation.reset(); validationAttempted.value=false; headerAttempted.value=false;
   state.value = createBusinessState(); current.value = null;
@@ -169,40 +166,10 @@ async function openProject(project) {
 }
 function closeProject() {if (busy.value) return; operation.reset(); state.value = null; current.value = null; selected.value = []; error.value = ''; notice.value = ''; loadProjects();}
 const postJson=body=>({method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
-async function useTemplate(){
-  if(busy.value||current.value||!canUpload.value||projectMode.value!=='template')return;
-  const workingState=state.value,companyId=props.company.id,template=templates.value.find(item=>item.id===Number(selectedTemplateId.value))||(workingState?.createFields?.template_id?{id:workingState.createFields.template_id}:null);
-  if(!workingState||!template||!header.value.title.trim()||header.value.title.trim().length>160)return;
-  const isCurrent=()=>active&&workingState===state.value&&companyId===props.company.id;
-  const ticket=operation.begin(N_('Копируем оригинальные Excel и Word…'),2);
-  action.value='template';error.value='';notice.value='';
-  try{
-    workingState.createFields||={company_id:companyId,title:header.value.title.trim(),mode:'files',template_id:template.id,request_key:workingState.requestKey};
-    let project;
-    try{project=await props.api(projectUrl(companyId),postJson(workingState.createFields));}
-    catch(e){if(e.status>=400&&e.status<500&&!workingState.createUnknown)workingState.createFields=null;else workingState.createUnknown=true;throw e;}
-    if(!isCurrent())return;assertProject(project,companyId);workingState.createUnknown=false;setProject(project,true);
-    operation.advance(ticket,1,N_('Проверяем исходные значения шаблона…'));
-    const detail=await props.api(projectUrl(companyId,project.id,'analyse'),postJson({revision:project.revision,overrides:{}}));
-    if(!isCurrent())return;assertProject(detail,companyId,project.id);setProject(detail,true);templateTitle.value=detail.title;
-    flowStage.value='data';operation.complete(ticket,N_('Шаблон скопирован. Можно добавить новые данные.'));
-    notice.value=N_('Добавьте новые документы или проверьте исходные значения и перейдите к отчёту.');await loadProjects();
-  }catch(e){if(isCurrent()&&e.name!=='AbortError'){error.value=e.message;operation.fail(ticket,e.message);await recoverConflict(e);}}
-  finally{if(isCurrent())action.value='';}
-}
-async function saveTemplate(){
-  if(busy.value||!canSaveTemplate.value)return;
-  const project=current.value,companyId=props.company.id,title=templateTitle.value.trim();
-  if(!title||title.length>160){error.value=N_('Укажите название шаблона: до 160 символов.');return;}
-  const matches=templateSave.value&&templateSave.value.projectId===project.id&&templateSave.value.revision===project.revision&&templateSave.value.title===title;
-  if(!matches)templateSave.value={projectId:project.id,revision:project.revision,title,request_key:createBusinessState().requestKey};
-  const body={revision:project.revision,title,request_key:templateSave.value.request_key};
-  const isCurrent=()=>active&&current.value?.id===project.id&&companyId===props.company.id;
-  const ticket=operation.begin(N_('Сохраняем оригинальную пару как шаблон…'),1);action.value='save-template';error.value='';notice.value='';
-  try{const saved=await props.api(projectUrl(companyId,project.id,'save-template'),postJson(body));if(!isCurrent())return;if(!Number.isSafeInteger(saved.id)||saved.id<1)throw Error(N_('Сервер не вернул сохранённый шаблон. Обновите список шаблонов.'));operation.complete(ticket,N_('Шаблон Excel и Word сохранён'));notice.value=N_('Шаблон сохранён для вашей компании. Выберите его при создании следующего проекта.');await loadTemplates();}
-  catch(e){if(isCurrent()&&e.name!=='AbortError'){error.value=e.message;operation.fail(ticket,e.message);await recoverConflict(e);}}
-  finally{if(isCurrent())action.value='';}
-}
+async function useTemplate(){error.value=N_('Импорт финансовых моделей Excel отключён.');}
+
+async function saveTemplate(){error.value=N_('Импорт финансовых моделей Excel отключён.');}
+
 async function changeProjectState(project, restore = false) {
   if (busy.value || project.company_id !== props.company.id || !(restore ? project.can_restore : project.can_delete)) return;
   const companyId = props.company.id;
@@ -236,54 +203,8 @@ async function recoverConflict(e) {
     error.value = N_('Папка уже изменена. Список файлов и версия обновлены. Проверьте параметры и повторите действие; ваши изменения формы сохранены.');
   } catch { /* Keep the original error and local inputs if refreshing also failed. */ }
 }
-async function upload() {
-  if (busy.value || !selected.value.length || selectionProblems.value.length) return;
-  if(current.value?!canEdit.value:!canUpload.value)return;
-  if(uploadRequirement.value){headerAttempted.value=true;error.value=tx(uploadRequirement.value);return;}
-  const workingState = state.value, companyId = props.company.id;
-  const isCurrent = () => active && state.value === workingState && props.company.id === companyId;
-  const nativeUpload=nativeFlow.value;
-  const preliminary = !current.value && projectMode.value==='manual' ? 2 : !current.value&&nativeUpload ? 1 : current.value&&!current.value.native_model&&changed.value ? 1 : 0;
-  const total = preliminary + Number(!current.value&&projectMode.value!=='manual'&&!nativeUpload) + selected.value.filter(item=>!workingState.uploaded.has(item.key)).length + 1;
-  const ticket=operation.begin(N_('Готовим проект к загрузке…'),total); let prepared=0;
-  headerAttempted.value=true;
-  action.value = 'upload'; error.value = ''; notice.value = '';
-  try {
-    if(!current.value&&nativeUpload){operation.stage(ticket,N_('Создаём проект…'));const created=await createProjectDraft(props.api,workingState,companyId,header.value.title,'files',isCurrent);setProject(created);operation.advance(ticket);prepared++;}
-    if (!current.value && projectMode.value === 'manual') {
-      operation.stage(ticket,N_('Создаём проект…'));
-      const created = await createProjectDraft(props.api, workingState, companyId, header.value.title, 'manual', isCurrent);
-      operation.advance(ticket); prepared++;
-      setProject(created); form.value = formFromInputs({}, header.value);
-      operation.stage(ticket,N_('Сохраняем данные проекта…'));
-      const saved = await saveProjectDraft(props.api, created, companyId, inputsFromForm(form.value), isCurrent);
-      operation.advance(ticket); prepared++;
-      setProject(saved, true);
-    }
-    if (current.value && !current.value.native_model && !nativeUpload && changed.value) {
-      operation.stage(ticket,N_('Сохраняем изменения перед загрузкой…'));
-      const saved = await saveProjectDraft(props.api, current.value, companyId, inputsFromForm(form.value), isCurrent);
-      operation.advance(ticket); prepared++;
-      setProject(saved, true);
-    }
-    const project = await uploadProjectFolder(props.api, workingState, {companyId, header: {...header.value}, sources: selected.value,
-      // Existing files-mode projects need no guessed forecast date during native source analysis.
-      mode: nativeUpload?'manual':projectMode.value, isCurrent,
-      onProject: project => setProject(project), onStep: value => {step.value = value;},
-      onProgress: value => {if(isCurrent())operation.progress(ticket,{...value,completed:prepared+value.completed,total:prepared+value.total});},
-    });
-    if (!isCurrent()) return;
-    setProject(project, true);
-    templateTitle.value=project.title;
-    operation.complete(ticket,N_('Файлы загружены, источники проверены'));
-    const ready = readyReport(project);
-    flowStage.value = ready ? 'report' : 'data';
-    notice.value = ready ? N_('Бизнес-план готов. Скачайте PDF и Excel в разделе «Отчёт».') : project.status === 'ready' ? unavailableReportMessage(project) : N_('Папка изучена. Проверьте замечания и заполните недостающие параметры ниже.');
-    if (ready) emit('generated');
-    await loadProjects();
-  } catch (e) {if (isCurrent() && e.name !== 'AbortError') {error.value = uploadFailureMessage(e, workingState); operation.fail(ticket,error.value); await recoverConflict(e);}}
-  finally {if (active && state.value === workingState && props.company.id === companyId) {action.value = ''; step.value = '';}}
-}
+async function upload(){error.value=N_('Импорт финансовых моделей Excel отключён.');}
+
 async function generate() {
   if (busy.value || !canEdit.value) return;
   validationAttempted.value=true;
@@ -393,7 +314,7 @@ function scheduleField(entry, month = null) {
 
 <template>
   <section class="card business-projects" aria-labelledby="business-projects-title">
-    <div class="card-h"><div><h3 id="business-projects-title">{{tx('Бизнес-план')}}</h3><p class="sub">{{tx('{company} · данные проекта и автоматический расчёт', {company: company.name})}}</p></div><button v-if="canUpload&&!editing" :disabled="busy||listLoading" @click="newProject('template')"><AppIcon name="plus"/> {{tx('Новый проект')}}</button></div>
+    <div class="card-h"><div><h3 id="business-projects-title">{{tx('Бизнес-план')}}</h3><p class="sub">{{tx('{company} · данные проекта и автоматический расчёт', {company: company.name})}}</p></div><button v-if="canUpload&&!editing" :disabled="busy||listLoading" @click="newProject('manual')"><AppIcon name="plus"/> {{tx('Новый проект')}}</button></div>
     <div class="card-b">
       <p class="sub bp-intro">{{tx('Выберите сохранённые Excel и Word, добавьте новые документы и проверьте только изменения. Сайт сформирует бизнес-план в структуре оригинала и пересчитанный Excel.')}}</p>
       <div class="bp-actions"><a v-if="canDownload" class="button secondary" :href="templateUrl(company.id)"><AppIcon name="download"/> {{tx('Шаблон исходных данных · Excel')}}</a><button class="ghost" :disabled="busy||listLoading" @click="loadProjects"><AppIcon name="refresh"/> {{tx('Обновить папки')}}</button></div>
@@ -409,16 +330,6 @@ function scheduleField(entry, month = null) {
         <p v-if="current?.status==='deleted'" class="warning">{{tx('Папка удалена. Для нового расчёта сначала восстановите её. Исходные файлы сохранены.')}}</p>
         <p v-if="current&&!canEdit" class="sub">{{tx('Просмотр проекта и готовых отчётов. Изменять исходные данные может автор папки с правом импорта.')}}</p>
         <nav class="bp-actions bp-flow" :aria-label="tx('Этапы проекта')"><button v-for="[stage,label] in nativeFlow?[['project',tx('1. Шаблон')],['data',tx('2. Новые данные')],['report',tx('3. Проверка и отчёт')]]:[['project',tx('1. Проект')],['data',tx('2. Данные')],['report',tx('3. Отчёт')]]" :key="stage" type="button" :class="flowStage===stage?'':'secondary'" :aria-current="flowStage===stage?'step':undefined" :disabled="busy||!current&&stage!=='project'&&nativeFlow||!current&&stage==='report'" @click="goStage(stage)">{{label}}</button></nav>
-        <section v-if="projectMode==='template'&&!current" class="bp-template-choice" :hidden="flowStage!=='project'">
-          <h3>{{tx('Оригинальный шаблон компании')}}</h3><p class="sub">{{tx('Excel содержит ваши формулы и исходные значения, Word — разделы и оформление бизнес-плана. Сохранённая пара доступна вам внутри выбранной компании.')}}</p>
-          <p v-if="templatesLoading" role="status" class="sub">{{tx('Загружаем шаблоны…')}}</p><p v-if="templateError" class="warning" role="alert">{{tx(templateError)}} <button class="ghost tiny" type="button" :disabled="busy||templatesLoading" @click="loadTemplates">{{tx('Обновить шаблоны')}}</button></p>
-          <label v-if="templates.length">{{tx('Сохранённый шаблон')}}<select v-model="selectedTemplateId" :disabled="busy||!!state.createFields"><option value="">{{tx('Выберите шаблон')}}</option><option v-for="template in templates" :key="template.id" :value="template.id">{{template.title}}</option></select></label>
-          <p v-if="!templatesLoading&&!templates.length" class="sub">{{tx('Сохранённых шаблонов пока нет. Загрузите оригинальные Excel и Word ниже; затем сохраните их для следующих расчётов.')}}</p>
-          <p v-if="selectedTemplateId" class="sub">{{templates.find(template=>template.id===Number(selectedTemplateId))?.xlsx_name}} · {{templates.find(template=>template.id===Number(selectedTemplateId))?.docx_name}}</p>
-          <button v-if="selectedTemplateId" type="button" :disabled="busy||!header.title.trim()" @click="useTemplate">{{tx('Использовать шаблон и перейти к новым данным')}}</button>
-          <p v-if="state.createUnknown" class="warning">{{tx('Сервер мог создать папку. Повторите загрузку: она продолжится в том же проекте.')}}</p>
-          <div class="bp-actions"><button type="button" class="ghost tiny" :disabled="busy||!!state.createFields" @click="selectedTemplateId=''">{{tx('Загрузить другую оригинальную пару')}}</button><button type="button" class="ghost tiny" :disabled="busy||!!state.createFields" @click="newProject('manual')">{{tx('Создать проект вручную')}}</button></div>
-        </section>
         <div v-if="!current||canEdit" ref="headerForm" :hidden="current?.native_model?flowStage!=='data':flowStage!=='project'" class="bp-upload-area">
           <section v-if="headerMissing.length" class="bp-missing-summary" aria-labelledby="bp-header-missing-title"><h4 id="bp-header-missing-title">{{tx('Не заполнены поля проекта')}}</h4><ul><li v-for="item in headerMissing" :key="item.field"><button type="button" class="ghost tiny" :disabled="busy" @click="goToHeader(item.field)">{{tx(item.label)}}</button></li></ul><p class="sub">{{tx('Для сохранения черновика достаточно названия; остальные поля можно заполнить позже.')}}</p></section>
           <div class="bp-fields" v-if="!current?.native_model">
@@ -430,23 +341,11 @@ function scheduleField(entry, month = null) {
             </template>
           </div>
           <div v-if="!current&&projectMode==='manual'" class="bp-actions"><button :disabled="busy||!header.title.trim()" @click="saveDraft('data')"><AppIcon name="check"/> {{tx('Сохранить и перейти к данным')}}</button><span class="sub">{{tx('Файлы не обязательны')}}</span></div>
-          <details v-if="!importOriginalPair||!selectedTemplateId" class="bp-details" :open="nativeFlow||projectMode==='files'&&!current"><summary>{{current?.native_model?tx('Добавить новые документы'):importOriginalPair?tx('Загрузить оригинальные Excel и Word'):tx('Файлы и импорт оригинала · необязательно')}}</summary>
-          <p class="sub">{{importOriginalPair?tx('Выберите один оригинальный Excel (.xlsx) и один Word бизнес-плана (.docx).'):current?.native_model?tx('Добавьте новые балансы, прайс-листы, договоры или расчётные таблицы. Сайт предложит изменения к исходным значениям; вы выберете, какие принять.'):tx('Можно приложить документы к ручному проекту или использовать исходные Word и Excel выбранной компании.')}}</p>
-          <button v-if="!current&&projectMode==='manual'&&!state.createFields" type="button" class="secondary tiny" @click="projectMode='files'">{{tx('Импорт оригинальных Word и Excel')}}</button>
-          <p class="sub bp-note">{{current?.native_model?tx('Оригинальная модель: 36 месяцев, USD. Период для поиска отчётов выбирается ниже, перед формированием.'):tx('Начало прогноза задаётся отдельно от даты загрузки.')}} {{tx('При добавлении новых источников анализ заново проверит финансовые параметры; готовые версии останутся в истории.')}}</p>
-          <div class="bp-actions"><label v-if="!importOriginalPair" class="button"><AppIcon name="import"/> {{tx('Выбрать папку')}}<input type="file" webkitdirectory multiple :accept="SOURCE_ACCEPT" hidden :disabled="busy" @change="chooseSources"></label><label class="button secondary"><AppIcon name="file"/> {{importOriginalPair?tx('Выбрать Excel и Word'):tx('Выбрать отдельные файлы')}}<input type="file" multiple :accept="importOriginalPair?'.xlsx,.docx':SOURCE_ACCEPT" hidden :disabled="busy" @change="chooseSources"></label></div>
-          <p class="sub bp-note">{{tx('PDF, XLSX, XLTX, DOCX, CSV, TXT, JSON, ZIP, PNG и JPEG. До 100 файлов, 20 МБ на файл и 100 МБ на папку. Поддерживаемый оригинальный Excel пересчитывается по своим формулам; изображения и договоры сохраняются как источники.')}}</p>
-          <p v-for="problem in selectionProblems" :key="problem" class="error" role="alert">{{tx(problem)}}</p>
-          <details v-if="ignored.length" class="bp-details"><summary>{{tx('Пропущены служебные файлы: {n}', {n: ignored.length})}}</summary><ul><li v-for="item in ignored" :key="item.name">{{item.name}} — {{tx(item.reason)}}</li></ul></details>
-          <details v-if="selected.length" class="bp-details" :open="selected.some(item=>!state.uploaded.has(item.key))"><summary>{{tx('Выбрано {n} файлов · {size}', {n: selected.length, size: sourceSize(totalSize)})}}</summary><ul class="bp-files"><li v-for="item in selected" :key="item.key"><span>{{item.relativePath}}</span><small>{{sourceSize(item.size)}} {{state.uploaded.has(item.key)?tx('· загружен'):''}}</small></li></ul></details>
-          <p v-if="state.createUnknown" class="warning">{{tx('Сервер мог создать папку. Повторите загрузку: она продолжится в том же проекте.')}}</p>
-          <p v-if="selected.length&&uploadRequirement" class="warning" role="status">{{tx('Перед загрузкой: {problem}', {problem: tx(uploadRequirement)})}}</p>
-          <button :disabled="busy||!selected.length||selectionProblems.length>0||!!uploadRequirement" @click="upload"><AppIcon name="import"/> {{current?tx('Добавить файлы и выполнить анализ'):importOriginalPair?tx('Загрузить оригинал и перейти к новым данным'):tx('Импортировать файлы проекта')}}</button>
-          </details>
+
         </div>
 
         <template v-if="current">
-          <details v-if="canSaveTemplate" class="bp-details bp-save-template" :hidden="flowStage==='report'"><summary>{{tx('Сохранить оригинальную пару для следующих расчётов')}}</summary><p class="sub">{{tx('Шаблон хранит исходные Excel и Word. Изменения этого расчёта сохраняются в проекте и в готовых отчётах.')}}</p><label>{{tx('Название шаблона')}}<input v-model="templateTitle" maxlength="160" :disabled="busy" :placeholder="current.title"></label><button type="button" class="secondary" :disabled="busy||!templateTitle.trim()" @click="saveTemplate">{{tx('Сохранить Excel и Word как шаблон')}}</button></details>
+
           <details v-if="originalReports.length" class="bp-details" aria-labelledby="bp-original-title"><summary>{{tx('Исходные документы · {n}', {n: originalReports.length})}}</summary>
             <h3 id="bp-original-title">{{tx('Готовый бизнес-план из вашей папки')}}</h3>
             <p class="sub bp-note">{{tx('Загруженные документы сохраняют свои разделы, таблицы, оформление, формулы и исходные суммы. Скачивание выдаёт исходный файл. Изменения параметров ниже попадут в отдельный новый расчёт.')}}</p>
@@ -455,7 +354,7 @@ function scheduleField(entry, month = null) {
           </details>
           <details class="bp-details"><summary>{{tx('Исходные файлы проекта · {n}', {n: current.files?.length||0})}}</summary><ul class="bp-files"><li v-for="file in current.files||[]" :key="file.relative_path"><span>{{file.relative_path||file.filename}}</span><small>{{sourceSize(file.size||0)}} <a v-if="canDownload&&canEdit&&file.download_url" :href="file.download_url">{{tx('Скачать исходник')}}</a></small></li></ul></details>
           <p v-if="flowStage==='report'&&!readyReport(current)" class="sub" role="status">{{tx(unavailableReportMessage(current))}}<template v-if="!deletedReport(current)"> {{canEdit ? current.native_model ? tx('Нажмите «Подготовить бизнес-план и Excel», чтобы создать файлы.') : tx('Нажмите «Рассчитать бизнес-план», чтобы создать файлы.') : tx('Попросите автора проекта подготовить отчёт.')}}</template></p>
-          <NativeWorkbook :can-download="canDownload" v-if="current.native_model" :hidden="flowStage==='project'" :stage="flowStage" :api="api" :company="company" :project="current" @report="goStage('report')" @data="goStage('data')" @updated="setProject($event,true)" @generated="flowStage='report';emit('generated');loadProjects()" @working="nativeWorking"/>
+          <p v-if="current.native_model" class="sub">{{tx('Показан сохранённый отчёт. Импорт финансовых моделей Excel отключён.')}}</p>
           <template v-if="!current.native_model">
           <section v-if="canEdit&&requiredFields.length" class="bp-missing-summary" :class="{'bp-validation-attempted':validationAttempted}" aria-labelledby="bp-missing-title"><h4 id="bp-missing-title" aria-live="polite">{{tx('Не заполнены обязательные поля · {n}', {n: requiredFields.length})}}</h4><ul><li v-for="item in requiredFields" :key="item.field"><button type="button" class="ghost tiny" :disabled="busy" @click="goToField(item.field)">{{guidance(item.field).label||fieldLabel(item.field)}}</button></li></ul><p class="sub">{{tx('Нажмите название, чтобы открыть нужную группу и перейти к полю. Явный ноль считается заполненным значением.')}}</p></section>
           <div :hidden="flowStage!=='data'">
@@ -573,9 +472,9 @@ function scheduleField(entry, month = null) {
           </div>
           </template>
           <section v-if="!current.native_model" :hidden="flowStage!=='report'" class="bp-results"><h3>{{tx('Подготовить отчёт')}}</h3><p class="sub">{{tx('Полный бизнес-план и финансовые таблицы формируются из сохранённых данных проекта.')}}</p><p v-if="canEdit&&requiredFields.length" class="warning">{{tx('Незаполненные поля перечислены выше. Нажмите название, чтобы внести данные.')}}</p><p v-if="canEdit&&needsConfirmation&&!confirmed" class="warning">{{tx('Перед расчётом подтвердите проверку замечаний в разделе «Данные».')}}</p><div class="bp-actions"><button v-if="canEdit" :disabled="busy||needsConfirmation&&!confirmed" @click="generate"><AppIcon name="report"/> {{tx('Рассчитать бизнес-план')}}</button><button v-if="canEdit" type="button" class="secondary" :disabled="busy" @click="goStage('data')">{{tx('Вернуться к данным')}}</button></div><p v-if="!latest" class="sub bp-no-file">{{canEdit?tx('Готового файла пока нет. После расчёта здесь и в списке проектов появятся кнопки «Бизнес-план · PDF» и «Бизнес-план · Excel»; копия сохранится в «Архиве отчётов».'):tx('Попросите автора проекта подготовить отчёт.')}}</p></section>
-          <component :is="reportsStale?'details':'section'" v-if="latest&&!current.native_model" :hidden="flowStage!=='report'" :open="reportsStale?true:undefined" class="bp-results">
+          <component :is="reportsStale?'details':'section'" v-if="latest" :hidden="flowStage!=='report'" :open="reportsStale?true:undefined" class="bp-results">
             <summary v-if="reportsStale">{{tx('Предыдущая сохранённая версия')}}</summary><h3 v-else>{{tx('Готовые отчёты · версия исходных данных {n}', {n: latest.revision})}}</h3><p class="sub">{{latest.business_archive?.title||current.title}}</p><p class="sub">{{tx('{date} · суммы в валюте, указанной в файлах этой версии', {date: uploadLabel(latest.created_at)})}}</p>
-            <div class="bp-metrics"><div><small>{{tx('NPV проекта')}}</small><b>{{money(latest.metrics?.npv)}}</b></div><div><small>{{tx('IRR годовая')}}</small><b>{{ratio(latest.metrics?.irr_annual)}}</b></div><div><small>{{tx('Окупаемость, мес.')}}</small><b>{{latest.metrics?.payback_months==null?tx('Не определена'):money(latest.metrics.payback_months)}}</b></div><div><small>{{tx('Минимум денег')}}</small><b>{{money(latest.metrics?.minimum_cash)}}</b></div></div>
+            <div v-if="!current.native_model" class="bp-metrics"><div><small>{{tx('NPV проекта')}}</small><b>{{money(latest.metrics?.npv)}}</b></div><div><small>{{tx('IRR годовая')}}</small><b>{{ratio(latest.metrics?.irr_annual)}}</b></div><div><small>{{tx('Окупаемость, мес.')}}</small><b>{{latest.metrics?.payback_months==null?tx('Не определена'):money(latest.metrics.payback_months)}}</b></div><div><small>{{tx('Минимум денег')}}</small><b>{{money(latest.metrics?.minimum_cash)}}</b></div></div>
             <p v-if="latest.metrics?.irr_reason" class="sub bp-note">{{tx(latest.metrics.irr_reason)}}</p><p v-if="String(latest.metrics?.minimum_cash||'').startsWith('-')" class="warning">{{tx('В прогнозе есть недостаток денег. Проверьте финансирование и сроки расходов в отчётах.')}}</p>
             <p v-if="changed||current.status!=='ready'||latest.revision!==current.revision" class="warning">{{tx('Файлы относятся к сохранённой версии. Изменённые параметры и новые источники попадут в следующий расчёт.')}}</p>
             <div class="bp-actions"><a v-for="file in downloads(latest).filter(item=>!item.secondary)" :key="file.title" class="button secondary" :href="file.url"><AppIcon name="download"/> {{file.title}}</a></div>

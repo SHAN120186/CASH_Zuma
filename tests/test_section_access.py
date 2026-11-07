@@ -143,13 +143,16 @@ class SectionAccessTests(base.SiteTests):
         self.assertEqual(self.save_sections(uid,{'pnl':'edit','balance':'edit'},version=1).status_code,200)
         cl.close();cl,h=self.relogin('shared_source_editor')
         flags=cl.get('/api/financial-statements',headers=h).json()
-        self.assertTrue(flags['can_upload']);self.assertTrue(flags['can_confirm_revenue_basis'])
+        self.assertFalse(flags['can_upload']);self.assertFalse(flags['can_confirm_revenue_basis'])
         cl.close()
 
 
     def test_read_only_rating_hides_sync_action(self):
         from unittest.mock import patch
-        from app.db import Company
+        import hashlib,json
+        from app.db import Company,IfrsRatingSource,Setting
+        from app.ifrs_rating import METHOD_VERSION,binding_key,build_rating
+        from tests.test_ifrs_rating import fixture
         cl,h=self.make_user('finance','rating_reader');uid=self.uid('rating_reader')
         with unit(True) as s:
             cid=s.scalar(select(Company.id).where(Company.code=='ZUMA'))
@@ -158,7 +161,15 @@ class SectionAccessTests(base.SiteTests):
         saved=self.client.put(f'/api/admin/users/{uid}/sections',headers=self.h,json={'company_id':cid,'version':0,'sections':{'rating':'view'},'reason':'Reader may only view the rating'})
         self.assertEqual(saved.status_code,200,saved.text)
         cl.close();cl,h=self.relogin('rating_reader',company=cid)
-        with patch('app.ifrs_rating.download_rating_source',return_value=(b'synthetic','synthetic.xlsx','test','2026-01-01')),patch('app.ifrs_rating.build_rating',return_value={}):
+        raw=fixture();reports={'3':build_rating(raw,end_month=3)}
+        with unit(True) as s:
+            source=IfrsRatingSource(company_id=cid,created_by=uid,filename='synthetic.xlsx',sha256=hashlib.sha256(raw).hexdigest(),size=len(raw),content=raw)
+            s.add(source);s.flush()
+            s.add(Setting(key=binding_key(cid),value=json.dumps({'source_id':source.id})))
+            s.add(Setting(key=f'ifrs_rating_ready:{cid}',value=json.dumps({'company_id':cid,'source_id':source.id,
+                'source_sha256':source.sha256,'method_version':METHOD_VERSION,'default_end_month':3,'reports':reports,
+                'prepared_at':'2026-09-16T00:00:00+00:00','reports_sha256':hashlib.sha256(json.dumps(reports,sort_keys=True,separators=(',',':'),ensure_ascii=False).encode()).hexdigest()})))
+        with patch('app.ifrs_rating.download_rating_source',side_effect=AssertionError('No network')),patch('app.ifrs_rating.build_rating',side_effect=AssertionError('No Excel calculation')):
             rating=cl.get('/api/ifrs-rating',headers=h)
         self.assertEqual(rating.status_code,200,rating.text);self.assertFalse(rating.json()['can_sync'])
         self.assertEqual(cl.post('/api/ifrs-rating/sync',headers=h).status_code,403)

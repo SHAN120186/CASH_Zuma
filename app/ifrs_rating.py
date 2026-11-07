@@ -380,44 +380,29 @@ def get_rating(request:Request,end_month:int|None=Query(default=None,ge=1,le=12)
         setting = s.get(Setting,binding_key(cid))
         binding = json.loads(setting.value) if setting else None
         source = s.get(IfrsRatingSource,binding['source_id']) if binding else None
-        base = {'company_id':cid,'source_url':SOURCE_URL if 'download' in perms_of(user) else None,
-                'can_sync':'import' in perms_of(user) and can_edit_section(user,'rating'),'binding':binding}
-        saved = (source.content,source.filename,source.sha256) if source else None
-    try:
-        raw,name,origin,synced_at = download_rating_source()
-        digest = hashlib.sha256(raw).hexdigest()
-        base['binding'] = {'synced_at':synced_at,'file_id':DRIVE_FILE_ID,'origin':origin}
-        base['stale'] = False
-    except RuntimeError as exc:
-        if saved is None:
-            with _source_lock:
-                cached = _source_cache[1] if _source_cache else None
-            if cached is None:
-                raise HTTPException(503,str(exc)) from exc
-            raw,name,origin,synced_at = cached
-            digest = hashlib.sha256(raw).hexdigest()
-            base['binding'] = {'synced_at':synced_at,'file_id':DRIVE_FILE_ID,'origin':origin}
-        else:
-            raw,name,digest = saved
-        base.update(stale=True,warning=str(exc))
-    try:
-        report = build_rating(raw,end_month)
-    except ValueError as exc:
-        raise HTTPException(422,str(exc)) from exc
-    return {**base,'report':report,'source':{'filename':name,'sha256':digest}}
+        ready = s.get(Setting,f'ifrs_rating_ready:{cid}')
+        unavailable='Готовый IFRS Rating за выбранный период отсутствует. Импорт и пересчёт финансовых моделей Excel отключены.'
+        try:
+            payload=json.loads(ready.value) if ready else {}
+            reports=payload['reports']
+            checksum=hashlib.sha256(json.dumps(reports,sort_keys=True,separators=(',',':'),ensure_ascii=False).encode()).hexdigest()
+            month=end_month if end_month is not None else payload['default_end_month']
+            report=reports[str(month)]
+            valid=(source is not None and payload['company_id']==cid and payload['source_id']==source.id
+                and payload['source_sha256']==source.sha256 and payload['method_version']==METHOD_VERSION
+                and payload['reports_sha256']==checksum and report['end_month']==month
+                and report['method_version']==METHOD_VERSION
+                and isinstance(payload['prepared_at'],str) and bool(payload['prepared_at']))
+        except (KeyError,TypeError,ValueError):
+            valid=False
+        if not valid:raise HTTPException(503,unavailable)
+        return {'company_id':cid,'source_url':SOURCE_URL if 'download' in perms_of(user) else None,'can_sync':False,'binding':binding,'stale':False,
+                'snapshot_only':True,'prepared_at':payload['prepared_at'],'report':report,
+                'source':{'filename':source.filename,'sha256':source.sha256}}
 
 
 @router.post('/api/ifrs-rating/sync')
 def sync_rating(request:Request,company_id:int|None=Query(default=None,ge=1)):
     with unit() as s:
-        _,cid = authorize(s,request,True)
-    try:
-        raw,name,origin,_ = download_rating_source(force=True)
-        with unit(True) as s:
-            user,current_cid = authorize(s,request,True)
-            if current_cid != cid:
-                raise HTTPException(409,'Компания запроса изменилась. Обновите раздел.')
-            binding = save_drive_source(s,user,cid,raw,name,origin)
-        return {'company_id':cid,'binding':binding}
-    except (ValueError,RuntimeError) as exc:
-        raise HTTPException(422,str(exc)) from exc
+        authorize(s,request,True)
+    raise HTTPException(410,'Импорт и пересчёт финансовых моделей Excel отключены. Доступен только сохранённый IFRS Rating.')

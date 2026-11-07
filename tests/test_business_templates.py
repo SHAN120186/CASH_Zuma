@@ -1,17 +1,10 @@
-"""Reusable private report pairs: tenant isolation, revisions and copy integrity."""
-import json
-import sys
+"""Historical templates stay private; disabled Excel cannot be parsed or cloned."""
+import hashlib
 import unittest
-from pathlib import Path
+from unittest.mock import patch
 from uuid import uuid4
-
-sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from tests import test_business_projects as fixtures
-from app.db import BusinessProject, BusinessSourceFile, BusinessTemplate
-
-TMP, engine = fixtures.TMP, fixtures.engine
-native_fixture, synthetic_source = fixtures.native_fixture, fixtures.synthetic_source
-unit, select = fixtures.unit, fixtures.select
+from app.db import BusinessProject, BusinessTemplate
 
 
 class BusinessTemplateTests(unittest.TestCase):
@@ -20,118 +13,91 @@ class BusinessTemplateTests(unittest.TestCase):
     login = fixtures.BusinessProjectTests.login
     actor = fixtures.BusinessProjectTests.actor
     create = fixtures.BusinessProjectTests.create
-    upload = fixtures.BusinessProjectTests.upload
     remove = fixtures.BusinessProjectTests.remove
 
     @classmethod
     def tearDownClass(cls):
-        engine.dispose()
-        TMP.cleanup()
+        fixtures.engine.dispose()
 
-    def pair(self):
-        project, _ = self.create()
-        response = self.upload(project, native_fixture(), 'original/model.xlsx')
-        self.assertEqual(response.status_code, 200, response.text)
-        response = self.upload(response.json(), synthetic_source('.docx'), 'original/business-plan.docx')
-        self.assertEqual(response.status_code, 200, response.text)
-        return response.json()
+    def legacy_template(self):
+        workbook, word = b'legacy workbook must never be parsed', b'legacy document'
+        with fixtures.unit(True) as s:
+            t = BusinessTemplate(company_id=self.cid, created_by=self.uid, title='Saved template',
+                request_key=str(uuid4()), xlsx_name='original.xlsx', docx_name='business.docx',
+                xlsx_content=workbook, xlsx_size=len(workbook), xlsx_sha256=hashlib.sha256(workbook).hexdigest(),
+                docx_content=word, docx_size=len(word), docx_sha256=hashlib.sha256(word).hexdigest())
+            s.add(t); s.flush(); return t.id, workbook, word
 
-    def save(self, project, body=None, client=None, headers=None):
-        body = body or {'revision': project['revision'], 'title': 'Synthetic template',
-                        'request_key': str(uuid4())}
-        response = (client or self.client).post(
-            f"/api/business-projects/{project['id']}/save-template",
-            params={'company_id': self.cid}, json=body, headers=headers or self.headers)
-        return response, body
+    def save(self, project, client=None, headers=None, revision=None):
+        return (client or self.client).post(f"/api/business-projects/{project['id']}/save-template",
+            params={'company_id': self.cid}, headers=headers or self.headers,
+            json={'revision': project['revision'] if revision is None else revision,
+                  'title': 'New template', 'request_key': str(uuid4())})
 
-    def clone(self, template, **fields):
-        body = {'company_id': self.cid, 'title': 'Synthetic new report',
-                'request_key': str(uuid4()), 'template_id': template['id'], **fields}
-        return self.client.post('/api/business-projects', json=body, headers=self.headers), body
+    def clone(self, tid, company=None, client=None, headers=None):
+        return (client or self.client).post('/api/business-projects', headers=headers or self.headers,
+            json={'company_id': company or self.cid, 'title': 'Clone', 'request_key': str(uuid4()),
+                  'template_id': tid})
 
-    def test_saved_pair_is_idempotent_and_does_not_change_project(self):
-        project = self.pair()
-        first, body = self.save(project)
-        self.assertEqual(first.status_code, 200, first.text)
-        repeated, _ = self.save(project, body)
-        self.assertEqual(repeated.status_code, 200, repeated.text)
-        self.assertEqual(first.json(), repeated.json())
-        with unit() as s:
+    def test_save_is_disabled_before_source_parsing_and_preserves_revision(self):
+        project, _ = self.create('manual')
+        with patch('app.native_projects.native_candidate', side_effect=AssertionError('read workbook')):
+            response = self.save(project)
+        self.assertEqual(response.status_code, 410, response.text)
+        with fixtures.unit() as s:
             self.assertEqual(s.get(BusinessProject, project['id']).revision, project['revision'])
-            self.assertEqual(len(list(s.scalars(select(BusinessTemplate)))), 1)
+            self.assertEqual(list(s.scalars(fixtures.select(BusinessTemplate))), [])
 
-    def test_copy_preserves_both_blobs_and_new_project_uses_native_mode(self):
-        saved, _ = self.save(self.pair())
-        response, _ = self.clone(saved.json())
-        self.assertEqual(response.status_code, 200, response.text)
-        copied = response.json()
-        self.assertEqual(copied['source_count'], 2)
-        self.assertTrue(copied['native_model']['supported'])
-        self.assertEqual(copied['extraction']['template_selected']['id'], saved.json()['id'])
-        with unit() as s:
-            template = s.get(BusinessTemplate, saved.json()['id'])
-            records = list(s.scalars(select(BusinessSourceFile).where(BusinessSourceFile.project_id == copied['id'])))
-            actual = {record.filename: record.content for record in records}
-            self.assertEqual(actual[template.xlsx_name], template.xlsx_content)
-            self.assertEqual(actual[template.docx_name], template.docx_content)
+    def test_save_keeps_revision_and_owner_boundaries(self):
+        project, _ = self.create('manual')
+        self.assertEqual(self.save(project, revision=project['revision']+1).status_code, 409)
+        peer, headers = self.actor('template_peer', 'finance')
+        self.assertEqual(self.save(project, peer, headers).status_code, 403)
+        reader, headers = self.actor('template_reader', 'investor')
+        self.assertEqual(self.save(project, reader, headers).status_code, 403)
 
-    def test_template_survives_original_project_deletion(self):
-        project = self.pair()
-        saved, _ = self.save(project)
-        self.assertEqual(self.remove(project).status_code, 200)
-        response, _ = self.clone(saved.json())
-        self.assertEqual(response.status_code, 200, response.text)
-
-    def test_missing_word_and_stale_revision_are_rejected(self):
-        project, _ = self.create()
-        uploaded = self.upload(project, native_fixture(), 'model.xlsx').json()
-        missing, _ = self.save(uploaded)
-        self.assertEqual(missing.status_code, 422)
-        completed = self.upload(uploaded, synthetic_source('.docx'), 'business-plan.docx').json()
-        stale, _ = self.save(completed, {'revision': uploaded['revision'], 'title': 'Synthetic template',
-                                       'request_key': str(uuid4())})
-        self.assertEqual(stale.status_code, 409)
-
-    def test_template_is_private_to_creator_and_company(self):
-        project = self.pair()
-        saved, _ = self.save(project)
-        viewer, headers = self.actor('another_importer', 'finance')
-        listed = viewer.get('/api/business-templates', params={'company_id': self.cid}, headers=headers)
-        self.assertEqual(listed.status_code, 200, listed.text)
-        self.assertEqual(listed.json()['items'], [])
-        copied = viewer.post('/api/business-projects', headers=headers,
-            json={'company_id': self.cid, 'title': 'Other project',
-                  'request_key': str(uuid4()), 'template_id': saved.json()['id']})
-        self.assertEqual(copied.status_code, 404)
-        other_headers = {**self.headers, 'X-Company-ID': str(self.other)}
-        result = self.client.post('/api/business-projects', headers=other_headers,
-            json={'company_id': self.other, 'title': 'Other company',
-                  'request_key': str(uuid4()), 'template_id': saved.json()['id']})
+    def test_save_keeps_company_boundary(self):
+        project, _ = self.create('manual')
+        result = self.client.post(f"/api/business-projects/{project['id']}/save-template",
+            params={'company_id': self.other}, headers={**self.headers, 'X-Company-ID': str(self.other)},
+            json={'revision': project['revision'], 'title': 'Other company', 'request_key': str(uuid4())})
         self.assertEqual(result.status_code, 404)
 
-    def test_create_request_cannot_be_replayed_with_another_template(self):
-        project = self.pair()
-        first, _ = self.save(project)
-        second, _ = self.save(project, {'revision': project['revision'], 'title': 'Another template',
-                                       'request_key': str(uuid4())})
-        response, body = self.clone(first.json())
-        self.assertEqual(response.status_code, 200, response.text)
-        body['template_id'] = second.json()['id']
-        repeated = self.client.post('/api/business-projects', json=body, headers=self.headers)
-        self.assertEqual(repeated.status_code, 409)
+    def test_historical_template_metadata_is_listed_without_upload_or_blobs(self):
+        tid, workbook, word = self.legacy_template()
+        result = self.client.get('/api/business-templates', params={'company_id': self.cid}, headers=self.headers)
+        self.assertEqual(result.status_code, 200, result.text)
+        self.assertFalse(result.json()['can_upload'])
+        self.assertEqual(result.json()['items'][0]['id'], tid)
+        self.assertNotIn('xlsx_content', result.json()['items'][0])
+        with fixtures.unit() as s:
+            t = s.get(BusinessTemplate, tid)
+            self.assertEqual(bytes(t.xlsx_content), workbook)
+            self.assertEqual(bytes(t.docx_content), word)
 
-    def test_template_cannot_be_used_for_generic_manual_project(self):
-        saved, _ = self.save(self.pair())
-        response, _ = self.clone(saved.json(), mode='manual')
-        self.assertEqual(response.status_code, 422)
+    def test_template_cannot_be_cloned_and_no_empty_project_is_created(self):
+        tid, _, _ = self.legacy_template()
+        with patch('app.native_projects.native_candidate', side_effect=AssertionError('read workbook')):
+            result = self.clone(tid)
+        self.assertEqual(result.status_code, 410, result.text)
+        with fixtures.unit() as s:
+            self.assertEqual(list(s.scalars(fixtures.select(BusinessProject))), [])
 
-    def test_modified_saved_blob_cannot_silently_become_generic_model(self):
-        saved, _ = self.save(self.pair())
-        with unit(True) as s:
-            template = s.get(BusinessTemplate, saved.json()['id'])
-            template.xlsx_content = synthetic_source('.xlsx')
-        response, _ = self.clone(saved.json())
-        self.assertEqual(response.status_code, 409)
+    def test_historical_template_remains_private_to_creator_and_company(self):
+        tid, _, _ = self.legacy_template()
+        peer, headers = self.actor('another_importer', 'finance')
+        self.assertEqual(peer.get('/api/business-templates', params={'company_id': self.cid},
+                                  headers=headers).json()['items'], [])
+        self.assertEqual(self.clone(tid, client=peer, headers=headers).status_code, 404)
+        self.assertEqual(self.clone(tid, company=self.other,
+                         headers={**self.headers, 'X-Company-ID': str(self.other)}).status_code, 404)
+
+    def test_historical_template_survives_project_deletion(self):
+        project, _ = self.create('manual')
+        tid, workbook, _ = self.legacy_template()
+        self.assertEqual(self.remove(project).status_code, 200)
+        with fixtures.unit() as s:
+            self.assertEqual(bytes(s.get(BusinessTemplate, tid).xlsx_content), workbook)
 
 
 if __name__ == '__main__':
