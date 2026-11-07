@@ -3,6 +3,8 @@
 // Terms follow common.js: заявка — ariza, согласование — kelishish, статья — modda, справочник — maʼlumotnoma,
 // сторно — storno, ВрИО — v.b., привязать / отвязать Telegram — ulash / uzish, сводка — xulosa.
 export default {
+  'Загружаем раздел…': 'Bo‘lim yuklanmoqda…',
+  'Не удалось загрузить раздел. Проверьте соединение и повторите.': 'Bo‘limni yuklab bo‘lmadi. Ulanishni tekshirib, qayta urinib ko‘ring.',
   // Shell: sections, page title, release notice
   'Справочники': 'Maʼlumotnomalar',
   'Казначейство': 'Gʻaznachilik',

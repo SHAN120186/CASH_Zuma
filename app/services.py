@@ -74,6 +74,23 @@ def account_balance(s,a,upto=None):
         if t.to_account_id==a.id:balance += t.amount
     return balance
 
+def batch_account_balances(s,accounts,upto=None):
+    """Read-only balances from one company-scoped pass over the raw ledger.
+
+    Preserve the scalar helper's opening-date, transfer and reversal semantics.
+    Payment/write guards deliberately keep using ``account_balance``.
+    """
+    upto=upto or today()
+    balances={a.id:(a.opening if a.opening_date<=upto else 0) for a in accounts}
+    ids={a.id for a in accounts if a.opening_date<=upto}
+    if not ids:return balances
+    rows=s.execute(select(Ledger.account_id,Ledger.to_account_id,Ledger.kind,Ledger.amount).where(
+        Ledger.date<=upto,or_(Ledger.account_id.in_(ids),Ledger.to_account_id.in_(ids))))
+    for source,target,kind,value in rows:
+        if source in ids:balances[source]+=value if kind=='in' else -value
+        if target in ids:balances[target]+=value
+    return balances
+
 def day_start_balance(s,a,day):
     """Остаток на начало дня. Начальный остаток задан на начало дня ``opening_date``,
     поэтому счёт, открытый в этот день, начинает его с начального остатка, а счёт,
@@ -659,7 +676,7 @@ def post_ledger(s,u,data,*,bank_statement_fact=False,bank_statement_import=False
 def dashboard(s,currency,horizon=30):
     accounts=[a for a in s.scalars(select(Account)) if a.currency==currency]
     ids={a.id for a in accounts};start=today()
-    account_balances={a.id:account_balance(s,a) for a in accounts}
+    account_balances=batch_account_balances(s,accounts,start)
     current=sum(account_balances.values())
     in_transit=sum(max(account_balances[a.id],0) for a in accounts if a.kind=='transit')
     from .bank_statement_guard import pending_bank_debit_hold

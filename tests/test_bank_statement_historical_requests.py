@@ -5,12 +5,12 @@ from datetime import date
 from sqlalchemy import select
 
 import tests.test_site as base
-from app.main import app
+from app.main import app, request_state
 from app.bank_statement_historical_requests import router, HISTORICAL_ACTION
 from app.bank_statement_models import BankStatementBatch, BankStatementLine
 from app.bank_statement_guard import set_statement_reconciliation
 from app.db import Account, Audit, Category, Company, Ledger, PaymentRequest, RequestDocument, Setting, User, engine, unit
-from app.services import account_balance
+from app.services import account_balance, log
 
 if not any(getattr(route, 'path', '') == '/api/bank-statements/lines/{id}/historical-request/options' for route in app.routes):
     app.include_router(router)
@@ -21,11 +21,20 @@ class HistoricalRequestTests(base.SiteTests):
         created = self.post('/api/requests', {**self.request_body('100'), 'counterparty_inn': '300000002'})
         self.assertEqual(created.status_code, 200, created.text)
         self.rid = created.json()['id']
-        closed = self.post(f'/api/requests/{self.rid}/decision', {'action': 'close', 'note': 'Synthetic closed without payment'})
-        self.assertEqual(closed.status_code, 200, closed.text)
         with unit(True) as s:
+            s.info['company_id'] = self.company
             account = s.get(Account, self.acc)
             user = s.scalar(select(User).where(User.username == 'admin'))
+            # Model a retained legacy closure. The current close endpoint
+            # permanently deletes unpaid requests and cannot create this history.
+            req = s.get(PaymentRequest, self.rid)
+            before = request_state(req)
+            req.status = 'cancelled'
+            req.decision_note = 'Synthetic legacy closed without payment'
+            s.flush()
+            log(s, user, 'Действие по заявке: close', 'request', req.id,
+                json.dumps({'before': before, 'after': request_state(req),
+                            'reason': req.decision_note}, ensure_ascii=False))
             day = date.fromisoformat(self.date)
             batch = BankStatementBatch(company_id=self.company, account_id=self.acc, created_by=user.id,
                 filename='synthetic-historical.xls', sha256='a'*64, account_number='20200000000000000001',
