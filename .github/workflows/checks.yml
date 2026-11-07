@@ -38,6 +38,7 @@ jobs:
       - run: python -m unittest tests.test_company_category_catalog -q
       - run: python -m unittest tests.test_request_batch_performance -q
       - run: python -m unittest tests.test_read_balance_performance -q
+      - run: python -m unittest tests.test_read_bank_hold_performance -q
       - run: python -m unittest tests.test_request_batch_history -q
       - run: python -m unittest tests.test_http_audit -q
       - run: python -m unittest tests.test_request_document_limit -q
@@ -127,6 +128,7 @@ jobs:
       - run: python -m unittest tests.test_finance_author_workflow -q
       - run: python -m unittest tests.test_request_batch_performance -q
       - run: python -m unittest tests.test_read_balance_performance -q
+      - run: python -m unittest tests.test_read_bank_hold_performance -q
       - run: python -m unittest tests.test_request_batch_history -q
       - run: python -m unittest tests.test_http_audit -q
       - run: python -m unittest tests.test_request_document_limit -q

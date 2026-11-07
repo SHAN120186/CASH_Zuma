@@ -679,8 +679,8 @@ def dashboard(s,currency,horizon=30):
     account_balances=batch_account_balances(s,accounts,start)
     current=sum(account_balances.values())
     in_transit=sum(max(account_balances[a.id],0) for a in accounts if a.kind=='transit')
-    from .bank_statement_guard import pending_bank_debit_hold
-    bank_holds={a.id:pending_bank_debit_hold(s,a,start) for a in accounts}
+    from .bank_statement_guard import read_pending_bank_debit_holds
+    bank_holds=read_pending_bank_debit_holds(s,accounts,start)
     bank_hold=sum(bank_holds.values())
     account_balances={aid:value-bank_holds[aid] for aid,value in account_balances.items()}
     req=[r for r in s.scalars(select(PaymentRequest)) if r.account_id in ids]

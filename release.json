@@ -1,7 +1,8 @@
 {
-  "version": "2.35.19",
+  "version": "2.35.20",
   "date": "2026-11-07",
   "changes": [
+    "Устранены повторные запросы банковских удержаний для счетов без незавершённой сверки. Данные читаются в пределах выбранной компании; скрытые показатели отдела продаж не влияют на расчёт. Проверки удержаний по спорным выпискам и правила оплаты сохранены.",
     "Ускорена загрузка разделов: тяжёлые страницы загружают свой код при открытии, с состоянием ожидания и повтором после ошибки. Остатки банков и обзора рассчитываются одним пакетным чтением вместо повторного просмотра операций для каждого счёта. Права, финансовые проверки и порядок оплаты сохранены.",
     "Учёт снятия «Наличные через банк» больше не зависит от завершения сверки банковской выписки. Проверяются фактический остаток Zuma, согласования и комиссия; защита от повторной записи банковского документа сохранена.",
     "Упрощён блок «Наличные через банк»: показаны текущий шаг, исполнитель и передача от расчётного бухгалтера кассиру. Форма и кнопки прямо называют списание банка или получение в кассу. Отдельные подтверждения, комиссия, права и защита от повторного проведения сохранены.",
@@ -120,6 +121,7 @@
     "Длинные названия файлов и кнопки выбора шаблона переносятся на узком экране. В ТЭО дата архива отдельно обозначена и не подменяет начало финансового прогноза."
   ],
   "changes_uz": [
+    "Tugallanmagan solishtirish bo‘lmagan hisoblar uchun bank ushlanmalarining takroriy so‘rovlari olib tashlandi. Ma’lumotlar tanlangan kompaniya doirasida o‘qiladi; savdo bo‘limiga yashirilgan ko‘rsatkichlar hisob-kitobga ta’sir qilmaydi. Bahsli ko‘chirmalar tekshiruvlari va to‘lov qoidalari saqlangan.",
     "Bo‘limlar tezroq yuklanadi: og‘ir sahifalar kodi ochilganda olinadi, kutish va xatodan keyin qayta urinish ko‘rsatiladi. Bank va bosh sahifa qoldiqlari har bir hisob uchun takroriy o‘qish o‘rniga bitta paketli o‘qishda hisoblanadi. Huquqlar, moliyaviy tekshiruvlar va to‘lov tartibi saqlangan.",
     "«Bank orqali naqd pul» yechishni hisobga olish endi bank ko‘chirmasini to‘liq solishtirishga bog‘liq emas. Zuma hisobidagi haqiqiy qoldiq, tasdiqlar va komissiya tekshiriladi; bank hujjatini takroran hisobga olishdan himoya saqlanadi.",
     "«Bank orqali naqd pul» bloki soddalashtirildi: joriy bosqich, masʼul xodim va hisob-kitob buxgalteridan kassirga oʻtish koʻrsatiladi. Shakl va tugmalar bankdan yechish yoki kassaga olish amalini aniq nomlaydi. Alohida tasdiqlar, komissiya, huquqlar va takroriy qayd etishdan himoya saqlangan.",

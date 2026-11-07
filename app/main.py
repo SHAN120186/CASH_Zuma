@@ -321,13 +321,15 @@ def get_dashboard(request:Request,currency:Literal['UZS','USD','EUR']='UZS',days
 def accounts(request:Request,archived:bool=False):
     with unit() as s:
         user,_=session_user(s,request,'view')
-        from .bank_statement_guard import unreconciled_account_counts, pending_bank_debit_hold
-        pending=unreconciled_account_counts(s) if company_role(user)!='sales' else {}
+        from .bank_statement_guard import unreconciled_account_counts, read_pending_bank_debit_holds
+        marker_counts=unreconciled_account_counts(s)
+        pending=marker_counts if company_role(user)!='sales' else {}
         result=[]
         accounts=list(s.scalars(select(Account).where(Account.archived==archived).order_by(Account.id)))
         balances=batch_account_balances(s,accounts)
+        holds=read_pending_bank_debit_holds(s,accounts,marker_counts=marker_counts)
         for a in accounts:
-            balance=balances[a.id];hold=pending_bank_debit_hold(s,a)
+            balance=balances[a.id];hold=holds[a.id]
             result.append({'id':a.id,'name':a.name,'kind':a.kind,'currency':a.currency,'company_id':a.company_id,'opening':money(a.opening),
                  'balance':money(balance),'opening_date':str(a.opening_date),'allow_overdraft':a.allow_overdraft,'archived':a.archived,
                  'unreconciled_statements':pending.get(a.id,0),'bank_pending_debits':money(hold),'spendable_balance':money(balance-hold)})
