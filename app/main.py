@@ -774,8 +774,6 @@ def ledger_list(request:Request,include_deleted:bool=False,date_from:Optional[da
         deleted_ids=deleted_ledger_ids(s)
         from .cash_funding import protected_ledger_ids
         funding_legs=protected_ledger_ids(s)
-        acc={a.id:a for a in s.scalars(select(Account))};cats={c.id:c.name for c in s.scalars(select(Category))}
-        reversed_ids={t.reversal_of for t in s.scalars(select(Ledger).where(Ledger.reversal_of!=None))}
         if date_from and date_to and date_from>date_to:raise HTTPException(422,'Начало периода позже окончания.')
         query=select(Ledger).join(Account,Account.id==Ledger.account_id).outerjoin(Category,Category.id==Ledger.category_id)
         if not include_deleted:query=query.where(Ledger.id.not_in(deleted_ids))
@@ -792,6 +790,15 @@ def ledger_list(request:Request,include_deleted:bool=False,date_from:Optional[da
         if q:query=query.where(or_(Ledger.counterparty.ilike('%'+q+'%'),Ledger.reference.ilike('%'+q+'%'),Ledger.note.ilike('%'+q+'%'),Account.name.ilike('%'+q+'%'),Category.name.ilike('%'+q+'%')))
         total=s.scalar(select(func.count()).select_from(query.subquery()))
         query=query.order_by(Ledger.date.desc(),Ledger.id.desc())
+        entries=list(s.scalars(query.offset((page-1)*page_size).limit(page_size) if paginated else query.limit(500)))
+        page_ids={t.id for t in entries}
+        account_ids={id for t in entries for id in (t.account_id,t.to_account_id) if id is not None}
+        category_ids={t.category_id for t in entries if t.category_id is not None}
+        acc={a.id:a for a in s.scalars(select(Account).where(Account.id.in_(account_ids)))} if account_ids else {}
+        cats={c.id:c.name for c in s.scalars(select(Category).where(Category.id.in_(category_ids)))} if category_ids else {}
+        # A reversal outside this page/date/search still protects its original.
+        # Keep the same raw-ledger/company semantics, including deleted reversals.
+        reversed_ids=set(s.scalars(select(Ledger.reversal_of).where(Ledger.reversal_of.in_(page_ids)))) if page_ids else set()
         items=[{'id':t.id,'date':str(t.date),'kind':t.kind,'account_id':t.account_id,'account':acc[t.account_id].name,
                  'to_account':acc[t.to_account_id].name if t.to_account_id else '', 'currency':acc[t.account_id].currency,
                  'category':cats.get(t.category_id,'Внутренний перевод'),'amount':money(t.amount),'counterparty':t.counterparty,
@@ -801,7 +808,7 @@ def ledger_list(request:Request,include_deleted:bool=False,date_from:Optional[da
                  'cash_funding_protected':t.id in funding_legs,'can_reverse':t.id not in funding_legs and not t.reversal_of and t.id not in reversed_ids,
                  'edit_token':ledger_edit_token(t),'deleted':t.id in deleted_ids,'can_delete':u.role=='admin' and t.id not in deleted_ids and t.id not in funding_legs,
                  'can_edit':u.role=='admin' and t.id not in deleted_ids and not t.reversal_of and t.id not in reversed_ids and t.id not in funding_legs,
-                 'reversal_of':t.reversal_of,'reversed':t.id in reversed_ids} for t in s.scalars(query.offset((page-1)*page_size).limit(page_size) if paginated else query.limit(500))]
+                 'reversal_of':t.reversal_of,'reversed':t.id in reversed_ids} for t in entries]
         return {'items':items,'total':total,'page':page,'page_size':page_size} if paginated else items
 @app.post('/api/ledger')
 def add_ledger(data:LedgerIn,request:Request):
