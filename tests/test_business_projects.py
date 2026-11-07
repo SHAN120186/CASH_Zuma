@@ -235,270 +235,16 @@ class BusinessProjectTests(unittest.TestCase):
                                           'source_sha256': str(index)*64} for index, value in enumerate(values, 1)]}],
                 'warnings': []}
 
-    def test_native_input_review_applies_selected_source_and_preserves_uploaded_original(self):
-        project, source = self.native_folder()
-        decisions = {'Стоим_проекта!B38': {'choice': 'source', 'proposal_id': 'source-1'}}
-        updates = {'Стоим_проекта!B38': 8}
-        with patch('app.native_template_inputs.describe_inputs', side_effect=lambda *_: self.native_review_description()):
-            initial = self.client.get(f"/api/business-projects/{project['id']}", params={'company_id': self.cid}).json()
-            self.assertFalse(initial['native_model']['input_review']['complete'])
-            response = self.native_preview(project, data_updates=updates, review_decisions=decisions,
-                                           source_sha256=hashlib.sha256(source).hexdigest())
-            self.assertEqual(response.status_code, 200, response.text)
-            reviewed = response.json()
-            profile = reviewed['native_model']
-            self.assertTrue(profile['input_review']['complete'])
-            self.assertEqual(profile['data_updates'], updates)
-            self.assertEqual(profile['review_decisions'], decisions)
-            self.assertEqual(profile['source_sha256'], hashlib.sha256(source).hexdigest())
-            self.assertEqual(profile['input_review']['items'][0]['original_value'], 7)
-            self.assertEqual(profile['input_review']['items'][0]['value'], 8)
-            self.assertEqual(profile['overrides']['Стоим_проекта!B38'], 8)
-            self.assertEqual(next(m['calculated'] for m in profile['metrics'] if m['key'] == 'ВНД!D6'), 16)
-            downloaded = self.native_download(reviewed)
-            self.assertEqual(downloaded.status_code, 200, downloaded.text[:100])
-            self.assertEqual(self.client.get(project['files'][0]['download_url']).content, source)
-            from app.native_workbook import recalculate
-            self.assertEqual(recalculate(downloaded.content)[1]['values']['Стоим_проекта']['B38'], 8)
-        with unit() as s:
-            self.assertEqual(s.scalar(select(func.count()).select_from(ReportArchiveFile)), 0)
 
-    def test_native_input_review_rejects_missing_decisions_unknown_keys_and_forged_proposals(self):
-        project, _, word = self.native_complete_folder()
-        key = 'Стоим_проекта!B38'
-        invalid = [
-            ({}, {}), ({key: 8}, {}), ({key: 8}, {key: {'choice': 'manual', 'proposal_id': 'source-1'}}),
-            ({key: 8}, {key: {'choice': 'keep'}}), ({}, {key: {'choice': 'manual'}}),
-            ({key: 8}, {key: {'choice': 'source'}}), ({key: 8}, {key: {'choice': 'source', 'proposal_id': 'forged'}}),
-            ({key: 9}, {key: {'choice': 'source', 'proposal_id': 'source-1'}}),
-            ({key: True}, {key: {'choice': 'manual'}}), ({key: '8'}, {key: {'choice': 'manual'}}),
-            ({key: 1e99}, {key: {'choice': 'manual'}}), ({'ВНД!D6': 100}, {key: {'choice': 'keep'}}),
-            ({key: 8}, {'Unknown!A1': {'choice': 'manual'}}), ({key: 8}, {key: {'choice': 'automatic'}}),
-        ]
-        stack, patched, rendered, teo = self.native_renderers(word)
-        with stack, patch('app.native_template_inputs.describe_inputs', side_effect=lambda *_: self.native_review_description()):
-            for updates, decisions in invalid:
-                with self.subTest(updates=updates, decisions=decisions):
-                    self.assertEqual(self.native_preview(project, data_updates=updates, review_decisions=decisions).status_code, 422)
-                    self.assertEqual(self.native_generate(project, data_updates=updates, review_decisions=decisions).status_code, 422)
-            conflict = self.native_preview(project, {key: 9}, data_updates={key: 8}, review_decisions={key: {'choice': 'manual'}})
-            self.assertEqual(conflict.status_code, 422)
-            bypass = self.client.post(f"/api/business-projects/{project['id']}/native/preview",
-                params={'company_id': self.cid}, headers=self.headers,
-                json={'revision': project['revision'], 'review_confirmed': True})
-            self.assertEqual(bypass.status_code, 422)
-            patched.assert_not_called(); rendered.assert_not_called(); teo.assert_not_called()
-        with unit() as s:
-            self.assertEqual(s.scalar(select(func.count()).select_from(ReportArchiveFile)), 0)
-            self.assertEqual(s.scalar(select(func.count()).select_from(Ledger)), 0)
 
-    def test_native_input_review_decisions_are_immutable_report_provenance_and_retries_are_canonical(self):
-        project, source, word = self.native_complete_folder()
-        key, updates = 'Стоим_проекта!B38', {'Стоим_проекта!B38': 8}
-        source_choice = {key: {'choice': 'source', 'proposal_id': 'source-1'}}
-        stack, _, rendered, _ = self.native_renderers(word)
-        with stack, patch('app.native_template_inputs.describe_inputs', side_effect=lambda *_: self.native_review_description()):
-            response = self.native_generate(project, data_updates=updates, review_decisions=source_choice)
-            self.assertEqual(response.status_code, 200, response.text)
-            ready = response.json()
-            first_id = ready['current_generation_id']
-            again = self.native_generate(ready, {key: 8}, data_updates=updates, review_decisions=source_choice)
-            self.assertEqual(again.status_code, 200, again.text)
-            self.assertEqual(again.json()['current_generation_id'], first_id)
-            manual = self.native_generate(again.json(), data_updates=updates, review_decisions={key: {'choice': 'manual'}})
-            self.assertEqual(manual.status_code, 200, manual.text)
-            self.assertNotEqual(manual.json()['current_generation_id'], first_id)
-            self.assertEqual(rendered.call_count, 2)
-            self.assertEqual(self.client.get(project['files'][0]['download_url']).content, source)
-        with unit() as s:
-            inputs = json.loads(s.get(BusinessGeneration, first_id).inputs_json)
-            self.assertEqual(inputs['native_data_updates'], updates)
-            self.assertEqual(inputs['native_review_decisions'], source_choice)
-            self.assertEqual(inputs['native_overrides'], {})
-            self.assertEqual(s.scalar(select(func.count()).select_from(ReportArchiveFile)), 8)
 
-    def test_native_input_review_equal_duplicate_sources_require_an_explicit_keep(self):
-        project, _ = self.native_folder()
-        key = 'Стоим_проекта!B38'
-        with patch('app.native_template_inputs.describe_inputs', side_effect=lambda *_: self.native_review_description((7, 7))):
-            self.assertEqual(self.native_preview(project).status_code, 422)
-            response = self.native_preview(project, review_decisions={key: {'choice': 'keep'}})
-            self.assertEqual(response.status_code, 200, response.text)
-            self.assertTrue(response.json()['native_model']['input_review']['complete'])
-            self.assertEqual(response.json()['native_model']['data_updates'], {})
-            self.assertEqual(next(m['calculated'] for m in response.json()['native_model']['metrics'] if m['key'] == 'ВНД!D6'), 14)
-        with patch('app.native_template_inputs.describe_inputs', side_effect=lambda *_: self.native_review_description((7,))):
-            self.assertEqual(self.native_preview(project).status_code, 200)
 
-    def test_native_input_review_requires_source_basis_confirmation_only_for_selected_uncertain_source(self):
-        project, source, word = self.native_complete_folder()
-        key, updates = 'Стоим_проекта!B38', {'Стоим_проекта!B38': 8}
-        description = self.native_review_description()
-        description['items'][0]['proposals'][0]['basis_confirmation'] = True
-        choices = {key: {'choice': 'source', 'proposal_id': 'source-1'}}
-        stack, _, rendered, _ = self.native_renderers(word)
-        with stack, patch('app.native_template_inputs.describe_inputs', return_value=description):
-            rejected = self.native_preview(project, data_updates=updates, review_decisions=choices)
-            self.assertEqual(rejected.status_code, 422)
-            self.assertIn('подтвердите валюту, единицы, период и базу цен', rejected.json()['detail'])
-            self.assertEqual(self.native_generate(project, data_updates=updates, review_decisions=choices).status_code, 422)
-            rendered.assert_not_called()
-            self.assertEqual(self.native_preview(project, review_decisions={key: {'choice': 'keep'}}).status_code, 200)
-            self.assertEqual(self.native_preview(project, data_updates=updates, review_decisions={key: {'choice': 'manual'}}).status_code, 200)
-            checked = self.native_preview(project, data_updates=updates, review_decisions=choices, confirm_source_basis=True)
-            self.assertEqual(checked.status_code, 200, checked.text)
-            profile = checked.json()['native_model']
-            self.assertTrue(profile['confirm_source_basis'])
-            self.assertTrue(profile['input_review']['source_basis_confirmation_required'])
-            self.assertTrue(profile['input_review']['complete'])
-            self.assertEqual(self.native_download(checked.json()).status_code, 200)
-            ready = self.native_generate(checked.json(), data_updates=updates, review_decisions=choices, confirm_source_basis=True)
-            self.assertEqual(ready.status_code, 200, ready.text)
-            self.assertTrue(ready.json()['native_model']['confirm_source_basis'])
-            self.assertEqual(rendered.call_count, 1)
-            self.assertEqual(self.client.get(project['files'][0]['download_url']).content, source)
-            self.assertEqual(self.native_preview(project, data_updates=updates, review_decisions=choices, confirm_source_basis='true').status_code, 422)
-        with unit() as s:
-            generation = s.get(BusinessGeneration, ready.json()['current_generation_id'])
-            self.assertTrue(json.loads(generation.inputs_json)['native_confirm_source_basis'])
-        # An equal proposal left unused never asks for source-basis confirmation.
-        equal = self.native_review_description((7,))
-        equal['items'][0]['proposals'][0]['basis_confirmation'] = True
-        with patch('app.native_template_inputs.describe_inputs', return_value=equal):
-            unchanged = self.native_preview(project)
-            self.assertEqual(unchanged.status_code, 200, unchanged.text)
-            self.assertFalse(unchanged.json()['native_model']['confirm_source_basis'])
-            self.assertFalse(unchanged.json()['native_model']['input_review']['source_basis_confirmation_required'])
 
-    def test_native_input_review_source_sha_and_proposal_ids_cannot_reuse_a_new_source_revision(self):
-        project, source = self.native_folder()
-        key = 'Стоим_проекта!B38'
-        choices = {key: {'choice': 'source', 'proposal_id': 'source-1'}}
-        with patch('app.native_template_inputs.describe_inputs', side_effect=lambda *_: self.native_review_description()):
-            reviewed = self.native_preview(project, data_updates={key: 8}, review_decisions=choices).json()
-            changed = self.upload(reviewed, b'Changed evidence', 'updated-evidence.txt').json()
-            self.assertEqual(self.native_preview(reviewed, data_updates={key: 8}, review_decisions=choices).status_code, 409)
-            self.assertEqual(self.native_download(reviewed).status_code, 409)
-            self.assertEqual(self.native_download(changed).status_code, 409)
-            self.assertEqual(self.native_preview(changed, data_updates={key: 8}, review_decisions=choices, source_sha256='0'*64).status_code, 409)
-        description = self.native_review_description()
-        description['items'][0]['proposals'][0]['id'] = 'new-source-1'
-        with patch('app.native_template_inputs.describe_inputs', return_value=description):
-            response = self.native_preview(changed, data_updates={key: 8}, review_decisions=choices,
-                                           source_sha256=hashlib.sha256(source).hexdigest())
-            self.assertEqual(response.status_code, 422)
 
-    def test_native_input_review_blank_input_requires_explicit_number_and_not_keep_or_zero_default(self):
-        project, _ = self.native_folder({('Стоим_проекта', 'B38'): (None, None)})
-        key = 'Стоим_проекта!B38'
-        item = next(item for item in project['native_model']['input_review']['items'] if item['key'] == key)
-        self.assertIsNone(item['value'])
-        self.assertTrue(item['requires_decision'])
-        self.assertEqual(self.native_preview(project).status_code, 422)
-        self.assertEqual(self.native_preview(project, review_decisions={key: {'choice': 'keep'}}).status_code, 422)
-        response = self.native_preview(project, data_updates={key: 8}, review_decisions={key: {'choice': 'manual'}})
-        self.assertEqual(response.status_code, 200, response.text)
-        self.assertEqual(next(m['calculated'] for m in response.json()['native_model']['metrics'] if m['key'] == 'ВНД!D6'), 16)
 
-    def test_native_input_review_unused_staff_blanks_stay_optional_until_role_explicitly_selected(self):
-        from app.native_uzgermed import REQUIRED_SHEETS
-        with patch('test_native_uzgermed.REQUIRED_SHEETS', REQUIRED_SHEETS | {'Труд'}):
-            project, source = self.native_folder({('Труд', 'A16'): ('Synthetic unused role', None),
-                                                  ('Труд', 'B16'): (None, None), ('Труд', 'C16'): (None, None)})
-        keys = ('Труд!B16', 'Труд!C16')
-        items = {item['key']: item for item in project['native_model']['input_review']['items']}
-        for key in keys:
-            self.assertIsNone(items[key]['value'])
-            self.assertFalse(items[key]['required'])
-            self.assertFalse(items[key]['requires_decision'])
-        original = self.native_preview(project)
-        self.assertEqual(original.status_code, 200, original.text)
-        self.assertTrue(original.json()['native_model']['input_review']['complete'])
-        self.assertEqual(original.json()['native_model']['data_updates'], {})
-        self.assertEqual(self.native_download(original.json()).status_code, 200)
-        for key, value in zip(keys, (2, 50)):
-            selected = self.native_preview(project, data_updates={key: value}, review_decisions={key: {'choice': 'manual'}})
-            self.assertEqual(selected.status_code, 422)
-            self.assertIn('численность и зарплату выбранной должности', selected.json()['detail'])
-        complete = self.native_preview(project, data_updates={keys[0]: 2, keys[1]: 50},
-                                       review_decisions={key: {'choice': 'manual'} for key in keys})
-        self.assertEqual(complete.status_code, 200, complete.text)
-        self.assertEqual(complete.json()['native_model']['data_updates'], {keys[0]: 2, keys[1]: 50})
-        self.assertEqual(self.client.get(project['files'][0]['download_url']).content, source)
 
-    def test_selected_template_marker_survives_upload_and_analysis_and_blocks_generic_fallback(self):
-        project, _ = self.native_folder()
-        marker = {'id': 17, 'title': 'Synthetic original template', 'xlsx_sha256': project['native_model']['source_sha256']}
-        with unit(True) as s:
-            record = s.get(BusinessProject, project['id'])
-            extraction = json.loads(record.extraction_json)
-            record.extraction_json = json.dumps({**extraction, 'template_selected': marker})
-        uploaded = self.upload(project, b'Synthetic evidence', 'evidence.txt')
-        self.assertEqual(uploaded.status_code, 200, uploaded.text)
-        uploaded = uploaded.json()
-        self.assertEqual(uploaded['extraction']['template_selected'], marker)
-        analysed = self.analyse(uploaded)
-        self.assertEqual(analysed.status_code, 200, analysed.text)
-        analysed = analysed.json()
-        self.assertEqual(analysed['extraction']['template_selected'], marker)
-        self.assertIn('input_review', analysed['native_model'])
-        with patch('app.native_projects.native_candidate', return_value=None):
-            for response in (self.analyse(analysed), self.generate(analysed), self.save_draft(analysed, model())):
-                self.assertEqual(response.status_code, 422, response.text)
-                self.assertIn('выбранного шаблона', response.json()['detail'])
-        corrupted = self.upload(analysed, synthetic_source('.xlsx'), 'Synthetic/native.xlsx')
-        self.assertEqual(corrupted.status_code, 422, corrupted.text)
-        current = self.client.get(f"/api/business-projects/{project['id']}", params={'company_id': self.cid}).json()
-        self.assertEqual(current['revision'], analysed['revision'])
-        self.assertEqual(current['extraction']['template_selected'], marker)
-        with unit() as s:
-            self.assertEqual(s.scalar(select(func.count()).select_from(ReportArchiveFile)), 0)
 
-    def test_original_template_project_creation_checks_template_id_on_idempotent_retries(self):
-        source = native_fixture()
-        body = {'company_id': self.cid, 'title': 'Synthetic template project', 'request_key': str(uuid4()), 'template_id': 17}
-        def use_template(session, project, template_id, user):
-            self.assertIsNotNone(project.id)
-            project.extraction_json = json.dumps({'mode': 'files', 'sources_pending': True,
-                                                  'template_selected': {'id': template_id, 'title': 'Synthetic template'}})
-            project.revision = 1
-            session.add(BusinessSourceFile(company_id=self.cid, project_id=project.id, filename='native.xlsx',
-                relative_path='template/native.xlsx', content=source, size=len(source), sha256=hashlib.sha256(source).hexdigest()))
-        with patch('app.business_templates.use_template', side_effect=use_template) as copied:
-            response = self.client.post('/api/business-projects', json=body, headers=self.headers)
-            self.assertEqual(response.status_code, 200, response.text)
-            project = response.json()
-            self.assertEqual(project['extraction']['template_selected']['id'], 17)
-            self.assertEqual(project['source_count'], 1)
-            self.assertTrue(project['native_model'])
-            repeat = self.client.post('/api/business-projects', json=body, headers=self.headers)
-            self.assertEqual(repeat.status_code, 200, repeat.text)
-            self.assertEqual(repeat.json()['id'], project['id'])
-            self.assertEqual(self.client.post('/api/business-projects', json={**body, 'template_id': 18}, headers=self.headers).status_code, 409)
-            self.assertEqual(self.client.post('/api/business-projects', json={**body, 'mode': 'manual'}, headers=self.headers).status_code, 422)
-            copied.assert_called_once()
 
-    def test_identical_template_copies_are_one_model_but_different_models_are_rejected(self):
-        project, source, word = self.native_complete_folder()
-        copied = self.upload(project, source, 'Another folder/native-copy.xlsx')
-        self.assertEqual(copied.status_code, 200, copied.text)
-        copied = self.upload(copied.json(), word, 'Another folder/Бизнес-план-копия.docx')
-        self.assertEqual(copied.status_code, 200, copied.text)
-        copied = copied.json()
-        stack, _, rendered, _ = self.native_renderers(word)
-        with stack:
-            ready = self.native_generate(copied)
-            self.assertEqual(ready.status_code, 200, ready.text)
-            rendered.assert_called_once()
-        with unit() as s:
-            generation = s.get(BusinessGeneration, ready.json()['current_generation_id'])
-            self.assertEqual(len(json.loads(generation.source_manifest_json)), 4)
-        different = native_fixture({('Стоим_проекта', 'B38'): (9, None)})
-        response = self.upload(ready.json(), different, 'Another folder/different-model.xlsx')
-        self.assertEqual(response.status_code, 422, response.text)
-        self.assertIn('несколько оригинальных', response.json()['detail'])
-        current = self.client.get(f"/api/business-projects/{project['id']}", params={'company_id': self.cid}).json()
-        self.assertEqual(current['source_count'], 4)
 
     def test_manual_project_generates_four_files_without_sources_or_analysis(self):
         project, body = self.create('manual')
@@ -690,23 +436,20 @@ class BusinessProjectTests(unittest.TestCase):
         self.assertTrue(ready['extraction']['parameters_confirmed'])
         self.assertTrue(any(issue.get('code') == 'price_conflict' for issue in ready['extraction']['issues']))
 
-    def test_manual_native_attachment_cannot_bypass_original_methodology(self):
+    def test_manual_excel_upload_is_disabled_and_draft_is_unchanged(self):
         project, _ = self.create('manual')
         saved = self.save_draft(project, {**model(), 'resources': 'Preserved manual resources'}).json()
-        uploaded = self.upload(saved, native_fixture(), 'native.xlsx').json()
-        self.assertTrue(uploaded['native_model'])
-        self.assertEqual(uploaded['inputs'], saved['inputs'])
-        self.assertEqual(self.save_draft(uploaded, model()).status_code, 409)
-        self.assertEqual(self.generate(uploaded, confirmed=True).status_code, 409)
-        analysed = self.analyse(uploaded).json()
-        self.assertTrue(analysed['native_model'])
-        self.assertEqual(analysed['mode'], 'manual')
-        self.assertEqual(analysed['inputs'], saved['inputs'])
+        uploaded = self.upload(saved, native_fixture(), 'native.xlsx')
+        self.assertEqual(uploaded.status_code, 410, uploaded.text)
+        detail = self.client.get(f"/api/business-projects/{project['id']}", params={'company_id': self.cid}).json()
+        self.assertEqual(detail['inputs'], saved['inputs'])
+        self.assertEqual(detail['revision'], saved['revision'])
+        self.assertEqual(detail['files'], [])
 
     def test_manual_draft_rechecks_revision_after_source_inspection(self):
         project, _ = self.create('manual')
         concurrent = {'title': 'Concurrent draft'}
-        def change_during_inspection(files):
+        def change_during_inspection(extraction, records):
             with unit(True) as s:
                 record = s.get(BusinessProject, project['id'])
                 record.inputs_json = json.dumps(concurrent)
@@ -714,7 +457,7 @@ class BusinessProjectTests(unittest.TestCase):
                 from app.db import now
                 record.updated_at = now()
             return None
-        with patch('app.native_projects.native_candidate', side_effect=change_during_inspection):
+        with patch('app.business_projects.require_manual_or_non_excel', side_effect=change_during_inspection):
             response = self.save_draft(project, {'title': 'Stale draft'})
         self.assertEqual(response.status_code, 409, response.text)
         with unit() as s:
@@ -748,291 +491,18 @@ class BusinessProjectTests(unittest.TestCase):
         self.assertEqual(self.generate(uploaded).status_code, 409)
         self.assertEqual(self.analyse(uploaded).json()['status'], 'ready')
 
-    def test_native_generation_publishes_four_private_files_from_fresh_model_and_retries_without_rendering(self):
-        project, source, word = self.native_complete_folder()
-        stack, patched, rendered, teo = self.native_renderers(word)
-        with stack:
-            response = self.native_generate(project, {'Стоим_проекта!B38': 8})
-            self.assertEqual(response.status_code, 200, response.text)
-            ready = response.json()
-            self.assertEqual(ready['status'], 'ready')
-            self.assertEqual(len(ready['generations']), 1)
-            generation = ready['generations'][0]
-            self.assertEqual(generation['metrics']['npv'], 16)
-            self.assertEqual(generation['business_archive']['period_start'], '2027-01-01')
-            self.assertEqual(generation['business_archive']['period_end'], '2029-12-31')
-            again = self.native_generate(ready, {'Стоим_проекта!B38': 8})
-            self.assertEqual(again.status_code, 200, again.text)
-            self.assertEqual(again.json()['current_generation_id'], ready['current_generation_id'])
-            patched.assert_called_once()
-            rendered.assert_called_once_with(word)
-            teo.assert_called_once()
-        files = {f['filename']: f for f in ready['files']}
-        self.assertEqual(self.client.get(files['native.xlsx']['download_url']).content, source)
-        self.assertEqual(self.client.get(files['Бизнес-план.docx']['download_url']).content, word)
-        for archive in (generation['business_archive'], generation['teo_archive']):
-            self.assertEqual(archive['status'], 'ready')
-            for fmt in ('pdf', 'xlsx'):
-                response = self.client.get(f"/api/bot/v1/report-archives/{archive['id']}/files/{fmt}",
-                    params={'company_id': self.cid, 'telegram_user_id': 88101}, auth=BOT)
-                self.assertEqual(response.status_code, 200, response.text[:100])
-                self.assertTrue(response.content.startswith(b'%PDF-' if fmt == 'pdf' else b'PK'))
-                self.assertEqual(response.headers['Cache-Control'], 'no-store')
-        with unit() as s:
-            self.assertEqual(s.scalar(select(func.count()).select_from(ReportArchive)), 2)
-            self.assertEqual(s.scalar(select(func.count()).select_from(ReportArchiveFile)), 4)
-            self.assertEqual(s.scalar(select(func.count()).select_from(BusinessGeneration)), 1)
-            self.assertEqual(s.scalar(select(func.count()).select_from(Ledger)), 0)
 
-    def test_native_generator_update_creates_a_new_immutable_report_without_reusing_old_word_conclusions(self):
-        project, source, word = self.native_complete_folder()
-        stack, patched, rendered, _ = self.native_renderers(word)
-        with stack:
-            with patch('app.native_projects.GENERATOR_VERSION', '1.0'):
-                before = self.native_generate(project).json()
-            old_archive = before['generations'][0]['business_archive']['id']
-            path = f'/api/report-archives/{old_archive}/files/pdf?company_id={self.cid}'
-            old_bytes = self.client.get(path, headers=self.headers).content
-            with patch('app.native_projects.GENERATOR_VERSION', '1.1'):
-                response = self.native_generate(before)
-                self.assertEqual(response.status_code, 200, response.text)
-                after = response.json()
-                retry = self.native_generate(after)
-                self.assertEqual(retry.status_code, 200, retry.text)
-                self.assertEqual(retry.json()['current_generation_id'], after['current_generation_id'])
-            self.assertNotEqual(before['current_generation_id'], after['current_generation_id'])
-            self.assertEqual(len(after['generations']), 2)
-            self.assertEqual(patched.call_count, 2)
-            self.assertEqual(rendered.call_count, 2)
-            self.assertEqual(self.client.get(path, headers=self.headers).content, old_bytes)
-        self.assertEqual(self.client.get(after['files'][0]['download_url'], headers=self.headers).content, source)
-        with unit() as s:
-            versions = [json.loads(g.result_json)['native_generator'] for g in s.scalars(
-                select(BusinessGeneration).order_by(BusinessGeneration.id))]
-            self.assertEqual(versions, ['1.0', '1.1'])
 
-    def test_native_parameter_or_source_change_creates_new_immutable_report_versions(self):
-        project, _, word = self.native_complete_folder()
-        stack, _, rendered, _ = self.native_renderers(word)
-        with stack:
-            first = self.native_generate(project, {'Стоим_проекта!B38': 8}).json()
-            second = self.native_generate(first, {'Стоим_проекта!B38': 9})
-            self.assertEqual(second.status_code, 200, second.text)
-            second = second.json()
-            self.assertNotEqual(second['current_generation_id'], first['current_generation_id'])
-            self.assertEqual(len(second['generations']), 2)
-            self.assertEqual(second['generations'][0]['metrics']['npv'], 18)
-            changed_source = native_fixture({('Стоим_проекта', 'B38'): (8, None),
-                                            ('ВНД', 'D6'): (16, "'Стоим_проекта'!B38*2")})
-            updated = self.upload(second, changed_source, 'Synthetic/native.xlsx')
-            self.assertEqual(updated.status_code, 200, updated.text)
-            third = self.native_generate(updated.json(), {'Стоим_проекта!B38': 9})
-            self.assertEqual(third.status_code, 200, third.text)
-            self.assertEqual(len(third.json()['generations']), 3)
-            self.assertNotEqual(third.json()['current_generation_id'], second['current_generation_id'])
-            self.assertEqual(rendered.call_count, 3)
-        with unit() as s:
-            self.assertEqual(s.scalar(select(func.count()).select_from(ReportArchive)), 6)
-            self.assertEqual(s.scalar(select(func.count()).select_from(ReportArchiveFile)), 12)
-            self.assertEqual(s.scalar(select(func.count()).select_from(Ledger)), 0)
 
-    def test_native_generation_checks_owner_company_revision_template_calendar_and_safe_parameters(self):
-        incomplete, _ = self.native_folder()
-        self.assertEqual(self.native_generate(incomplete).status_code, 422)
-        project, _, word = self.native_complete_folder()
-        peer, peer_headers = self.actor('native_gen_peer', 'finance')
-        reader, reader_headers = self.actor('native_gen_reader', 'investor')
-        for client, headers in ((peer, peer_headers), (reader, reader_headers)):
-            self.assertEqual(self.native_generate(project, client=client, headers=headers).status_code, 403)
-        anonymous = TestClient(app)
-        self.clients.append(anonymous)
-        self.assertEqual(self.native_generate(project, client=anonymous).status_code, 401)
-        self.assertEqual(self.native_generate({**project, 'revision': project['revision']+1}).status_code, 409)
-        foreign = {**self.headers, 'X-Company-ID': str(self.other)}
-        self.assertEqual(self.native_generate(project, headers=foreign, company_id=self.other).status_code, 404)
-        stack, patched, rendered, teo = self.native_renderers(word)
-        with stack:
-            for start in ('1999-01-01', '2098-01-01', '2027-01-02', 'not-a-date'):
-                self.assertEqual(self.native_generate(project, start=start).status_code, 422)
-            self.assertEqual(self.native_generate(project, {'ВНД!D6': 100}).status_code, 422)
-            self.assertEqual(self.native_generate(project, {'РКЛ!AA7': 3}).status_code, 422)
-            patched.assert_not_called()
-            rendered.assert_not_called()
-            teo.assert_not_called()
-        with unit() as s:
-            self.assertEqual(s.scalar(select(func.count()).select_from(ReportArchive)), 0)
 
-    def test_native_generation_blocks_core_error_but_retains_unrelated_errors_as_evidence(self):
-        blocked, _, word = self.native_complete_folder({('ВНД', 'D6'): ('#REF!', '#REF!')})
-        unrelated, _, _ = self.native_complete_folder({('РКЛ', 'AB14'): ('#REF!', '#REF!')})
-        stack, _, rendered, _ = self.native_renderers(word)
-        with stack:
-            response = self.native_generate(blocked)
-            self.assertEqual(response.status_code, 422, response.text)
-            rendered.assert_not_called()
-            response = self.native_generate(unrelated)
-            self.assertEqual(response.status_code, 200, response.text)
-            self.assertFalse(response.json()['native_model']['preview']['blocked'])
-            self.assertEqual(response.json()['native_model']['preview']['error_count'], 1)
-            self.assertEqual(len(response.json()['generations']), 1)
-            rendered.assert_called_once()
-        with unit() as s:
-            self.assertEqual(s.scalar(select(func.count()).select_from(BusinessGeneration)), 1)
-            self.assertEqual(s.scalar(select(func.count()).select_from(ReportArchive)), 2)
 
-    def test_native_generation_rechecks_lifecycle_and_permission_after_pdf_rendering(self):
-        project, _, word = self.native_complete_folder()
-        def delete_restore_during_render(_):
-            self.assertEqual(self.restore(self.remove(project).json()).status_code, 200)
-            return b'%PDF-1.4\nSynthetic native test\n%%EOF\n'
-        stack, _, _, _ = self.native_renderers(word, delete_restore_during_render)
-        with stack:
-            self.assertEqual(self.native_generate(project).status_code, 409)
-        def revoke_during_render(_):
-            with unit(True) as s:
-                s.get(CompanyUser, (self.cid, self.uid)).role = 'investor'
-                s.get(User, self.uid).role = 'investor'
-                s.delete(s.get(CompanyUser, (self.other, self.uid)))
-            return b'%PDF-1.4\nSynthetic native test\n%%EOF\n'
-        stack, _, _, _ = self.native_renderers(word, revoke_during_render)
-        with stack:
-            self.assertEqual(self.native_generate(project).status_code, 403)
-        with unit() as s:
-            self.assertEqual(s.scalar(select(func.count()).select_from(BusinessGeneration)), 0)
-            self.assertEqual(s.scalar(select(func.count()).select_from(ReportArchiveFile)), 0)
-            self.assertEqual(s.scalar(select(func.count()).select_from(Ledger)), 0)
 
-    def test_native_original_model_uses_source_profile_without_generic_requirements_or_reports(self):
-        project, _ = self.native_folder()
-        self.assertTrue(project['native_model']['supported'])
-        self.assertEqual(project['native_model']['sheet_count'], 11)
-        self.assertEqual(project['validation'], [])
-        reviewed = self.analyse(project)
-        self.assertEqual(reviewed.status_code, 200, reviewed.text)
-        self.assertEqual(reviewed.json()['generations'], [])
-        self.assertEqual(reviewed.json()['validation'], [])
-        self.assertEqual(self.generate(reviewed.json()).status_code, 409)
-        self.assertEqual(self.native_download(reviewed.json()).status_code, 409)
-        with unit() as s:
-            self.assertEqual(s.scalar(select(func.count()).select_from(ReportArchive)), 0)
-            self.assertEqual(s.scalar(select(func.count()).select_from(Ledger)), 0)
 
-    def test_native_preview_recalculates_changed_input_preserves_original_and_native_print_styles(self):
-        project, original = self.native_folder()
-        response = self.native_preview(project, {'Стоим_проекта!B38': 8})
-        self.assertEqual(response.status_code, 200, response.text)
-        profile = response.json()['native_model']
-        self.assertFalse(profile['preview']['blocked'], profile['preview'])
-        npv = next(m for m in profile['metrics'] if m['key'] == 'ВНД!D6')
-        self.assertEqual(npv['original'], 14)
-        self.assertEqual(npv['calculated'], 16)
-        downloaded = self.native_download(response.json())
-        self.assertEqual(downloaded.status_code, 200, downloaded.text[:100])
-        self.assertEqual(downloaded.headers['Cache-Control'], 'no-store')
-        self.assertEqual(downloaded.headers['X-Content-Type-Options'], 'nosniff')
-        self.assertIn(quote('Пересчитано_'), downloaded.headers['Content-Disposition'])
-        self.assertEqual(self.client.get(project['files'][0]['download_url']).content, original)
-        with ZipFile(io.BytesIO(original)) as before, ZipFile(io.BytesIO(downloaded.content)) as after:
-            self.assertEqual(after.read('xl/styles.xml'), before.read('xl/styles.xml'))
-            self.assertEqual(after.read('xl/printerSettings/printerSettings1.bin'), before.read('xl/printerSettings/printerSettings1.bin'))
-            for name in before.namelist():
-                if name.startswith('xl/worksheets/'):
-                    self.assertIn(b'orientation="landscape"', after.read(name))
-                    self.assertIn(b'paperSize="9"', after.read(name))
-                    if b'ht="24"' in before.read(name):
-                        self.assertIn(b'ht="24"', after.read(name))
-        with unit() as s:
-            self.assertEqual(s.scalar(select(func.count()).select_from(BusinessGeneration)), 0)
-            self.assertEqual(s.scalar(select(func.count()).select_from(ReportArchiveFile)), 0)
-            self.assertEqual(s.scalar(select(func.count()).select_from(Ledger)), 0)
 
-    def test_native_preview_and_download_enforce_owner_permission_company_and_revision(self):
-        project, _ = self.native_folder()
-        peer, peer_headers = self.actor('native_peer', 'finance')
-        investor, investor_headers = self.actor('native_reader', 'investor')
-        for client, headers in ((peer, peer_headers), (investor, investor_headers)):
-            self.assertEqual(self.native_preview(project, client=client, headers=headers).status_code, 403)
-            self.assertEqual(self.native_download(project, client=client, headers=headers).status_code, 403)
-            viewed = client.get(f"/api/business-projects/{project['id']}", params={'company_id': self.cid}).json()
-            self.assertNotIn('native_model', viewed)
-        anonymous = TestClient(app)
-        self.clients.append(anonymous)
-        self.assertEqual(self.native_preview(project, client=anonymous).status_code, 401)
-        self.assertEqual(self.native_download(project, client=anonymous).status_code, 401)
-        stale = {**project, 'revision': project['revision']+1}
-        self.assertEqual(self.native_preview(stale).status_code, 409)
-        self.assertEqual(self.native_download(stale).status_code, 409)
-        foreign = {**self.headers, 'X-Company-ID': str(self.other)}
-        self.assertEqual(self.native_preview(project, headers=foreign, company_id=self.other).status_code, 404)
-        self.assertEqual(self.native_download(project, headers=foreign, company_id=self.other).status_code, 404)
 
-    def test_native_overrides_cannot_edit_formulas_or_unknown_cells_and_check_numbers_and_ranges(self):
-        project, _ = self.native_folder()
-        for overrides in ({'ВНД!D6': 3}, {'Unknown!A1': 3}, {'Стоим_проекта!B38': '8'},
-                          {'Стоим_проекта!B38': True}, {'Стоим_проекта!B38': 0},
-                          {'Раб_капит!B7': 0}):
-            with self.subTest(overrides=overrides):
-                response = self.native_preview(project, overrides)
-                self.assertEqual(response.status_code, 422, response.text)
-        formula_project, _ = self.native_folder({('Стоим_проекта', 'B38'): (7, '3+4')})
-        self.assertEqual(self.native_preview(formula_project, {'Стоим_проекта!B38': 8}).status_code, 422)
 
-    def test_native_readonly_credit_conditions_reject_overrides_before_calculation_or_publication(self):
-        project, source, word = self.native_complete_folder()
-        controls = {item['key']: item for item in project['native_model']['parameters']}
-        keys = ('РКЛ!AA7', 'РКЛ!AA8', 'РКЛ!AA10')
-        for key in keys:
-            self.assertFalse(controls[key]['editable'])
-            self.assertIsNotNone(controls[key]['value'])
-        stack, patched, rendered, teo = self.native_renderers(word)
-        with stack:
-            for key in keys:
-                for value in (controls[key]['value'], controls[key]['value'] + 1):
-                    with self.subTest(key=key, value=value):
-                        self.assertEqual(self.native_preview(project, {key: value}).status_code, 422)
-                        self.assertEqual(self.native_generate(project, {key: value}).status_code, 422)
-            patched.assert_not_called()
-            rendered.assert_not_called()
-            teo.assert_not_called()
-        files = {item['filename']: item for item in project['files']}
-        self.assertEqual(self.client.get(files['native.xlsx']['download_url']).content, source)
-        with unit() as s:
-            self.assertEqual(s.scalar(select(func.count()).select_from(BusinessGeneration)), 0)
-            self.assertEqual(s.scalar(select(func.count()).select_from(ReportArchiveFile)), 0)
 
-    def test_native_preview_exposes_dependent_formula_error_and_never_publishes_a_financial_report(self):
-        project, original = self.native_folder({('ВНД', 'D6'): ('#REF!', '#REF!')})
-        response = self.native_preview(project)
-        self.assertEqual(response.status_code, 200, response.text)
-        preview = response.json()['native_model']['preview']
-        self.assertTrue(preview['blocked'])
-        self.assertIn('ВНД!D6', preview['dependent_errors'])
-        self.assertGreater(preview['error_count'], 0)
-        downloaded = self.native_download(response.json())
-        self.assertEqual(downloaded.status_code, 200)
-        self.assertIn(quote('Проверка_ошибок_'), downloaded.headers['Content-Disposition'])
-        self.assertEqual(self.client.get(project['files'][0]['download_url']).content, original)
-        with unit() as s:
-            self.assertEqual(s.scalar(select(func.count()).select_from(ReportArchive)), 0)
-            self.assertEqual(s.scalar(select(func.count()).select_from(BusinessGeneration)), 0)
 
-    def test_native_preview_and_download_recheck_delete_restore_lifecycle_after_calculation(self):
-        project, _ = self.native_folder()
-        from app.native_workbook import recalculate
-        def change_lifecycle(*args, **kwargs):
-            output = recalculate(*args, **kwargs)
-            self.assertEqual(self.restore(self.remove(project).json()).status_code, 200)
-            return output
-        with patch('app.native_workbook.recalculate', side_effect=change_lifecycle):
-            self.assertEqual(self.native_preview(project).status_code, 409)
-        current = self.client.get(f"/api/business-projects/{project['id']}", params={'company_id': self.cid}).json()
-        self.assertIsNone(current['native_model'].get('preview'))
-        reviewed = self.native_preview(current).json()
-        with patch('app.native_workbook.recalculate', side_effect=change_lifecycle):
-            self.assertEqual(self.native_download(reviewed).status_code, 409)
-        with unit() as s:
-            self.assertEqual(s.scalar(select(func.count()).select_from(ReportArchive)), 0)
-            self.assertEqual(s.scalar(select(func.count()).select_from(Ledger)), 0)
 
     def test_delete_restore_retains_original_sources_parameters_and_generated_bytes(self):
         project = self.ready()
@@ -1304,9 +774,18 @@ class BusinessProjectTests(unittest.TestCase):
             with self.subTest(extension=extension):
                 raw = synthetic_source(extension)
                 filename = 'Образец "исходник"' + extension
-                uploaded = self.upload(project, raw, 'Папка/' + filename)
-                self.assertEqual(uploaded.status_code, 200, uploaded.text)
-                project = uploaded.json()
+                if extension in ('.xlsx', '.xltx'):
+                    # Historical originals remain downloadable after new Excel imports are disabled.
+                    with unit(True) as s:
+                        s.add(BusinessSourceFile(company_id=self.cid, project_id=project['id'],
+                            relative_path='Папка/' + filename, filename=filename, content=raw,
+                            sha256=hashlib.sha256(raw).hexdigest(), size=len(raw)))
+                    project = self.client.get(f"/api/business-projects/{project['id']}",
+                                               params={'company_id': self.cid}).json()
+                else:
+                    uploaded = self.upload(project, raw, 'Папка/' + filename)
+                    self.assertEqual(uploaded.status_code, 200, uploaded.text)
+                    project = uploaded.json()
                 metadata = next(f for f in project['files'] if f['filename'] == filename)
                 self.assertEqual(metadata['sha256'], hashlib.sha256(raw).hexdigest())
                 self.assertNotIn('content', metadata)

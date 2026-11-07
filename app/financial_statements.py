@@ -804,75 +804,81 @@ class RevenuePolicyIn(BaseModel):
 @router.post('/api/financial-statements/{source_id}/revenue-policy')
 def confirm_revenue_policy(source_id: int, payload: RevenuePolicyIn, request: Request,
                            company_id: int | None = Query(default=None, ge=1)):
-    with unit(True) as s:
+    with unit() as s:
         user, _ = session_user(s, request, 'export')
         require_permission(user, 'import')
-        source = s.get(FinancialStatementSource, source_id)
-        if source is None:
-            raise HTTPException(404, 'Исходник не найден в выбранной компании.')
-        if payload.source_sha256 != source.sha256:
-            raise HTTPException(409, 'Выбран другой исходник. Обновите отчёт перед подтверждением.')
-        previous = source_revenue_policy(s, source)
-        if payload.expected_revision != previous['revision']:
-            raise HTTPException(409, 'Правило выручки уже изменено. Обновите отчёт перед подтверждением.')
-        if payload.basis == CONFIRMED_REVENUE_BASIS:
-            review = current_source_review(source, previous)
-            if review.get('calculation', {}).get('profile') is None:
-                raise HTTPException(422, 'Формат ОСВ не распознан: правило выручки нельзя применить к этому исходнику.')
-        if payload.basis == previous['basis']:
-            return {'company_id': source.company_id, 'source_id': source.id, 'changed': False, 'policy': previous}
-        policy = {'basis': payload.basis, 'status': 'confirmed' if payload.basis == CONFIRMED_REVENUE_BASIS else 'unconfirmed',
-                  'revision': previous['revision'] + 1, 'source_sha256': source.sha256,
-                  'confirmed_at': datetime.now(timezone.utc).isoformat(), 'confirmed_by': user.id}
-        stored = {**policy, 'company_id': source.company_id, 'source_id': source.id}
-        setting = s.get(Setting, _policy_key(source))
-        if setting is None:
-            s.add(Setting(key=_policy_key(source), value=json.dumps(stored, ensure_ascii=False)))
-        else:
-            setting.value = json.dumps(stored, ensure_ascii=False)
-        log(s, user, 'Изменено правило выручки PNL', 'financial_statement_source', source.id,
-            json.dumps({'previous': previous, 'current': policy, 'scope': 'immutable_source'}, ensure_ascii=False))
-        return {'company_id': source.company_id, 'source_id': source.id, 'changed': True, 'policy': policy}
+    raise HTTPException(410, 'Пересчёт финансовых Excel-моделей отключён.')
 
 
-def current_source_review(source, revenue_policy=None):
-    """Re-review immutable source bytes with current code and original cutoff.
+def _ready_key(source):
+    return f'financial_ready:{source.company_id}:{source.id}'
 
-    A bounded process cache stores JSON, never mutable report objects. Its key
-    includes company, source and version; authorization always precedes lookup.
-    The database content and original snapshot remain untouched.
-    """
+
+def _ready_digest(review):
+    return hashlib.sha256(json.dumps(review, ensure_ascii=False, sort_keys=True,
+                                     separators=(',', ':')).encode()).hexdigest()
+
+
+def _ready_matches(source, review, policy):
+    if not isinstance(review, dict):
+        return False
     original = json.loads(source.snapshot)
-    original_date = original.get('reviewed_as_of') or source.created_at.date().isoformat()
-    try:
-        as_of = date.fromisoformat(original_date)
-    except (TypeError, ValueError):
-        as_of = source.created_at.date()
-        original_date = as_of.isoformat()
-    revenue_policy = revenue_policy or {'basis': 'unconfirmed', 'status': 'unconfirmed', 'revision': 0,
-                                        'source_sha256': source.sha256, 'confirmed_at': None, 'confirmed_by': None}
-    policy_hash = hashlib.sha256(json.dumps(revenue_policy, sort_keys=True).encode()).hexdigest()
-    key = (source.company_id, source.id, source.sha256, REVIEW_VERSION, original_date, policy_hash)
-    with _review_cache_lock:
-        cached = _review_cache.get(key)
-        if cached is not None:
-            _review_cache.move_to_end(key)
-    if cached is None:
-        # Original snapshots never contain a later confirmation. Rebuilding on
-        # a confirmed policy ensures stale immutable snapshots cannot bypass it.
-        result = (original if original.get('review_version') == REVIEW_VERSION and revenue_policy['revision'] == 0
-                  else build_review(source.content, source.filename, as_of, revenue_policy))
-        result = {**result, 'review_version': REVIEW_VERSION,
-                  'revenue_policy': revenue_policy, 'source_sha256': source.sha256,
-                  'original_reviewed_as_of': original_date,
-                  'original_review_timestamp': source.created_at.replace(tzinfo=timezone.utc).isoformat()}
-        cached = json.dumps(result, ensure_ascii=False)
-        with _review_cache_lock:
-            _review_cache[key] = cached
-            _review_cache.move_to_end(key)
-            while len(_review_cache) > 4:
-                _review_cache.popitem(last=False)
-    return json.loads(cached)
+    cutoff = original.get('reviewed_as_of') or source.created_at.date().isoformat()
+    return (review.get('company_id') == source.company_id and review.get('id') == source.id
+            and review.get('source_sha256') == source.sha256
+            and review.get('review_version') == REVIEW_VERSION
+            and review.get('revenue_policy') == policy
+            and review.get('reviewed_as_of') == cutoff
+            and isinstance(review.get('requirements'), list)
+            and isinstance(review.get('reports'), dict)
+            and set(review['reports']) == set(REPORTS)
+            and all(isinstance(report, dict) and isinstance(report.get('rows'), list)
+                    for report in review['reports'].values()))
+
+
+def save_ready_review(s, source, review):
+    """Trusted offline migration of an already calculated report, never Excel.
+
+    No HTTP endpoint accepts report JSON. Keep the immutable workbook/snapshot
+    and bind the saved result to its source, calculation and confirmed policy.
+    """
+    policy = source_revenue_policy(s, source)
+    if not _ready_matches(source, review, policy):
+        raise ValueError('Saved report provenance does not match the selected source/policy.')
+    value = {'company_id': source.company_id, 'source_id': source.id,
+             'source_sha256': source.sha256, 'review_version': REVIEW_VERSION,
+             'policy': policy, 'review': review, 'sha256': _ready_digest(review)}
+    row = s.get(Setting, _ready_key(source))
+    if row is None:
+        s.add(Setting(key=_ready_key(source), value=json.dumps(value, ensure_ascii=False)))
+    else:
+        row.value = json.dumps(value, ensure_ascii=False)
+
+
+def current_source_review(source, revenue_policy=None, s=None):
+    """Read a prepared report only; never open or recalculate a workbook."""
+    policy = revenue_policy or {'basis': 'unconfirmed', 'status': 'unconfirmed', 'revision': 0,
+                               'source_sha256': source.sha256, 'confirmed_at': None, 'confirmed_by': None}
+    saved = s.get(Setting, _ready_key(source)) if s is not None else None
+    if saved:
+        try:
+            value = json.loads(saved.value)
+            review = value['review']
+            if (value['company_id'] == source.company_id and value['source_id'] == source.id
+                    and value['source_sha256'] == source.sha256
+                    and value['review_version'] == REVIEW_VERSION and value['policy'] == policy
+                    and value['sha256'] == _ready_digest(review)
+                    and _ready_matches(source, review, policy)):
+                return review
+        except (ValueError, KeyError, TypeError):
+            pass
+        raise HTTPException(503, 'Сохранённый отчёт не соответствует исходнику или правилу расчёта. Пересчёт Excel отключён.')
+    # A snapshot created by exactly this calculator/policy is already prepared.
+    # Older or subsequently confirmed sources are never silently substituted.
+    original = json.loads(source.snapshot)
+    if original.get('review_version') == REVIEW_VERSION and policy['revision'] == 0:
+        return {**original, 'revenue_policy': policy, 'source_sha256': source.sha256}
+    raise HTTPException(503, 'Готовый отчёт для этого исходника не сохранён. Импорт и пересчёт Excel отключены; исходный файл сохранён.')
 
 
 def statement_sources(s):
@@ -902,7 +908,7 @@ def financial_statements(request: Request, source_id: int | None = Query(default
             raise HTTPException(404, 'Исходник не найден в выбранной компании.')
         result = None
         if source:
-            result = current_source_review(source, source_revenue_policy(s, source))
+            result = current_source_review(source, source_revenue_policy(s, source), s)
             result['id'] = source.id
             result['company_id'] = source.company_id
             modes=getattr(user,'_sections',None)
@@ -911,8 +917,8 @@ def financial_statements(request: Request, source_id: int | None = Query(default
         return {'sources': [{'id': row.id, 'filename': row.filename,
                              'created_at': row.created_at.replace(tzinfo=timezone.utc).isoformat()} for row in sources],
                 'selected': source.id if source else None, 'source': result,
-                'company_id': s.info['company_id'], 'can_upload': 'import' in perms_of(user) and can_edit_section(user,'pnl','balance'),
-                'can_confirm_revenue_basis': 'import' in perms_of(user) and can_edit_section(user,'pnl','balance'),
+                'company_id': s.info['company_id'], 'can_upload': False,
+                'can_confirm_revenue_basis': False,
                 'review_version': REVIEW_VERSION,
                 'requirements': result['requirements'] if result else REQUIREMENTS}
 
@@ -937,7 +943,7 @@ def financial_reconciliation(request: Request, year: int = Query(ge=2000, le=210
             query.order_by(FinancialStatementSource.id.desc()).limit(1))
         if source_id is not None and source is None:
             raise HTTPException(404, 'Исходник не найден в выбранной компании.')
-        review = current_source_review(source, source_revenue_policy(s, source)) if source else None
+        review = current_source_review(source, source_revenue_policy(s, source), s) if source else None
         result = build_reconciliation(review, year, start_month, end_month)
         if source is None:
             result['status'] = 'missing'
@@ -949,50 +955,7 @@ def financial_reconciliation(request: Request, year: int = Query(ge=2000, le=210
 
 @router.post('/api/financial-statements/upload')
 async def upload_financial_statements(request: Request, company_id: int | None = Query(default=None, ge=1)):
-    # Authorize before reading/parsing, then again inside the serialized write transaction.
     with unit() as s:
         user, _ = session_user(s, request, 'export')
         require_permission(user, 'import')
-    filename = unquote(request.headers.get('X-Filename', 'FinancialStatements.xlsx')).replace('\\', '/')
-    filename = PurePosixPath(filename).name
-    if (not filename.lower().endswith('.xlsx') or not filename or len(filename) > 220
-            or any(unicodedata.category(c).startswith('C') for c in filename)):
-        raise HTTPException(422, 'Нужен файл Excel (.xlsx) с корректным названием.')
-    raw = bytearray()
-    async for chunk in request.stream():
-        raw.extend(chunk)
-        if len(raw) > MAX_SIZE:
-            raise HTTPException(413, 'Файл больше 20 МБ.')
-    digest = hashlib.sha256(raw).hexdigest()
-    with unit() as s:
-        user, _ = session_user(s, request, 'export')
-        require_permission(user, 'import')
-        existing = s.scalar(select(FinancialStatementSource).where(FinancialStatementSource.sha256 == digest))
-        if existing and existing.snapshot != '{}':
-            return {'id': existing.id, 'created': False, 'company_id': s.info['company_id']}
-    try:
-        snapshot = build_review(bytes(raw), filename)
-    except ValueError as e:
-        raise HTTPException(422, str(e))
-    with unit(True) as s:
-        user, _ = session_user(s, request, 'export')
-        require_permission(user, 'import')
-        existing = s.scalar(select(FinancialStatementSource).where(FinancialStatementSource.sha256 == digest))
-        if existing:
-            if existing.snapshot == '{}':
-                # Explicit PNL upload adopts a legacy rating-only source.
-                # Preserve both immutable bytes and its original snapshot.
-                legacy = s.get(Setting, f"ifrs_rating:{s.info['company_id']}")
-                binding = json.loads(legacy.value) if legacy else {}
-                if binding.get('source_id') == existing.id:
-                    legacy.value = json.dumps({**binding, 'pnl_uploaded': True})
-                log(s, user, 'Загружен исходник PNL и баланса', 'financial_statement_source', existing.id,
-                    f'{filename}; сохранён для проверки, без проведения операций')
-            return {'id': existing.id, 'created': False, 'company_id': s.info['company_id']}
-        source = FinancialStatementSource(company_id=s.info['company_id'], created_by=user.id, filename=filename,
-                                          sha256=digest, size=len(raw), snapshot=json.dumps(snapshot, ensure_ascii=False), content=bytes(raw))
-        s.add(source)
-        s.flush()
-        log(s, user, 'Загружен исходник PNL и баланса', 'financial_statement_source', source.id,
-            f'{filename}; сохранён для проверки, без проведения операций')
-        return {'id': source.id, 'created': True, 'company_id': s.info['company_id']}
+    raise HTTPException(410, 'Импорт финансовых Excel-моделей отключён.')

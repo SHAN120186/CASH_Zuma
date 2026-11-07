@@ -130,7 +130,7 @@ test('the source review cutoff is shown from its immutable snapshot instead of t
  const view=mount(component,{company,type:'pnl',api:async()=>payload});t.after(view.unmount);await settle();await openHelp(view);
  const metadata=find(view.container,node=>String(node.props?.class||'').includes('statement-source'));
  assert.match(text(metadata),/Дата проверки \/ среза: 11\.10\.2026/);
- assert.match(text(view.container),/Для новых операций и месяцев загрузите новую версию источника/);
+ assert.match(text(view.container),/Импорт финансовых моделей Excel отключён/);
  setLang('uz');await settle();assert.match(text(metadata),/Tekshirish \/ kesim sanasi: 11\.10\.2026/);
 });
 
@@ -176,16 +176,10 @@ test('company change clears prior source while loading and late former-company r
  resolveLater(sourcePayload(8));await pending;await settle();assert.equal(view.state.payload,null);
 });
 
-test('upload requires import rights, sends raw Excel and counts only confirmed upload and checked-read stages',async t=>{
- const calls=[];let resolveUpload;const uploaded=new Promise(resolve=>resolveUpload=resolve);
- const view=mount(component,{company,canImport:true,api:async(url,opts)=>{calls.push({url,opts});if(opts?.method==='POST')return uploaded;return sourcePayload(opts?1:8);}});t.after(view.unmount);await settle();
- const file={name:'Synthetic source.xlsx',size:10};const event={target:{files:[file],value:'file'}};const task=view.state.upload(event);await settle();
- assert.equal(event.target.value,'');assert.equal(view.state.progress.completed,0);assert.equal(view.state.progress.total,2);assert.equal(view.state.uploading,true);
- resolveUpload({id:8,created:true});await task;await settle();
- assert.equal(view.state.progress.completed,2);assert.equal(view.state.progress.active,false);
- const call=calls.find(item=>item.opts?.method==='POST');assert.equal(call.url,'/api/financial-statements/upload?company_id=2');assert.equal(call.opts.body,file);assert.equal(call.opts.headers['X-Filename'],'Synthetic%20source.xlsx');
- assert.equal(calls.at(-1).url,'/api/financial-statements?company_id=2&source_id=8');
- view.app._instance.props.canImport=false;await settle();const count=calls.length;await view.state.upload({target:{files:[file],value:'file'}});assert.equal(calls.length,count);
+test('saved financial reports never expose Excel upload even when import rights are supplied',async t=>{
+ const calls=[];const view=mount(component,{company,canImport:true,api:async(url,opts)=>{calls.push({url,opts});return sourcePayload();}});t.after(view.unmount);await settle();await openHelp(view);
+ assert.equal(all(view.container,n=>n.tag==='input'&&n.props.type==='file').length,0);assert.equal(view.state.upload,undefined);
+ assert.equal(calls.filter(c=>c.opts?.method).length,0);assert.match(text(view.container),/Импорт финансовых моделей Excel отключён/);
 });
 
 test('RU/UZ changes static source-review instructions and units without altering raw source labels',async t=>{
@@ -322,7 +316,7 @@ test('corrected sources show independent capital, residual and named clarificati
  assert.match(text(view.container),/Synthetic VAT basis.*Synthetic gross versus net/);
  assert.doesNotMatch(text(view.container),/Synthetic duplicate sales field/);
  assert.match(text(view.container),/сохранённый снимок Macro.*Обновление проверки не заменяет бюджет/);
- assert.match(text(view.container),/2026-08, 2026-09.*не считаются ошибками расчёта/);
+ assert.match(text(view.container),/2026-08, 2026-09.*В сохранённом отчёте нет данных за эти месяцы/);
 });
 
 test('unconfirmed EBITDA stays blank, states its allocation reason and preserves original cache only in source details',async t=>{
@@ -435,11 +429,11 @@ test('working reports keep source checks and file controls in one closed accessi
  assert.match(visibleText(view.container),/Валовая прибыль/);assert.match(visibleText(view.container),/Чистая выручка/);
  button.props.onClick();await settle();
  assert.equal(button.props['aria-expanded'],true);assert.equal(help.props.open,true);assert.equal(help.scrolled,true);
- assert.equal(all(view.container,node=>node.tag==='input'&&node.props.type==='file').length,1);
+ assert.equal(all(view.container,node=>node.tag==='input'&&node.props.type==='file').length,0);
  assert.match(text(help),/Справка и проверка.*Как читать отчёт.*Данные и обновление.*Источники и полнота данных.*Проверка и исправления/);
  assert.match(text(help),/Synthetic.xlsx/);assert.match(text(help),/соответствие МСФО не подтверждено/);
- assert.match(text(help),/Повторно загружать файл нужно только после появления новых данных/);
- assert.ok(find(help,node=>node.tag==='button'&&text(node).trim()==='Обновить данные'));
+ assert.match(text(help),/Импорт финансовых моделей Excel отключён/);
+ assert.equal(find(help,node=>node.tag==='button'&&text(node).trim()==='Обновить данные'),undefined);
  button.props.onClick();await settle();assert.equal(help.props.open,false);
  assert.doesNotMatch(text(help),/Synthetic.xlsx/);assert.equal(all(view.container,node=>node.tag==='input'&&node.props.type==='file').length,0);
 });
@@ -453,7 +447,7 @@ test('empty-company setup opens help without forcing a technical workbook templa
  assert.equal(all(view.container,node=>node.tag==='input'&&node.props.type==='file').length,0);
  assert.doesNotMatch(text(view.container),/Обновить данные|Загрузить данные/);
  const calls=[];view.app._instance.props.api=async(...args)=>calls.push(args);await settle();
- await view.state.upload({target:{files:[{name:'Synthetic.xlsx',size:10}],value:'file'}});assert.equal(calls.length,0);
+ assert.equal(view.state.upload,undefined);assert.equal(calls.length,0);
 });
 
 test('help and ordinary recognized labels follow RU/UZ while missing reasons and balance residual remain visible',async t=>{
@@ -466,8 +460,8 @@ test('help and ordinary recognized labels follow RU/UZ while missing reasons and
  assert.doesNotMatch(visibleText(view.container),/Synthetic source cash metric|09b_Balance|соответствие МСФО/);
  setLang('uz');await settle();assert.match(visibleText(view.container),/Balans farqi · 12,34/);
  assert.match(visibleText(view.container),/Yordam va tekshirish/);assert.match(visibleText(view.container),/Asosiy ko‘rsatkichlar/);
- await openHelp(view);assert.match(visibleText(view.container),/Maʼlumotlarni yangilash/);
- assert.match(visibleText(view.container),/Ma’lumotlar allaqachon saqlangan/);
+ await openHelp(view);assert.match(visibleText(view.container),/Excel moliyaviy modellarini import qilish o‘chirilgan/);
+ assert.match(visibleText(view.container),/Saqlangan hisobot ko‘rsatilgan/);
 });
 
 test('Mapping-only profit uses an honest result label and leaves uncertain revenue blank; source-only comparison is in help',async t=>{
@@ -599,83 +593,11 @@ test('RU/UZ translates management captions and closed method while an unrecogniz
  assert.equal(all(view.container,node=>node.tag==='button'&&text(node)==='Excel namunasiga ko‘ra').length,0);
 });
 
-test('revenue basis starts unconfirmed and can only be explicitly changed inside closed help',async t=>{
- const calls=[],payload=revenuePolicyPayload();
- const view=mount(component,{company,canImport:true,type:'pnl',api:async(...args)=>{calls.push(args);return payload;}});t.after(view.unmount);await settle();
- assert.equal(view.state.revenueBasis,'unconfirmed');assert.equal(view.state.confirmedRevenuePolicy,false);
- assert.doesNotMatch(visibleText(view.container),/Правило выручки|Сохранить правило выручки/);
- await openHelp(view);
- const form=find(view.container,node=>node.tag==='form'&&String(node.props.class||'').includes('statement-revenue-form'));
- assert.ok(form);assert.equal(find(form,node=>node.tag==='button').props.disabled,true);
- assert.match(text(view.container),/Состав выручки не подтверждён/);
- assert.doesNotMatch(text(view.container),/Чистая выручка = выручка 9000/);
- await view.state.saveRevenuePolicy();assert.equal(calls.length,1);
-});
 
-test('explicit revenue confirmation uses current company, source hash and revision, reloads reports without reupload and preserves period controls',async t=>{
- const calls=[],editing=[],initial=revenuePolicyPayload({revision:3}),updated=revenuePolicyPayload({confirmed:true,revision:4});
- let reads=0;
- const view=mount(component,{company,canImport:true,type:'pnl',onEditing:value=>editing.push(value),api:async(url,options)=>{
-  calls.push({url,options});
-  if(options?.method==='POST')return{company_id:2,source_id:1,changed:true,policy:updated.source.revenue_policy};
-  return reads++===0?initial:updated;
- }});t.after(view.unmount);await settle();view.state.setPer('q1');view.state.unit='m';view.state.mode='actual';await openHelp(view);
- view.state.revenueBasis=revenuePolicyBasis;await settle();
- await view.state.saveRevenuePolicy();await settle();
- assert.deepEqual(calls.map(item=>item.url),['/api/financial-statements?company_id=2','/api/financial-statements/1/revenue-policy?company_id=2','/api/financial-statements?company_id=2&source_id=1']);
- assert.deepEqual(JSON.parse(calls[1].options.body),{basis:revenuePolicyBasis,expected_revision:3,source_sha256:'a'.repeat(64)});
- assert.deepEqual(calls[1].options.headers,{'Content-Type':'application/json'});
- assert.equal(view.state.confirmedRevenuePolicy,true);assert.equal(view.state.helpOpen,true);assert.equal(view.state.revenuePolicyChanged,false);
- assert.equal(view.state.per,'q1');assert.equal(view.state.unit,'m');assert.equal(view.state.mode,'actual');
- assert.match(text(view.container),/Правило выручки сохранено\. Отчёт пересчитан из Mapping/);
- assert.match(text(mainTable(view)),/Выручка без НДС/);assert.match(text(mainTable(view)),/Рентабельность финансового результата/);
- assert.doesNotMatch(text(mainTable(view)),/Состав выручки уточняется|Чистая маржа/);
- assert.deepEqual(editing,[true,false]);assert.equal(view.state.progress.completed,2);assert.equal(view.state.progress.total,2);
-});
 
-test('revenue policy editing requires both returned permission and import rights; another company is never confirmed automatically',async t=>{
- for(const [canImport,allowed] of [[false,true],[true,false],[false,false]]){
-  const calls=[],payload=revenuePolicyPayload({allowed});
-  const view=mount(component,{company,canImport,type:'pnl',api:async(...args)=>{calls.push(args);return payload;}});t.after(view.unmount);await settle();await openHelp(view);
-  assert.equal(view.state.canConfirmRevenueBasis,false);assert.equal(all(view.container,node=>node.tag==='form').length,0);
-  view.state.revenueBasis=revenuePolicyBasis;await view.state.saveRevenuePolicy();assert.equal(calls.length,1);assert.equal(view.state.confirmedRevenuePolicy,false);
- }
-});
 
-test('a stale revenue revision error leaves the old source and calculations untouched',async t=>{
- const payload=revenuePolicyPayload({revision:7}),calls=[];
- const view=mount(component,{company,canImport:true,type:'pnl',api:async(url,options)=>{calls.push(url);if(options?.method==='POST')throw Error('Synthetic conflict: reload required');return payload;}});t.after(view.unmount);await settle();await openHelp(view);
- view.state.revenueBasis=revenuePolicyBasis;await view.state.saveRevenuePolicy();await settle();
- assert.equal(calls.length,2);assert.equal(view.state.revenuePolicy.revision,7);assert.equal(view.state.confirmedRevenuePolicy,false);
- assert.equal(view.state.source.reports.pnl.rows.find(row=>row.row===7).cells[0].fact.value,null);
- const policySection=find(view.container,node=>String(node.props?.class||'').includes('statement-revenue-policy'));
- assert.match(text(find(policySection,node=>node.props?.role==='alert')),/Synthetic conflict/);assert.equal(view.state.savingRevenueBasis,false);
-});
 
-test('a company switch during revenue saving discards late success without loading or showing the previous company',async t=>{
- const payload=revenuePolicyPayload(),other=revenuePolicyPayload();other.company_id=7;other.source.company_id=7;other.can_confirm_revenue_basis=false;
- let complete;const calls=[];
- const view=mount(component,{company,canImport:true,type:'pnl',api:async(url,options)=>{
-  calls.push(url);if(options?.method==='POST')return new Promise(resolve=>complete=resolve);
-  return url.includes('company_id=7')?other:payload;
- }});t.after(view.unmount);await settle();await openHelp(view);view.state.revenueBasis=revenuePolicyBasis;
- const saving=view.state.saveRevenuePolicy();await settle();assert.equal(view.state.savingRevenueBasis,true);
- view.app._instance.props.company={id:7,name:'Other synthetic company'};await settle();
- complete({company_id:2,source_id:1,changed:true,policy:{basis:revenuePolicyBasis}});await saving;await settle();
- assert.equal(view.state.source.company_id,7);assert.equal(view.state.confirmedRevenuePolicy,false);assert.equal(view.state.revenueBasis,'unconfirmed');
- assert.equal(view.state.revenuePolicyMessage,'');assert.equal(view.state.revenuePolicyError,'');assert.equal(view.state.helpOpen,false);
- assert.deepEqual(calls,['/api/financial-statements?company_id=2','/api/financial-statements/1/revenue-policy?company_id=2','/api/financial-statements?company_id=7']);
-});
 
-test('saved revenue policy cannot apply a reloaded different source and the UI explains that refresh failed',async t=>{
- const payload=revenuePolicyPayload(),other=revenuePolicyPayload({confirmed:true,revision:1});other.source.source_sha256='b'.repeat(64);
- let reads=0;
- const view=mount(component,{company,canImport:true,type:'pnl',api:async(url,options)=>options?.method==='POST'?{company_id:2,source_id:1,changed:true}:reads++===0?payload:other});t.after(view.unmount);await settle();await openHelp(view);
- view.state.revenueBasis=revenuePolicyBasis;await view.state.saveRevenuePolicy();await settle();
- assert.equal(view.state.source.source_sha256,'a'.repeat(64));assert.equal(view.state.confirmedRevenuePolicy,false);
- const policySection=find(view.container,node=>String(node.props?.class||'').includes('statement-revenue-policy'));
- assert.match(text(find(policySection,node=>node.props?.role==='alert')),/Правило сохранено, но отчёт не обновлён/);
-});
 
 test('RU/UZ translates confirmed revenue basis and financial-result margin without changing the plan or masking unresolved disposal classification',async t=>{
  const previous=lang.value;t.after(()=>setLang(previous));setLang('ru');
@@ -772,4 +694,13 @@ test('missing required account reasons do not claim a missing profit account whe
  for(const number of [14,22])assert.match(visibleText(affected(number)),/Aylanma-saldo qaydnomasida zarur hisobvaraq topilmadi\./);
  assert.doesNotMatch(visibleText(mainTable(view)),/moliyaviy natija hisobvarag‘i topilmadi/);
  assert.deepEqual(payload,original);
+});
+
+test('saved revenue rules remain read-only for both companies, policies and legacy import permissions',async t=>{
+ for(const cid of [2,3])for(const canImport of [false,true])for(const confirmed of [false,true]){
+  const payload=managementPayload();payload.company_id=cid;payload.source.company_id=cid;payload.can_confirm_revenue_basis=true;payload.source.source_sha256='a'.repeat(64);payload.source.revenue_policy={basis:confirmed?'gross_excluding_vat_before_returns_discounts':'unconfirmed',status:confirmed?'confirmed':'unconfirmed',revision:confirmed?1:0,source_sha256:'a'.repeat(64)};
+  const calls=[];const view=mount(component,{company:{id:cid,name:'Synthetic company'},canImport,api:async(url,opts)=>{calls.push({url,opts});return payload;}});t.after(view.unmount);await settle();await openHelp(view);
+  assert.equal(view.state.canConfirmRevenueBasis,false);assert.equal(view.state.saveRevenuePolicy,undefined);assert.equal(view.state.source.company_id,cid);
+  assert.equal(all(view.container,n=>n.tag==='form'&&String(n.props.class||'').includes('statement-revenue-form')).length,0);assert.equal(calls.filter(c=>c.opts?.method).length,0);
+ }
 });

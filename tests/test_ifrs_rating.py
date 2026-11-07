@@ -1,5 +1,7 @@
 """Synthetic inputs only: rating arithmetic, coverage and company boundaries."""
 import io
+import json
+import hashlib
 import unittest
 from datetime import date
 from decimal import Decimal
@@ -8,7 +10,7 @@ from unittest.mock import patch, Mock
 import tests.test_site as base
 from openpyxl import Workbook
 from sqlalchemy import select, func
-from app.db import Company, FinancialStatementSource, IfrsRatingSource, Ledger, User, unit
+from app.db import Company, FinancialStatementSource, IfrsRatingSource, Ledger, Setting, User, unit
 from app.ifrs_rating import build_rating, score_value, grade, RULES
 from app import ifrs_rating
 
@@ -117,21 +119,47 @@ class RatingApiTests(unittest.TestCase):
         with unit() as s:cid=s.scalar(select(Company.id).where(Company.code=='ZUMA'))
         return {**self.h,'X-Company-ID':str(cid)}
 
-    def test_read_sync_repeat_and_stale_source_without_ledger_mutation(self):
-        raw=fixture();h=self.zuma_headers()
+    def ready(self):
+        raw=fixture();report=build_rating(raw,as_of=date(2026,10,14));h=self.zuma_headers();cid=int(h['X-Company-ID'])
+        with unit(True) as s:
+            uid=s.scalar(select(User.id).where(User.username=='admin'))
+            source=IfrsRatingSource(company_id=cid,created_by=uid,filename='synthetic.xlsx',sha256=hashlib.sha256(raw).hexdigest(),size=len(raw),content=raw)
+            s.add(source);s.flush()
+            s.add(Setting(key=ifrs_rating.binding_key(cid),value=json.dumps({'source_id':source.id})))
+            reports={'3':report}
+            ready={'company_id':cid,'source_id':source.id,'source_sha256':source.sha256,'method_version':ifrs_rating.METHOD_VERSION,
+                   'default_end_month':3,'reports':reports,'prepared_at':'2026-10-14T00:00:00+00:00',
+                   'reports_sha256':hashlib.sha256(json.dumps(reports,sort_keys=True,separators=(',',':'),ensure_ascii=False).encode()).hexdigest()}
+            s.add(Setting(key=f'ifrs_rating_ready:{cid}',value=json.dumps(ready)))
+        return h,report,ready
+
+    def test_ready_report_survives_empty_memory_cache_without_excel_network_or_ledger_mutation(self):
+        h,report,_=self.ready()
         with unit() as s:before=s.scalar(select(func.count()).select_from(Ledger))
-        with patch('app.ifrs_rating.download_rating_source',return_value=(raw,'synthetic.xlsx','Google Drive','2026-09-16T00:00:00+00:00')):
-            result=self.client.get('/api/ifrs-rating',headers=h)
-            self.assertEqual(result.status_code,200,result.text)
-            self.assertFalse(result.json()['stale'])
-            for _ in range(2):self.assertEqual(self.client.post('/api/ifrs-rating/sync',headers=h).status_code,200)
+        with patch.object(ifrs_rating,'_source_cache',None),patch('app.ifrs_rating.download_rating_source',side_effect=AssertionError('No network')),\
+             patch('app.ifrs_rating.build_rating',side_effect=AssertionError('No recalculation')),\
+             patch('app.ifrs_rating.read_workbook',side_effect=AssertionError('No Excel read')):
+            for _ in range(2):
+                result=self.client.get('/api/ifrs-rating',headers=h)
+                self.assertEqual(result.status_code,200,result.text);self.assertEqual(result.json()['report'],report)
+                self.assertTrue(result.json()['snapshot_only']);self.assertFalse(result.json()['can_sync'])
+            self.assertEqual(self.client.get('/api/ifrs-rating?end_month=2',headers=h).status_code,503)
+            self.assertEqual(self.client.post('/api/ifrs-rating/sync',headers=h).status_code,410)
         with unit() as s:
             self.assertEqual(s.scalar(select(func.count()).select_from(IfrsRatingSource)),1)
             self.assertEqual(s.scalar(select(func.count()).select_from(FinancialStatementSource)),0)
             self.assertEqual(s.scalar(select(func.count()).select_from(Ledger)),before)
-        with patch('app.ifrs_rating.download_rating_source',side_effect=RuntimeError('Unavailable')):
-            result=self.client.get('/api/ifrs-rating',headers=h)
-            self.assertEqual(result.status_code,200,result.text);self.assertTrue(result.json()['stale'])
+
+    def test_missing_or_mismatched_ready_snapshot_never_rebuilds(self):
+        h=self.zuma_headers()
+        with patch('app.ifrs_rating.download_rating_source',side_effect=AssertionError('No network')):
+            self.assertEqual(self.client.get('/api/ifrs-rating',headers=h).status_code,503)
+        h,_,ready=self.ready();key=f"ifrs_rating_ready:{h['X-Company-ID']}"
+        for change in ({'company_id':999},{'source_id':999},{'source_sha256':'wrong'},{'method_version':'old'},
+                       {'reports_sha256':'wrong'},{'reports':{}},{'default_end_month':12}):
+            with unit(True) as s:s.get(Setting,key).value=json.dumps({**ready,**change})
+            with patch('app.ifrs_rating.build_rating',side_effect=AssertionError('No recalculation')):
+                self.assertEqual(self.client.get('/api/ifrs-rating',headers=h).status_code,503)
 
     def test_wrong_company_and_missing_csrf_stop_before_download(self):
         with patch('app.ifrs_rating.download_rating_source') as download:

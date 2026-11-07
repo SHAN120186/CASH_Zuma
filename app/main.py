@@ -1177,35 +1177,15 @@ def model(request:Request,version:int=0):
         rec=s.get(ModelVersion,version) if version else (versions[0] if versions else None)
         return {'versions':[{'id':r.id,'name':r.filename,'imported_at':str(r.imported_at),'source':r.source,'sha256':r.sha256} for r in versions],
                 'selected':rec.id if rec else None,'snapshot':json.loads(rec.snapshot) if rec else None,
-                'drive_configured':bool(os.getenv('GOOGLE_APPLICATION_CREDENTIALS') and os.getenv('GOOGLE_DRIVE_FILE_ID'))}
+                'drive_configured':False,'can_import':False}
 @app.post('/api/model/upload')
 async def model_upload(request:Request):
-    with unit() as s:u,_=session_user(s,request,'import');uid=u.id
-    filename=request.headers.get('X-Filename','FinModel.xlsx')
-    from urllib.parse import unquote
-    filename=Path(unquote(filename)).name
-    if not filename.lower().endswith('.xlsx'):raise HTTPException(422,'Нужен файл .xlsx.')
-    raw=bytearray()
-    async for chunk in request.stream():
-        raw.extend(chunk)
-        if len(raw)>MAX_SIZE:raise HTTPException(413,'Файл больше 20 МБ.')
-    try:
-        with unit(True) as s:
-            session_user(s,request,'import')
-            u,_=session_user(s,request,'import')
-            rec,created=import_snapshot(s,bytes(raw),filename,user_id=uid,user=u)
-            return {'id':rec.id,'created':created}
-    except ValueError as e:raise HTTPException(422,str(e))
+    with unit() as s:session_user(s,request,'import')
+    raise HTTPException(410,'Импорт финансовых моделей Excel отключён. Сохранённые отчёты доступны без пересчёта исходника.')
 @app.post('/api/model/drive-sync')
 def model_drive_sync(request:Request):
-    with unit() as s:u,_=session_user(s,request,'import');uid=u.id
-    try:
-        from .drive import download_model
-        raw,name,source=download_model()
-        with unit(True) as s:
-            u,_=session_user(s,request,'import')
-            rec,created=import_snapshot(s,raw,name,source,uid,user=u);return {'id':rec.id,'created':created}
-    except (ValueError,RuntimeError) as e:raise HTTPException(422,str(e))
+    with unit() as s:session_user(s,request,'import')
+    raise HTTPException(410,'Импорт финансовых моделей Excel отключён. Сохранённые отчёты доступны без пересчёта исходника.')
 
 @app.get('/api/users')
 def users(request:Request):

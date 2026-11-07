@@ -3,6 +3,11 @@
 // Terms follow common.js: заявка — ariza, согласование — kelishish, статья — modda, справочник — maʼlumotnoma,
 // сторно — storno, ВрИО — v.b., привязать / отвязать Telegram — ulash / uzish, сводка — xulosa.
 export default {
+  'В сохранённом отчёте нет данных за эти месяцы.': 'Saqlangan hisobotda ushbu oylar bo‘yicha ma’lumot yo‘q.',
+  'Показан сохранённый отчёт. Импорт финансовых моделей Excel отключён.': 'Saqlangan hisobot ko‘rsatilgan. Excel moliyaviy modellarini import qilish o‘chirilgan.',
+  'Импорт финансовых моделей Excel отключён.': 'Excel moliyaviy modellarini import qilish o‘chirilgan.',
+  'Сохранённого отчёта пока нет.': 'Hozircha saqlangan hisobot yo‘q.',
+  'Загружаем сохранённый отчёт…': 'Saqlangan hisobot yuklanmoqda…',
   'Раздел мог обновиться. Сохраните текущую работу перед обновлением страницы.': 'Bo‘lim yangilangan bo‘lishi mumkin. Sahifani yangilashdan oldin joriy ishingizni saqlang.',
   'Дождитесь завершения текущей операции перед обновлением.': 'Yangilashdan oldin joriy amal yakunlanishini kuting.',
   'Загружаем раздел…': 'Bo‘lim yuklanmoqda…',

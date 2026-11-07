@@ -334,10 +334,16 @@ class SiteTests(unittest.TestCase):
         cash['D54']='=I54+1'
         balance['D8']='Test cash';balance['R8']=13500
         out=io.BytesIO();book.save(out);book.close();raw=out.getvalue()
+        # Retained synthetic snapshot remains readable; the public importer is retired.
+        from app.model_import import build_snapshot
+        with unit(True) as s:
+            s.add(ModelVersion(company_id=self.company,sha256='a'*64,filename='FinModel.xlsx',source='Synthetic retained source',
+                snapshot=json.dumps(build_snapshot(raw,'FinModel.xlsx'),ensure_ascii=False)))
         headers={**self.h,'Content-Type':'application/octet-stream','X-Filename':'FinModel.xlsx'}
-        r=self.client.post('/api/model/upload',content=raw,headers=headers);self.assertEqual(r.status_code,200,r.text);self.assertTrue(r.json()['created'])
-        r2=self.client.post('/api/model/upload',content=raw,headers=headers);self.assertFalse(r2.json()['created'])
+        r=self.client.post('/api/model/upload',content=raw,headers=headers);self.assertEqual(r.status_code,410,r.text)
+        r2=self.client.post('/api/model/upload',content=raw,headers=headers);self.assertEqual(r2.status_code,410,r2.text)
         m=self.client.get('/api/model').json();self.assertEqual(len(m['versions']),1)
+        self.assertFalse(m['can_import']);self.assertFalse(m['drive_configured'])
         self.assertEqual(m['snapshot']['summary']['cash_close_july']['value'],'12500')
         self.assertEqual(m['snapshot']['summary']['balance_cash_july']['value'],'13500')
         self.assertIn('09_CASH_Flow!D54',m['snapshot']['missing_cache'])
@@ -2782,10 +2788,15 @@ class SiteTests(unittest.TestCase):
 
     def test_133_model_import_is_journaled_with_role_and_ip(self):
         from unittest.mock import patch
-        with patch('app.model_import.build_snapshot',return_value={'sheets':{}}):
+        with patch('app.model_import.build_snapshot',side_effect=AssertionError('Retired importer must not parse Excel')):
             r=self.client.post('/api/model/upload',content=b'PK\x03\x04 model',headers={**self.h,'Content-Type':'application/octet-stream','X-Filename':'FinModel.xlsx'})
-        self.assertEqual(r.status_code,200,r.text)
-        row=self.audit_row('Импорт FinModel');self.assertEqual((row['ip'],row['role']),('testclient','Администратор холдинга'))
+        self.assertEqual(r.status_code,410,r.text)
+        row=self.audit_row('API POST');self.assertEqual(row['ip'],'testclient')
+        self.assertIn('/api/model/upload; status=410',row['detail'])
+        with unit() as s:
+            self.assertEqual(s.get(User,s.get(Audit,row['id']).user_id).role,'admin')
+            self.assertIsNone(s.scalar(select(ModelVersion)))
+            self.assertIsNone(s.scalar(select(Audit).where(Audit.action=='Импорт FinModel')))
 
     def test_134_edits_of_submitted_requests_never_loosen_the_route(self):
         pdf_put=lambda rid,n,**extra:self.client.put(f'/api/requests/{rid}',headers=self.h,json={**self.request_body(n,**extra),'status':'pending','version':self.version_of(rid),'reason':'Уточнение суммы платежа'})

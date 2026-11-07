@@ -496,164 +496,11 @@ class FinancialStatementApiTests(unittest.TestCase):
             json={'basis': basis, 'expected_revision': revision, 'source_sha256': sha256},
             headers=self.h, **kwargs)
 
-    def test_existing_management_source_rebuilds_and_policy_cache_changes_without_source_mutation(self):
-        import hashlib
-        raw = recognized_workbook(management=True)
-        old = build_review(raw, 'synthetic.xlsx', as_of=date(2026, 9, 16))
-        old['review_version'] = 'mapping-2026-10-11-v4'
-        user_id = self.client.get('/api/me').json()['user']['id']
-        with unit(True) as s:
-            source = FinancialStatementSource(company_id=self.company, created_by=user_id,
-                filename='synthetic.xlsx', sha256=hashlib.sha256(raw).hexdigest(), size=len(raw),
-                snapshot=json.dumps(old), content=raw)
-            s.add(source); s.flush()
-            source_id, snapshot, created_at = source.id, source.snapshot, source.created_at
-        _review_cache.clear()
-        before = self.client.get('/api/financial-statements', params={'source_id': source_id}).json()['source']
-        self.assertEqual(before['review_version'], REVIEW_VERSION)
-        self.assertEqual(before['reviewed_as_of'], '2026-09-16')
-        self.assertEqual(before['calculation']['management_template']['status'], 'recognized')
-        rows = {r['row']: r for r in before['reports']['pnl']['rows']}
-        self.assertIsNone(rows[16]['cells'][0]['fact']['value'])
-        response = self.policy_request(source_id, before['source_sha256'])
-        self.assertEqual(response.status_code, 200, response.text)
-        _review_cache.clear()
-        after = self.client.get('/api/financial-statements', params={'source_id': source_id}).json()['source']
-        rows = {r['row']: r for r in after['reports']['pnl']['rows']}
-        for row, expected in ((16, '25'), (18, '25'), (21, '5')):
-            self.assertEqual(rows[row]['cells'][0]['fact']['value'], expected)
-            self.assertEqual(rows[row]['cells'][0]['fact']['template_profile'], MANAGEMENT_PROFILE)
-        self.assertEqual(rows[23]['cells'][0]['fact']['value'], '10')
-        self.assertEqual(after['reports']['pnl']['source_actual'], before['reports']['pnl']['source_actual'])
-        self.assertEqual(after['reviewed_as_of'], before['reviewed_as_of'])
-        for key in ('pnl', 'balance'):
-            self.assertEqual([[c['plan'] for c in r['cells']] for r in after['reports'][key]['rows']],
-                             [[c['plan'] for c in r['cells']] for r in before['reports'][key]['rows']])
-        revoked = self.policy_request(source_id, before['source_sha256'], 1, 'unconfirmed')
-        self.assertEqual(revoked.status_code, 200, revoked.text)
-        final = self.client.get('/api/financial-statements', params={'source_id': source_id}).json()['source']
-        final_rows = {r['row']: r for r in final['reports']['pnl']['rows']}
-        self.assertIsNone(final_rows[16]['cells'][0]['fact']['value'])
-        self.assertEqual(final_rows[23]['cells'][0]['fact']['value'], '10')
-        with unit() as s:
-            stored = s.get(FinancialStatementSource, source_id)
-            self.assertEqual((stored.snapshot, stored.content, stored.created_at), (snapshot, raw, created_at))
-            self.assertEqual(s.scalar(select(func.count(FinancialStatementSource.id))), 1)
 
-    def test_revenue_policy_is_private_audited_and_derived_without_mutating_the_source_or_ledger(self):
-        raw = recognized_workbook()
-        source_id = self.upload_source(raw).json()['id']
-        before = self.client.get('/api/financial-statements').json()
-        source = before['source']
-        self.assertTrue(before['can_confirm_revenue_basis'])
-        self.assertEqual(source['revenue_policy']['status'], 'unconfirmed')
-        self.assertIsNone(first_cell(source)['value'])
-        plans = {key: [[cell['plan'] for cell in row['cells']] for row in report['rows']]
-                 for key, report in source['reports'].items()}
-        with unit() as s:
-            stored = s.get(FinancialStatementSource, source_id)
-            snapshot, content, created_at = stored.snapshot, stored.content, stored.created_at
-            counts = (s.scalar(select(func.count(Ledger.id))), s.scalar(select(func.count(Receipt.id))))
-            accounts = [(a.id, a.opening) for a in s.scalars(select(Account))]
-        response = self.policy_request(source_id, source['source_sha256'])
-        self.assertEqual(response.status_code, 200, response.text)
-        policy = response.json()['policy']
-        self.assertTrue(response.json()['changed'])
-        self.assertEqual(policy['revision'], 1)
-        self.assertEqual(policy['status'], 'confirmed')
-        after = self.client.get('/api/financial-statements').json()['source']
-        self.assertEqual(after['revenue_policy'], policy)
-        self.assertEqual(first_cell(after)['value'], '95')
-        gross = next(r for r in after['reports']['pnl']['rows'] if r['row'] == 12)['cells'][0]['fact']
-        self.assertEqual(gross['value'], '55')
-        self.assertEqual(after['coverage'], source['coverage'])
-        self.assertEqual(after['reports']['pnl']['source_actual'], source['reports']['pnl']['source_actual'])
-        self.assertNotIn('actual_revenue_basis', {field['key'] for field in after['calculation']['required_fields']})
-        self.assertNotIn('actual_revenue_classification_pending', {issue['code'] for issue in after['issues']})
-        self.assertEqual(plans, {key: [[cell['plan'] for cell in row['cells']] for row in report['rows']]
-                                for key, report in after['reports'].items()})
-        _review_cache.clear()  # Confirmation survives a process-cache restart.
-        self.assertEqual(first_cell(self.client.get('/api/financial-statements').json()['source'])['value'], '95')
-        with unit() as s:
-            stored = s.get(FinancialStatementSource, source_id)
-            self.assertEqual((stored.snapshot, stored.content, stored.created_at), (snapshot, content, created_at))
-            self.assertEqual(stored.content, raw)
-            self.assertEqual(counts, (s.scalar(select(func.count(Ledger.id))), s.scalar(select(func.count(Receipt.id)))))
-            self.assertEqual(accounts, [(a.id, a.opening) for a in s.scalars(select(Account))])
-            audit = s.scalar(select(Audit).where(Audit.action == 'Изменено правило выручки PNL'))
-            self.assertEqual(audit.company_id, self.company)
-            self.assertEqual(audit.entity_id, str(source_id))
-            self.assertEqual(json.loads(audit.detail)['current'], policy)
 
-    def test_policy_revision_blocks_stale_confirmation_and_revoke_invalidates_calculation_cache(self):
-        source_id = self.upload_source(recognized_workbook()).json()['id']
-        sha256 = self.client.get('/api/financial-statements').json()['source']['source_sha256']
-        self.assertEqual(self.policy_request(source_id, sha256).status_code, 200)
-        self.assertEqual(self.policy_request(source_id, sha256).status_code, 409)
-        same = self.policy_request(source_id, sha256, 1)
-        self.assertEqual(same.status_code, 200)
-        self.assertFalse(same.json()['changed'])
-        self.assertEqual(same.json()['policy']['revision'], 1)
-        self.assertEqual(first_cell(self.client.get('/api/financial-statements').json()['source'])['value'], '95')
-        reverted = self.policy_request(source_id, sha256, 1, 'unconfirmed')
-        self.assertEqual(reverted.status_code, 200, reverted.text)
-        self.assertEqual(reverted.json()['policy']['revision'], 2)
-        source = self.client.get('/api/financial-statements').json()['source']
-        self.assertIsNone(first_cell(source)['value'])
-        self.assertEqual(source['revenue_policy']['status'], 'unconfirmed')
-        self.assertEqual(self.policy_request(source_id, sha256, 1).status_code, 409)
-        self.assertEqual(self.policy_request(source_id, sha256, 2).json()['policy']['revision'], 3)
-        self.assertEqual(first_cell(self.client.get('/api/financial-statements').json()['source'])['value'], '95')
-        with unit() as s:
-            self.assertEqual(s.scalar(select(func.count(Audit.id)).where(Audit.action == 'Изменено правило выручки PNL')), 3)
 
-    def test_policy_does_not_transfer_between_sources_or_companies(self):
-        raw = recognized_workbook()
-        source_id = self.upload_source(raw).json()['id']
-        source = self.client.get('/api/financial-statements').json()['source']
-        self.assertEqual(self.policy_request(source_id, source['source_sha256']).status_code, 200)
-        with unit() as s:
-            other_company = s.scalar(select(Company).where(Company.code == 'ZUMA')).id
-        foreign = self.upload_source(raw, company=other_company).json()['id']
-        other = self.client.get('/api/financial-statements', params={'company_id': other_company}).json()['source']
-        self.assertEqual(other['revenue_policy']['revision'], 0)
-        self.assertIsNone(first_cell(other)['value'])
-        self.assertEqual(self.policy_request(foreign, source['source_sha256']).status_code, 404)
-        new_id = self.upload_source(workbook()).json()['id']
-        new_source = self.client.get('/api/financial-statements', params={'source_id': new_id}).json()['source']
-        self.assertEqual(new_source['revenue_policy']['status'], 'unconfirmed')
-        self.assertEqual(self.policy_request(new_id, new_source['source_sha256']).status_code, 422)
 
-    def test_policy_requires_import_right_and_csrf_before_source_lookup(self):
-        for role in ('auditor', 'investor', 'sales', 'employee', 'accountant', 'cashier', 'material_accountant', 'procurement'):
-            with self.subTest(role=role):
-                client, headers = self.make_user(role, 'policy_' + role)
-                self.addCleanup(client.close)
-                with patch('app.financial_statements.current_source_review') as review:
-                    response = client.post('/api/financial-statements/999999/revenue-policy',
-                        json={'basis': CONFIRMED_REVENUE_BASIS, 'expected_revision': 0, 'source_sha256': '1' * 64}, headers=headers)
-                    self.assertEqual(response.status_code, 403, response.text)
-                    review.assert_not_called()
-        source_id = self.upload_source(recognized_workbook()).json()['id']
-        source = self.client.get('/api/financial-statements').json()['source']
-        response = self.client.post(f'/api/financial-statements/{source_id}/revenue-policy',
-            json={'basis': CONFIRMED_REVENUE_BASIS, 'expected_revision': 0, 'source_sha256': source['source_sha256']})
-        self.assertEqual(response.status_code, 403)
-        self.assertEqual(self.client.get('/api/financial-statements').json()['source']['revenue_policy']['revision'], 0)
 
-    def test_policy_validates_hash_basis_revision_and_fail_closes_corrupt_scope(self):
-        source_id = self.upload_source(recognized_workbook()).json()['id']
-        source = self.client.get('/api/financial-statements').json()['source']
-        self.assertEqual(self.policy_request(source_id, '0' * 64).status_code, 409)
-        self.assertEqual(self.policy_request(source_id, source['source_sha256'], basis='guess_from_total').status_code, 422)
-        self.assertEqual(self.policy_request(source_id, source['source_sha256'], revision=True).status_code, 422)
-        with unit(True) as s:
-            s.add(Setting(key=f'financial_revenue:{self.company}:{source_id}', value=json.dumps({
-                'basis': CONFIRMED_REVENUE_BASIS, 'revision': 1, 'company_id': self.company + 1000,
-                'source_id': source_id, 'source_sha256': source['source_sha256']})))
-        after = self.client.get('/api/financial-statements').json()['source']
-        self.assertEqual(after['revenue_policy']['revision'], 0)
-        self.assertIsNone(first_cell(after)['value'])
 
     def test_empty_source_and_authorization(self):
         response = self.client.get('/api/financial-statements')
@@ -675,68 +522,12 @@ class FinancialStatementApiTests(unittest.TestCase):
         self.assertEqual(client.get('/api/financial-statements').status_code, 200)
         self.assertEqual(self.upload_source(client=client, headers=headers).status_code, 403)
 
-    def test_source_upload_deduplicates_per_company_and_keeps_ledger(self):
-        with unit() as s:
-            before = (s.scalar(select(func.count(Ledger.id))), s.scalar(select(func.count(Receipt.id))),
-                      [(a.id, a.opening) for a in s.scalars(select(Account))])
-            zuma = s.scalar(select(Company).where(Company.code == 'ZUMA')).id
-        raw = workbook()
-        first = self.upload_source(raw)
-        self.assertEqual(first.status_code, 200, first.text)
-        self.assertTrue(first.json()['created'])
-        repeated = self.upload_source(raw)
-        self.assertEqual(repeated.json(), {'id': first.json()['id'], 'created': False, 'company_id': self.company})
-        other = self.upload_source(raw, company=zuma)
-        self.assertEqual(other.status_code, 200, other.text)
-        self.assertTrue(other.json()['created'])
-        self.assertNotEqual(other.json()['id'], first.json()['id'])
-        result = self.client.get('/api/financial-statements', params={'company_id': self.company}).json()
-        self.assertEqual([r['id'] for r in result['sources']], [first.json()['id']])
-        self.assertEqual(result['source']['company_id'], self.company)
-        self.assertNotIn('content', result['source'])
-        with unit() as s:
-            after = (s.scalar(select(func.count(Ledger.id))), s.scalar(select(func.count(Receipt.id))),
-                     [(a.id, a.opening) for a in s.scalars(select(Account))])
-            stored = s.get(FinancialStatementSource, first.json()['id'])
-            self.assertEqual(stored.content, raw)
-        self.assertEqual(before, after)
 
-    def test_legacy_rating_sync_preserves_pnl_selection_until_explicit_pnl_upload(self):
-        import hashlib
-        original_id = self.upload_source().json()['id']
-        raw = workbook(months=(1, 2))
-        user_id = self.client.get('/api/me').json()['user']['id']
-        with unit(True) as s:
-            legacy = FinancialStatementSource(company_id=self.company, created_by=user_id,
-                filename='rating-only.xlsx', sha256=hashlib.sha256(raw).hexdigest(),
-                size=len(raw), snapshot='{}', content=raw)
-            s.add(legacy); s.flush()
-            legacy_id = legacy.id
-            s.add(Setting(key=f'ifrs_rating:{self.company}', value=json.dumps({'source_id': legacy_id})))
-        result = self.client.get('/api/financial-statements').json()
-        self.assertEqual(result['selected'], original_id)
-        self.assertEqual([row['id'] for row in result['sources']], [original_id])
-        query = {'year': 2026, 'start_month': 1, 'end_month': 1}
-        bridge = self.client.get('/api/financial-statements/reconciliation', params=query).json()
-        self.assertEqual(bridge['source_id'], original_id)
-        for endpoint in ('/api/financial-statements', '/api/financial-statements/reconciliation'):
-            response = self.client.get(endpoint, params={**query, 'source_id': legacy_id})
-            self.assertEqual(response.status_code, 404, response.text)
-        with unit() as s:
-            self.assertEqual(s.get(FinancialStatementSource, legacy_id).content, raw)
-            self.assertEqual(s.get(FinancialStatementSource, legacy_id).snapshot, '{}')
-        adopted = self.upload_source(raw)
-        self.assertEqual(adopted.status_code, 200, adopted.text)
-        self.assertEqual(adopted.json()['id'], legacy_id)
-        self.assertEqual(self.client.get('/api/financial-statements').json()['selected'], legacy_id)
-        with unit() as s:
-            self.assertEqual(s.get(FinancialStatementSource, legacy_id).content, raw)
-            self.assertEqual(s.get(FinancialStatementSource, legacy_id).snapshot, '{}')
 
     def test_explicit_foreign_source_is_404_and_headers_must_match(self):
         with unit() as s:
             zuma = s.scalar(select(Company).where(Company.code == 'ZUMA')).id
-        foreign = self.upload_source(company=zuma).json()['id']
+        foreign = self.seed_source(company=zuma).json()['id']
         response = self.client.get('/api/financial-statements', params={'company_id': self.company, 'source_id': foreign})
         self.assertEqual(response.status_code, 404, response.text)
         bridge = self.client.get('/api/financial-statements/reconciliation', params={
@@ -755,14 +546,14 @@ class FinancialStatementApiTests(unittest.TestCase):
         for changes in ({'start_month':4,'end_month':3},{'start_month':0},{'end_month':13},{'year':1999}):
             response=self.client.get('/api/financial-statements/reconciliation',params={**query,**changes})
             self.assertIn(response.status_code,(400,422),response.text)
-        source_id=self.upload_source().json()['id']
+        source_id=self.seed_source().json()['id']
         current=self.client.get('/api/financial-statements/reconciliation',params={**query,'source_id':source_id})
         self.assertEqual(current.status_code,200,current.text)
         self.assertEqual(current.json()['source_id'],source_id)
         self.assertEqual(current.json()['status'],'unavailable')
 
     def test_reconciliation_shows_scoped_website_cash_without_substituting_mapping_or_scaling(self):
-        source_id = self.upload_source(recognized_workbook(months=(1, 2, 3))).json()['id']
+        source_id = self.seed_source(recognized_workbook(months=(1, 2, 3))).json()['id']
         user_id = self.client.get('/api/me').json()['user']['id']
         with unit(True) as s:
             account = s.get(Account, self.acc)
@@ -820,7 +611,7 @@ class FinancialStatementApiTests(unittest.TestCase):
             self.assertEqual((s.scalar(select(func.count(Ledger.id))), s.scalar(select(func.count(Receipt.id)))), counts)
 
     def test_reconciliation_cash_missing_accounts_future_period_and_currency_validation(self):
-        source_id = self.upload_source(recognized_workbook()).json()['id']
+        source_id = self.seed_source(recognized_workbook()).json()['id']
         query = {'company_id': self.company, 'source_id': source_id, 'year': 2026,
                  'start_month': 1, 'end_month': 1, 'currency': 'UZS'}
         result = self.client.get('/api/financial-statements/reconciliation', params=query).json()
@@ -836,14 +627,14 @@ class FinancialStatementApiTests(unittest.TestCase):
         self.assertEqual(invalid.status_code, 422)
         with unit() as s:
             other = s.scalar(select(Company).where(Company.code == 'ZUMA')).id
-        foreign_id = self.upload_source(company=other).json()['id']
+        foreign_id = self.seed_source(company=other).json()['id']
         with patch('app.financial_reconciliation.website_cash_snapshot') as snapshot:
             foreign = self.client.get('/api/financial-statements/reconciliation', params={**query, 'source_id': foreign_id})
             self.assertEqual(foreign.status_code, 404)
             snapshot.assert_not_called()
 
     def test_reconciliation_website_cash_respects_historical_cutoff_without_changing_mapping(self):
-        source_id = self.upload_source(recognized_workbook(months=(1, 2, 3))).json()['id']
+        source_id = self.seed_source(recognized_workbook(months=(1, 2, 3))).json()['id']
         with unit(True) as s:
             account = s.get(Account, self.acc)
             account.opening_date, account.opening = date(2026, 1, 1), 10000
@@ -869,46 +660,9 @@ class FinancialStatementApiTests(unittest.TestCase):
                     **query, 'as_of': invalid})
                 self.assertEqual(invalid_response.status_code, 422)
 
-    def test_existing_immutable_source_is_rereviewed_without_upload_or_coverage_drift(self):
-        import hashlib
-        raw = workbook(months=(1, 11))
-        old = {'filename': 'old.xlsx', 'reviewed_as_of': '2026-09-16', 'review_version': 'old',
-               'requirements': [], 'issues': [{'code': 'old_global_false_alarm'}]}
-        user_id = self.client.get('/api/me').json()['user']['id']
-        with unit(True) as s:
-            source = FinancialStatementSource(company_id=self.company, created_by=user_id,
-                filename='old.xlsx', sha256=hashlib.sha256(raw).hexdigest(), size=len(raw),
-                snapshot=json.dumps(old), content=raw)
-            s.add(source); s.flush()
-            source_id = source.id
-            original = source.snapshot
-            created_at = source.created_at
-        _review_cache.clear()
-        with patch('app.financial_statements.today', return_value=date(2027, 1, 1)):
-            response = self.client.get('/api/financial-statements', params={'company_id': self.company, 'source_id': source_id})
-        self.assertEqual(response.status_code, 200, response.text)
-        current = response.json()['source']
-        self.assertEqual(current['review_version'], REVIEW_VERSION)
-        self.assertEqual(current['reviewed_as_of'], '2026-09-16')
-        self.assertEqual(current['original_reviewed_as_of'], '2026-09-16')
-        self.assertTrue(current['original_review_timestamp'])
-        self.assertEqual(current['coverage'][10]['status'], 'future')
-        self.assertNotIn('old_global_false_alarm', {i['code'] for i in current['issues']})
-        with patch('app.financial_statements.build_review') as parser:
-            again = self.client.get('/api/financial-statements', params={'company_id': self.company, 'source_id': source_id})
-            self.assertEqual(again.json()['source'], current)
-            parser.assert_not_called()
-        duplicate = self.upload_source(raw)
-        self.assertEqual(duplicate.json(), {'id': source_id, 'created': False, 'company_id': self.company})
-        with unit() as s:
-            saved = s.get(FinancialStatementSource, source_id)
-            self.assertEqual(saved.snapshot, original)
-            self.assertEqual(saved.content, raw)
-            self.assertEqual(saved.created_at, created_at)
-            self.assertEqual(s.scalar(select(func.count(FinancialStatementSource.id))), 1)
 
     def test_sources_are_immutable_and_have_no_download_route(self):
-        source_id = self.upload_source().json()['id']
+        source_id = self.seed_source().json()['id']
         with self.assertRaisesRegex(Exception, 'не изменяются'):
             with unit(True) as s:
                 s.get(FinancialStatementSource, source_id).filename = 'rewritten.xlsx'
@@ -919,14 +673,101 @@ class FinancialStatementApiTests(unittest.TestCase):
         self.assertEqual(self.client.delete(f'/api/financial-statements/{source_id}', headers=self.h).status_code, 404)
 
     def test_invalid_xlsx_filename_and_unauthorized_upload_are_not_saved(self):
-        self.assertEqual(self.upload_source(b'not an Excel archive').status_code, 422)
+        self.assertEqual(self.upload_source(b'not an Excel archive').status_code, 410)
         response = self.client.post('/api/financial-statements/upload', content=workbook(),
             headers={**self.h, 'X-Filename': 'bad.csv'})
-        self.assertEqual(response.status_code, 422)
+        self.assertEqual(response.status_code, 410)
         without_csrf = self.client.post('/api/financial-statements/upload', content=workbook(),
                                        headers={'X-Filename': 'test.xlsx'})
         self.assertEqual(without_csrf.status_code, 403)
         self.assertEqual(self.client.get('/api/financial-statements').json()['sources'], [])
+
+    def seed_source(self, content=None, company=None):
+        import hashlib
+        from types import SimpleNamespace
+        raw = content or workbook()
+        cid = company or self.company
+        uid = self.client.get('/api/me').json()['user']['id']
+        review = build_review(raw, 'synthetic.xlsx', as_of=date(2026, 9, 16))
+        with unit(True) as s:
+            source = FinancialStatementSource(company_id=cid, created_by=uid, filename='synthetic.xlsx',
+                sha256=hashlib.sha256(raw).hexdigest(), size=len(raw), snapshot=json.dumps(review), content=raw)
+            s.add(source); s.flush(); sid=source.id
+        return SimpleNamespace(json=lambda: {'id':sid})
+
+    def test_prepared_report_survives_cold_reads_without_excel_and_preserves_source(self):
+        from app.financial_statements import save_ready_review, source_revenue_policy
+        sid = self.seed_source(recognized_workbook()).json()['id']
+        with unit(True) as s:
+            src=s.get(FinancialStatementSource,sid)
+            original=(src.snapshot,src.content)
+            review=json.loads(src.snapshot)
+            review.update(id=sid,company_id=src.company_id,source_sha256=src.sha256,
+                          revenue_policy=source_revenue_policy(s,src))
+            save_ready_review(s,src,review)
+        _review_cache.clear()
+        with patch('app.financial_statements.build_review',side_effect=AssertionError('Excel must not run')):
+            result=self.client.get('/api/financial-statements').json()
+            self.assertEqual(result['source'],review)
+            self.assertFalse(result['can_upload'])
+            self.assertFalse(result['can_confirm_revenue_basis'])
+            self.assertEqual(self.client.get('/api/financial-statements/reconciliation',params={'year':2026}).status_code,200)
+        with unit() as s:
+            src=s.get(FinancialStatementSource,sid)
+            self.assertEqual((src.snapshot,src.content),original)
+
+    def test_old_snapshot_missing_ready_report_fails_closed_without_recalculation(self):
+        sid=self.seed_source().json()['id']
+        # Test fixture simulates immutable legacy data via SQL, bypassing ORM update guard.
+        from sqlalchemy import update
+        from app.db import engine
+        with engine.begin() as conn:
+            conn.execute(update(FinancialStatementSource).where(FinancialStatementSource.id==sid).values(snapshot='{}'))
+        with patch('app.financial_statements.build_review',side_effect=AssertionError('Excel must not run')):
+            self.assertEqual(self.client.get('/api/financial-statements').status_code,503)
+
+    def test_disabled_policy_does_not_change_confirmed_settings(self):
+        sid=self.seed_source().json()['id']
+        source=self.client.get('/api/financial-statements').json()['source']
+        with patch('app.financial_statements.build_review',side_effect=AssertionError('Excel must not run')):
+            self.assertEqual(self.policy_request(sid,source['source_sha256']).status_code,410)
+        with unit() as s:
+            self.assertIsNone(s.get(Setting,f'financial_revenue:{self.company}:{sid}'))
+
+    def test_confirmed_ready_report_is_kept_and_policy_mismatch_never_recalculates(self):
+        from app.financial_statements import save_ready_review, source_revenue_policy
+        sid=self.seed_source(recognized_workbook()).json()['id']
+        with unit(True) as s:
+            src=s.get(FinancialStatementSource,sid)
+            policy={'basis':CONFIRMED_REVENUE_BASIS,'revision':1,'source_sha256':src.sha256,
+                    'confirmed_at':'2026-09-16T10:00:00+00:00','confirmed_by':src.created_by,
+                    'company_id':src.company_id,'source_id':sid}
+            s.add(Setting(key=f'financial_revenue:{src.company_id}:{sid}',value=json.dumps(policy)));s.flush()
+            review=build_review(src.content,src.filename,date(2026,9,16),source_revenue_policy(s,src))
+            review.update(id=sid,company_id=src.company_id,source_sha256=src.sha256,
+                          revenue_policy=source_revenue_policy(s,src))
+            save_ready_review(s,src,review)
+        with patch('app.financial_statements.build_review',side_effect=AssertionError('Excel must not run')):
+            response=self.client.get('/api/financial-statements')
+            self.assertEqual(response.status_code,200,response.text)
+            self.assertEqual(response.json()['source'],review)
+            with unit(True) as s:
+                row=s.get(Setting,f'financial_revenue:{self.company}:{sid}')
+                policy=json.loads(row.value);policy['revision']=2;row.value=json.dumps(policy)
+            self.assertEqual(self.client.get('/api/financial-statements').status_code,503)
+
+    def test_ready_migration_rejects_other_company_and_incomplete_report(self):
+        from app.financial_statements import save_ready_review, source_revenue_policy
+        sid=self.seed_source().json()['id']
+        with unit(True) as s:
+            src=s.get(FinancialStatementSource,sid)
+            review=json.loads(src.snapshot)
+            review.update(id=sid,company_id=src.company_id+1,source_sha256=src.sha256,
+                          revenue_policy=source_revenue_policy(s,src))
+            with self.assertRaises(ValueError):save_ready_review(s,src,review)
+            review['company_id']=src.company_id;review['reports'].pop('balance')
+            with self.assertRaises(ValueError):save_ready_review(s,src,review)
+
 
 
 if __name__ == '__main__':
