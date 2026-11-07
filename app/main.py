@@ -324,8 +324,10 @@ def accounts(request:Request,archived:bool=False):
         from .bank_statement_guard import unreconciled_account_counts, pending_bank_debit_hold
         pending=unreconciled_account_counts(s) if company_role(user)!='sales' else {}
         result=[]
-        for a in s.scalars(select(Account).where(Account.archived==archived).order_by(Account.id)):
-            balance=account_balance(s,a);hold=pending_bank_debit_hold(s,a)
+        accounts=list(s.scalars(select(Account).where(Account.archived==archived).order_by(Account.id)))
+        balances=batch_account_balances(s,accounts)
+        for a in accounts:
+            balance=balances[a.id];hold=pending_bank_debit_hold(s,a)
             result.append({'id':a.id,'name':a.name,'kind':a.kind,'currency':a.currency,'company_id':a.company_id,'opening':money(a.opening),
                  'balance':money(balance),'opening_date':str(a.opening_date),'allow_overdraft':a.allow_overdraft,'archived':a.archived,
                  'unreconciled_statements':pending.get(a.id,0),'bank_pending_debits':money(hold),'spendable_balance':money(balance-hold)})

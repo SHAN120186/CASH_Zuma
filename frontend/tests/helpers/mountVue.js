@@ -23,6 +23,14 @@ export async function compileComponent(url, overrides = {}) {
     const variable = bindings.startsWith('{') ? bindings.replace(/\s+as\s+/g, ': ') : bindings;
     content = content.replace(statement, `const ${variable} = modules[${index}]${bindings.startsWith('{') ? '' : '.default'};`);
   }
+  // Dynamic SFC imports use the same module overrides as static SFC imports.
+  // Keep Vue's real async wrapper and promise scheduling rather than replacing
+  // the wrapper or eagerly mounting a page that has not been opened.
+  content = content.replace(/import\((['"])([^'"]+\.vue)\1\)/g, (_, quote, specifier) => {
+    const module = {__esModule: true, default: overrides[specifier] || {render: () => Vue.h('component-stub')}};
+    const index = modules.push(module) - 1;
+    return `Promise.resolve(modules[${index}])`;
+  });
   const component = new Function('modules', content.replace('export default', 'return'))(modules);
   const template = compileTemplate({source: descriptor.template.content, filename, id: filename,
     compilerOptions: {bindingMetadata: script.bindings, hoistStatic: false}});
@@ -75,7 +83,9 @@ function element(tag) {
 export const text = node => (node.text || '') + (node.children || []).map(text).join('');
 export const find = (node, check) => check(node) ? node : (node.children || []).map(child => find(child, check)).find(Boolean);
 export const all = (node, check) => [...(check(node) ? [node] : []), ...(node.children || []).flatMap(child => all(child, check))];
-export async function settle() {for (let i = 0; i < 4; i++) {await Promise.resolve(); await Vue.nextTick();}}
+// Drain Vue's async-component loader and nested onMounted reads as well as
+// ordinary reactive updates; this does not advance timers or resolve I/O.
+export async function settle() {for (let i = 0; i < 12; i++) {await Promise.resolve(); await Vue.nextTick();}}
 
 export function mount(component, props) {
   globalThis.Document ??= class Document {};
