@@ -183,6 +183,13 @@ def require_regular_account(account):
 
 
 def _authorized(s,user,request,funding,action,*,batch=None):
+    if action=='cancel':
+        if 'request_delete' not in perms_of(user) or not can_edit_section(user,'requests','ledger'):
+            raise HTTPException(403,'Ошибочное снятие отменяет финансовый директор, директор или администратор.')
+        if funding.state!='in_transit' or request.status!='approved':
+            raise HTTPException(409,'Отмена доступна только до получения наличных в кассу.')
+        act_with_right(user,'request_delete')
+        return
     right='pay_bank' if action=='withdraw' else 'pay_cash'
     if right not in perms_of(user) or not can_edit_section(user,'requests','ledger'):
         raise HTTPException(403,'Снятие из банка подтверждает расчётный бухгалтер, получение в кассу — кассир.')
@@ -202,7 +209,7 @@ def _authorized(s,user,request,funding,action,*,batch=None):
 
 def capabilities(s,user,request,funding,*,batch=None):
     result={}
-    for action in ('withdraw','receive'):
+    for action in ('withdraw','receive','cancel'):
         try:_authorized(s,user,request,funding,action,batch=batch)
         except HTTPException:result['can_'+action]=False
         else:result['can_'+action]=True
@@ -221,7 +228,7 @@ def funding_json(s,funding,user=None,request=None,accounts=None,categories=None)
                    'fee_category_name':fee.name,'withdraw_date':str(funding.withdraw_date) if funding.withdraw_date else None,
                    'receive_date':str(funding.receive_date) if funding.receive_date else None,
                    'withdraw_reference':funding.withdraw_reference,'receive_reference':funding.receive_reference,
-                   'can_withdraw':False,'can_receive':False})
+                   'can_withdraw':False,'can_receive':False,'can_cancel':False})
     if user is not None and request is not None:result.update(capabilities(s,user,request,funding))
     return result
 
@@ -234,6 +241,11 @@ def _context(s,user,request_id,action,data):
     _authorized(s,user,request,funding,action)
     if data.version!=funding.version:raise HTTPException(409,'Наличное финансирование уже изменено. Обновите заявку.')
     bank=get(s,Account,funding.bank_account_id);cash=get(s,Account,funding.cash_account_id)
+    if action=='cancel':
+        if len(data.note.strip())<10:raise HTTPException(422,'Укажите причину отмены (не менее 10 символов).')
+        if data.date!=funding.withdraw_date or data.reference!=funding.withdraw_reference:
+            raise HTTPException(409,'Реквизиты отменяемого снятия изменились. Обновите заявку.')
+        return request,funding,bank,cash
     if action=='withdraw':
         validate_plan(s,cash,request.amount,CashFundingIn(bank_account_id=bank.id,gross_amount=money(funding.gross_amount),
                       fee_percent=funding.fee_percent,fee_category_id=funding.fee_category_id,mode=funding.mode))
@@ -284,6 +296,29 @@ def _context(s,user,request_id,action,data):
 
 
 def _checks(s,request,funding,bank,cash,action,data):
+    if action=='cancel':
+        _require_active_legs(s,funding)
+        from .db import CashFundingPaymentGroup
+        from .bank_statement_models import BankStatementBatch,BankStatementLine
+        if funding.receipt_ledger_id or funding.receive_date or s.scalar(select(CashFundingPaymentGroup.id).where(CashFundingPaymentGroup.funding_id==funding.id).limit(1)):
+            raise HTTPException(409,'Наличные уже получены или выданы. Отдельная отмена снятия запрещена.')
+        if s.scalar(select(Ledger.id).where(Ledger.request_id==request.id).limit(1)):
+            raise HTTPException(409,'По заявке уже есть оплата. Отдельная отмена снятия запрещена.')
+        links=select(BankStatementLine.id).join(BankStatementBatch,BankStatementBatch.id==BankStatementLine.batch_id).where(
+            BankStatementBatch.status!='deleted',or_(BankStatementLine.ledger_id.in_([funding.transfer_ledger_id,funding.fee_ledger_id]),
+                BankStatementLine.request_id==request.id,
+                (BankStatementLine.account_id==bank.id)&(BankStatementLine.date==funding.withdraw_date)&(BankStatementLine.document_number==funding.withdraw_reference)))
+        if s.scalar(links.limit(1)):
+            raise HTTPException(409,'Снятие связано с банковской выпиской. Сначала разберите связь; подтверждённый банковский факт нельзя отменять как ошибку ввода.')
+        if s.scalar(select(BankStatementBatch.id).where(BankStatementBatch.status=='committed',
+                BankStatementBatch.account_id.in_([bank.id,funding.transit_account_id]),BankStatementBatch.period_to>=funding.withdraw_date).limit(1)):
+            raise HTTPException(409,'Отмена изменит остатки подтверждённой выписки. Сначала разберите зависимую выписку.')
+        transit=get(s,Account,funding.transit_account_id)
+        if transit.kind!='transit' or transit.company_id!=bank.company_id or transit.currency!=bank.currency:
+            raise HTTPException(409,'Параметры счёта денег в пути изменились.')
+        if account_balance(s,transit)<funding.net_amount:
+            raise HTTPException(409,'Денег в пути недостаточно для отмены снятия.')
+        return
     if action=='withdraw':
         # Record the completed withdrawal independently of statement review.
         # The journal is the balance source; _context still rejects a bank
@@ -383,7 +418,7 @@ def read_funding(id:int,request:Request):
 
 @router.post('/api/requests/{id}/cash-funding/{action}/preview')
 def preview_funding(id:int,action:str,data:FundingPreview,request:Request):
-    if action not in ('withdraw','receive'):raise HTTPException(404,'Этап не найден.')
+    if action not in ('withdraw','receive','cancel'):raise HTTPException(404,'Этап не найден.')
     with unit() as s:
         user,_=session_user(s,request)
         return _preview(s,user,id,action,data)[4]
@@ -391,7 +426,7 @@ def preview_funding(id:int,action:str,data:FundingPreview,request:Request):
 
 @router.post('/api/requests/{id}/cash-funding/{action}/commit')
 def commit_funding(id:int,action:str,data:FundingCommit,request:Request):
-    if action not in ('withdraw','receive'):raise HTTPException(404,'Этап не найден.')
+    if action not in ('withdraw','receive','cancel'):raise HTTPException(404,'Этап не найден.')
     if not data.confirm:raise HTTPException(422,'Подтвердите фактически выполненный этап.')
     from .requests_api import request_view
     with unit(True) as s:
@@ -400,7 +435,24 @@ def commit_funding(id:int,action:str,data:FundingCommit,request:Request):
         if not hmac.compare_digest(data.token,preview['token']):
             raise HTTPException(409,'После проверки данные изменились. Обновите предпросмотр и подтвердите заново.')
         prefix=f'CF-CASH-{funding.id}'
-        if action=='withdraw':
+        if action=='cancel':
+            from .services import reversal_reference,enforce_reservations_after_correction
+            for leg in (funding.transfer_ledger_id,funding.fee_ledger_id):
+                if leg is None:continue
+                original=get(s,Ledger,leg)
+                inverse_account=original.to_account_id if original.kind=='transfer' else original.account_id
+                inverse=Ledger(account_id=inverse_account,to_account_id=original.account_id if original.kind=='transfer' else None,
+                    kind='transfer' if original.kind=='transfer' else 'in',amount=original.amount,date=original.date,
+                    category_id=original.category_id,reference=reversal_reference(s,inverse_account,original.id),
+                    reversal_of=original.id,counterparty=original.counterparty,note=data.note,creator_id=user.id)
+                s.add(inverse);s.flush()
+                log(s,user,'Отменена ошибочная операция снятия','ledger',original.id,data.note)
+            funding.state='cancelled'
+            s.flush()
+            for account in (bank,get(s,Account,funding.transit_account_id)):
+                validate_running_balance(s,account)
+                enforce_reservations_after_correction(s,account)
+        elif action=='withdraw':
             transit=_transit(s,user,bank,data.date)
             transfer=Ledger(account_id=bank.id,to_account_id=transit.id,kind='transfer',amount=funding.net_amount,date=data.date,
                             reference=prefix+'-WITHDRAW',counterparty=req.counterparty,note=data.note,creator_id=user.id)
@@ -424,7 +476,7 @@ def commit_funding(id:int,action:str,data:FundingCommit,request:Request):
         from sqlalchemy.orm.attributes import flag_modified
         flag_modified(req,'decision_note')
         s.flush()
-        log(s,user,'Учтено снятие наличных из банка' if action=='withdraw' else 'Наличные получены в кассу','request',req.id,
+        log(s,user,'Отменено ошибочное снятие наличных' if action=='cancel' else 'Учтено снятие наличных из банка' if action=='withdraw' else 'Наличные получены в кассу','request',req.id,
             json.dumps({'funding_id':funding.id,'state':funding.state,'date':str(data.date),'reference':data.reference,
                         'note':data.note,'gross_amount':money(funding.gross_amount),'net_amount':money(funding.net_amount),
                         'fee_amount':money(funding.fee_amount),'transfer_ledger_id':funding.transfer_ledger_id,
