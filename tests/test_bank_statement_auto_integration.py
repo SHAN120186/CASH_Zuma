@@ -263,7 +263,7 @@ class AutoBankIntegrationTests(SiteTests):
         finally:
             finance.close()
 
-    def test_partial_statement_blocks_manual_payments_until_each_statement_is_reconciled(self):
+    def test_manual_payment_with_partial_statements_preserves_review_and_prevents_duplicates(self):
         rid=self.approved()
         raw=self.statement(False)
         p=self.preview(raw);self.assertEqual(p.status_code,200,p.text)
@@ -272,9 +272,14 @@ class AutoBankIntegrationTests(SiteTests):
         committed=self.confirmed(p.json(),token=False);self.assertEqual(committed.status_code,200,committed.text)
         self.assertFalse(committed.json()['full_reconciliation'])
         batch_id=p.json()['id']
-        blocked=self.ledger('600','out',reference='SYN-BLOCKED',request_id=rid)
-        self.assertEqual(blocked.status_code,409,blocked.text)
-        self.assertIn('сверк',blocked.text.casefold())
+        paid=self.ledger('600','out',reference='SYN-MANUAL',request_id=rid)
+        self.assertEqual(paid.status_code,200,paid.text)
+        with unit() as s:
+            s.info['company_id']=self.company
+            self.assertTrue(unreconciled_statements(s,s.get(Account,self.acc)))
+            self.assertEqual(len(list(s.scalars(select(Ledger).where(Ledger.request_id==rid)))),1)
+        duplicate=self.ledger('600','out',reference='SYN-DUPLICATE',request_id=rid)
+        self.assertEqual(duplicate.status_code,409,duplicate.text)
         payload={'account_id':self.acc,'category_id':self.cat,'amount':'600','kind':'out','date':self.date,
                  'reference':'SYN-BYPASS','note':'Synthetic payment','request_id':rid,
                  'request_version':self.version_of(rid),'bank_statement_fact':True}
@@ -293,30 +298,34 @@ class AutoBankIntegrationTests(SiteTests):
             set_statement_reconciliation(s,old,False,admin)
         q=self.client.post(f'/api/bank-statements/{batch_id}/reprocess/preview',headers=self.h,
                            json={'fee_category_id':self.cat})
-        self.assertEqual(q.status_code,200,q.text);self.assertTrue(q.json()['full_reconciliation'],q.text)
-        done=self.client.post(f'/api/bank-statements/{batch_id}/reprocess/commit',headers=self.h,
-            json={'fee_category_id':self.cat,'preview_token':q.json()['preview_token'],'confirm':True})
-        self.assertEqual(done.status_code,200,done.text);self.assertTrue(done.json()['full_reconciliation'])
-        self.assertEqual(self.ledger('600','out',reference='SYN-STILL-BLOCKED',request_id=rid).status_code,409)
-        q=self.client.post(f'/api/bank-statements/{other_id}/reprocess/preview',headers=self.h,json={})
-        self.assertEqual(q.status_code,200,q.text);self.assertTrue(q.json()['full_reconciliation'],q.text)
-        done=self.client.post(f'/api/bank-statements/{other_id}/reprocess/commit',headers=self.h,
-            json={'preview_token':q.json()['preview_token'],'confirm':True})
-        self.assertEqual(done.status_code,200,done.text);self.assertTrue(done.json()['full_reconciliation'])
-        paid=self.ledger('600','out',reference='SYN-AFTER-RECONCILE',request_id=rid)
-        self.assertEqual(paid.status_code,200,paid.text)
+        self.assertEqual(q.status_code,200,q.text)
+        # Manual payment was absent from this statement; review must stay unresolved.
+        self.assertFalse(q.json()['full_reconciliation'])
         with unit() as s:
+            s.info['company_id']=self.company
             self.assertEqual(s.get(PaymentRequest,rid).status,'paid')
-            actions=list(s.scalars(select(Audit.action).where(Audit.entity=='bank_statement')))
-            self.assertIn('Банковская выписка требует сверки',actions)
-            self.assertIn('Сверена банковская выписка',actions)
+            self.assertEqual(len(list(s.scalars(select(Ledger).where(Ledger.request_id==rid)))),1)
+            self.assertEqual(len(unreconciled_statements(s,s.get(Account,self.acc))),2)
+
+    def test_partial_statement_does_not_bypass_actual_funds(self):
+        rid=self.approved()
+        p=self.preview(self.statement(False))
+        self.assertEqual(p.status_code,200,p.text)
+        self.assertEqual(self.confirmed(p.json(),token=False).status_code,200)
+        with unit(True) as s:
+            s.get(Account,self.acc).opening=100
+        denied=self.ledger('600','out',reference='SYN-NO-FUNDS',request_id=rid)
+        self.assertEqual(denied.status_code,409,denied.text)
+        self.assertIn('фактических средств',denied.text)
+        with unit() as s:
+            self.assertEqual(s.get(PaymentRequest,rid).status,'approved')
+            self.assertEqual(len(list(s.scalars(select(Ledger).where(Ledger.request_id==rid)))),0)
 
     def test_statement_payment_remains_allowed_after_prior_partial_statement(self):
         rid=self.approved()
         p=self.preview(self.statement(False))
         self.assertEqual(p.status_code,200,p.text)
         self.assertEqual(self.confirmed(p.json(),token=False).status_code,200)
-        self.assertEqual(self.ledger('600','out',reference='SYN-MANUAL-DENY',request_id=rid).status_code,409)
         accountant,headers=self.accountant
         p2=self.preview(self.statement(),client=accountant,headers=headers)
         self.assertEqual(p2.status_code,200,p2.text)

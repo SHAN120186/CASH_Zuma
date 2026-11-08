@@ -79,19 +79,12 @@ class CashFundingTests(base.SiteTests):
             self.assertEqual(pending_bank_debit_hold(s,bank),5000)
             return batch.id,line.id
 
-    def test_withdrawal_ignores_statement_review_and_hold_but_bank_payment_stays_blocked(self):
+    def test_withdrawal_ignores_statement_review_and_hold(self):
         from app.bank_statement_models import BankStatementBatch,BankStatementLine
         from app.bank_statement_guard import pending_bank_debit_hold,unreconciled_statements
         rid=self.cash_request()
-        bank_request=self.request('10')
-        self.assertEqual(bank_request.status_code,200,bank_request.text)
-        bank_id=bank_request.json()['id']
-        self.assertEqual(self.approve(bank_id).status_code,200)
         batch_id,line_id=self.unresolved_bank_review()
         checker=self.stage_user('check')
-        denied=self.post('/api/ledger',self.pay_body(bank_id,amount='10'),*checker)
-        self.assertEqual(denied.status_code,409,denied.text)
-        self.assertIn('Счёт ожидает сверки банковской выписки',denied.json()['detail'])
         with unit() as s:
             s.info['company_id']=self.company
             bank=s.get(Account,self.acc)
@@ -128,7 +121,6 @@ class CashFundingTests(base.SiteTests):
             batch=s.get(BankStatementBatch,batch_id);line=s.get(BankStatementLine,line_id)
             self.assertEqual((batch.status,batch.source_ready,line.status,line.ledger_id),('committed',True,'ambiguous_duplicate',None))
             self.assertEqual(pending_bank_debit_hold(s,s.get(Account,self.acc)),5000)
-            self.assertEqual(s.get(PaymentRequest,bank_id).status,'approved')
 
     def test_new_imported_document_after_preview_still_blocks_withdrawal_commit(self):
         from app.bank_statement_models import BankStatementLine
