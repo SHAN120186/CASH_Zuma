@@ -16,6 +16,21 @@ function browser(t, {reason='Remove duplicate request',confirm=true}={}) {
   return {prompts,confirmations,restore};
 }
 
+test('opening a card loads date rules only when the server permits rescheduling',async t=>{
+  const dialogs=browser(t);t.after(()=>dialogs.restore());
+  for(const actions of [[],['delete'],['reschedule']]){
+    const calls=[];
+    const api=async url=>{calls.push(url);return url==='/api/request-rules'?{due_minimums:{urgent:'2026-11-08'}}:{...request(actions),status:'approved'};};
+    const view=mount(card,{id:42,api,companyUrl:url=>url,money:value=>value});
+    try{
+      await settle();
+      assert.equal(view.state.r.id,42);
+      assert.deepEqual(calls,actions.includes('reschedule')?['/api/requests/42','/api/request-rules']:['/api/requests/42']);
+      if(actions.includes('reschedule'))assert.equal(view.state.rules.urgent,'2026-11-08');
+    }finally{view.unmount();}
+  }
+});
+
 test('server deletion action opens the request control and deletes with version and reason, never a payment',async t=>{
   const dialogs=browser(t),calls=[],events=[];
   const api=async(url,options={})=>{calls.push({url,options});

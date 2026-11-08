@@ -170,7 +170,9 @@ function onKey(e) {
 }
 onMounted(async () => {
   document.addEventListener('keydown', onKey); await load(); await nextTick(); dialog.value?.querySelector('button')?.focus();
-  try { rules.value = (await props.api('/api/request-rules')).due_minimums; } catch { /* сервер проверит дату переноса */ }
+  if (can('reschedule')) {
+    try { rules.value = (await props.api('/api/request-rules')).due_minimums; } catch { /* сервер проверит дату переноса */ }
+  }
 });
 onUnmounted(() => document.removeEventListener('keydown', onKey));
 </script>
