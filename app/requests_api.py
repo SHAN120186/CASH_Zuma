@@ -7,7 +7,7 @@ from datetime import date
 from typing import Literal, Optional
 from fastapi import APIRouter, Request, HTTPException, Query
 from pydantic import BaseModel, Field, ConfigDict
-from sqlalchemy import select, func
+from sqlalchemy import select, func, literal, union_all
 from .db import (unit, now, User, Account, Category, PaymentRequest, RequestDocument, CalendarDay, Delegation, Audit)
 from .security import (session_user, perms_of, has_role, payment_channels, pay_right, ROLES, COMPANY_ROLES)
 from .services import (get, log, money, amount, today, approval_stage, round_participants, all_participants, route_complete,
@@ -133,20 +133,63 @@ def names_of(s, ids):
     return dict(s.execute(select(User.id,User.name).where(User.id.in_(ids)).execution_options(company_unscoped=True)).all())
 
 
+PEOPLE_FIELDS = ('creator_id', 'last_editor_id', 'checked_by', 'finance_approved_by', 'approved_by')
+
+
+def card_reference_query(s, id):
+    query=request_reference_query([id],department_key=setting_key(s,'departments'))
+    # As names_of: historical names may outlive company membership. Only names
+    # linked to this scoped request are selected, never other user attributes.
+    for field in PEOPLE_FIELDS:
+        person=User.__table__.alias('person_'+field)
+        query=query.outerjoin(person,person.c.id==getattr(PaymentRequest,field)).add_columns(person.c.name)
+    return query
+
+
+def card_evidence(s, id):
+    """One round trip for document metadata, history and their display names.
+
+    UNION ALL avoids a documents x history join. Both branches retain ORM
+    company filters. File contents are deliberately not part of this query.
+    These detached records are presentation-only, never used by write guards.
+    """
+    from types import SimpleNamespace
+    author=User.__table__.alias('evidence_author')
+    acting=User.__table__.alias('evidence_acting')
+    docs=select(literal('document'),RequestDocument.id,RequestDocument.created_at,RequestDocument.created_by,
+        RequestDocument.kind,RequestDocument.version,RequestDocument.active,RequestDocument.filename,
+        RequestDocument.mime,RequestDocument.sha256,literal(''),literal(''),literal(''),literal(None),
+        author.c.name,literal(None),literal('request'),literal(str(id))).outerjoin(author,author.c.id==RequestDocument.created_by)\
+        .where(RequestDocument.request_id==id)
+    history=select(literal('audit'),Audit.id,Audit.created_at,Audit.user_id,Audit.action,literal(0),literal(False),
+        literal(''),literal(''),literal(''),Audit.detail,Audit.role,Audit.ip,Audit.acting_for_id,
+        author.c.name,acting.c.name,Audit.entity,Audit.entity_id).outerjoin(author,author.c.id==Audit.user_id)\
+        .outerjoin(acting,acting.c.id==Audit.acting_for_id).where(request_journal(id))
+    documents=[];journal=[];names={}
+    for source,identity,at,uid,kind,version,active,filename,mime,sha,detail,role,ip,acting_id,name,acting_name,entity,entity_id in s.execute(union_all(docs,history)):
+        if uid and name is not None:names[uid]=name
+        if acting_id and acting_name is not None:names[acting_id]=acting_name
+        if source=='document':
+            documents.append(SimpleNamespace(id=identity,request_id=id,created_at=at,created_by=uid,kind=kind,
+                version=version,active=active,filename=filename,mime=mime,sha256=sha))
+        else:
+            journal.append(SimpleNamespace(id=identity,created_at=at,user_id=uid,action=kind,
+                detail=detail,role=role,ip=ip,acting_for_id=acting_id,entity=entity,entity_id=entity_id))
+    documents.sort(key=lambda d:(d.kind,d.version,d.id));journal.sort(key=lambda a:a.id)
+    return documents,journal,names
+
+
 @router.get('/api/requests/{id}')
 def request_card(id: int, request: Request):
     with unit() as s:
         u, _ = session_user(s, request)
-        reference=s.execute(request_reference_query([id],department_key=setting_key(s,'departments'))).first()
+        reference=s.execute(card_reference_query(s,id)).first()
         if reference is None or not can_view_request(s,u,reference[0]):
             raise HTTPException(404,'Запись не найдена.')
         r=reference[0]
-        docs = list(s.scalars(select(RequestDocument).where(RequestDocument.request_id == id)
-                              .order_by(RequestDocument.kind, RequestDocument.version, RequestDocument.id)))
-        rows = list(s.scalars(select(Audit).where(request_journal(id)).order_by(Audit.id)))
+        docs,rows,names=card_evidence(s,id)
         data = request_view(s, u, r, batch=request_batch(s,[r],documents=docs,journal_rows=rows,references=[reference]))
-        names = names_of(s, [r.creator_id, r.last_editor_id, r.checked_by, r.finance_approved_by, r.approved_by]
-                         + [d.created_by for d in docs] + [a.user_id for a in rows] + [a.acting_for_id for a in rows])
+        names.update({getattr(r,field):name for field,name in zip(PEOPLE_FIELDS,reference[7:]) if name is not None})
         show_ip = 'audit' in perms_of(u)
         data['people'] = {k: names.get(getattr(r, k), '') for k in ('creator_id', 'last_editor_id', 'checked_by', 'finance_approved_by', 'approved_by')}
         data['documents_list'] = [document_json(d, names) for d in docs]

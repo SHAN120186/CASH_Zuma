@@ -7,7 +7,7 @@ the same boundary, including imports, downloads and aggregate subqueries.
 import json
 import re
 from fastapi import HTTPException
-from sqlalchemy import event, select, inspect, text, or_, exists
+from sqlalchemy import event, select, inspect, text, or_, exists, literal, cast, String
 from sqlalchemy.orm import Session, with_loader_criteria
 from sqlalchemy.schema import CreateTable
 from .db import (Company, CompanyUser, User, Account, Category, Counterparty,
@@ -83,16 +83,18 @@ def activate(s, request, user):
     has_delegations=exists(select(Delegation.id).where(Delegation.company_id==Company.id,
         Delegation.user_id==user.id,Delegation.revoked_at.is_(None),
         Delegation.starts_on<=day,Delegation.ends_on>=day))
-    q=select(Company,CompanyUser,has_delegations).outerjoin(CompanyUser,
-        (CompanyUser.company_id==Company.id)&(CompanyUser.user_id==user.id)).where(Company.active.is_(True))
+    policy_key=literal('sections:')+cast(Company.id,String)+literal(':'+str(user.id))
+    q=select(Company,CompanyUser,has_delegations,Setting).outerjoin(CompanyUser,
+        (CompanyUser.company_id==Company.id)&(CompanyUser.user_id==user.id))\
+        .outerjoin(Setting,Setting.key==policy_key).where(Company.active.is_(True))
     if user.role!='admin':q=q.where(Company.code!=SERVICE_CODE)
     if user.role not in ('admin','founder'):q=q.where(CompanyUser.role.in_(COMPANY_ROLES))
     choices=s.execute(q.execution_options(company_unscoped=True)).all()
     if user.role not in ('admin','founder') and len(choices)!=1:choices=[]
-    chosen=next(((c,m,d) for c,m,d in choices if (c.id==cid if raw else c.code=='UZGERMED')),None)
+    chosen=next(((c,m,d,p) for c,m,d,p in choices if (c.id==cid if raw else c.code=='UZGERMED')),None)
     if chosen is None:
         raise HTTPException(403, 'Нет доступа к выбранной компании.')
-    company,membership,has_acting=chosen;cid=company.id
+    company,membership,has_acting,policy=chosen;cid=company.id
     from .security import scope_user
     acting = []
     for d in (active_delegations(s, user.id, cid) if has_acting else []):
@@ -103,6 +105,8 @@ def activate(s, request, user):
                member=membership is not None or user.role in ('admin', 'founder'))
     s.info['company_id'] = cid
     request.state.company_id = cid
+    # Passed only to this request's access check; never cached across requests.
+    return json.loads(policy.value) if policy and user.role!='admin' else {'version':0,'sections':{}}
 
 
 def criteria(cid):

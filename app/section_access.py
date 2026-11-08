@@ -32,13 +32,13 @@ def defaults(permissions):
     if {'request_check','approve','pay_bank','pay_cash'} & permissions and result['requests']!='hidden':result['requests']='edit'
     if {'schedule','receipts','receipt_edit','receipt_delete'} & permissions and result['calendar']!='hidden':result['calendar']='edit'
     return result
-def apply(s,user,request):
+def apply(s,user,request,*,policy=None):
     cid=s.info.get('company_id')
     from .security import perms_of
     base=set(perms_of(user))
     if user.role=='admin':
         user._sections={k:'edit' for k in SECTIONS};user._section_overrides={};return
-    policy=stored(s,cid,user.id) if cid else {'sections':{}}
+    if policy is None:policy=stored(s,cid,user.id) if cid else {'sections':{}}
     overrides=policy.get('sections',{})
     if not overrides:
         user._sections=None;user._section_overrides={};return

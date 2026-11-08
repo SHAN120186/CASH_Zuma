@@ -6,7 +6,7 @@ from sqlalchemy import event, select
 from sqlalchemy.orm import Session
 import tests.test_site as base
 from tests.test_request_batch_history import RequestBatchHistoryTests
-from app.db import unit, engine, User, Account, Company, Ledger, PaymentRequest, CashFunding, Setting, Delegation
+from app.db import unit, engine, User, Account, Company, Ledger, PaymentRequest, CashFunding, Setting, Delegation, Audit, RequestDocument
 from app.company_scope import setting_key
 from app.services import request_batch
 from app.requests_api import request_view
@@ -66,11 +66,12 @@ class RequestReadTests(base.SiteTests):
             finally:event.remove(engine,'before_cursor_execute',record)
             self.assertEqual(response.status_code,200,response.text)
             selects=[sql for sql in statements if sql.lstrip().startswith('select')]
-            self.assertLessEqual(len(selects),5 if path==paths[0] else 7,(path,selects))
+            self.assertLessEqual(len(selects),5,(path,selects))
             self.assertFalse(any('insert into' in sql for sql in statements))
             if path==paths[1]:
                 self.assertEqual(sum('from request_documents' in sql for sql in selects),1)
                 self.assertEqual(sum('from audit_log' in sql for sql in selects),1)
+                self.assertFalse(any('request_documents.content' in sql for sql in selects))
             print('HTTP_REQUEST_SELECTS',path,len(selects))
         first=self.client.get(paths[0],headers=self.h).json()
         second=self.client.get(paths[0]+'&page=2',headers=self.h).json()
@@ -83,6 +84,59 @@ class RequestReadTests(base.SiteTests):
         with unit(True) as s:s.get(PaymentRequest,ids[0]).amount=12345
         self.assertEqual(self.client.get(paths[1],headers=self.h).json()['amount'],'123.45')
         self.assertEqual(self.client.get(paths[0],headers=self.h).json()['items'][0]['amount'],'123.45')
+
+    def test_card_evidence_matches_separate_reads_with_legacy_history_and_versions(self):
+        from unittest.mock import patch
+        from app.requests_api import names_of
+        from app.services import request_journal
+        ids,actors=self.fixture(4)
+        with unit(True) as s:
+            doc=s.scalar(select(RequestDocument).where(RequestDocument.request_id==ids[0]));doc.active=False
+            s.add(RequestDocument(request_id=ids[0],kind='internal',filename='replacement.pdf',mime='application/pdf',
+                storage_key='replacement',sha256='new',content=b'large-secret-document',version=2,active=True,
+                created_by=actors['procurement']))
+            s.add(Audit(company_id=self.company,user_id=actors['cashier'],acting_for_id=actors['finance'],
+                entity='request_document',entity_id=str(doc.id),action='Заменён документ заявки',
+                detail=f'request={ids[0]}; legacy',ip='192.0.2.1',role='cashier'))
+            s.add(Audit(company_id=self.company,user_id=None,entity='request',entity_id=str(ids[0]),
+                action='Synthetic system event',detail='system',role=None))
+        def legacy(s,rid):
+            docs=list(s.scalars(select(RequestDocument).where(RequestDocument.request_id==rid)
+                .order_by(RequestDocument.kind,RequestDocument.version,RequestDocument.id)))
+            rows=list(s.scalars(select(Audit).where(request_journal(rid)).order_by(Audit.id)))
+            names=names_of(s,[d.created_by for d in docs]+[a.user_id for a in rows]+[a.acting_for_id for a in rows])
+            return docs,rows,names
+        for rid in ids:
+            path=f'/api/requests/{rid}'
+            actual=self.client.get(path,headers=self.h)
+            with patch('app.requests_api.card_evidence',side_effect=legacy):
+                expected=self.client.get(path,headers=self.h)
+            self.assertEqual(actual.status_code,200,actual.text)
+            self.assertEqual(actual.json(),expected.json())
+
+    def test_joined_section_policy_is_fresh_and_removes_staff_round_trip(self):
+        ids,_=self.fixture(2)
+        client,headers=self.user_in(self.company,'finance','fresh_policy_reader')
+        try:
+            with unit() as s:uid=s.scalar(select(User.id).where(User.username=='fresh_policy_reader'))
+            def get(path):
+                statements=[]
+                def record(conn,cursor,statement,parameters,context,many):statements.append(statement.lower())
+                event.listen(engine,'before_cursor_execute',record)
+                try:response=client.get(path,headers=headers)
+                finally:event.remove(engine,'before_cursor_execute',record)
+                self.assertLessEqual(sum(sql.lstrip().startswith('select') for sql in statements),5,statements)
+                return response
+            for mode,status in [('view',200),('hidden',403),('edit',200),('default',200)]:
+                with unit(True) as s:
+                    key=f'sections:{self.company}:{uid}'
+                    row=s.get(Setting,key)
+                    if row is None:row=Setting(key=key,value='');s.add(row)
+                    row.value=json.dumps({'version':1,'sections':{'requests':mode}})
+                listed=get('/api/requests?paginated=true');card=get(f'/api/requests/{ids[0]}')
+                self.assertEqual((listed.status_code,card.status_code),(status,status))
+                if mode=='view':self.assertEqual(card.json()['actions'],[])
+        finally:client.close()
 
     def test_joined_departments_are_fresh_and_company_scoped(self):
         ids,_=self.fixture(2)
