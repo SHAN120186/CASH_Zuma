@@ -84,7 +84,10 @@ function submit() {
   run(() => props.api(`/api/requests/${r.value.id}/decision`, json({action: 'submit', version: r.value.version})), N_('Заявка отправлена на согласование.'));
 }
 
-async function fundingChanged(row) {
+async function fundingChanged(row, result) {
+  if (result?.saved && row?.id === r.value?.id) {
+    r.value = row; emit('changed'); emit('close'); return;
+  }
   if (row?.id === r.value?.id) r.value = row;
   // A commit returns the authoritative workflow view, while GET includes
   // document versions, people and history. Never treat the short reply as an

@@ -108,7 +108,7 @@ async function commit() {
       || row.cash_funding.state !== (which === 'cancel' ? 'cancelled' : which === 'withdraw' ? 'in_transit' : 'received')
       || row.cash_funding.gross_amount !== funding.value.gross_amount || row.cash_funding.net_amount !== funding.value.net_amount
       || row.cash_funding.fee_amount !== funding.value.fee_amount) throw new Error(tx('Ответ о проведении не получен. Проверьте состояние заявки перед дальнейшими действиями.'));
-    action.value = ''; emit('changed', row);
+    action.value = ''; emit('changed', row, {saved: true});
     notice.value = which === 'cancel' ? N_('Ошибочные списание и комиссия отменены. Заявку можно удалить; история операций сохранится.') : which === 'withdraw' ? batch.value ? N_('Списание банка и комиссия учтены. Выдача по выбранным заявкам ещё не проведена.') : N_('Списание банка и комиссия учтены. Заявка ещё не оплачена.') : batch.value ? N_('Наличные получены в кассу. Выберите заявки для групповой выдачи.') : N_('Наличные получены в кассу. Заявка готова к оплате по прежним правилам.');
   } catch (failure) {
     if (!alive || current !== generation) return;
