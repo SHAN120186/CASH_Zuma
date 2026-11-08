@@ -569,20 +569,25 @@ def request_budget_totals(s,category_ids,months):
     return result
 
 
-def request_batch(s,requests,*,documents=None,journal_rows=None):
+def request_reference_query(ids):
+    """Request and its scoped account/article references in one database read."""
+    bank=aliased(Account);fee=aliased(Category)
+    return (select(PaymentRequest,Account,Category,CashFunding,bank,fee).select_from(PaymentRequest)
+        .join(Account,Account.id==PaymentRequest.account_id).join(Category,Category.id==PaymentRequest.category_id)
+        .outerjoin(CashFunding,CashFunding.request_id==PaymentRequest.id)
+        .outerjoin(bank,bank.id==CashFunding.bank_account_id).outerjoin(fee,fee.id==CashFunding.fee_category_id)
+        .where(PaymentRequest.id.in_(ids)))
+
+
+def request_batch(s,requests,*,documents=None,journal_rows=None,references=None):
     """Prefetch data used by request cards, within the current company scope."""
     from .department_catalog import catalog as department_catalog
     from collections import defaultdict
     ids=[r.id for r in requests]
     if not ids:return None
-    bank=aliased(Account);fee=aliased(Category)
-    references=s.execute(select(Account,Category,CashFunding,bank,fee).select_from(PaymentRequest)
-        .join(Account,Account.id==PaymentRequest.account_id).join(Category,Category.id==PaymentRequest.category_id)
-        .outerjoin(CashFunding,CashFunding.request_id==PaymentRequest.id)
-        .outerjoin(bank,bank.id==CashFunding.bank_account_id).outerjoin(fee,fee.id==CashFunding.fee_category_id)
-        .where(PaymentRequest.id.in_(ids)))
+    if references is None:references=s.execute(request_reference_query(ids))
     accounts={};categories={};fundings={}
-    for account,category,funding,bank_account,fee_category in references:
+    for _,account,category,funding,bank_account,fee_category in references:
         accounts[account.id]=account;categories[category.id]=category
         if funding:fundings[funding.request_id]=funding
         if bank_account:accounts[bank_account.id]=bank_account

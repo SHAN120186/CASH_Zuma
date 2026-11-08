@@ -64,7 +64,7 @@ class RequestReadTests(base.SiteTests):
             finally:event.remove(engine,'before_cursor_execute',record)
             self.assertEqual(response.status_code,200,response.text)
             selects=[sql for sql in statements if sql.lstrip().startswith('select')]
-            self.assertLessEqual(len(selects),13,(path,selects))
+            self.assertLessEqual(len(selects),9,(path,selects))
             self.assertFalse(any('insert into' in sql for sql in statements))
             if path==paths[1]:
                 self.assertEqual(sum('from request_documents' in sql for sql in selects),1)

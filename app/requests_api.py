@@ -12,7 +12,7 @@ from .db import (unit, now, User, Account, Category, PaymentRequest, RequestDocu
 from .security import (session_user, perms_of, has_role, payment_channels, pay_right, ROLES, COMPANY_ROLES)
 from .services import (get, log, money, amount, today, approval_stage, round_participants, all_participants, route_complete,
                        DOCUMENT_KINDS, REQUIRED_DOCUMENTS, REQUIRED_DOCUMENTS_BY_CHANNEL, REQUEST_DEPARTMENTS,
-                       THRESHOLD_FIELDS, category_policy, request_json, request_journal, request_batch)
+                       THRESHOLD_FIELDS, category_policy, request_json, request_journal, request_batch, request_reference_query)
 from .workdays import due_minimums, LEAD_DAYS
 from .workflow_setup import DEFAULT_THRESHOLDS
 from .director_limits import limits_json
@@ -136,11 +136,14 @@ def names_of(s, ids):
 def request_card(id: int, request: Request):
     with unit() as s:
         u, _ = session_user(s, request)
-        r = visible(s, u, id)
+        reference=s.execute(request_reference_query([id])).first()
+        if reference is None or not can_view_request(s,u,reference[0]):
+            raise HTTPException(404,'Запись не найдена.')
+        r=reference[0]
         docs = list(s.scalars(select(RequestDocument).where(RequestDocument.request_id == id)
                               .order_by(RequestDocument.kind, RequestDocument.version, RequestDocument.id)))
         rows = list(s.scalars(select(Audit).where(request_journal(id)).order_by(Audit.id)))
-        data = request_view(s, u, r, batch=request_batch(s,[r],documents=docs,journal_rows=rows))
+        data = request_view(s, u, r, batch=request_batch(s,[r],documents=docs,journal_rows=rows,references=[reference]))
         names = names_of(s, [r.creator_id, r.last_editor_id, r.checked_by, r.finance_approved_by, r.approved_by]
                          + [d.created_by for d in docs] + [a.user_id for a in rows] + [a.acting_for_id for a in rows])
         show_ip = 'audit' in perms_of(u)
