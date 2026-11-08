@@ -31,6 +31,9 @@ class CashFundingIn(BaseModel):
     fee_percent:str
     fee_category_id:int=Field(ge=1)
     mode:Literal['single','batch']='single'
+    source:Literal['bank','counterparty']='bank'
+    intermediary_name:str=Field(default='',max_length=160)
+    intermediary_inn:str=Field(default='',max_length=20)
 
 
 class FundingPreview(BaseModel):
@@ -115,6 +118,13 @@ def save_plan(s,user,request,data,*,provided=True):
     current.bank_account_id=bank.id;current.cash_account_id=cash.id
     if current.mode=='batch' and 'mode' not in data.model_fields_set:
         raise HTTPException(409,'В документе выбран групповой режим. Обновите форму перед изменением получения наличных.')
+    if current.source=='counterparty' and 'source' not in data.model_fields_set:
+        raise HTTPException(409,'Обновите форму: наличные получаются через контрагента.')
+    if data.source=='counterparty' and (data.mode!='batch' or len(data.intermediary_name.strip())<3):
+        raise HTTPException(422,'Для получения наличных через фирму выберите пополнение кассы и укажите фирму.')
+    current.source=data.source
+    current.intermediary_name=data.intermediary_name.strip() if data.source=='counterparty' else ''
+    current.intermediary_inn=data.intermediary_inn.strip() if data.source=='counterparty' else ''
     current.mode=data.mode
     current.gross_amount=gross;current.fee_percent=percent;current.fee_amount=fee
     current.net_amount=net;current.fee_category_id=category.id
@@ -124,6 +134,7 @@ def save_plan(s,user,request,data,*,provided=True):
     flag_modified(request,'decision_note')
     s.flush()
     log(s,user,'Настроено получение наличных через банк','request',request.id,json.dumps({
+        'source':current.source,'intermediary_name':current.intermediary_name,'intermediary_inn':current.intermediary_inn,
         'bank_account_id':bank.id,'cash_account_id':cash.id,'gross_amount':money(gross),
         'fee_percent':percent,'fee_amount':money(fee),'net_amount':money(net),'fee_category_id':category.id},ensure_ascii=False))
 
@@ -220,7 +231,7 @@ def funding_json(s,funding,user=None,request=None,accounts=None,categories=None)
     if not funding:return None
     bank=(accounts or {}).get(funding.bank_account_id) or get(s,Account,funding.bank_account_id)
     fee=(categories or {}).get(funding.fee_category_id) or get(s,Category,funding.fee_category_id)
-    result={key:getattr(funding,key) for key in ('id','version','mode','bank_account_id','cash_account_id','fee_category_id','state',
+    result={key:getattr(funding,key) for key in ('id','version','mode','source','intermediary_name','intermediary_inn','bank_account_id','cash_account_id','fee_category_id','state',
         'transit_account_id','transfer_ledger_id','fee_ledger_id','receipt_ledger_id')}
     result.update({key:money(getattr(funding,key)) for key in ('gross_amount','fee_amount','net_amount')})
     result['completed']=funding.mode=='batch' and funding.state=='received'
@@ -455,19 +466,19 @@ def commit_funding(id:int,action:str,data:FundingCommit,request:Request):
         elif action=='withdraw':
             transit=_transit(s,user,bank,data.date)
             transfer=Ledger(account_id=bank.id,to_account_id=transit.id,kind='transfer',amount=funding.net_amount,date=data.date,
-                            reference=prefix+'-WITHDRAW',counterparty=req.counterparty,note=data.note,creator_id=user.id)
+                            reference=prefix+'-WITHDRAW',counterparty=funding.intermediary_name if funding.source=='counterparty' else req.counterparty,note=data.note,creator_id=user.id)
             s.add(transfer);s.flush()
             funding.transit_account_id=transit.id;funding.transfer_ledger_id=transfer.id
             if funding.fee_amount:
                 fee=Ledger(account_id=bank.id,category_id=funding.fee_category_id,kind='out',amount=funding.fee_amount,date=data.date,
-                           reference=prefix+'-FEE',counterparty='Банковская комиссия',note=data.note,creator_id=user.id)
+                           reference=prefix+'-FEE',counterparty=funding.intermediary_name if funding.source=='counterparty' else 'Банковская комиссия',note=data.note,creator_id=user.id)
                 s.add(fee);s.flush();funding.fee_ledger_id=fee.id
             funding.state='in_transit';funding.withdraw_date=data.date;funding.withdraw_reference=data.reference
             validate_running_balance(s,bank);validate_running_balance(s,transit)
         else:
             transit=get(s,Account,funding.transit_account_id)
             entry=Ledger(account_id=transit.id,to_account_id=cash.id,kind='transfer',amount=funding.net_amount,date=data.date,
-                         reference=prefix+'-RECEIVE',counterparty=req.counterparty,note=data.note,creator_id=user.id)
+                         reference=prefix+'-RECEIVE',counterparty=funding.intermediary_name if funding.source=='counterparty' else req.counterparty,note=data.note,creator_id=user.id)
             s.add(entry);s.flush();funding.receipt_ledger_id=entry.id
             funding.state='received';funding.receive_date=data.date;funding.receive_reference=data.reference
             validate_running_balance(s,transit);validate_running_balance(s,cash)

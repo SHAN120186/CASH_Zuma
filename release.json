@@ -1,7 +1,9 @@
 {
-  "version": "2.36.9",
+  "version": "2.36.10",
   "date": "2026-11-08",
   "changes": [
+    "Ежедневная сверка по компании, дате и валюте открывается по запросу: банк, выписка, заявки, касса и деньги в пути. Сводка не создаёт финансовых операций; дубли и неподтверждённые остатки остаются на проверке.",
+    "Для группового получения наличных добавлен источник «Через контрагента»: фирма и удержание сохраняются отдельно от банковской комиссии. Получение кассой и выдача по заявкам остаются отдельными фактами.",
     "Список заявок подгружает следующие строки при прокрутке без переключения страниц. Сохраняются фильтры и сортировка; повторная загрузка не добавляет дубли.",
     "После успешного сохранения снятия, приёма наличных или отмены снятия карточка заявки закрывается автоматически. При ошибке или неопределённом результате остаётся открытой.",
     "Финансовый директор, директор и администратор могут отменить ошибочную запись снятия до приёма кассой: отдельная проверка и подтверждение, отмена списания и комиссии вместе, сохранение истории и защита связанных выписок.",
@@ -138,6 +140,8 @@
     "Длинные названия файлов и кнопки выбора шаблона переносятся на узком экране. В ТЭО дата архива отдельно обозначена и не подменяет начало финансового прогноза."
   ],
   "changes_uz": [
+    "Kompaniya, sana va valyuta boʻyicha kunlik solishtirish soʻrov boʻyicha ochiladi: bank, koʻchirma, arizalar, kassa va yoʻldagi pul. Jamlanma moliyaviy operatsiya yaratmaydi.",
+    "Guruhli naqd pul olishda «Kontragent orqali» manbasi qoʻshildi. Firma va ushlab qolish bank komissiyasidan alohida saqlanadi.",
     "Ommaviy repozitoriydan moliyaviy jadval xeshi saqlangan fayl olib tashlandi. 2.36.0 da olib tashlangan bo'limlarning ishlatilmaydigan tarjimalari o'chirildi. Ishchi bo'limlar va interfeys matni o'zgarmadi.",
     "Sayt yengillashtirildi: biznes-reja va TEO generatori, P&L va balans moliyaviy hisobotlari, IFRS reytingi, hisobotlar arxivi hamda texnik HTTP-jurnal sahifalari va testlari bilan birga olib tashlandi. Ma'lumotlar bazasi jadvallari va saqlangan ma'lumotlar o'chirilmadi; biznes-jurnal saqlanadi.",
     "Arizalar ro‘yxati va kartalari bazaga kamroq ketma-ket murojaat qiladi: bo‘limlar, hujjatlar va ishtirokchilar kerakli yozuvlar bilan birga o‘qiladi. Huquqlar, summalar, tarix va kelishuv tartibi joriy ma’lumotlar asosida tekshiriladi.",

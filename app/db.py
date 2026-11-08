@@ -237,6 +237,9 @@ class CashFunding(Base):
     company_id = Column(Integer, ForeignKey('companies.id'), nullable=False)
     request_id = Column(Integer, ForeignKey('payment_requests.id'), nullable=False, unique=True)
     mode = Column(String(12), nullable=False, default='single', server_default='single')
+    source = Column(String(16), nullable=False, default='bank', server_default='bank')
+    intermediary_name = Column(String(160), nullable=False, default='', server_default='')
+    intermediary_inn = Column(String(20), nullable=False, default='', server_default='')
     bank_account_id = Column(Integer, ForeignKey('accounts.id'), nullable=False)
     cash_account_id = Column(Integer, ForeignKey('accounts.id'), nullable=False)
     transit_account_id = Column(Integer, ForeignKey('accounts.id'), nullable=True)
@@ -685,6 +688,8 @@ def initialize():
         if 'inn' not in receipt_columns:conn.execute(text("ALTER TABLE expected_receipts ADD COLUMN inn VARCHAR(20) NOT NULL DEFAULT ''"))
         if 'version' not in receipt_columns:conn.execute(text('ALTER TABLE expected_receipts ADD COLUMN version INTEGER NOT NULL DEFAULT 1'))
         funding_columns={c['name'] for c in inspect(conn).get_columns('request_cash_fundings')}
+        for name, definition in [('source', "VARCHAR(16) NOT NULL DEFAULT 'bank'"), ('intermediary_name', "VARCHAR(160) NOT NULL DEFAULT ''"), ('intermediary_inn', "VARCHAR(20) NOT NULL DEFAULT ''")]:
+            if name not in funding_columns:conn.execute(text(f'ALTER TABLE request_cash_fundings ADD COLUMN {name} {definition}'))
         if 'mode' not in funding_columns:
             conn.execute(text("ALTER TABLE request_cash_fundings ADD COLUMN mode VARCHAR(12) NOT NULL DEFAULT 'single'"))
         columns={c['name'] for c in inspect(conn).get_columns('categories')}
