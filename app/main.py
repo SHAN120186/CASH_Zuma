@@ -859,7 +859,7 @@ def edit_ledger(id:int,data:LedgerEditIn,request:Request):
         log(s,u,'Исправлена операция','ledger',id,json.dumps({'before':before,'replacement_id':replacement.id,'reason':data.reason},ensure_ascii=False))
         return {'id':replacement.id}
 
-def reverse_ledger_entry(s,u,t,reason,allow_archived=False):
+def reverse_ledger_entry(s,u,t,reason,allow_archived=False,*,defer_balance_checks=False):
     id=t.id
     from .cash_funding import require_independent_ledger
     require_independent_ledger(s,t)
@@ -879,13 +879,15 @@ def reverse_ledger_entry(s,u,t,reason,allow_archived=False):
         log(s,u,'Отмена оплаты заявки','request',t.request_id,f'Сторно операции {id}');t.request_id=None
     if t.receipt_id:
         get(s,Receipt,t.receipt_id).status='expected';log(s,u,'Отмена поступления','receipt',t.receipt_id,f'Сторно операции {id}');t.receipt_id=None
-    s.flush();validate_running_balance(s,get(s,Account,t.account_id))
-    if t.to_account_id:validate_running_balance(s,get(s,Account,t.to_account_id))
-    from .bank_statement_guard import refresh_reconciliation_after_reversal
-    refresh_reconciliation_after_reversal(s,u,t)
+    s.flush()
+    if not defer_balance_checks:
+        validate_running_balance(s,get(s,Account,t.account_id))
+        if t.to_account_id:validate_running_balance(s,get(s,Account,t.to_account_id))
+        from .bank_statement_guard import refresh_reconciliation_after_reversal
+        refresh_reconciliation_after_reversal(s,u,t)
     # The inverse entry is already included in the actual balance. Check
     # only the account losing money, with required=0, to avoid a second debit.
-    if t.kind in ('in','transfer'):
+    if not defer_balance_checks and t.kind in ('in','transfer'):
         reduced_account=t.to_account_id if t.kind=='transfer' else t.account_id
         enforce_reservations_after_correction(s,get(s,Account,reduced_account))
     log(s,u,'Сторно операции (исходная дата)','ledger',id,reason)
@@ -1044,17 +1046,33 @@ def statement_admin_delete(id:int,data:BankStatementDeleteIn,request:Request):
                 raise HTTPException(409,'Созданная выпиской операция изменилась. Проверьте её вручную.')
             if entry.id in reversals and str(entry.id) not in registry:
                 raise HTTPException(409,'Операция уже сторнирована или исправлена. Проверьте её вручную перед удалением выписки.')
-        # Removing expense before income avoids a spurious intermediate cash
-        # shortage. Each existing reversal still checks historical balances and reservations.
+        # Reverse the whole statement before validating its final financial state.
+        # Its own pending debits must not survive as artificial reservation holds.
         removed=[]
         try:
             for entry in sorted(ledger.values(),key=lambda e:(e.kind not in ('out','transfer'),e.date,e.id)):
                 if str(entry.id) in registry:continue
                 before={k:str(getattr(entry,k)) for k in ('account_id','to_account_id','category_id','kind','amount','date','counterparty','reference','note','request_id','receipt_id')}
-                inverse=reverse_ledger_entry(s,u,entry,data.reason.strip(),allow_archived=True)
+                inverse=reverse_ledger_entry(s,u,entry,data.reason.strip(),allow_archived=True,defer_balance_checks=True)
                 info={'ids':[entry.id,inverse.id],'reason':data.reason.strip(),'deleted_by':u.id,'deleted_at':str(now()),'before':before,'bank_statement_id':batch.id}
                 registry[str(entry.id)]=info;removed.append(entry.id)
                 log(s,u,'Удалена операция из выписки','ledger',entry.id,json.dumps(info,ensure_ascii=False))
+            marker=s.get(Setting,f'bsu:{batch.company_id}:{batch.account_id}:{batch.id}')
+            if marker:s.delete(marker)
+            batch.status='deleted'
+            s.flush()
+            from .bank_statement_guard import refresh_reconciliation_after_reversal
+            changed=[entry for entry in ledger.values() if entry.id in removed]
+            for entry in changed:
+                refresh_reconciliation_after_reversal(s,u,entry)
+            affected={aid for entry in changed for aid in (entry.account_id,entry.to_account_id) if aid}
+            for account_id in sorted(affected):
+                final_account=get(s,Account,account_id)
+                try:
+                    validate_running_balance(s,final_account)
+                    enforce_reservations_after_correction(s,final_account)
+                except HTTPException as exc:
+                    raise HTTPException(409,f'Счёт «{final_account.name}» ({final_account.currency}): '+str(exc.detail))
             for other in later:
                 other_account=get(s,Account,other.account_id)
                 if other_balances[other.id]!=(day_start_balance(s,other_account,other.period_from),account_balance(s,other_account,other.period_to)):
@@ -1064,9 +1082,6 @@ def statement_admin_delete(id:int,data:BankStatementDeleteIn,request:Request):
         row=get_setting(s,'ledger_deletions')
         if row:row.value=json.dumps(registry,ensure_ascii=False)
         elif removed:s.add(Setting(key=setting_key(s,'ledger_deletions'),value=json.dumps(registry,ensure_ascii=False)))
-        marker=s.get(Setting,f'bsu:{batch.company_id}:{batch.account_id}:{batch.id}')
-        if marker:s.delete(marker)
-        batch.status='deleted'
         log(s,u,'Удалена банковская выписка','bank_statement',batch.id,json.dumps({'reason':data.reason.strip(),
             'removed_ledger_ids':removed,'preserved_linked':sum(1 for line in lines if line.ledger_id and line.ledger_id not in ledger)},ensure_ascii=False))
         return {'deleted':True,'removed_operations':len(removed)}

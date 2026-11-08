@@ -104,7 +104,8 @@ def refresh_reconciliation_after_reversal(s, user, entry):
 
     Called under the same write guard after flushing the inverse. Cover both
     transfer accounts and later statement openings, not just directly linked
-    rows. Statement deletion may clear its own marker later in that transaction.
+    rows. Whole-statement deletion invokes this only after all inverses are
+    flushed and its own batch is marked deleted, so only surviving batches refresh.
     """
     from .bank_statement_api import _line_data, _posting_summary
     from .services import get
