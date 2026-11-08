@@ -72,13 +72,23 @@ def activate(s, request, user):
     raw = header or query
     try:
         # Compatibility with existing API clients: never aggregate all companies.
-        cid = int(raw) if raw else s.scalar(select(Company.id).where(Company.code == 'UZGERMED'))
+        cid = int(raw) if raw else None
     except (TypeError, ValueError):
         raise HTTPException(422, 'Некорректная компания.')
-    if not any(c.id == cid for c in available_companies(s, user)):
+    # Validate the current assignments on every request, in one round trip.
+    # Staff with more than one valid company still have no access at all.
+    from .security import COMPANY_ROLES
+    q=select(Company,CompanyUser).outerjoin(CompanyUser,
+        (CompanyUser.company_id==Company.id)&(CompanyUser.user_id==user.id)).where(Company.active.is_(True))
+    if user.role!='admin':q=q.where(Company.code!=SERVICE_CODE)
+    if user.role not in ('admin','founder'):q=q.where(CompanyUser.role.in_(COMPANY_ROLES))
+    choices=s.execute(q.execution_options(company_unscoped=True)).all()
+    if user.role not in ('admin','founder') and len(choices)!=1:choices=[]
+    chosen=next(((c,m) for c,m in choices if (c.id==cid if raw else c.code=='UZGERMED')),None)
+    if chosen is None:
         raise HTTPException(403, 'Нет доступа к выбранной компании.')
+    company,membership=chosen;cid=company.id
     from .security import scope_user
-    membership = s.get(CompanyUser, (cid, user.id))
     acting = []
     for d in active_delegations(s, user.id, cid):
         replaced = s.get(User, d.replaced_user_id)

@@ -221,10 +221,11 @@ def session_user(s, request: Request, permission=None):
     try:
         claims=jwt.decode(token,jwt_key(),algorithms=['HS256'],issuer='zuma-treasury',audience='zuma-api',options={'require':['sub','exp','iat','jti']})
     except jwt.PyJWTError:raise HTTPException(401,'Сессия завершена. Войдите снова.')
-    session=s.get(LoginSession, digest(token)) if token else None
+    pair=s.execute(select(LoginSession,User).outerjoin(User,User.id==LoginSession.user_id)
+                   .where(LoginSession.token_hash==digest(token))).first() if token else None
+    session,user=pair if pair else (None,None)
     if not session or session.expires_at <= now():
         raise HTTPException(401, 'Сессия завершена. Войдите снова.')
-    user=s.get(User,session.user_id)
     if not user or not user.active: raise HTTPException(401,'Учётная запись отключена.')
     if claims['sub']!=str(user.id):raise HTTPException(401,'Неверный токен.')
     request.state.user_id=user.id

@@ -1,8 +1,9 @@
 {
-  "version": "2.35.25",
+  "version": "2.35.26",
   "date": "2026-11-08",
   "changes": [
-    "Технический журнал больше не записывает чтения (GET и HEAD): каждый просмотр раньше давал строку в базе. Изменения, отказы в доступе и вызовы бота с ошибками журнализируются как прежде. Права, проверки и журнал изменений не изменены.",
+    "Ускорено чтение заявок: связанные данные и бюджетные итоги читаются пакетно, карточка повторно использует документы и историю текущего запроса. Проверки прав и финансовые правила сохранены. Успешные просмотры не создают технические строки журнала; отказы и изменения журналируются.",
+    "Ускорено чтение бюджетов: расходы, резервы и комиссии собираются для всех статей за четыре запроса. Обзор показывает остатки и заявки, не ожидая бюджета; незавершённая проверка рисков обозначена отдельно.",
     "Ускорен расчёт бюджета статьи: суммы считает база данных вместо загрузки всех проводок и счетов на каждую строку списка заявок. Добавлены индексы под проводки, заявки, софинансирование и документы; они создаются при запуске и не меняют данные. Ключ подписи сессий читается один раз за процесс. Правила бюджета, резерва и оплаты не изменены.",
     "По выбору владельца отключены импорт и пересчёт финансовых Excel-моделей. P&L и баланс читают сохранённый проверенный результат; исходники не удаляются. Банковские выписки, бюджеты, справочники, вложения и оперативный Cash Flow сохранены. Бизнес-планы можно создавать вручную, готовые отчёты — скачивать.",
     "При ошибке загрузки раздела после обновления сайта добавлена явная кнопка «Обновить страницу». Повтор загрузки сохранён. Открытые формы, редактирование отчётов и выполняющиеся операции защищены от перезагрузки; автоматического обновления страницы нет.",
@@ -126,7 +127,8 @@
     "Длинные названия файлов и кнопки выбора шаблона переносятся на узком экране. В ТЭО дата архива отдельно обозначена и не подменяет начало финансового прогноза."
   ],
   "changes_uz": [
-    "Texnik jurnal endi o‘qishlarni (GET va HEAD) yozmaydi: har bir ko‘rish bazada alohida qator yaratardi. O‘zgartirishlar, ruxsat rad etilishi va xato bot chaqiruvlari avvalgidek qayd etiladi. Huquqlar, tekshiruvlar va o‘zgarishlar jurnali o‘zgarmadi.",
+    "Arizalarni o‘qish tezlashtirildi: bog‘liq ma’lumotlar va byudjet jamlari paketda olinadi, karta hujjatlar va tarixni qayta o‘qimaydi. Huquqlar va moliyaviy qoidalar saqlangan. Muvaffaqiyatli ko‘rishlar texnik jurnalga yozilmaydi; rad javoblari va o‘zgarishlar qayd etiladi.",
+    "Byudjetlar tezroq yuklanadi: xarajatlar, zaxiralar va komissiyalar barcha moddalar uchun toʻrtta soʻrovda olinadi. Umumiy koʻrinish byudjetni kutmasdan qoldiqlar va arizalarni koʻrsatadi; xavflar tekshiruvi tugamaganligi alohida belgilanadi.",
     "Statya byudjetini hisoblash tezlashtirildi: summalarni ma’lumotlar bazasi hisoblaydi, har bir ariza qatoriga barcha o‘tkazmalar va hisoblarni yuklamaydi. O‘tkazmalar, arizalar, moliyalashtirish va hujjatlar uchun indekslar qo‘shildi; ular ishga tushirishda yaratiladi va ma’lumotlarni o‘zgartirmaydi. Seans kaliti jarayon uchun bir marta o‘qiladi. Byudjet, zaxira va to‘lov qoidalari o‘zgarmadi.",
     "Egasining tanloviga ko‘ra moliyaviy Excel modellarini import qilish va qayta hisoblash o‘chirildi. P&L va balans saqlangan tekshirilgan natijadan ochiladi; asl fayllar saqlanadi. Bank ko‘chirmalari, budjetlar, ma’lumotnomalar va operativ Cash Flow ishlashda davom etadi.",
     "Sayt yangilangandan keyin bo‘limni yuklash xatosida «Sahifani yangilash» tugmasi qo‘shildi. Qayta urinish saqlangan. Ochiq shakllar, hisobotni tahrirlash va bajarilayotgan amallar qayta yuklashdan himoyalangan; avtomatik qayta yuklash yo‘q.",
