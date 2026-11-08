@@ -97,6 +97,31 @@ function assertCompact(view) {
   assert.doesNotMatch(rendered, /Synthetic balance-only bank|Synthetic hidden ledger recipient/);
 }
 
+test('optional analytics require a click and never reload the working blocks', async t => {
+  for (const company of companies) {
+    const calls = [];
+    const view = mount(overview, propsFor(company, apiFixture(calls), ownRole('finance')));
+    t.after(view.unmount); await settle(); await settle();
+    assert.equal(calls.filter(url => url.startsWith('/api/report?')).length, 0);
+    assert.equal(calls.filter(url => url.startsWith('/api/group-report?')).length, 1);
+    assert.equal(calls.filter(url => url.startsWith('/api/ledger?') && url.includes('date_from')).length, 0);
+    assert.equal(view.state.reserved, 0);
+    assert.equal(view.state.available, 10000);
+    const essential = () => calls.filter(url => /\/api\/(requests|budgets|accounts|dashboard)\?/.test(url)).length;
+    const initial = essential();
+    const button = find(view.container, node => node.tag === 'button' && text(node) === 'Показать график остатка и план-факт');
+    assert.ok(button); await button.props.onClick(); await settle();
+    assert.equal(essential(), initial);
+    assert.equal(calls.filter(url => url.startsWith('/api/report?')).length, 1);
+    assert.equal(calls.filter(url => url.startsWith('/api/group-report?')).length, 2);
+    assert.equal(calls.filter(url => url.startsWith('/api/ledger?') && url.includes('date_from')).length, 1);
+    assert.equal(view.state.reserved, 0);
+    assert.equal(view.state.available, 10000);
+    const total = calls.length; await view.state.showDetails();
+    assert.equal(calls.length, total);
+  }
+});
+
 test('a slow budget does not block balances, request panels or the report',async t=>{
   let finishBudget;
   const calls=[],baseApi=apiFixture(calls);
@@ -106,7 +131,7 @@ test('a slow budget does not block balances, request panels or the report',async
   assert.equal(view.state.s.loading,false);
   assert.equal(view.state.s.requestsLoading,false);
   assert.equal(view.state.balanceState,'ready');
-  assert.equal(view.state.s.report.rows.length,0);
+  assert.equal(view.state.s.report,null);
   assert.equal(view.state.s.budgetsLoading,true);
   assert.match(text(view.container),/Проверяем бюджеты/);
   assert.doesNotMatch(text(view.container),/Рисков по UZS не видно/);
@@ -224,10 +249,12 @@ test('finance, director and admin retain the complete overview and their existin
     assert.equal(requestCalls(calls).length, 2);
     assert.ok(calls.some(url => url.startsWith('/api/dashboard?')));
     assert.ok(calls.some(url => url.startsWith('/api/accounts?')));
-    assert.ok(calls.some(url => url.startsWith('/api/report?')));
+    assert.ok(!calls.some(url => url.startsWith('/api/report?')));
+    await view.state.showDetails(); await settle();
     assert.ok(section(view, 'ov-decisions'));
     assert.ok(section(view, 'ov-payments'));
     assert.ok(section(view, 'ov-risks'));
+    await view.state.showDetails(); await settle();
     assert.ok(heading(view, 'ov-pf-h'));
     assert.ok(heading(view, 'ov-ops-h'));
     assert.match(text(view.container), /Synthetic pending recipient/);
@@ -248,6 +275,7 @@ test('founder retains the full read-only overview without gaining approval or pa
     assert.ok(heading(view, 'ov-pend-h'));
     assert.ok(section(view, 'ov-payments'));
     assert.ok(section(view, 'ov-risks'));
+    await view.state.showDetails(); await settle();
     assert.ok(heading(view, 'ov-pf-h'));
     assert.equal(view.state.canPay, false);
     assert.equal(view.state.approver, false);
@@ -264,7 +292,7 @@ test('late full-overview responses cannot reveal hidden aggregates after switchi
   const view = mount(overview, propsFor(companies[0], api, ownRole('finance')));
   t.after(view.unmount);
   await settle();
-  assert.ok(finishFull.length >= 7);
+  assert.ok(finishFull.length >= 6);
   const oldFinancialCalls = calls.filter(url => !requestCalls([url]).length).length;
   view.app._instance.props.requestsOnly = true;
   await settle(); await settle();
