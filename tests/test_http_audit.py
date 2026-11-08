@@ -64,7 +64,7 @@ class HttpAuditTests(base.SiteTests):
         self.assertEqual(response.headers['X-Content-Type-Options'], 'nosniff')
         self.assertEqual(response.headers['Cache-Control'], 'no-store')
 
-    def test_authenticated_denied_write_is_logged_but_reads_and_anonymous_calls_are_not(self):
+    def test_authenticated_denials_are_logged_but_successful_reads_and_anonymous_calls_are_not(self):
         employee, headers = self.make_user('employee', 'http_audit_employee')
         account = {'name': 'Denied audit account', 'kind': 'bank', 'currency': 'UZS', 'opening': '10', 'opening_date': self.date}
         try:
@@ -78,7 +78,10 @@ class HttpAuditTests(base.SiteTests):
             with unit() as session:
                 self.assertEqual(rows[-1].user_id, session.scalar(select(User.id).where(User.username == 'http_audit_employee')))
             self.assertEqual(employee.get('/api/accounts', headers=headers).status_code, 403)
-            self.assertEqual(len(self.http_rows()), before + 1)
+            self.assertEqual(len(self.http_rows()), before + 2)
+            self.assertEqual(self.http_rows()[-1].detail, '/api/accounts; status=403')
+            self.assertEqual(employee.get('/api/me', headers=headers).status_code, 200)
+            self.assertEqual(len(self.http_rows()), before + 2)
         finally:
             employee.close()
         before = len(self.http_rows())

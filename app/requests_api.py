@@ -137,10 +137,10 @@ def request_card(id: int, request: Request):
     with unit() as s:
         u, _ = session_user(s, request)
         r = visible(s, u, id)
-        data = request_view(s, u, r, batch=request_batch(s,[r]))
         docs = list(s.scalars(select(RequestDocument).where(RequestDocument.request_id == id)
                               .order_by(RequestDocument.kind, RequestDocument.version, RequestDocument.id)))
         rows = list(s.scalars(select(Audit).where(request_journal(id)).order_by(Audit.id)))
+        data = request_view(s, u, r, batch=request_batch(s,[r],documents=docs,journal_rows=rows))
         names = names_of(s, [r.creator_id, r.last_editor_id, r.checked_by, r.finance_approved_by, r.approved_by]
                          + [d.created_by for d in docs] + [a.user_id for a in rows] + [a.acting_for_id for a in rows])
         show_ip = 'audit' in perms_of(u)

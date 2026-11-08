@@ -4,6 +4,7 @@
 // stages, states, document kinds), audit action names and business-plan diagnostics.
 // Telegram bot messages, Excel/PDF/Word contents and parsing keywords are not translated.
 export default {
+  'Некорректный месяц бюджета.': 'Byudjet oyi notoʻgʻri.',
   'Исчерпан диапазон номеров заявок.': 'Ariza raqamlari diapazoni tugadi.',
   'По заявке есть денежная операция. Удаление не должно менять или разрывать денежные факты.':
     'Ariza boʻyicha pul operatsiyasi mavjud. Oʻchirish pul harakati faktlarini oʻzgartirmasligi yoki ular orasidagi bogʻlanishni uzmasligi kerak.',

@@ -41,6 +41,7 @@ class RequestPerfTests(base.SiteTests):
      else:self.assertEqual(values,baseline)
   print('SQL_COUNTS',counts)
   self.assertLess(counts['batch',10],counts['legacy',10])
+  self.assertLessEqual(counts['batch',10],6)
   for rights in [{'request'},{'view'},{'view','approve','request_edit'},{'pay_bank'}]:
    with unit() as s:
     s.info['company_id']=self.company;admin=s.scalar(select(User).where(User.username=='admin'));admin._permissions=rights
