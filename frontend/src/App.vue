@@ -31,6 +31,7 @@ import {statementCashFlowContext} from './cashflow/statementContext.js';
 import {toCents,formatAmount,amountTitle} from './overview/format.js';
 import RequestEditor from './requests/RequestEditor.vue';
 import RequestCard from './requests/RequestCard.vue';
+import RequestLoadMore from './requests/RequestLoadMore.vue';
 import {manualAccounts, accountKindLabel, hasCashFundingFee} from './requests/cashFunding.js';
 import PolicyPage from './requests/PolicyPage.vue';
 import Delegations from './requests/Delegations.vue';
@@ -50,7 +51,7 @@ function refreshVersion(){
 onMounted(()=>{checkRelease();releaseTimer=setInterval(checkRelease,60000)});
 onUnmounted(()=>clearInterval(releaseTimer));
 let requestArchiveTimer;
-onMounted(()=>{requestArchiveTimer=setInterval(()=>{if(page.value==='requests'&&user.value&&!busy.value&&!document.hidden&&!modal.value&&!editor.value&&!cardId.value)load()},60000)});
+onMounted(()=>{requestArchiveTimer=setInterval(()=>{if(page.value==='requests'&&listPage.value===1&&!moreRequestsBusy.value&&user.value&&!busy.value&&!document.hidden&&!modal.value&&!editor.value&&!cardId.value)load()},60000)});
 onUnmounted(()=>clearInterval(requestArchiveTimer));
 const vModalFocus={mounted(el){el._previousFocus=document.activeElement;el._trap=e=>{if(e.key!=='Tab')return;const controls=[...el.querySelectorAll('button:not(:disabled),input:not(:disabled),select:not(:disabled),textarea:not(:disabled),a[href]')].filter(n=>n.getClientRects().length);const first=controls[0],last=controls.at(-1);if(e.shiftKey&&document.activeElement===first){e.preventDefault();last?.focus()}else if(!e.shiftKey&&document.activeElement===last){e.preventDefault();first?.focus()}};el.addEventListener('keydown',el._trap);el.querySelector('input:not(:disabled),select:not(:disabled),button:not(:disabled)')?.focus()},unmounted(el){el.removeEventListener('keydown',el._trap);el._previousFocus?.focus()}};
 const user=ref(null),csrf=ref(''),login=ref({username:'',password:''}),recentLogins=ref(loadRecentLogins()),passwordInput=ref(null),error=ref(''),busy=ref(false),notice=ref(''),noticeParams=ref(null);
@@ -200,6 +201,30 @@ onUnmounted(()=>clearTimeout(searchTimer));
 function archiveAccount(a){if(a.kind==='transit')return;open(a.archived?N_('Восстановить счёт'):N_('Убрать счёт в архив'),[field('reason',N_('Причина'),'textarea',{minlength:10})],{reason:''},d=>post(`/api/accounts/${a.id}/archive`,{...d,archived:!a.archived}),N_('История сохраняется. В архив можно убрать счёт с нулевым остатком и без незавершённых заявок.'))}
 
 let listRequestId=0,reportRequestId=0,loadRequestId=0;
+const moreRequestsBusy=ref(false),moreRequestsError=ref(''),requestListKey=ref('');
+const requestsKey=()=>JSON.stringify([companyId.value,page.value,currency.value,search.value,dateFrom.value,dateTo.value,requestArchive.value,requestStatus.value]);
+const moreRequestsAvailable=computed(()=>page.value==='requests'&&listPage.value<listPages.value);
+const requestScrollDisabled=computed(()=>busy.value||moreRequestsBusy.value||!!cardId.value||!!editor.value||!!modal.value||requestListKey.value!==requestsKey());
+function requestListParams(number){
+ const p=new URLSearchParams({paginated:'true',page:String(number),page_size:'15',currency:currency.value,q:search.value,archive:dateFrom.value||dateTo.value?'all':requestArchive.value});
+ if(dateFrom.value)p.set('date_from',dateFrom.value);if(dateTo.value)p.set('date_to',dateTo.value);if(requestStatus.value)p.set('state',requestStatus.value);return p;
+}
+async function loadMoreRequests(){
+ if(requestScrollDisabled.value||!moreRequestsAvailable.value)return;
+ const key=requestsKey(),epoch=companyEpoch,number=listPage.value+1,id=++listRequestId;
+ const current=()=>id===listRequestId&&epoch===companyEpoch&&key===requestsKey()&&companyReady.value&&!!user.value;
+ moreRequestsBusy.value=true;moreRequestsError.value='';
+ try{
+  const data=await api(`/api/requests?${requestListParams(number)}`);
+  if(!current())return;
+  const known=new Set(rows.value.map(r=>r.id));
+  rows.value=[...rows.value,...data.items.filter(r=>{if(known.has(r.id))return false;known.add(r.id);return true;})];
+  listTotal.value=data.total;listPage.value=number;
+ }catch(e){if(current()&&e.name!=='AbortError')moreRequestsError.value=e.message;}
+ finally{if(id===listRequestId)moreRequestsBusy.value=false;}
+}
+watch(()=>requestsKey(),()=>{listRequestId++;moreRequestsBusy.value=false;moreRequestsError.value='';},{flush:'sync'});
+
 const stageLabel=r=>requestStage(r);
 const otherCurrencies=computed(()=>[...new Set(boot.value.accounts.map(a=>a.currency))].filter(c=>c!==currency.value));
 const currentAccounts=computed(()=>boot.value.accounts.filter(a=>a.currency===currency.value));
@@ -289,13 +314,15 @@ async function openStatementCashFlow(data){
  if(context.crossYear)flash(N_('Cash Flow открыт за год окончания выписки. Предыдущий год откройте отдельно.'));
 }
 async function load(options={}){if(!companyReady.value)return;const epoch=companyEpoch,id=++loadRequestId,requestedPage=page.value,requestedCurrency=currency.value;busy.value=true;error.value='';
- const current=()=>id===loadRequestId&&epoch===companyEpoch&&page.value===requestedPage&&currency.value===requestedCurrency;
+ const key=requestsKey();
+ if(requestedPage==='requests'){listPage.value=1;listRequestId++;moreRequestsBusy.value=false;moreRequestsError.value='';}
+ const current=()=>id===loadRequestId&&epoch===companyEpoch&&page.value===requestedPage&&currency.value===requestedCurrency&&(requestedPage!=='requests'||key===requestsKey());
  try{
  if(!options.skipBootstrap&&bootstrapLocalDay.value&&bootstrapLocalDay.value!==localBusinessDay()){await bootstrap();if(!current()||!companyReady.value)return;}
  if(page.value==='home')homeRefresh.value++;
  if(requestedPage==='calendar'){const horizon=days.value,data=await api(`/api/dashboard?currency=${requestedCurrency}&days=${horizon}`);if(current()&&days.value===horizon)dash.value=data;}
  if(requestedPage==='accounts'){const archived=showArchive.value,data=await api('/api/accounts?archived='+archived);if(current()&&showArchive.value===archived)rows.value=data;}
- if(['ledger','requests'].includes(requestedPage)){const requestId=++listRequestId;const params=new URLSearchParams({paginated:'true',page:String(listPage.value),page_size:String(listPageSize.value),currency:requestedCurrency,q:search.value});if(dateFrom.value)params.set('date_from',dateFrom.value);if(dateTo.value)params.set('date_to',dateTo.value);if(requestedPage==='ledger'&&showDeletedOperations.value)params.set('include_deleted','true');if(requestedPage==='requests')params.set('archive',dateFrom.value||dateTo.value?'all':requestArchive.value);if(requestedPage==='requests'&&requestStatus.value)params.set('state',requestStatus.value);const data=await api(`/api/${requestedPage}?${params}`);if(current()&&requestId===listRequestId){rows.value=data.items;listTotal.value=data.total;}}
+ if(['ledger','requests'].includes(requestedPage)){const requestId=++listRequestId;const params=new URLSearchParams({paginated:'true',page:String(listPage.value),page_size:String(listPageSize.value),currency:requestedCurrency,q:search.value});if(dateFrom.value)params.set('date_from',dateFrom.value);if(dateTo.value)params.set('date_to',dateTo.value);if(requestedPage==='ledger'&&showDeletedOperations.value)params.set('include_deleted','true');if(requestedPage==='requests')params.set('archive',dateFrom.value||dateTo.value?'all':requestArchive.value);if(requestedPage==='requests'&&requestStatus.value)params.set('state',requestStatus.value);const data=await api(`/api/${requestedPage}?${params}`);if(current()&&requestId===listRequestId){rows.value=data.items;listTotal.value=data.total;if(requestedPage==='requests')requestListKey.value=key;}}
  if(!current())return;
  if(requestedPage==='budgets'){const selectedMonth=month.value,data=await api(`/api/budgets?currency=${requestedCurrency}&month=${selectedMonth}`);if(current()&&month.value===selectedMonth)rows.value=data;}
  if(!current())return;
@@ -604,7 +631,7 @@ onMounted(async()=>{try{const r=await api('/api/me');user.value=r.user;csrf.valu
      <p class="sub">{{dateFrom||dateTo?tx('За выбранный период показаны все заявки, включая архивные.'):tx('На согласовании, на доработке и утверждённые неоплаченные заявки остаются в основном списке. Оплаченные сразу переходят в архив.')}}</p>
      <p class="sub">{{tx('Сначала ранние сроки оплаты: просроченные, затем сегодняшние и ближайшие.')}}</p>
      <PeriodFilter :key="page" :date-from="dateFrom" :date-to="dateTo" @apply="applyPeriod"><select :aria-label="tx('Статус заявки')" v-model="requestStatus" @change="listPage=1;load()"><option value="">{{tx('Статус: все')}}</option><option v-for="(label,key) in requestStatuses" :key="key" :value="key">{{tx(label)}}</option></select><label class="search"><AppIcon name="search"/><input v-model="search" :placeholder="tx('Номер заявки, контрагент или назначение')" :aria-label="tx('Поиск заявки')"></label><div class="grow actions"><button v-if="has('request')" @click="requestForm()"><AppIcon name="plus"/> {{tx('Создать заявку')}}</button></div></PeriodFilter>
-     <p class="sumline"><span>{{tx('Найдено')}} <b>{{listTotal}}</b></span><span>{{listTotal<=4?tx('До 4 заявок — карточки'):tx('С 5 заявок — таблица со страницами')}}</span></p>
+     <p class="sumline"><span>{{tx('Найдено')}} <b>{{listTotal}}</b></span><span>{{listTotal<=4?tx('До 4 заявок — карточки'):tx('Следующие заявки загружаются при прокрутке')}}</span></p>
      <div v-if="listTotal<=4&&visibleRows.length" class="rq-grid"><section v-for="r in visibleRows" :key="r.id" class="card rq-card" :class="{backdated: isBackdated(r)}" :title="isBackdated(r)?tx(BACKDATED_HINT):null">
       <div class="rq-top"><span>{{r.number}}</span><span class="pill" :class="statusClass(r)">{{stageLabel(r)}}</span></div>
       <h3>{{r.counterparty}}</h3><p class="cp">{{r.purpose}}</p><small v-if="r.cash_funding?.mode==='batch'" class="sub">{{tx('Пополнение кассы для группы заявок')}}</small>
@@ -619,7 +646,8 @@ onMounted(async()=>{try{const r=await api('/api/me');user.value=r.user;csrf.valu
      </template></tbody></table></div>
      <section v-if="!visibleRows.length&&!busy" class="empty card"><b>{{tx('Заявок не найдено')}}</b><br>{{tx('Измените период, статус или поисковый запрос.')}}</section>
     </template>
-    <div v-if="['ledger','requests'].includes(page)&&listPages>1" class="pagination"><span>{{tx('Найдено: {total} · Страница {page} из {pages}',{total:listTotal,page:listPage,pages:listPages})}}</span><div class="actions"><button class="secondary tiny" :disabled="listPage<=1||busy" @click="changeListPage(listPage-1)">← {{tx('Назад')}}</button><button class="secondary tiny" :disabled="listPage>=listPages||busy" @click="changeListPage(listPage+1)">{{tx('Далее')}} →</button></div></div>
+    <RequestLoadMore v-if="page==='requests'&&listTotal>0" :loaded="rows.length" :total="listTotal" :has-more="moreRequestsAvailable" :disabled="requestScrollDisabled" :error="moreRequestsError" @more="loadMoreRequests" />
+    <div v-if="page==='ledger'&&listPages>1" class="pagination"><span>{{tx('Найдено: {total} · Страница {page} из {pages}',{total:listTotal,page:listPage,pages:listPages})}}</span><div class="actions"><button class="secondary tiny" :disabled="listPage<=1||busy" @click="changeListPage(listPage-1)">← {{tx('Назад')}}</button><button class="secondary tiny" :disabled="listPage>=listPages||busy" @click="changeListPage(listPage+1)">{{tx('Далее')}} →</button></div></div>
 
     <!-- Календарь -->
     <template v-if="page==='calendar'&&dash">
