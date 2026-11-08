@@ -298,11 +298,11 @@ class BotApiTests(unittest.TestCase):
         self.assertEqual(self.summary(auth=None).status_code,401)
         with unit() as s:
             self.assertTrue(s.scalar(select(Audit.id).where(Audit.action=='Бот: отказ в доступе')))
-        # The HTTP journal keeps the bot's authenticated calls only: refused calls do not fill it.
+        # The HTTP journal records no reads, so neither refused nor authenticated bot GET calls appear in it.
         http=lambda:[a.detail for a in self.audit_rows('API GET') if a.detail.startswith('/api/bot/v1/')]
         self.assertEqual(http(),[])
         self.assertEqual(self.pending(),[])
-        self.assertEqual(http(),['/api/bot/v1/pending-requests; status=200'])
+        self.assertEqual(http(),[])
 
     def test_wrong_bot_keys_are_throttled_per_address_and_logged_once(self):
         wrong=('test-bot','wrong-secret-'+'z'*30)
@@ -744,7 +744,8 @@ class BotApiTests(unittest.TestCase):
             self.assertEqual({a.user_id for a in rows},{finance['id'],other['id'],admin['user_id']})
             # Telegram ids are personal data: neither the bot journal nor the HTTP log keeps them.
             self.assertFalse(s.scalar(select(Audit.id).where(Audit.detail.contains('55510')|Audit.entity_id.contains('55510'))))
-            self.assertTrue(s.scalar(select(Audit.id).where(Audit.detail=='/api/bot/v1/telegram-users/{telegram_user_id}; status=200')))
+            # Bot reads are not written to the HTTP journal at all (see the HTTP audit policy).
+            self.assertFalse(s.scalar(select(Audit.id).where(Audit.detail=='/api/bot/v1/telegram-users/{telegram_user_id}; status=200')))
 
     def test_my_requests_for_unlinked_disabled_or_invalid_telegram(self):
         empty={'linked':False,'user_id':None,'name':None,'is_admin':False,'items':[]}

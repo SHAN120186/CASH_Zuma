@@ -44,12 +44,13 @@ class HttpAuditTests(base.SiteTests):
         self.assertEqual((row.ip, row.forwarded_for), ('198.51.100.7', '198.51.100.7'))
         self.assertIsNotNone(row.created_at)
 
-    def test_authenticated_get_keeps_company_user_status_proxy_and_redacts_query(self):
+    def test_authenticated_write_keeps_company_user_status_proxy_and_redacts_query(self):
         forwarded = '198.51.100.17, 203.0.113.9'
         headers = {**self.h, 'X-Company-ID': str(self.company), 'X-Forwarded-For': forwarded}
+        account = {'name': 'Proxy audit account', 'kind': 'bank', 'currency': 'UZS', 'opening': '10', 'opening_date': self.date}
         before = len(self.http_rows())
         with patch.dict(os.environ, {'UZGERMED_HOSTING': 'render'}):
-            response = self.client.get('/api/requests?q=private-query-marker', headers=headers)
+            response = self.client.post('/api/accounts?q=private-query-marker', json=account, headers=headers)
         self.assertEqual(response.status_code, 200, response.text)
         rows = self.http_rows()
         self.assertEqual(len(rows), before + 1)
@@ -57,17 +58,18 @@ class HttpAuditTests(base.SiteTests):
         self.assertEqual(row.company_id, self.company)
         with unit() as session:
             self.assertEqual(row.user_id, session.scalar(select(User.id).where(User.username == 'admin')))
-        self.assertEqual((row.action, row.entity, row.detail), ('API GET', 'http', '/api/requests; status=200'))
+        self.assertEqual((row.action, row.entity, row.detail), ('API POST', 'http', '/api/accounts; status=200'))
         self.assertEqual((row.ip, row.forwarded_for), ('203.0.113.9', forwarded))
         self.assertNotIn('private-query-marker', row.detail)
         self.assertEqual(response.headers['X-Content-Type-Options'], 'nosniff')
         self.assertEqual(response.headers['Cache-Control'], 'no-store')
 
-    def test_authenticated_denial_is_logged_but_anonymous_calls_are_not(self):
+    def test_authenticated_denied_write_is_logged_but_reads_and_anonymous_calls_are_not(self):
         employee, headers = self.make_user('employee', 'http_audit_employee')
+        account = {'name': 'Denied audit account', 'kind': 'bank', 'currency': 'UZS', 'opening': '10', 'opening_date': self.date}
         try:
             before = len(self.http_rows())
-            response = employee.get('/api/accounts', headers=headers)
+            response = employee.post('/api/accounts', json=account, headers=headers)
             self.assertEqual(response.status_code, 403, response.text)
             rows = self.http_rows()
             self.assertEqual(len(rows), before + 1)
@@ -75,6 +77,8 @@ class HttpAuditTests(base.SiteTests):
             self.assertEqual(rows[-1].company_id, self.company)
             with unit() as session:
                 self.assertEqual(rows[-1].user_id, session.scalar(select(User.id).where(User.username == 'http_audit_employee')))
+            self.assertEqual(employee.get('/api/accounts', headers=headers).status_code, 403)
+            self.assertEqual(len(self.http_rows()), before + 1)
         finally:
             employee.close()
         before = len(self.http_rows())
@@ -105,20 +109,14 @@ class HttpAuditTests(base.SiteTests):
                             Audit.entity_id == str(account.id), Audit.action == 'Создан счёт / касса')))
             self.assertEqual(len(business), 1, 'the guarded business audit must commit with the account')
 
-    def test_authenticated_bot_http_path_remains_redacted(self):
+    def test_authenticated_bot_reads_are_not_written_to_the_http_journal(self):
         synthetic_id = 77112233
         credentials = ('audit-test-bot', 'SyntheticAuditBotOnly_' + 'x' * 32)
         before = len(self.http_rows())
         with patch.dict(os.environ, {'BOT_CLIENT_ID': credentials[0], 'BOT_CLIENT_SECRET': credentials[1]}):
             response = self.client.get('/api/bot/v1/telegram-users/' + str(synthetic_id), auth=credentials)
         self.assertEqual(response.status_code, 200, response.text)
-        rows = self.http_rows()
-        self.assertEqual(len(rows), before + 1)
-        row = rows[-1]
-        self.assertEqual(row.detail, '/api/bot/v1/telegram-users/{telegram_user_id}; status=200')
-        self.assertIsNone(row.user_id)
-        self.assertIsNone(row.company_id)
-        self.assertNotIn(str(synthetic_id), row.detail)
+        self.assertEqual(len(self.http_rows()), before)
 
     def test_slow_audit_commit_leaves_event_loop_free_and_response_waits_for_it(self):
         entered, release = threading.Event(), threading.Event()
@@ -138,7 +136,8 @@ class HttpAuditTests(base.SiteTests):
             transport = httpx.ASGITransport(app=base.app)
             async with httpx.AsyncClient(transport=transport, base_url='http://testserver',
                                          cookies=self.client.cookies) as client:
-                audited = asyncio.create_task(client.get('/api/me'))
+                account = {'name': 'Slow audit commit account', 'kind': 'bank', 'currency': 'UZS', 'opening': '10', 'opening_date': self.date}
+                audited = asyncio.create_task(client.post('/api/accounts', json=account, headers=self.h))
                 try:
                     self.assertTrue(await asyncio.to_thread(entered.wait, 3))
                     health = await asyncio.wait_for(client.get('/health'), timeout=2)
@@ -155,7 +154,7 @@ class HttpAuditTests(base.SiteTests):
         self.assertNotEqual(worker_ids[0], loop_ids[0], 'database work must not run on the event-loop thread')
         rows = self.http_rows()
         self.assertEqual(len(rows), before + 1)
-        self.assertEqual(rows[-1].detail, '/api/me; status=200')
+        self.assertEqual(rows[-1].detail, '/api/accounts; status=200')
 
 
 def load_tests(loader, tests, pattern):

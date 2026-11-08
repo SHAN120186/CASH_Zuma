@@ -65,8 +65,9 @@ async def safety(request,call_next):
     response=await call_next(request)
     # Технический журнал остаётся синхронным по отношению к ответу: ждём commit,
     # но ожидание БД не блокирует event loop и не берёт финансовый write guard.
+    # Чтения (GET, HEAD) не журналируются: каждое чтение давало бы строку в базе.
     # Анонимные 401/404 не журналируются; неудачные входы учитывает их ограничение.
-    if request.url.path.startswith('/api') and (getattr(request.state,'user_id',None) or getattr(request.state,'bot',False)):
+    if request.method not in ('GET','HEAD') and request.url.path.startswith('/api') and (getattr(request.state,'user_id',None) or getattr(request.state,'bot',False)):
         audit_payload = dict(company_id=getattr(request.state,'company_id',None),user_id=getattr(request.state,'user_id',None),action='API '+request.method,entity='http',detail=journal_path(request.url.path)+'; status='+str(response.status_code),
                              ip=client_ip(request),forwarded_for=(request.headers.get('X-Forwarded-For') or '')[:200] or None)
         try:
