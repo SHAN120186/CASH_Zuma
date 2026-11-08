@@ -161,7 +161,7 @@ def build(s, day, currency):
 @router.get('/api/bank-statements/reconciliation-day')
 def reconciliation_day(request: Request, date: date, currency: str = Query(pattern=r'^(UZS|USD|EUR)$')):
     with unit() as s:
-        user, _ = session_user(s, request, ('view',))
+        user, _ = session_user(s, request, ('view', 'pay_bank'))
         if user.role not in HOLDING_ROLES and company_role(user) not in ('finance', 'director', 'accountant'):
             raise HTTPException(403, 'Дневная сверка доступна финансовой службе и руководству.')
         company_id = s.info.get('company_id')

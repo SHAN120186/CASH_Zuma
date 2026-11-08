@@ -192,3 +192,13 @@ class DailyReconciliationTests(base.SiteTests):
             self.assertEqual(self.report_day(employee).status_code, 403)
         finally:
             employee[0].close()
+
+    def test_accountant_can_read_reconciliation_without_general_view_right(self):
+        self.fixture()
+        accountant=self.make_user('accountant','daily_accountant')
+        try:
+            response=self.report_day(accountant)
+            self.assertEqual(response.status_code,200,response.text)
+            self.assertEqual(response.json()['cash'][0]['closing'],'990000.00')
+        finally:
+            accountant[0].close()
