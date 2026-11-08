@@ -169,19 +169,24 @@ def can_attach_document(user, entry):
         bool(payment_channels(permissions)) and entry.creator_id == user.id and entry.request_id is not None
     )
 
+_file_keys={}
+
 def jwt_key():
     configured=os.getenv('JWT_SECRET','')
     if configured:
         if len(configured)<32:raise RuntimeError('JWT_SECRET must be at least 32 characters')
         return configured
+    # Файл читается один раз за процесс: ключ подписи вызывается на каждый запрос.
     path=DATA/'jwt.secret'
-    if not path.exists():
-        try:
-            # Ключ подписи сессий читает только владелец процесса: другие пользователи компьютера его не видят.
-            fd=os.open(path,os.O_WRONLY|os.O_CREAT|os.O_EXCL,0o600)
-            with os.fdopen(fd,'w',encoding='ascii') as f:f.write(secrets.token_urlsafe(48))
-        except FileExistsError:pass
-    return path.read_text(encoding='ascii').strip()
+    if path not in _file_keys:
+        if not path.exists():
+            try:
+                # Ключ подписи сессий читает только владелец процесса: другие пользователи компьютера его не видят.
+                fd=os.open(path,os.O_WRONLY|os.O_CREAT|os.O_EXCL,0o600)
+                with os.fdopen(fd,'w',encoding='ascii') as f:f.write(secrets.token_urlsafe(48))
+            except FileExistsError:pass
+        _file_keys[path]=path.read_text(encoding='ascii').strip()
+    return _file_keys[path]
 
 def issue_token(user_id):
     stamp=datetime.now(timezone.utc)

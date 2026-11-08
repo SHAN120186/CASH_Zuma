@@ -77,7 +77,7 @@ class BudgetReadPerformanceTests(base.SiteTests):
             self.assertTrue(values[cats[0]]['over'])
             self.assertIsNone(values[cats[2]]['limit'])
 
-    def test_four_queries_for_one_and_fifty_articles_instead_of_five_per_article(self):
+    def test_four_queries_for_one_and_fifty_articles_instead_of_per_article_reads(self):
         cats,_,_=self.seed();counts=[];old=[]
         with unit() as s:
             s.info['company_id']=self.company
@@ -93,7 +93,7 @@ class BudgetReadPerformanceTests(base.SiteTests):
                     for c in chosen:budget_state(s,c,self.month,'UZS')
                 finally:event.remove(engine,'before_cursor_execute',counter)
                 old.append(len(statements))
-        self.assertEqual(counts,[4,4]);self.assertEqual(old,[5,250])
+        self.assertEqual(counts,[4,4]);self.assertEqual(old,[4,200])
         print('BUDGET_READ_QUERIES',{'old':old,'new':counts})
 
     def test_http_order_and_every_field_match_original_calculation(self):
