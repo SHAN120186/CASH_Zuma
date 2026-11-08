@@ -240,9 +240,9 @@ def session_user(s, request: Request, permission=None):
         if not hmac.compare_digest(request.headers.get('X-CSRF-Token','').encode('utf-8','surrogateescape'), session.csrf.encode()):
             raise HTTPException(403, 'Защитный токен не совпадает. Обновите страницу.')
     from .company_scope import activate
-    activate(s, request, user)
+    section_policy=activate(s, request, user)
     from .section_access import apply
-    apply(s,user,request)
+    apply(s,user,request,policy=section_policy)
     # Права проверяются после выбора компании: роль назначается отдельно в каждой.
     if permission:require_permission(user,permission)
     return user,session
