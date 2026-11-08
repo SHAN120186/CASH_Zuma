@@ -23,12 +23,11 @@ from .services import *
 from .company_scope import available_companies, setting_key, get_setting, active_delegations
 from . import access
 from .model_import import import_snapshot, MAX_SIZE
-from .bot_api import drop_groups_of, drop_orphan_groups, drop_shadowed_groups, journal_path, revoke_telegram
+from .bot_api import drop_groups_of, drop_orphan_groups, drop_shadowed_groups, revoke_telegram
 from .workdays import enforce_lead_time, due_minimums
 from .requests_api import request_view, can_view_request, MAX_DOCUMENT
 from .bank_statement_guard import CREATED_BANK_STATUSES
 from .cash_funding import CashFundingIn, expense_amount
-from .http_audit import persist_http_audit
 
 SECURE=os.getenv('COOKIE_SECURE','0')=='1'
 ALLOWED=[x.strip() for x in os.getenv('ALLOWED_HOSTS','127.0.0.1,localhost,testserver').split(',') if x.strip()]
@@ -50,9 +49,7 @@ async def safety(request,call_next):
     if request.method not in ('GET','HEAD','OPTIONS'):
         try:length=int(request.headers.get('content-length','0' if request.method=='DELETE' else '-1'))
         except ValueError:length=-1
-        archive_file=bool(re.fullmatch(r'/api/(?:bot/v1/)?report-archives/[0-9]+/files/(?:pdf|xlsx)',request.url.path)) or bool(re.fullmatch(r'/api/business-projects/[0-9]+/sources',request.url.path))
-        business_params=bool(re.fullmatch(r'/api/business-projects/[0-9]+/(?:generate|analyse|inputs|native/(?:preview|generate))',request.url.path))
-        limit=MAX_SIZE if request.url.path in ('/api/model/upload','/api/financial-statements/upload') or archive_file else 1024*1024 if business_params else 5*1024*1024 if request.url.path in ('/api/import/preview','/api/plan-import/preview') or request.url.path.endswith('/document') or '/documents' in request.url.path else 65536
+        limit=MAX_SIZE if request.url.path=='/api/model/upload' else 5*1024*1024 if request.url.path in ('/api/import/preview','/api/plan-import/preview') or request.url.path.endswith('/document') or '/documents' in request.url.path else 65536
         if request.url.path=='/api/cashflow-osv/preview':limit=24*1024*1024
         if request.url.path=='/api/budgets/import/preview':limit=15*1024*1024
         if request.url.path=='/api/bank-statements/preview' and request.method=='POST':limit=5*1024*1024
@@ -63,19 +60,6 @@ async def safety(request,call_next):
         expected=PUBLIC_ORIGIN or str(request.base_url).rstrip('/')
         if origin and origin!=expected:return JSONResponse({'detail':'Запрос с другого сайта запрещён.'},status_code=403)
     response=await call_next(request)
-    # Технический журнал остаётся синхронным по отношению к ответу: ждём commit,
-    # но ожидание БД не блокирует event loop и не берёт финансовый write guard.
-    # Успешные чтения не создают записи; отказы сохраняют технический след.
-    # Анонимные 401/404 не журналируются; неудачные входы учитывает их ограничение.
-    if (request.method not in ('GET','HEAD') or response.status_code>=400) and request.url.path.startswith('/api') and (getattr(request.state,'user_id',None) or getattr(request.state,'bot',False)):
-        audit_payload = dict(company_id=getattr(request.state,'company_id',None),user_id=getattr(request.state,'user_id',None),action='API '+request.method,entity='http',detail=journal_path(request.url.path)+'; status='+str(response.status_code),
-                             ip=client_ip(request),forwarded_for=(request.headers.get('X-Forwarded-For') or '')[:200] or None)
-        try:
-            await run_in_threadpool(persist_http_audit, audit_payload)
-        except OperationalError:
-            # Financial changes and their business audit are committed together.
-            # A failed secondary HTTP log must not disguise a completed payment.
-            logging.error('Could not persist HTTP audit: database unavailable')
     response.headers['X-Content-Type-Options']='nosniff'
     response.headers['X-Frame-Options']='DENY'
     response.headers['Referrer-Policy']='same-origin'
@@ -1330,18 +1314,6 @@ from .cash_funding_payments import router as cash_funding_payments_router
 app.include_router(cash_funding_payments_router)
 app.include_router(cash_funding_router)
 
-from .report_archives import router as report_archives_router
-app.include_router(report_archives_router)
-from .business_projects import router as business_projects_router
-app.include_router(business_projects_router)
-from .native_projects import router as native_projects_router
-app.include_router(native_projects_router)
-from .financial_statements import router as financial_statements_router
-app.include_router(financial_statements_router)
-from .ifrs_rating import router as ifrs_rating_router
-app.include_router(ifrs_rating_router)
-from .business_templates import router as business_templates_router
-app.include_router(business_templates_router)
 from .counterparties_api import router as counterparties_router
 app.include_router(counterparties_router)
 

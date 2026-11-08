@@ -4,7 +4,7 @@ import {tx,N_} from '../i18n/index.js';
 const props=defineProps({api:Function,user:Object,companies:Array});
 const company=ref(props.user.company_id||props.companies[0]?.id),policy=ref(null),choices=ref({}),reason=ref(''),busy=ref(false),error=ref(''),notice=ref('');
 const modes=[['hidden',N_('Нет доступа')],['view',N_('Только просмотр')],['edit',N_('Можно работать')]];
-const reportKeys=['report','pnl','balance','rating','business','reports'];
+const reportKeys=['report'];
 const savedMode=m=>policy.value?.sections[m.key]||'default';
 const effective=(m,mode)=>policy.value?.locked?'edit':mode==='default'?m.default:mode;
 const modeLabel=mode=>tx(modes.find(x=>x[0]===mode)?.[1]||N_('Нет доступа'));

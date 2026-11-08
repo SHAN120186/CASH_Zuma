@@ -7,10 +7,7 @@ const progressComponent=await compileComponent(new URL('../src/OperationProgress
 const periodComponent=await compileComponent(new URL('../src/PeriodFilter.vue',import.meta.url));
 const appComponent=await compileComponent(new URL('../src/App.vue',import.meta.url),{'./OperationProgress.vue':progressComponent,'./PeriodFilter.vue':periodComponent});
 const companyCard=await compileComponent(new URL('../src/CompanyCard.vue',import.meta.url));
-const businessProjects=await compileComponent(new URL('../src/BusinessProjects.vue',import.meta.url));
-const reportArchive=await compileComponent(new URL('../src/ReportArchive.vue',import.meta.url));
-const financialStatements=await compileComponent(new URL('../src/FinancialStatements.vue',import.meta.url),{'./OperationProgress.vue':progressComponent});
-const reportEntryApp=await compileComponent(new URL('../src/App.vue',import.meta.url),{'./CompanyCard.vue':companyCard,'./BusinessProjects.vue':businessProjects,'./ReportArchive.vue':reportArchive,'./FinancialStatements.vue':financialStatements,'./OperationProgress.vue':progressComponent});
+const reportEntryApp=await compileComponent(new URL('../src/App.vue',import.meta.url),{'./CompanyCard.vue':companyCard,'./OperationProgress.vue':progressComponent});
 const idle={active:false,label:'',completed:0,total:0,error:''};
 const user={id:1,username:'synthetic',name:'Synthetic',role:'director',permissions:['view','export','download']};
 const company={id:2,code:'ZUMA',name:'Synthetic company'};
@@ -91,23 +88,6 @@ test('request cards and paginated table retain the server due-date order in each
  setLang('uz');await settle();assert.match(text(view.container),/Avval eng erta to‘lov muddatlari: muddati o‘tgan, so‘ng bugungi va yaqin kunlardagi arizalar/);
 });
 
-for(const [page,label,endpoint] of [['business','Бизнес-планы','/api/business-projects?'],['reports','Архив отчётов','/api/report-archives?'],['pnl','P&L','/api/financial-statements?'],['balance','Баланс','/api/financial-statements?']]){
-  test(`ZUMA opens ${page} from its internal menu after ordinary scoped company selection`,async t=>{
-    const calls=[];const {view}=await fixture(t,async(url,options)=>{
-      calls.push({url,companyId:options.headers['X-Company-ID']});
-      if(url==='/api/bootstrap'){assert.equal(view.state.companyId,2);assert.equal(view.state.companyReady,false);return {ok:true,status:200,json:async()=>bootstrapBody()};}
-      assert.ok(url.startsWith(endpoint),url);assert.match(url,/company_id=2(?:&|$)/);assert.equal(view.state.companyId,2);assert.equal(view.state.companyReady,true);assert.equal(view.state.page,page);assert.equal(options.headers['X-Company-ID'],'2');
-      return {ok:true,status:200,json:async()=>({items:[],sources:[],source:null,can_upload:false})};
-    },reportEntryApp);
-    view.state.chooseCompany();await settle();
-    assert.equal(find(view.container,node=>node.props?.class==='company-report-actions'),undefined);
-    const card=find(view.container,node=>node.props?.class==='company-card');assert.ok(card);card.props.onClick();await settle();
-    assert.equal(view.state.companyReady,true);assert.equal(view.state.page,'home');assert.equal(calls.length,1);
-    const button=find(view.container,node=>node.tag==='button'&&text(node).trim()===label);assert.ok(button);button.props.onClick();await settle();
-    assert.equal(view.state.companyId,2);assert.equal(view.state.page,page);assert.equal(location.hash,'#'+page);
-    assert.equal(calls[0].url,'/api/bootstrap');assert.ok(calls.some(call=>call.url.startsWith(endpoint)));assert.ok(calls.every(call=>call.companyId==='2'));
-  });
-}
 
 test('ordinary selection never loads reports after denied permission or failed bootstrap',async t=>{
   for(const failure of ['no_export','bootstrap_rejected']){
@@ -153,7 +133,7 @@ for(const action of ['logout','chooseCompany','unmount']) {
   test(`mounted App cancels a private download on ${action} and ignores its late body`,async t=>{
     const body=deferred();let signal,headers;
     const {view,files,listeners,unmount}=await fixture(t,async(url,options)=>{
-      assert.equal(url,'https://isolated.test/api/report-archives/1/files/pdf?company_id=2');
+      assert.equal(url,'https://isolated.test/api/export/report.pdf?year=2026&company_id=2');
       signal=options.signal;headers=options.headers;
       // Deliberately allow the cached body to resolve after abort, exercising
       // the application's epoch check as well as network cancellation.
@@ -162,7 +142,7 @@ for(const action of ['logout','chooseCompany','unmount']) {
         blob:()=>body.promise};
     });
     let prevented=false;
-    const link={href:'https://isolated.test/api/report-archives/1/files/pdf?company_id=2',hasAttribute(){return false;}};
+    const link={href:'https://isolated.test/api/export/report.pdf?year=2026&company_id=2',hasAttribute(){return false;}};
     const download=view.state.downloadFile({button:0,target:{closest(){return link;}},preventDefault(){prevented=true;}});
     await settle();
     assert.equal(prevented,true);assert.equal(headers['X-Company-ID'],'2');
@@ -227,7 +207,7 @@ test('sales has only overview and calendar, saves expected income and cannot con
   assert.deepEqual(view.state.navSections.flatMap(group=>group.items.map(item=>item[0])),['home','calendar']);
   const businessNav=all(view.container,node=>node.tag==='button'&&/^nav-i(?: |$)/.test(node.props?.class||'')).map(text);
   assert.ok(businessNav.some(label=>label.includes('Обзор')));assert.ok(businessNav.some(label=>label.includes('Календарь')));
-  for(const forbidden of ['accounts','report','business','reports','requests','ledger','budgets','users']){await view.state.go(forbidden);await view.state.goWith(forbidden);assert.equal(view.state.page,'home');}
+  for(const forbidden of ['accounts','report','requests','ledger','budgets','users']){await view.state.go(forbidden);await view.state.goWith(forbidden);assert.equal(view.state.page,'home');}
   assert.equal(calls.length,0);
   const calendar=find(view.container,node=>node.tag==='button'&&text(node).trim()==='Календарь');calendar.props.onClick();await settle();
   assert.equal(view.state.page,'calendar');
@@ -248,7 +228,7 @@ test('sales assignment stays restricted even with stale acting director rights',
   view.state.user={...user,role:'director',company_role:'sales',permissions:['view','overview','receipts','export','download','write','users','schedule']};await settle();
   assert.deepEqual(view.state.nav.map(item=>item[0]),['home','calendar','profile']);
   assert.equal(view.state.has('download'),false);assert.equal(view.state.has('write'),false);assert.equal(view.state.has('export'),false);
-  await view.state.goWith('business');view.state.openRequest({id:99});assert.equal(view.state.page,'home');assert.equal(view.state.cardId,null);
+  await view.state.goWith('report');view.state.openRequest({id:99});assert.equal(view.state.page,'home');assert.equal(view.state.cardId,null);
   assert.equal(calls.length,0);
   view.state.user={...view.state.user,holding_role:'admin'};await settle();
   assert.ok(view.state.nav.some(item=>item[0]==='users'),'holding management remains available');
@@ -286,7 +266,7 @@ test('file guard blocks ordinary and modified stale private links without starti
   const calls=[];const {view,files}=await fixture(t,async(...args)=>{calls.push(args);throw Error('No file request expected');});
   view.state.user={...user,role:'finance',permissions:['view','export']};await settle();
   for(const modified of [{},{ctrlKey:true},{metaKey:true},{shiftKey:true}]){
-    let prevented=false;const link={href:'https://isolated.test/api/report-archives/1/files/pdf?company_id=2',hasAttribute(){return false;}};
+    let prevented=false;const link={href:'https://isolated.test/api/export/report.pdf?year=2026&company_id=2',hasAttribute(){return false;}};
     await view.state.downloadFile({button:0,...modified,target:{closest(){return link;}},preventDefault(){prevented=true;}});
     assert.equal(prevented,true);
   }
@@ -354,7 +334,7 @@ test('treasury viewing preserves report tabs but CSV templates, ledger exports a
   for(const canDownload of [false,true]){
     view.state.user={...user,role:canDownload?'director':'finance',permissions:['view','ledger','import','export',...(canDownload?['download']:[])]};
     view.state.page='ledger';await settle();
-    assert.deepEqual(view.state.reportTabs.map(item=>item[0]),['report','pnl','balance','rating','business','reports']);
+    assert.deepEqual(view.state.reportTabs.map(item=>item[0]),['report']);
     assert.equal(all(view.container,node=>node.tag==='a'&&node.props.href?.includes('/api/export/ledger.csv')).length,canDownload?1:0);
     view.state.page='import';await settle();
     assert.equal(all(view.container,node=>node.tag==='a'&&node.props.href?.includes('/api/import/template.csv')).length,canDownload?1:0);
@@ -368,10 +348,10 @@ test('treasury viewing preserves report tabs but CSV templates, ledger exports a
 
 test('personal section modes hide exact report tabs and block navigation to hidden modules',async t=>{
  const {view}=await fixture(t,async()=>({ok:true,status:200,json:async()=>({items:[]})}));
- view.state.user={...user,sections:{home:'view',accounts:'hidden',ledger:'view',pnl:'hidden',balance:'view',reports:'hidden'}};
+ view.state.user={...user,sections:{home:'view',accounts:'hidden',ledger:'view',report:'hidden'}};
  await settle();
- assert.deepEqual(view.state.nav.map(n=>n[0]).sort(),['home','ledger','balance','profile'].sort());
- assert.equal(view.state.canNavigate('pnl'),false);assert.equal(view.state.canNavigate('accounts'),false);
+ assert.deepEqual(view.state.nav.map(n=>n[0]).sort(),['home','ledger','profile'].sort());
+ assert.equal(view.state.canNavigate('report'),false);assert.equal(view.state.canNavigate('accounts'),false);
 });
 test('read-only section mode hides write controls without removing read access',async t=>{
  const {view}=await fixture(t,async()=>({ok:true,status:200,json:async()=>({items:[]})}));

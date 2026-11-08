@@ -1152,8 +1152,6 @@ class SiteTests(unittest.TestCase):
                 self.assertEqual(r.status_code,503,r.text)
                 self.assertNotIn('secret',r.text);self.assertNotIn('private SQL',r.text)
                 self.assertEqual(r.headers['X-Content-Type-Options'],'nosniff')
-        with patch('app.main.persist_http_audit',side_effect=OperationalError('http audit',{},Exception('temporary failure'))):
-            self.assertEqual(self.client.get('/api/me').status_code,200)
 
     def test_71_plan_xml_rejects_entities_and_absurd_row_numbers(self):
         import io,zipfile
@@ -2786,15 +2784,12 @@ class SiteTests(unittest.TestCase):
         self.assertEqual(self.ledger('600.00','out','PAY-LEGACY',client=payer,request_id=rid).status_code,409)
         payer[0].close()
 
-    def test_133_model_import_is_journaled_with_role_and_ip(self):
+    def test_133_model_import_is_refused_without_mutation(self):
         from unittest.mock import patch
         with patch('app.model_import.build_snapshot',side_effect=AssertionError('Retired importer must not parse Excel')):
             r=self.client.post('/api/model/upload',content=b'PK\x03\x04 model',headers={**self.h,'Content-Type':'application/octet-stream','X-Filename':'FinModel.xlsx'})
         self.assertEqual(r.status_code,410,r.text)
-        row=self.audit_row('API POST');self.assertEqual(row['ip'],'testclient')
-        self.assertIn('/api/model/upload; status=410',row['detail'])
         with unit() as s:
-            self.assertEqual(s.get(User,s.get(Audit,row['id']).user_id).role,'admin')
             self.assertIsNone(s.scalar(select(ModelVersion)))
             self.assertIsNone(s.scalar(select(Audit).where(Audit.action=='Импорт FinModel')))
 

@@ -1,4 +1,4 @@
-// Uzbek (Latin) translations: CashFlowReport.vue, ReportArchive.vue, reportArchive.js, OperationProgress.vue, operationProgress.js, fileDownload.js, formFeedback.js, AuditHistory.vue, cashflow/planView.js.
+// Uzbek (Latin) translations: CashFlowReport.vue, OperationProgress.vue, operationProgress.js, fileDownload.js, formFeedback.js, AuditHistory.vue, cashflow/planView.js.
 // Key: the exact Russian text; value: the Uzbek text with the same {placeholders}.
 export default {
   // Months (Cash Flow columns and selectors)
@@ -209,6 +209,15 @@ export default {
   'Проверяем готовность версии…': 'Versiya tayyorligi tekshirilmoqda…',
   'Версия сохранена как черновик. Обновите список и завершите загрузку недостающих файлов.': 'Versiya qoralama sifatida saqlandi. Roʻyxatni yangilang va yetishmayotgan fayllarni yuklashni yakunlang.',
   'PDF и Excel готовы': 'PDF va Excel tayyor',
+  // Restored from the removed dictionaries: still shown by the kept Cash Flow, OSV and bank screens.
+  'Выберите решение': 'Qarorni tanlang',
+  'Выберите валюту': 'Valyutani tanlang',
+  'Единицы':'Birliklar',
+  'Cash Flow показывает доступный год факта; год исходной модели недоступен.':'Cash Flow mavjud fakt yilini koʻrsatadi; manba model yili mavjud emas.',
+  'Исправьте порядок месяцев. Cash Flow сохраняет последний допустимый период.':'Oylar tartibini tuzating. Cash Flow oxirgi mumkin boʻlgan davrni saqlaydi.',
+  'Валюта источника':'Manba valyutasi',
+  'Источник относится к другой компании. Обновите страницу.':'Manba boshqa kompaniyaga tegishli. Sahifani yangilang.',
+  'Источник изменился. Обновите страницу и проверьте выбранную книгу.':'Manba o‘zgardi. Sahifani yangilang va tanlangan kitobni tekshiring.',
 };
 
 // [RegExp over the whole Russian message, Uzbek replacement with $1…] for texts with numbers or names.

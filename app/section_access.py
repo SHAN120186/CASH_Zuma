@@ -13,11 +13,6 @@ SECTIONS={
  'requests':('Заявки',{'view','request','request_check','pay_bank','pay_cash'},{'view'},{'request','request_edit'}),
  'calendar':('Календарь',{'view','overview','calendar'},{'calendar','overview'},{'receipts','receipt_edit','receipt_delete'}),
  'report':('Cash Flow',{'export'},{'view','export'},{'plan','import','schedule'}),
- 'pnl':('P&L',{'export'},{'export'},{'import'}),
- 'balance':('Баланс',{'export'},{'export'},{'import'}),
- 'rating':('IFRS Rating',{'export'},{'export'},{'import'}),
- 'business':('Бизнес-планы',{'export'},{'export'},{'import'}),
- 'reports':('Архив отчётов',{'export'},{'export'},{'import'}),
  'budgets':('Бюджеты',{'view'},{'view'},{'budget'}),
  'approval':('Согласование',{'approval_policy'},{'approval_policy'},{'approval_policy'}),
  'counterparties':('Контрагенты',{'counterparties'},{'counterparties'},{'counterparties'}),
@@ -76,11 +71,7 @@ def modules(path):
       (r'/api/departments(?:/|$)',('categories',)),(r'/api/accounts(?:/|$)',('accounts',)),(r'/api/(?:dashboard|reserve|sales-overview)(?:/|$)',('home','calendar')),
       (r'/api/(?:receipts|sales-receipts|receipt-counterparties)(?:/|$)',('calendar',)),
       (r'/api/calendar-days(?:/|$)',('calendar','approval')),
-      (r'/api/financial-statements(?:/|$)',('pnl','balance')),
       (r'/api/cashflow-osv(?:/|$)',('report',)),
-      (r'/api/ifrs-rating(?:/|$)',('rating',)),
-      (r'/api/business-(?:projects|templates)(?:/|$)',('business',)),
-      (r'/api/report-archives(?:/|$)',('reports','business')),
       (r'/api/budgets(?:/|$)',('budgets',)),
       (r'/api/counterparties(?:/|$)',('counterparties',)),
       (r'/api/categories/[^/]+/(?:director-policy|director-limits|skip-allowed)',('approval',)),
@@ -96,16 +87,10 @@ def enforce(user,request):
     if not modes or user.role=='admin':return
     names=modules(request.url.path)
     if not names:return
-    if request.url.path.endswith('/financial-statements/reconciliation') and not all(modes.get(n)!='hidden' for n in ('pnl','balance')):
-        raise HTTPException(403,'Сверка требует доступа к P&L и балансу.')
-    # Archive writes belong to the archive, even if business plans remain editable.
-    if names==('reports','business') and request.method not in ('GET','HEAD'):names=('reports',)
     available=[n for n in names if modes.get(n,'hidden')!='hidden']
     if not available:raise HTTPException(403,'Раздел скрыт администратором.')
     if request.method not in ('GET','HEAD') and not any(modes[n]=='edit' for n in available):
         raise HTTPException(403,'Для этого раздела доступен только просмотр.')
-    if request.url.path.startswith('/api/financial-statements') and request.method not in ('GET','HEAD') and not all(modes.get(n)=='edit' for n in ('pnl','balance')):
-        raise HTTPException(403,'Обновление общего источника требует редактирования P&L и баланса.')
     if request.method in ('GET','HEAD'):
         # Do not alter the role's normal read permissions; write endpoints are gated above.
         return
