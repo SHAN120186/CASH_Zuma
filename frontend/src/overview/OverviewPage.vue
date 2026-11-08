@@ -403,7 +403,7 @@ const signedLedger = t => (t.kind === 'out' ? -1 : t.kind === 'in' ? 1 : 0) * (t
   <div v-if="!requestsOnly" class="ov-top">
    <BalanceCard class="ov-main" :state="balanceState" :error="s.errors.now" :company="company?.name || ''" :as-of="s.now?.day || today"
     :currency="currency" :available="available" :on-accounts="onAccounts" :reserved="reserved" :change="change"
-    :history="s.history" :history-note="s.errors.history ? tx('График не загрузился: {error}', {error: tx(s.errors.history)}) : s.errors.accounts ? tx('Счета не загрузились: {error}', {error: tx(s.errors.accounts)})
+    :history="s.history" :history-deferred="!detailsRequested" :history-note="s.errors.history ? tx('График не загрузился: {error}', {error: tx(s.errors.history)}) : s.errors.accounts ? tx('Счета не загрузились: {error}', {error: tx(s.errors.accounts)})
      : s.errors.archived ? tx('Архивные счета не загрузились, история остатка недоступна: {error}', {error: tx(s.errors.archived)}) : tx(s.historyNote)"
     :can-open-report="has('export')" :can-add-account="has('write')" :can-open-day="has('ledger')"
     @retry="load" @open-report="emit('go', 'report')" @add-account="emit('go', 'accounts')" @open-day="d => emit('go', 'ledger', {from: d, to: d})"/>
