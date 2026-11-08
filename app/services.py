@@ -189,18 +189,24 @@ def validate_running_balance(s,a):
 
 def budget_state(s,category,month,currency,extra=0,exclude_request=None):
     b=s.scalar(select(Budget).where(Budget.category_id==category,Budget.month==month,Budget.currency==currency))
-    accounts={a.id:a for a in s.scalars(select(Account))}
-    spent=0
-    for t in s.scalars(effective_cashflows(s).where(Ledger.category_id==category)):
-        if str(t.date)[:7]!=month or accounts[t.account_id].currency!=currency:continue
-        if t.kind=='out':spent+=t.amount
-    reserved=sum(r.amount for r in s.scalars(select(PaymentRequest).where(PaymentRequest.category_id==category,PaymentRequest.status=='approved',
-                 PaymentRequest.id.not_in(batch_funding_request_ids())))
-                 if str(r.due_date)[:7]==month and accounts[r.account_id].currency==currency and r.id!=exclude_request)
-    fee_plans=s.execute(select(CashFunding,PaymentRequest).join(PaymentRequest,PaymentRequest.id==CashFunding.request_id).where(
-        CashFunding.fee_category_id==category,CashFunding.state=='unfunded',PaymentRequest.status=='approved'))
-    reserved+=sum(f.fee_amount for f,r in fee_plans if r.id!=exclude_request and str(r.due_date)[:7]==month
-                  and accounts[f.bank_account_id].currency==currency)
+    # Неверный месяц не разбирается и даёт нули, как раньше: строка month не совпадает ни с одной датой.
+    try:start,end=month_bounds(month)
+    except ValueError:start=end=None
+    spent=reserved=0
+    if start is not None:
+        # Суммы считает база: раньше каждый вызов загружал все проводки и все счета, а вызывается он на каждую строку списка.
+        spent=int(s.scalar(select(func.coalesce(func.sum(Ledger.amount),0)).join(Account,Account.id==Ledger.account_id).where(
+            Ledger.reversal_of.is_(None),Ledger.id.not_in(select(Ledger.reversal_of).where(Ledger.reversal_of.is_not(None))),
+            Ledger.category_id==category,Ledger.kind=='out',Ledger.date>=start,Ledger.date<end,Account.currency==currency)) or 0)
+        not_current=[] if exclude_request is None else [PaymentRequest.id!=exclude_request]
+        reserved=int(s.scalar(select(func.coalesce(func.sum(PaymentRequest.amount),0)).join(Account,Account.id==PaymentRequest.account_id).where(
+            PaymentRequest.category_id==category,PaymentRequest.status=='approved',PaymentRequest.id.not_in(batch_funding_request_ids()),
+            PaymentRequest.due_date>=start,PaymentRequest.due_date<end,Account.currency==currency,*not_current)) or 0)
+        fee_reserved=s.scalar(select(func.coalesce(func.sum(CashFunding.fee_amount),0)).join(PaymentRequest,PaymentRequest.id==CashFunding.request_id)
+            .join(Account,Account.id==CashFunding.bank_account_id).where(
+            CashFunding.fee_category_id==category,CashFunding.state=='unfunded',PaymentRequest.status=='approved',
+            PaymentRequest.due_date>=start,PaymentRequest.due_date<end,Account.currency==currency,*not_current))
+        reserved+=int(fee_reserved or 0)
     used=spent+reserved
     return {'id':b.id if b else None,'limit':b.amount if b else None,'mode':b.mode if b else 'soft',
             'spent':spent,'reserved':reserved,'used':used,'remaining':b.amount-used if b else None,

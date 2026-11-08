@@ -658,10 +658,21 @@ def unit(write=False):
             s.rollback()
             raise
 
+# Индексы под горячие запросы бюджета, заявок и документов. Только добавляются; IF NOT EXISTS одинаков в SQLite и PostgreSQL.
+PERFORMANCE_INDEXES = [
+    'CREATE INDEX IF NOT EXISTS ix_ledger_category_date ON ledger (category_id, date)',
+    'CREATE INDEX IF NOT EXISTS ix_ledger_reversal_of ON ledger (reversal_of)',
+    'CREATE INDEX IF NOT EXISTS ix_payment_requests_category_status ON payment_requests (category_id, status, due_date)',
+    'CREATE INDEX IF NOT EXISTS ix_request_cash_fundings_fee_state ON request_cash_fundings (fee_category_id, state)',
+    'CREATE INDEX IF NOT EXISTS ix_request_documents_request_active ON request_documents (request_id, active)',
+]
+
 def initialize():
     Base.metadata.create_all(engine)
     # Additive migration of the pilot schema. Existing financial rows are kept.
     from sqlalchemy import inspect, text
+    with engine.begin() as conn:
+        for ddl in PERFORMANCE_INDEXES:conn.execute(text(ddl))
     with engine.begin() as conn:
         if not SQLITE:conn.execute(text('SELECT pg_advisory_xact_lock(7312801)'))
         columns={c['name'] for c in inspect(conn).get_columns('users')}
