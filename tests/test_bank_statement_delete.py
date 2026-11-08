@@ -244,6 +244,66 @@ class StatementDeleteTests(AutoBankIntegrationTests):
         self.assertEqual(result.json()['removed_operations'],0)
         result=self.remove(self.item(batch)); self.assertEqual(result.status_code,200,result.text)
 
+    def test_own_reversed_debit_does_not_hold_final_reserve(self):
+        req=self.approved()
+        batch=self.import_statement(False)
+        with unit(True) as s:
+            s.get(PaymentRequest,req).amount=99999000
+        result=self.remove(self.item(batch))
+        self.assertEqual(result.status_code,200,result.text)
+        with unit() as s:
+            s.info['company_id']=self.company
+            self.assertEqual(account_balance(s,s.get(Account,self.acc)),100000000)
+            self.assertEqual(s.get(PaymentRequest,req).status,'approved')
+            self.assertNotIn(batch,unreconciled_batch_ids(s))
+
+    def test_other_statement_debit_hold_still_blocks_delete(self):
+        req=self.approved()
+        batch=self.import_statement(False)
+        with unit(True) as s:
+            s.info['company_id']=self.company
+            s.get(PaymentRequest,req).amount=99999000
+            source=s.get(BankStatementBatch,batch)
+            day=source.period_from-timedelta(days=1)
+            other=BankStatementBatch(company_id=source.company_id,account_id=self.acc,created_by=source.created_by,
+                filename='synthetic-earlier-pending.xls',sha256='8'*64,account_number=source.account_number,
+                owner_name=source.owner_name,owner_inn=source.owner_inn,currency=source.currency,
+                period_from=day,period_to=day,opening=0,closing=-2000,debit_total=2000,credit_total=0,
+                balance_matches=True,source_ready=True,status='committed',committed_at=now())
+            s.add(other);s.flush();other_id=other.id
+            s.add(BankStatementLine(company_id=source.company_id,batch_id=other.id,account_id=self.acc,line=1,
+                date=day,direction='out',amount=2000,document_number='OTHER-PENDING',correspondent_mfo='0',
+                correspondent_account='0',correspondent_name='Synthetic',correspondent_inn='300000099',
+                purpose='Synthetic unresolved debit',fingerprint='7'*64,status='review',include_in_daily=True,
+                reason='',review_note=''))
+            set_statement_reconciliation(s,other,False,s.get(User,source.created_by))
+        result=self.remove(self.item(batch))
+        self.assertEqual(result.status_code,409,result.text)
+        with unit() as s:
+            s.info['company_id']=self.company
+            self.assertEqual(s.get(BankStatementBatch,batch).status,'committed')
+            self.assertIn(other_id,unreconciled_batch_ids(s))
+            self.assertFalse(deleted_ledger_ids(s))
+            self.assertEqual(len(list(s.scalars(select(Ledger)))),2)
+
+    def test_final_reserve_shortage_rolls_back_marker_and_all_reversals(self):
+        req=self.approved()
+        batch=self.import_statement(False)
+        with unit(True) as s:
+            s.info['company_id']=self.company
+            s.get(PaymentRequest,req).amount=100000001
+            source=s.get(BankStatementBatch,batch)
+            set_statement_reconciliation(s,source,False,s.get(User,source.created_by))
+        result=self.remove(self.item(batch))
+        self.assertEqual(result.status_code,409,result.text)
+        with unit() as s:
+            s.info['company_id']=self.company
+            self.assertEqual(s.get(BankStatementBatch,batch).status,'committed')
+            self.assertEqual(len(list(s.scalars(select(Ledger)))),2)
+            self.assertFalse(deleted_ledger_ids(s))
+            self.assertIn(batch,unreconciled_batch_ids(s))
+            self.assertFalse(s.scalar(select(Audit).where(Audit.action=='Удалена операция из выписки')))
+
     def test_later_spending_rolls_back_every_reversal(self):
         with unit(True) as s:s.get(Account,self.acc).opening=0
         raw=self.statement(False).replace(b'1000000.00',b'0.00').replace(b'1000180.00',b'180.00')
