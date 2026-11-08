@@ -1,5 +1,5 @@
 <script setup>
-import {computed, ref, watch} from 'vue';
+import {computed, onBeforeUnmount, ref, watch} from 'vue';
 import BalanceCard from './BalanceCard.vue';
 import ForecastCard from './ForecastCard.vue';
 import AppIcon from '../AppIcon.vue';
@@ -41,7 +41,7 @@ function fresh() {
   return {
     dash: null, dashDays: null, now: null, prev: null, accounts: null, activeAccounts: null, history: null, historyNote: '',
     latest: null, pending: null, pendingAll: null, pendingTotal: 0, pendingLoaded: 0, approved: null, approvedTotal: 0, approvedLoaded: 0,
-    budgets: null, report: null, errors: {}, loading: true,
+    budgets: null, budgetsLoading: !props.requestsOnly, report: null, errors: {}, loading: true,
     requestsLoading: props.showRequestPanels && (!props.requestsOnly || props.canOpenRequests), dashLoading: false,
   };
 }
@@ -109,14 +109,21 @@ async function load() {
     patch(gen, {loading: false, requestsLoading: false});
     return;
   }
-  const [dash, now, prev, active, archived, latest, budgets] = await Promise.all([
+  requests.then(receiveRequests);
+  // Budget latency must not hold back balances, payments or the forecast.
+  settle(props.api(`/api/budgets?${q({currency: c, month})}`)).then(result => {
+    if (aborted(result)) return;
+    patch(gen, {budgets: result.ok ? result.v : null, budgetsLoading: false},
+      {budgets: result.ok ? '' : result.e.message});
+  });
+  loadReport(gen);
+  const [dash, now, prev, active, archived, latest] = await Promise.all([
     settle(props.api(`/api/dashboard?${q({currency: c, days})}`)),
     settle(report(today)),
     settle(report(prevDay)),
     settle(props.api('/api/accounts?archived=false')),
     settle(props.api('/api/accounts?archived=true')),
     settle(props.api(`/api/ledger?${q({paginated: 'true', page: 1, page_size: 6, currency: c})}`)),
-    settle(props.api(`/api/budgets?${q({currency: c, month})}`)),
   ]);
   if (gen !== generation || [dash, now, active].some(aborted)) return;
 
@@ -126,7 +133,6 @@ async function load() {
     now: take('now', now),
     prev: prev.ok ? prev.v : null,
     latest: take('latest', latest)?.items ?? null,
-    budgets: take('budgets', budgets),
     activeAccounts: active.ok ? active.v.filter(x => x.currency === c) : null,
     // Balances and history need archived accounts too: they may still hold money.
     accounts: active.ok && archived.ok ? [...active.v, ...archived.v].filter(x => x.currency === c) : null,
@@ -137,9 +143,6 @@ async function load() {
   // A horizon switched during this load has already brought newer forecast data.
   if (dashGeneration === dashStart) Object.assign(first, {dash: take('dash', dash), dashDays: dash.ok ? days : null});
   patch(gen, first, errors);
-  loadReport(gen);
-
-  requests.then(receiveRequests);
 
   // The balance history needs every ledger entry of the window; page through it.
   if (first.accounts) {
@@ -188,6 +191,7 @@ async function reloadForecast() {
 watch(() => [props.refresh, props.currency, props.companyId, props.showRequestPanels, props.requestsOnly, props.canOpenRequests], load, {immediate: true});
 watch(horizon, (h, old) => { if (h !== old) reloadForecast(); });
 watch(scenario, () => { s.value = {...s.value, report: null, errors: {...s.value.errors, report: ''}}; loadReport(); });
+onBeforeUnmount(() => { generation++; dashGeneration++; });
 
 // ---- derived figures ----
 const c = computed(() => props.currency);
@@ -338,7 +342,7 @@ const chips = computed(() => {
       words: plural(pay ?? 0, tx('платёж к оплате'), tx('платежа к оплате'), tx('платежей к оплате')), tone: pay ? 'hot' : ''});
   }
   const gaps = riskGaps.value.length, n = risks.value.length;
-  out.push({target: 'ov-risks', text: gaps && !n && !s.value.requestsLoading ? '—' : count(n, gaps > 0),
+  out.push({target: 'ov-risks', text: s.value.budgetsLoading ? '…' : gaps && !n && !s.value.requestsLoading ? '—' : count(n, gaps > 0),
     words: plural(n, tx('риск'), tx('риска'), tx('рисков')), tone: n ? 'bad' : ''});
   return out;
 });
@@ -447,13 +451,14 @@ const signedLedger = t => (t.kind === 'out' ? -1 : t.kind === 'in' ? 1 : 0) * (t
     <div v-if="s.loading" class="panel-sk" aria-hidden="true"><span class="sk"></span><span class="sk"></span></div>
     <template v-else>
      <p v-if="riskGaps.length" class="panel-err">{{tx('Не удалось проверить: {list}. Список рисков может быть неполным.', {list: riskGaps.join(', ')})}}</p>
+     <p v-if="s.budgetsLoading" class="panel-note">{{tx('Проверяем бюджеты…')}}</p>
      <ul v-if="risks.length" class="risks">
       <li v-for="(r, i) in risks" :key="i" :class="r.level">
        <button type="button" class="risk" @click="emit('go', ...r.go)"><b>{{r.title}}</b><small>{{r.text}}</small></button>
       </li>
      </ul>
      <p v-else-if="s.requestsLoading" class="panel-note">{{tx('Проверяем утверждённые выплаты…')}}</p>
-     <div v-else-if="!riskGaps.length" class="ov-empty"><span class="empty-ic ok" aria-hidden="true">✓</span><p>{{showRequestPanels ? tx('Рисков по {currency} не видно: остаток выше резерва, бюджеты в пределах лимитов, просрочек нет.', {currency}) : tx('Рисков по {currency} не видно: остаток выше резерва, бюджеты в пределах лимитов.', {currency})}}</p></div>
+     <div v-else-if="!riskGaps.length && !s.budgetsLoading" class="ov-empty"><span class="empty-ic ok" aria-hidden="true">✓</span><p>{{showRequestPanels ? tx('Рисков по {currency} не видно: остаток выше резерва, бюджеты в пределах лимитов, просрочек нет.', {currency}) : tx('Рисков по {currency} не видно: остаток выше резерва, бюджеты в пределах лимитов.', {currency})}}</p></div>
     </template>
     <p v-if="s.dash" class="ov-reserve">
      <span>{{tx('Минимальный резерв:')}} <b :title="amountTitle(toCents(s.dash.reserve), currency)">{{formatAmount(toCents(s.dash.reserve), currency)}}</b> {{currency}}</span>

@@ -206,6 +206,43 @@ def budget_state(s,category,month,currency,extra=0,exclude_request=None):
             'spent':spent,'reserved':reserved,'used':used,'remaining':b.amount-used if b else None,
             'after':used+extra,'over':bool(b and used+extra>b.amount),'source':b.source if b else ''}
 
+def budget_states(s,categories,month,currency):
+    """Read the budget page in four scoped queries, without per-article reads.
+
+    Write guards continue using budget_state in their own transaction. Nothing
+    is cached across requests; fees and batch-funding exclusions match it.
+    """
+    ids=set(categories)
+    if not ids:return {}
+    try:start,end=month_bounds(month)
+    except (ValueError,TypeError):raise HTTPException(422,'Некорректный месяц бюджета.')
+    budgets={b.category_id:b for b in s.scalars(select(Budget).where(
+        Budget.category_id.in_(ids),Budget.month==month,Budget.currency==currency))}
+    spent=dict(s.execute(effective_cashflows(s).with_only_columns(Ledger.category_id,func.sum(Ledger.amount))
+        .join(Account,Account.id==Ledger.account_id).where(Ledger.category_id.in_(ids),
+            Ledger.kind=='out',Ledger.date>=start,Ledger.date<end,Account.currency==currency)
+        .group_by(Ledger.category_id)).all())
+    reserved=dict(s.execute(select(PaymentRequest.category_id,func.sum(PaymentRequest.amount))
+        .join(Account,Account.id==PaymentRequest.account_id).where(PaymentRequest.category_id.in_(ids),
+            PaymentRequest.status=='approved',PaymentRequest.due_date>=start,PaymentRequest.due_date<end,
+            PaymentRequest.id.not_in(batch_funding_request_ids()),Account.currency==currency)
+        .group_by(PaymentRequest.category_id)).all())
+    fees=s.execute(select(CashFunding.fee_category_id,func.sum(CashFunding.fee_amount))
+        .join(PaymentRequest,PaymentRequest.id==CashFunding.request_id)
+        .join(Account,Account.id==CashFunding.bank_account_id).where(CashFunding.fee_category_id.in_(ids),
+            CashFunding.state=='unfunded',PaymentRequest.status=='approved',
+            PaymentRequest.due_date>=start,PaymentRequest.due_date<end,Account.currency==currency)
+        .group_by(CashFunding.fee_category_id))
+    for category,total in fees:reserved[category]=reserved.get(category,0)+int(total)
+    result={}
+    for category in ids:
+        b=budgets.get(category);paid=int(spent.get(category,0));held=int(reserved.get(category,0));used=paid+held
+        result[category]={'id':b.id if b else None,'limit':b.amount if b else None,'mode':b.mode if b else 'soft',
+            'spent':paid,'reserved':held,'used':used,'remaining':b.amount-used if b else None,
+            'after':used,'over':bool(b and used>b.amount),'source':b.source if b else ''}
+    return result
+
+
 def enforce_budget(s,category,dt,currency,n,note,exclude=None):
     b=budget_state(s,category,str(dt)[:7],currency,n,exclude)
     if b['over']:

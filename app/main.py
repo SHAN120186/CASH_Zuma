@@ -420,7 +420,9 @@ def budgets(request:Request,month:str='',currency:Literal['UZS','USD','EUR']='UZ
     month=month or str(today())[:7]
     with unit() as s:
         session_user(s,request,'view')
-        return [dict(category_id=c.id,category=article_name(c),code=article_code(c),cost_group=c.cost_group,month=month,currency=currency,**budget_json(budget_state(s,c.id,month,currency))) for c,_ in category_catalog(s) if c.type=='outcome' and c.activity!='unclassified']
+        categories=[c for c,_ in category_catalog(s) if c.type=='outcome' and c.activity!='unclassified']
+        states=budget_states(s,(c.id for c in categories),month,currency)
+        return [dict(category_id=c.id,category=article_name(c),code=article_code(c),cost_group=c.cost_group,month=month,currency=currency,**budget_json(states[c.id])) for c in categories]
 @app.post('/api/budgets')
 def save_budget(data:BudgetIn,request:Request):
     with unit(True) as s:

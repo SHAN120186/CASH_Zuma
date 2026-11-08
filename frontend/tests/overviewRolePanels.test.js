@@ -97,6 +97,47 @@ function assertCompact(view) {
   assert.doesNotMatch(rendered, /Synthetic balance-only bank|Synthetic hidden ledger recipient/);
 }
 
+test('a slow budget does not block balances, request panels or the report',async t=>{
+  let finishBudget;
+  const calls=[],baseApi=apiFixture(calls);
+  const api=url=>url.startsWith('/api/budgets?')?new Promise(resolve=>{finishBudget=resolve}):baseApi(url);
+  const view=mount(overview,propsFor(companies[0],api,ownRole('finance')));t.after(view.unmount);
+  await settle();await settle();
+  assert.equal(view.state.s.loading,false);
+  assert.equal(view.state.s.requestsLoading,false);
+  assert.equal(view.state.balanceState,'ready');
+  assert.equal(view.state.s.report.rows.length,0);
+  assert.equal(view.state.s.budgetsLoading,true);
+  assert.match(text(view.container),/Проверяем бюджеты/);
+  assert.doesNotMatch(text(view.container),/Рисков по UZS не видно/);
+  finishBudget([{category:'Synthetic over budget',limit:'1.00',remaining:'-3.00'}]);
+  await settle();
+  assert.equal(view.state.s.budgetsLoading,false);
+  assert.match(text(view.container),/Synthetic over budget/);
+});
+
+test('a late budget from another company cannot replace the current one',async t=>{
+  const finishes=[],baseApi=apiFixture([]);
+  const api=url=>url.startsWith('/api/budgets?')?new Promise(resolve=>finishes.push(resolve)):baseApi(url);
+  const view=mount(overview,propsFor(companies[0],api,ownRole('finance')));t.after(view.unmount);
+  await settle();view.app._instance.props.companyId=companies[1].id;await settle();
+  finishes[1]([{category:'Current company',limit:'1.00',remaining:'-2.00'}]);await settle();
+  finishes[0]([{category:'Previous company',limit:'1.00',remaining:'-3.00'}]);await settle();
+  assert.equal(view.state.s.budgets[0].category,'Current company');
+  assert.doesNotMatch(text(view.container),/Previous company/);
+});
+
+test('a failed budget leaves risk coverage incomplete while other cards work',async t=>{
+  let failBudget;const baseApi=apiFixture([]);
+  const api=url=>url.startsWith('/api/budgets?')?new Promise((resolve,reject)=>{failBudget=reject}):baseApi(url);
+  const view=mount(overview,propsFor(companies[0],api,ownRole('finance')));t.after(view.unmount);
+  await settle();failBudget(Error('Synthetic unavailable'));await settle();
+  assert.equal(view.state.s.loading,false);assert.equal(view.state.s.budgetsLoading,false);
+  assert.equal(view.state.balanceState,'ready');
+  assert.ok(view.state.riskGaps.includes('бюджеты'));
+  assert.doesNotMatch(text(view.container),/Рисков по UZS не видно/);
+});
+
 test('only finance/director and holding admin/founder keep the full overview', () => {
   for (const role of ['finance', 'director']) assert.equal(canSeeFullOverview(ownRole(role)), true, role);
   for (const role of lowerRoles) {
