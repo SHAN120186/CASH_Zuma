@@ -730,9 +730,8 @@ def post_ledger(s,u,data,*,bank_statement_fact=False,bank_statement_import=False
         # Право и разделение обязанностей проверяются до любых сведений о заявке.
         req=get(s,PaymentRequest,data.request_id)
         check_payer(s,u,req)
-        if not bank_statement_fact:
-            from .bank_statement_guard import require_reconciled_for_manual_payment
-            require_reconciled_for_manual_payment(s,a)
+        # Manual payment is independent of statement review; approval, actual
+        # funds and duplicate-payment checks below remain authoritative.
     if data.date>today():raise HTTPException(422,'Будущий платёж — это заявка или ожидаемое поступление, а не факт.')
     if data.date<a.opening_date:raise HTTPException(422,'Операция раньше даты начального остатка счёта.')
     n=amount(data.amount);kind=data.kind
