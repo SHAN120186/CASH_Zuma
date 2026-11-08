@@ -124,7 +124,7 @@ async function decide() {
   }
   const ok = await run(() => props.api(`/api/requests/${r.value.id}/decision`, json({action, note, date: action === 'reschedule' ? date : null, version: r.value.version})),
     action === 'return' ? N_('Заявка возвращена на доработку.') : N_('Решение сохранено.'));
-  if (ok) decision.value = {action: options.value[0]?.[0] || '', note: '', date: r.value?.date || ''};
+  if (ok) { decision.value = {action: options.value[0]?.[0] || '', note: '', date: r.value?.date || ''}; if (['check','approve'].includes(action)) emit('close'); }
 }
 
 function upload(kind, event) {
@@ -211,7 +211,7 @@ onUnmounted(() => document.removeEventListener('keydown', onKey));
         </dl>
 
         <CashFundingPanel v-if="r.cash_funding" :api="api" :request="r" :money="money" @busy="busy = $event" @changed="fundingChanged" />
-        <CashFundingBatchPanel v-if="r.cash_funding?.mode === 'batch'" :api="api" :request="r" :money="money" @busy="busy = $event" @paid="batchPaymentsRecorded" />
+        <CashFundingBatchPanel v-if="r.cash_funding?.mode === 'batch' && r.cash_funding.state === 'received'" :api="api" :request="r" :money="money" @busy="busy = $event" @paid="batchPaymentsRecorded" />
 
         <section v-if="r.budget_card && r.cash_funding?.mode !== 'batch'" class="budget-check" :class="r.budget_card.status" :aria-label="tx('Бюджет статьи')">
           <strong>{{ tx('Бюджет статьи «{category}» · {period}', {category: r.category, period: periodLabel(r.budget_card.period)}) }}</strong>

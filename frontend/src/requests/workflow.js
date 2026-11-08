@@ -57,6 +57,7 @@ export const DECISIONS = Object.keys(ACTION_LABELS);
 export const COMMENT_REQUIRED = ['return', 'return_finance', 'close', 'reschedule'];
 
 export function stageLabel(r) {
+  if (r.cash_funding?.completed) return tx('Касса пополнена');
   if (r.status !== 'pending') return tx(STATUS[r.status] || r.status);
   return tx(WAITING[r.approval_stage] || N_('Ожидает: согласования'));
 }
@@ -94,7 +95,7 @@ export function steps(r) {
     check = legacy ? 'skip' : r.checked_by ? 'done' : '';
     finance = financeAuthor ? 'skip' : 'done';
     if (director) dir = r.approved_by != null && r.approved_by !== r.finance_approved_by ? 'done' : 'now';
-    paid = r.status === 'paid' ? 'done' : 'now';
+    paid = r.status === 'paid' || r.cash_funding?.completed ? 'done' : 'now';
   } else if (r.status === 'rejected') check = 'bad';
   else if (r.status === 'cancelled') author = 'bad';
   return [
@@ -102,7 +103,7 @@ export function steps(r) {
     { c: check, l: legacy ? tx('Проверка · не требовалась') : tx('Проверка') },
     { c: finance, l: financeAuthor ? tx('Фин. директор · автор заявки') : tx('Фин. директор') },
     { c: dir, l: director ? tx('Директор') : tx('Директор · не участвует') },
-    { c: paid, l: r.cash_funding?.mode === 'batch' ? tx('Выдача по заявкам') : tx('Оплата') },
+    { c: paid, l: r.cash_funding?.mode === 'batch' ? tx('Пополнение кассы') : tx('Оплата') },
   ];
 }
 

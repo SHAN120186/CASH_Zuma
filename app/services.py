@@ -414,9 +414,9 @@ def check_payer(s,u,req):
     right=pay_right(account)
     if right not in perms_of(u):
         raise HTTPException(403,'Оплату кассовой заявки проводит кассир.' if account.kind=='cash' else 'Оплату банковской заявки проводит расчётный бухгалтер.')
-    # Только проверка совместима с банковской оплатой: авторство, правки и
+    # Проверка бухгалтером совместима с оплатой: авторство, правки и
     # финансовые согласования этого же сотрудника в прежних кругах остаются запретом.
-    blocked=all_participants(s,req,include_check=account.kind!='bank')
+    blocked=all_participants(s,req,include_check=account.kind!='bank' and not has_role(u,'accountant'))
     if u.id in blocked:
         raise HTTPException(403,'Автор, редакторы и согласующие заявки (в том числе в прежних кругах согласования) не проводят её оплату.')
     act_with_right(u,right)

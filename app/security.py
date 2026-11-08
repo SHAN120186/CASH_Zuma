@@ -23,8 +23,8 @@ PERMS = {
  'director': {'view','ledger','export','download','request','write','approve','budget','plan','import','schedule','catalog','audit','approval_policy','request_edit','request_delete','counterparties','receipt_edit','receipt_delete'},
  'cashier': {'request','ledger','pay_cash'},
  'finance': {'view','ledger','export','request','write','approve','budget','plan','import','schedule','request_edit','request_delete'},
- # Расчётный бухгалтер проверяет реквизиты и комплектность заявок и оплачивает банк.
- 'accountant': {'ledger','pay_bank','request_check'},
+ # Расчётный бухгалтер создаёт и проверяет заявки, оплачивает банк и кассу.
+ 'accountant': {'ledger','pay_bank','pay_cash','request_check','request'},
  'employee': {'request'},
  'auditor': {'view','ledger','export','audit'},
  'operator': {'view','ledger','export','download','request','write','plan','import','schedule'},
@@ -57,7 +57,7 @@ NO_DOWNLOAD_ROLES = frozenset({'finance', 'accountant', 'cashier', 'auditor',
                               'material_accountant', 'procurement', 'employee', 'sales'})
 
 # Paying an approved request is a separate right per channel: the bank account
-# is paid by the settlement accountant, the cash desk by the cashier. The
+# is paid by the settlement accountant, the cash desk by the accountant or cashier. The
 # general right to write never pays a request.
 PAY_RIGHTS = {'bank': 'pay_bank', 'cash': 'pay_cash'}
 
