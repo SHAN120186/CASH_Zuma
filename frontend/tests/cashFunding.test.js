@@ -215,7 +215,7 @@ test('one cash request moves from accountant bank debit to cashier receipt and s
   };
   view=mountPanel(t,api,{onChanged:row=>{events.push(row);view.app._instance.props.request=row;}});await settle();
   assert.match(text(currentStep(view)),/Шаг 2 из 4 · Расчётный бухгалтер/);
-  assert.match(text(currentStep(view)),/Далее кассир подтверждает получение/);
+  assert.match(text(currentStep(view)),/Далее расчётный бухгалтер или кассир подтверждает получение/);
   assert.equal(all(view.container,node=>node.tag==='form').length,0,'the action initially stays compact');
   button(view,'Зафиксировать списание банка').props.onClick();await settle();
   assert.match(text(view.container),/Дата списания банка.*Номер банковского документа/);
@@ -225,12 +225,12 @@ test('one cash request moves from accountant bank debit to cashier receipt and s
   assert.match(text(view.container),/Проверено списание банка: 1000000.00 UZS, комиссия 10000.00, наличные 990000.00/);
   assert.equal(button(view,'Подтвердить списание банка').props.disabled,true);await view.state.commit();assert.equal(calls.length,1);
   view.state.confirmed=true;await view.state.commit();await settle();
-  assert.match(text(currentStep(view)),/Шаг 3 из 4 · Кассир.*Списание банка учтено.*Передайте этот этап кассиру/);
+  assert.match(text(currentStep(view)),/Шаг 3 из 4 · Расчётный бухгалтер \/ кассир.*Списание банка учтено.*Передайте этот этап расчётному бухгалтеру или кассиру/);
   assert.equal(button(view,'Зафиксировать списание банка'),undefined);assert.equal(button(view,'Принять наличные в кассу'),undefined,'accountant cannot perform the cashier step');
   assert.equal(events[0].status,'approved','withdrawal does not mark the expense paid');
   view.app._instance.props.request={...afterWithdrawal,actions:['cash_receive'],cash_funding:{...afterWithdrawal.cash_funding,can_receive:true}};await settle();
   assert.match(text(currentStep(view)),/Подтвердите фактическое получение наличных в кассу/);
-  assert.doesNotMatch(text(currentStep(view)),/Передайте этот этап кассиру/,'the receiving cashier sees their own task');
+  assert.doesNotMatch(text(currentStep(view)),/Передайте этот этап расчётному бухгалтеру или кассиру/,'the receiving cashier sees their own task');
   button(view,'Принять наличные в кассу').props.onClick();await settle();
   assert.match(text(view.container),/Дата получения в кассу.*Номер приходного кассового документа/);
   assert.equal(find(view.container,node=>node.tag==='input'&&node.props.type==='date').props.min,'2026-11-04');
@@ -238,7 +238,7 @@ test('one cash request moves from accountant bank debit to cashier receipt and s
   assert.match(text(view.container),/Проверено получение в кассу: 990000.00 UZS/);
   assert.equal(button(view,'Подтвердить получение в кассу').props.disabled,true);
   view.state.confirmed=true;await view.state.commit();await settle();
-  assert.match(text(currentStep(view)),/Шаг 4 из 4 · Кассир.*«Факт оплаты»/);assert.equal(events[1].status,'approved');
+  assert.match(text(currentStep(view)),/Шаг 4 из 4 · Расчётный бухгалтер \/ кассир.*«Факт оплаты»/);assert.equal(events[1].status,'approved');
   assert.deepEqual(calls.map(call=>call.url.split('/').slice(-2).join('/')),['withdraw/preview','withdraw/commit','receive/preview','receive/commit']);
   assert.ok(calls.filter(call=>call.url.endsWith('/commit')).every(call=>call.data.confirm===true&&call.data.token==='signed-preview'));
   view.app._instance.props.request={...afterReceipt,status:'paid',actions:[]};await settle();
@@ -276,7 +276,7 @@ test('permission flags and state must agree; unknown funding never offers a fina
 
 test('batch receipt hands over issuance without inferring hidden balances, remaining funds or completion',async t=>{
   const view=mountPanel(t,async()=>{}, {request:request({actions:[],cash_funding:funding({mode:'batch',state:'received',can_withdraw:false,can_receive:false,cash_balance:null,remaining_amount:null,allocated_amount:null})})});await settle();
-  assert.match(text(currentStep(view)),/Шаг 4 из 4 · Кассир.*Кассир проводит и отслеживает выдачу.*ниже/);
+  assert.match(text(currentStep(view)),/Шаг 4 из 4 · Расчётный бухгалтер \/ кассир.*Расчётный бухгалтер или кассир проводит и отслеживает выдачу.*ниже/);
   assert.doesNotMatch(text(currentStep(view)),/завершена|ещё не|остаток|полностью|0.00/);assert.equal(all(view.container,node=>node.tag==='form').length,0);
   assert.equal(button(view,'Зафиксировать списание банка'),undefined);assert.equal(button(view,'Принять наличные в кассу'),undefined);
   assert.match(text(view.container),/Пополнение кассы для нескольких заявок/);assert.match(text(view.container),/990000.00/);
@@ -305,5 +305,5 @@ test('current steps and operation-specific fields follow Uzbek without translati
   view.state.form.reference='SYN-BANK-UZ';await settle();await view.state.check();await settle();assert.ok(button(view,'Bankdan pul yechilganini tasdiqlash'));
   assert.match(text(view.container),/Synthetic bank/);assert.match(text(view.container),/Synthetic cash/);
   view.app._instance.props.request=request({actions:[],cash_funding:funding({state:'in_transit',can_withdraw:false})});await settle();
-  assert.match(text(currentStep(view)),/4 bosqichdan 3-si · Kassir/);assert.doesNotMatch(text(view.container),/[А-Яа-яЁё]/);
+  assert.match(text(currentStep(view)),/4 bosqichdan 3-si · Hisob-kitob buxgalteri \/ kassir/);assert.doesNotMatch(text(view.container),/[А-Яа-яЁё]/);
 });

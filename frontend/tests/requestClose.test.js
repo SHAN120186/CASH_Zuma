@@ -96,3 +96,9 @@ test('returning for correction still refreshes the retained request without dele
  assert.equal(confirmations.length,0);assert.equal(calls.filter(call=>call.url==='/api/requests/42').length,2);
  assert.deepEqual(events,['changed']);assert.equal(view.state.notice,'Заявка возвращена на доработку.');
 });
+
+for (const action of ['check','approve']) test(`successful ${action} closes the card after confirmation`,async t=>{
+ const {view,events,submit}=await fixture(t,{response:{ok:true}});
+ view.state.decision={action,note:'',date:''};await settle();
+ await submit();await settle();assert.deepEqual(events,['changed','close']);
+});

@@ -268,8 +268,8 @@ class SiteTests(unittest.TestCase):
             cashid=created.json()['id']
             self.assertEqual(self.approve(cashid).status_code,200)
             self.assertEqual(cashier[0].get(f'/api/requests/{cashid}/documents',headers=cashier[1]).status_code,200)
-            # Утверждённую кассовую заявку, которую он не проверял, бухгалтер банка не читает.
-            self.assertEqual(book[0].get(f'/api/requests/{cashid}/documents',headers=book[1]).status_code,403)
+            # Расчётный бухгалтер теперь также видит утверждённые кассовые заявки.
+            self.assertEqual(book[0].get(f'/api/requests/{cashid}/documents',headers=book[1]).status_code,200)
         finally:book[0].close();cashier[0].close()
 
     def test_edit_user_removes_legacy_other_company_access(self):
@@ -504,7 +504,7 @@ class SiteTests(unittest.TestCase):
         self.assertEqual(cl.get('/api/ledger').status_code,200)
         self.assertEqual(cl.get('/api/dashboard').status_code,403)
         self.assertEqual(cl.get('/api/export/report.xlsx').status_code,403)
-        self.assertEqual(self.request(client=cl,headers=h).status_code,403)
+        self.assertEqual(self.request(client=cl,headers=h).status_code,200)
         self.assertEqual(self.post('/api/accounts',{'name':'Denied','kind':'bank','currency':'UZS','opening':'0','opening_date':self.date},cl,h).status_code,403)
         cl.close()
         cl,h=self.make_user('director','reader')
@@ -1380,7 +1380,7 @@ class SiteTests(unittest.TestCase):
             'date':self.date,'reference':'BOOK-EARLY','note':'Оплата до согласования','request_id':rid},*book)
         self.assertEqual(early.status_code,409,early.text)
         self.assertEqual(self.post(f'/api/requests/{rid}/decision',{'action':'approve','note':'Бухгалтер согласует сам'},*book).status_code,403)
-        self.assertEqual(self.request('600',client=book[0],headers=book[1]).status_code,403)
+        self.assertEqual(self.request('600',client=book[0],headers=book[1]).status_code,200)
         pending=self.request('700',client=author[0],headers=author[1]).json()['id']
         draft=self.request('800',client=author[0],headers=author[1],submit=False).json()['id']
         self.assertEqual(self.approve(rid).status_code,200)
@@ -1627,12 +1627,12 @@ class SiteTests(unittest.TestCase):
         for i in (rid,own):self.assertEqual(self.approve(i).status_code,200)
         listed=[x['id'] for x in cashier[0].get('/api/requests',headers=cashier[1]).json()]
         self.assertIn(rid,listed);self.assertIn(own,listed)
-        self.assertNotIn(rid,[x['id'] for x in book[0].get('/api/requests',headers=book[1]).json()])
+        self.assertIn(rid,[x['id'] for x in book[0].get('/api/requests',headers=book[1]).json()])
         body=lambda i,n:{'account_id':till,'category_id':self.cat,'kind':'out','amount':n,'date':self.date,
                          'reference':f'CASH-{i}','note':'Выдача из кассы','request_id':i}
-        r=self.post('/api/ledger',body(rid,'300'),*book);self.assertEqual(r.status_code,403,r.text);self.assertIn('кассир',r.text)
+        r=self.post('/api/ledger',body(rid,'300'),*book);self.assertEqual(r.status_code,200,r.text)
         r=self.post('/api/ledger',body(own,'200'),*cashier);self.assertEqual(r.status_code,403,r.text)
-        r=self.post('/api/ledger',body(rid,'300'),*cashier);self.assertEqual(r.status_code,200,r.text)
+        r=self.post('/api/ledger',body(rid,'300'),*cashier);self.assertEqual(r.status_code,409,r.text)
         entry=next(x for x in self.client.get('/api/ledger').json() if x['request_id']==rid)
         self.assertEqual(entry['counterparty'],'Курьер')
         # The cashier still cannot record anything but a request payment.
@@ -1767,8 +1767,8 @@ class SiteTests(unittest.TestCase):
         for i in (bank,cash):self.assertEqual(self.approve(i).status_code,200)
         note={'action':'return_finance','note':'Не хватает денег на дату оплаты'}
         self.assertEqual(self.post(f'/api/requests/{bank}/decision',note,*cashier).status_code,403)
-        self.assertEqual(self.post(f'/api/requests/{cash}/decision',note,*book).status_code,403)
-        self.assertEqual(self.post(f'/api/requests/{cash}/decision',note,*cashier).status_code,200)
+        self.assertEqual(self.post(f'/api/requests/{cash}/decision',note,*book).status_code,200)
+        self.assertEqual(self.post(f'/api/requests/{cash}/decision',note,*cashier).status_code,404)
         self.assertEqual(self.post(f'/api/requests/{bank}/decision',note,*book).status_code,200)
         actions=[a['action'] for a in self.client.get('/api/audit').json()]
         self.assertIn('Действие по заявке: return_finance',actions)
@@ -2118,7 +2118,7 @@ class SiteTests(unittest.TestCase):
             other=next(c['id'] for c in cl.get('/api/bootstrap',headers=h).json()['categories'] if c['id']!=self.cat and c['type']=='outcome')
             none=cl.get(f"/api/budget-check?account_id={self.acc}&category_id={other}&amount=1&date={self.dues['normal']}",headers=h).json()
             self.assertEqual((none['budget_set'],none['status'],none['limit'],none['available'],none['after']),(False,'no_budget',None,None,None))
-            self.assertEqual(book[0].get(f"/api/budget-check?account_id={self.acc}&category_id={self.cat}&amount=1&date={self.dues['normal']}",headers=book[1]).status_code,403)
+            self.assertEqual(book[0].get(f"/api/budget-check?account_id={self.acc}&category_id={self.cat}&amount=1&date={self.dues['normal']}",headers=book[1]).status_code,200)
             # После оплаты сумма переходит из резерва в «оплачено»; доступный остаток статьи не меняется.
             self.assertEqual(self.ledger('600','out',request_id=rid).status_code,200)
             paid=q('300').json()
@@ -2173,13 +2173,13 @@ class SiteTests(unittest.TestCase):
     def test_110_permissions_have_no_generic_pay_and_payments_stay_split(self):
         from app.security import PERMS,ROLES
         self.assertTrue(all('pay' not in PERMS[r] for r in ROLES))
-        # Расчётный бухгалтер проверяет заявки и платит только банк; касса — только кассир.
-        self.assertEqual(PERMS['accountant'],{'home_view','ledger','pay_bank','request_check'});self.assertIn('pay_cash',PERMS['cashier'])
-        self.assertNotIn('pay_bank',PERMS['cashier']);self.assertNotIn('pay_cash',PERMS['accountant'])
+        # Расчётный бухгалтер проверяет заявки и платит банк и кассу; кассир — только кассу.
+        self.assertEqual(PERMS['accountant'],{'home_view','ledger','pay_bank','pay_cash','request_check','request'});self.assertIn('pay_cash',PERMS['cashier'])
+        self.assertNotIn('pay_bank',PERMS['cashier']);self.assertIn('pay_cash',PERMS['accountant'])
         self.assertTrue(all(not {'pay_bank','pay_cash'}&PERMS[r] for r in ('founder','director','finance','operator')))
-        self.assertFalse({'request','approve','write'}&PERMS['accountant'])
+        self.assertFalse({'approve','write'}&PERMS['accountant'])
         book=self.make_user('accountant','split_book')
-        self.assertEqual(book[0].get('/api/bootstrap',headers=book[1]).json()['user']['permissions'],['home_view','ledger','pay_bank','request_check'])
+        self.assertEqual(book[0].get('/api/bootstrap',headers=book[1]).json()['user']['permissions'],['home_view','ledger','pay_bank','pay_cash','request','request_check'])
 
     def test_111_company_role_column_is_added_to_an_existing_database(self):
         from sqlalchemy import inspect as sa_inspect,text

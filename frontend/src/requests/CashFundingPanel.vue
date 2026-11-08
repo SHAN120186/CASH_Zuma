@@ -23,7 +23,8 @@ const flow = computed(() => {
   if (needsStateCheck.value) return {title: N_('Проверить результат операции'),
     description: N_('Сначала обновите состояние заявки. Повторно подтверждать денежный факт пока не нужно.')};
   const status = props.request.status;
-  if (status === 'paid') return {number: 4, done: true, actor: N_('Кассир'), title: N_('Выдача наличных завершена'), description: N_('Оплата заявки подтверждена.')};
+  if (funding.value.completed) return {number: 3, done: true, actor: N_('Расчётный бухгалтер / кассир'), title: N_('Касса пополнена'), description: N_('Документ пополнения завершён. Расходные заявки оплачиваются отдельно.')};
+  if (status === 'paid') return {number: 4, done: true, actor: N_('Расчётный бухгалтер / кассир'), title: N_('Выдача наличных завершена'), description: N_('Оплата заявки подтверждена.')};
   if (['draft', 'returned'].includes(status)) return {number: 1, actor: N_('Автор заявки'), title: N_('Подготовка и согласование'),
     description: N_('Автор отправляет заявку; бухгалтер проверяет реквизиты, затем проходят нужные согласования.'),
     next: N_('После утверждения расчётный бухгалтер фиксирует списание банка.')};
@@ -40,14 +41,14 @@ const flow = computed(() => {
   if (status !== 'approved') return null;
   if (funding.value.state === 'unfunded') return {number: 2, actor: N_('Расчётный бухгалтер'), title: N_('Списание денег из банка'),
     description: N_('Расчётный бухгалтер фиксирует уже выполненное списание банка вместе с комиссией.'),
-    next: N_('Далее кассир подтверждает получение наличных в кассу.')};
-  if (funding.value.state === 'in_transit') return {number: 3, actor: N_('Кассир'), title: N_('Получение наличных в кассу'),
+    next: N_('Далее расчётный бухгалтер или кассир подтверждает получение наличных в кассу.')};
+  if (funding.value.state === 'in_transit') return {number: 3, actor: N_('Расчётный бухгалтер / кассир'), title: N_('Получение наличных в кассу'),
     description: canReceive.value ? N_('Списание банка учтено. Подтвердите фактическое получение наличных в кассу.')
-      : N_('Списание банка учтено. Передайте этот этап кассиру: он подтверждает фактическое получение наличных.'),
-    next: N_('После приёма кассир отдельно подтверждает выдачу денег получателю.')};
-  return {number: 4, actor: N_('Кассир'), title: batch.value ? N_('Выдача по заявкам') : N_('Выдача денег получателю'),
-    description: batch.value ? N_('Кассир проводит и отслеживает выдачу в блоке «Оплата нескольких заявок» ниже.')
-      : N_('Кассир фиксирует фактическую выдачу получателю кнопкой «Факт оплаты» внизу карточки.')};
+      : N_('Списание банка учтено. Передайте этот этап расчётному бухгалтеру или кассиру: он подтверждает фактическое получение наличных.'),
+    next: N_('После приёма расчётный бухгалтер или кассир отдельно подтверждает выдачу денег получателю.')};
+  return {number: 4, actor: N_('Расчётный бухгалтер / кассир'), title: batch.value ? N_('Выдача по заявкам') : N_('Выдача денег получателю'),
+    description: batch.value ? N_('Расчётный бухгалтер или кассир проводит и отслеживает выдачу в блоке «Оплата нескольких заявок» ниже.')
+      : N_('Расчётный бухгалтер или кассир фиксирует фактическую выдачу получателю кнопкой «Факт оплаты» внизу карточки.')};
 });
 let alive = true, generation = 0;
 const json = body => ({method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(body)});
@@ -176,6 +177,6 @@ onUnmounted(() => { alive = false; generation++; emit('busy', false); });
 .cash-funding-step{display:grid;grid-template-columns:32px minmax(0,1fr);gap:12px;margin:14px 0;padding:14px;border:1px solid var(--line);border-radius:12px;background:var(--surface);overflow-wrap:anywhere}
 .cash-funding-step-number{display:flex;align-items:center;justify-content:center;width:32px;height:32px;border-radius:50%;background:var(--primary-soft);color:var(--primary);font-weight:800}.cash-funding-step.complete .cash-funding-step-number{background:var(--good-soft);color:var(--good)}
 .cash-funding-step-owner{display:block;color:var(--muted);font-size:12px;font-weight:700;line-height:1.5}.cash-funding-step h4{margin:4px 0 6px;font-size:15px;line-height:1.45}.cash-funding-step p{margin:0;font-size:13px;line-height:1.6}.cash-funding-step .cash-funding-next{margin-top:7px}
-.cash-funding-action{margin-top:14px;padding:14px;border:1px solid var(--line);border-radius:12px;background:var(--surface);min-width:0}.cash-funding-action h4{margin:0 0 14px;font-size:14px}.cash-funding-action .sub{font-size:12px;line-height:1.6}.cash-funding-panel button{max-width:100%;white-space:normal;overflow-wrap:anywhere;text-align:center}.cash-funding-attest{display:flex;align-items:flex-start;gap:8px;margin:12px 0;font-size:13px;line-height:1.6}.cash-funding-attest input{width:auto;flex:none;margin-top:3px}
+.cash-funding-action{margin-top:14px;padding:14px;border:1px solid var(--line);border-radius:12px;background:var(--surface);min-width:0}.cash-funding-action h4{margin:0 0 14px;font-size:14px}.cash-funding-action .sub{font-size:12px;line-height:1.6}.cash-funding-panel button{max-width:100%;white-space:normal;overflow-wrap:anywhere;text-align:center}.cash-funding-attest{display:flex;align-items:flex-start;gap:12px;margin:16px 0;font-size:16px;font-weight:700;line-height:1.6}.cash-funding-attest input{width:24px;height:24px;flex:none;margin-top:2px;accent-color:var(--primary)}
 @media(max-width:520px){.cash-funding-panel{padding:12px}.cash-funding-step{padding:12px;gap:10px}.cash-funding-action{padding:12px}.cash-funding-panel .kv,.cash-funding-action .form-grid{grid-template-columns:minmax(0,1fr)}.cash-funding-panel .kv{gap:5px}.cash-funding-panel .kv dd{margin-bottom:7px;margin-left:0}.cash-funding-panel .actions,.cash-funding-panel .form-actions{flex-wrap:wrap}.cash-funding-panel .actions button,.cash-funding-panel .form-actions button{width:100%}}
 </style>

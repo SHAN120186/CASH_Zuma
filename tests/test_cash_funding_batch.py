@@ -55,6 +55,45 @@ class CashFundingBatchTests(CashFundingTests):
         self.assertEqual(self.report()['totals'][8],'-920000.00')
         self.assertEqual(self.state()['remaining_amount'],'80000.00')
 
+    def test_completed_funding_is_archived_but_accountant_can_issue_without_duplicate_expense(self):
+        self.fixture()
+        book=self.make_user('accountant','cash_combined_book')
+        try:
+            row=self.row(self.parent)
+            self.assertTrue(row['cash_funding']['completed'])
+            active=self.client.get('/api/requests?archive=active',headers=self.h).json()
+            archived=self.client.get('/api/requests?archive=archived',headers=self.h).json()
+            self.assertNotIn(self.parent,[r['id'] for r in active])
+            self.assertIn(self.parent,[r['id'] for r in archived])
+            response=book[0].get(f'/api/requests/{self.parent}/cash-funding/payments',headers=book[1])
+            self.assertEqual(response.status_code,200,response.text)
+            self.assertTrue(response.json()['can_pay'])
+            self.assertEqual(len(response.json()['candidates']),2)
+            body=self.body()
+            preview=self.preview(body,client=book)
+            self.assertEqual(preview.status_code,200,preview.text)
+            payload={**body,'token':preview.json()['token'],'confirm':True}
+            paid=self.post(f'/api/requests/{self.parent}/cash-funding/payments/commit',payload,*book)
+            self.assertEqual(paid.status_code,200,paid.text)
+            repeated=self.post(f'/api/requests/{self.parent}/cash-funding/payments/commit',payload,*book)
+            self.assertEqual(repeated.status_code,200,repeated.text)
+            self.assertEqual(repeated.json(),paid.json())
+
+            with unit() as s:
+                self.assertEqual(s.scalar(select(func.count()).select_from(Ledger).where(Ledger.request_id==self.parent)),0)
+                self.assertEqual(account_balance(s,s.get(Account,self.cash)),8000000)
+        finally:book[0].close()
+
+    def test_accountant_receives_cash_and_document_completes(self):
+        self.fixture(received=False)
+        book=self.make_user('accountant','cash_receiving_book')
+        try:
+            self.assertFalse(self.row(self.parent)['cash_funding']['completed'])
+            self.funding_action(self.parent,'receive',*book)
+            self.assertTrue(self.row(self.parent)['cash_funding']['completed'])
+            self.assertEqual(self.state()['received_amount'],'990000.00')
+        finally:book[0].close()
+
     def test_existing_funding_mode_migration_preserves_legacy_facts(self):
         self.fixture()
         with unit(True) as s:s.get(CashFunding,self.funding_id).mode='single'

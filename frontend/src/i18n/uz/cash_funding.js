@@ -1,4 +1,8 @@
 export default {
+  'Расчётный бухгалтер / кассир': 'Hisob-kitob buxgalteri / kassir',
+  'Документ пополнения завершён. Расходные заявки оплачиваются отдельно.': 'Kassani toʻldirish hujjati yakunlandi. Xarajat arizalari alohida toʻlanadi.',
+  'Касса пополнена': 'Kassa toʻldirildi',
+  'Пополнение кассы': 'Kassani toʻldirish',
   'Шаг {step} из 4 · {actor}': '4 bosqichdan {step}-si · {actor}',
   'Проверка состояния': 'Holatni tekshirish',
   'Состояние уточняется': 'Holat aniqlanmoqda',
@@ -24,19 +28,19 @@ export default {
   'Списание денег из банка': 'Bankdan pul yechish',
   'Расчётный бухгалтер фиксирует уже выполненное списание банка вместе с комиссией.':
     'Hisob-kitob buxgalteri bankdan amalda yechilgan pulni komissiya bilan birga qayd etadi.',
-  'Далее кассир подтверждает получение наличных в кассу.': 'Keyin kassir naqd pul kassaga olinganini tasdiqlaydi.',
+  'Далее расчётный бухгалтер или кассир подтверждает получение наличных в кассу.': 'Keyin hisob-kitob buxgalteri yoki kassir naqd pul kassaga olinganini tasdiqlaydi.',
   'Получение наличных в кассу': 'Naqd pulni kassaga olish',
   'Списание банка учтено. Подтвердите фактическое получение наличных в кассу.':
     'Bankdan pul yechish hisobga olingan. Naqd pul kassaga amalda olinganini tasdiqlang.',
-  'Списание банка учтено. Передайте этот этап кассиру: он подтверждает фактическое получение наличных.':
-    'Bankdan pul yechish hisobga olingan. Bu bosqichni kassirga topshiring: u naqd pul amalda olinganini tasdiqlaydi.',
-  'После приёма кассир отдельно подтверждает выдачу денег получателю.':
-    'Qabul qilgach, kassir pul oluvchiga berilganini alohida tasdiqlaydi.',
+  'Списание банка учтено. Передайте этот этап расчётному бухгалтеру или кассиру: он подтверждает фактическое получение наличных.':
+    'Bankdan pul yechish hisobga olingan. Bu bosqichni hisob-kitob buxgalteriga yoki kassirga topshiring: u naqd pul amalda olinganini tasdiqlaydi.',
+  'После приёма расчётный бухгалтер или кассир отдельно подтверждает выдачу денег получателю.':
+    'Qabul qilgach, hisob-kitob buxgalteri yoki kassir pul oluvchiga berilganini alohida tasdiqlaydi.',
   'Выдача денег получателю': 'Pulni oluvchiga berish',
-  'Кассир проводит и отслеживает выдачу в блоке «Оплата нескольких заявок» ниже.':
-    'Kassir pastdagi «Bir nechta arizani toʻlash» boʻlimida pul berishni qayd etadi va kuzatadi.',
-  'Кассир фиксирует фактическую выдачу получателю кнопкой «Факт оплаты» внизу карточки.':
-    'Kassir oluvchiga pul amalda berilganini kartaning pastidagi «Toʻlov fakti» tugmasi orqali qayd etadi.',
+  'Расчётный бухгалтер или кассир проводит и отслеживает выдачу в блоке «Оплата нескольких заявок» ниже.':
+    'Hisob-kitob buxgalteri yoki kassir pastdagi «Bir nechta arizani toʻlash» boʻlimida pul berishni qayd etadi va kuzatadi.',
+  'Расчётный бухгалтер или кассир фиксирует фактическую выдачу получателю кнопкой «Факт оплаты» внизу карточки.':
+    'Hisob-kitob buxgalteri yoki kassir oluvchiga pul amalda berilganini kartaning pastidagi «Toʻlov fakti» tugmasi orqali qayd etadi.',
   'Принять наличные в кассу': 'Naqd pulni kassaga qabul qilish',
   'Дата списания банка': 'Bankdan pul yechilgan sana',
   'Дата получения в кассу': 'Kassaga olingan sana',

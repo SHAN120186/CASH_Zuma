@@ -92,7 +92,7 @@ def request_actions(s, u, r, batch=None, director_limit=None):
         actions.append('close')
     if 'request_edit' in perms and r.status in ('pending', 'approved'):
         actions.append('reschedule')
-    if r.status == 'approved' and pay_right(account) in perms and route_complete(r) and u.id not in all_participants(s, r, include_check=account.kind!='bank', batch=batch) and (funding is None or (funding.state=='received' and funding.mode!='batch')):
+    if r.status == 'approved' and pay_right(account) in perms and route_complete(r) and u.id not in all_participants(s, r, include_check=account.kind!='bank' and not has_role(u,'accountant'), batch=batch) and (funding is None or (funding.state=='received' and funding.mode!='batch')):
         actions.append('pay')
     if funding:
         allowed=capabilities(s,u,r,funding,batch=batch)

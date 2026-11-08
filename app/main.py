@@ -460,6 +460,7 @@ def requests_list(request:Request,date_from:Optional[date]=None,date_to:Optional
             ).correlate(PaymentRequest).scalar_subquery()
             archived=or_(
                 PaymentRequest.status=='paid',
+                PaymentRequest.id.in_(select(CashFunding.request_id).where(CashFunding.mode=='batch',CashFunding.state=='received')),
                 and_(PaymentRequest.status.in_(['cancelled','rejected']),closed_at<=cutoff))
             query=query.where(func.coalesce(archived,False) if archive=='archived' else ~func.coalesce(archived,False))
         if date_from:query=query.where(PaymentRequest.due_date>=date_from)

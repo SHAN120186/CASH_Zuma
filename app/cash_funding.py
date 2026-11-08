@@ -216,6 +216,7 @@ def funding_json(s,funding,user=None,request=None,accounts=None,categories=None)
     result={key:getattr(funding,key) for key in ('id','version','mode','bank_account_id','cash_account_id','fee_category_id','state',
         'transit_account_id','transfer_ledger_id','fee_ledger_id','receipt_ledger_id')}
     result.update({key:money(getattr(funding,key)) for key in ('gross_amount','fee_amount','net_amount')})
+    result['completed']=funding.mode=='batch' and funding.state=='received'
     result.update({'fee_percent':funding.fee_percent,'bank_account':bank.name,'bank_account_currency':bank.currency,
                    'fee_category_name':fee.name,'withdraw_date':str(funding.withdraw_date) if funding.withdraw_date else None,
                    'receive_date':str(funding.receive_date) if funding.receive_date else None,

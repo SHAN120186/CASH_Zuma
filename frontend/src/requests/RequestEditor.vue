@@ -271,15 +271,14 @@ onUnmounted(() => { document.removeEventListener('keydown', onKey); clearTimeout
       <div class="form-grid">
         <label>{{ tx('Компания') }}<input :value="company?.name" disabled></label>
         <label>{{ tx('Канал оплаты') }}<select v-model="paymentMethod" :disabled="fundingFrozen" required><option v-for="(label, k) in CHANNELS" :key="k" :value="k">{{ tx(label) }}</option><option value="cash_bank">{{ tx('Наличные через банк') }}</option></select></label>
+            <label v-if="form.cash_funding" class="wide">{{ tx('Назначение наличных') }}<select v-model="form.cash_funding.mode" :disabled="fundingFrozen" required><option value="single">{{ tx('Оплата одной заявки') }}</option><option value="batch">{{ tx('Пополнение кассы для нескольких заявок') }}</option></select></label>
         <label>{{ tx('Валюта') }}<select v-model="form.currency" :disabled="fundingFrozen" required><option v-for="c in ['UZS','USD','EUR']" :key="c" :value="c">{{ c }}</option></select></label>
         <label>{{ tx('Счёт списания') }}<select v-model="form.account_id" required><option v-for="a in accountOptions" :key="a.id" :value="a.id">{{ a.name }}</option></select>
           <small v-if="!accountOptions.length" class="field-error">{{ tx('Нет счёта для выбранного канала и валюты.') }}</small></label>
         <label>{{ tx('Отдел') }}<select v-model="form.department"><option value="">{{ tx('Выберите отдел') }}</option><option v-for="item in departmentOptions" :key="item.code" :value="item.code">{{lang==='uz'&&item.name_uz?item.name_uz:tx(item.name_ru)}}</option></select></label>
         <label>{{ tx('Статья расходов') }}<select v-model="form.category_id" required><option v-for="c in outcomeCategories" :key="c.id" :value="c.id">{{ c.name }}</option></select></label>
-        <label>{{ batchFunding ? tx('Сумма пополнения кассы') : form.cash_funding ? tx('Сумма наличной заявки') : tx('Сумма') }}<MoneyInput v-if="form.cash_funding" v-model="form.amount" readonly required /><input v-else v-model="form.amount" type="text" inputmode="decimal" pattern="[0-9]+([.][0-9]{1,2})?" required autocomplete="off"></label>
         <section v-if="form.cash_funding" class="wide cash-funding-editor" :aria-label="tx('Получение наличных из банка')">
           <div class="form-grid">
-            <label class="wide">{{ tx('Назначение наличных') }}<select v-model="form.cash_funding.mode" :disabled="fundingFrozen" required><option value="single">{{ tx('Оплата одной заявки') }}</option><option value="batch">{{ tx('Пополнение кассы для нескольких заявок') }}</option></select></label>
             <label>{{ tx('Банковский счёт') }}<select v-model="form.cash_funding.bank_account_id" :disabled="fundingFrozen" required><option v-for="account in fundingAccounts" :key="account.id" :value="account.id">{{ account.name }}</option></select></label>
             <label>{{ tx('Всего списать с банка') }} · {{ form.currency }}<MoneyInput v-model="form.cash_funding.gross_amount" :disabled="fundingFrozen" required /></label>
             <label>{{ tx('Комиссия от суммы списания, %') }}<input v-model="form.cash_funding.fee_percent" inputmode="decimal" pattern="[0-9]+([.,][0-9]{1,2})?" :disabled="fundingFrozen" required></label>
@@ -289,6 +288,7 @@ onUnmounted(() => { document.removeEventListener('keydown', onKey); clearTimeout
           <p v-if="fundingProblem" class="field-error" role="status">{{ tx(fundingProblem) }}</p>
           <small class="sub">{{ batchFunding ? tx('Пополнение не является отдельным расходом. После получения наличных выберите согласованные заявки; расходы учитываются по их статьям, комиссия — отдельно.') : tx('Комиссия входит в списание банка. Заявка оплачивается из кассы после подтверждения получения наличных.') }}</small>
         </section>
+        <label>{{ batchFunding ? tx('Сумма пополнения кассы') : form.cash_funding ? tx('Сумма наличной заявки') : tx('Сумма') }}<MoneyInput v-if="form.cash_funding" v-model="form.amount" readonly required /><input v-else v-model="form.amount" type="text" inputmode="decimal" pattern="[0-9]+([.][0-9]{1,2})?" required autocomplete="off"></label>
         <label>{{ foreignBank ? tx('ИНН контрагента (необязательно)') : tx('ИНН контрагента') }}<input v-model.trim="partyInn" inputmode="numeric" pattern="[0-9]*" maxlength="20" autocomplete="off" aria-describedby="rq-inn-hint">
           <small id="rq-inn-hint" class="sub">{{ foreignBank ? tx('ИНН необязателен для USD и EUR. Для иностранного контрагента без ИНН введите название вручную.') : tx('Введите ИНН для поиска контрагента.') }}</small>
           <small v-if="partyStatus === 'loading'" class="sub" role="status">{{ tx('Ищем контрагента…') }}</small>
