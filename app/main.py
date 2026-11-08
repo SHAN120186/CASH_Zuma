@@ -65,9 +65,9 @@ async def safety(request,call_next):
     response=await call_next(request)
     # Технический журнал остаётся синхронным по отношению к ответу: ждём commit,
     # но ожидание БД не блокирует event loop и не берёт финансовый write guard.
-    # Чтения (GET, HEAD) не журналируются: каждое чтение давало бы строку в базе.
+    # Успешные чтения не создают записи; отказы сохраняют технический след.
     # Анонимные 401/404 не журналируются; неудачные входы учитывает их ограничение.
-    if request.method not in ('GET','HEAD') and request.url.path.startswith('/api') and (getattr(request.state,'user_id',None) or getattr(request.state,'bot',False)):
+    if (request.method not in ('GET','HEAD') or response.status_code>=400) and request.url.path.startswith('/api') and (getattr(request.state,'user_id',None) or getattr(request.state,'bot',False)):
         audit_payload = dict(company_id=getattr(request.state,'company_id',None),user_id=getattr(request.state,'user_id',None),action='API '+request.method,entity='http',detail=journal_path(request.url.path)+'; status='+str(response.status_code),
                              ip=client_ip(request),forwarded_for=(request.headers.get('X-Forwarded-For') or '')[:200] or None)
         try:
@@ -421,7 +421,9 @@ def budgets(request:Request,month:str='',currency:Literal['UZS','USD','EUR']='UZ
     month=month or str(today())[:7]
     with unit() as s:
         session_user(s,request,'view')
-        return [dict(category_id=c.id,category=article_name(c),code=article_code(c),cost_group=c.cost_group,month=month,currency=currency,**budget_json(budget_state(s,c.id,month,currency))) for c,_ in category_catalog(s) if c.type=='outcome' and c.activity!='unclassified']
+        categories=[c for c,_ in category_catalog(s) if c.type=='outcome' and c.activity!='unclassified']
+        states=budget_states(s,(c.id for c in categories),month,currency)
+        return [dict(category_id=c.id,category=article_name(c),code=article_code(c),cost_group=c.cost_group,month=month,currency=currency,**budget_json(states[c.id])) for c in categories]
 @app.post('/api/budgets')
 def save_budget(data:BudgetIn,request:Request):
     with unit(True) as s:
@@ -489,9 +491,14 @@ def requests_list(request:Request,date_from:Optional[date]=None,date_to:Optional
                 if len(digits)<19 or (len(digits)==19 and digits<='9223372036854775807'):
                     matches.append(PaymentRequest.id==int(digits))
             query=query.where(or_(*matches))
-        total=s.scalar(select(func.count()).select_from(query.subquery()))
-        query=query.order_by(PaymentRequest.due_date.asc(),PaymentRequest.id.asc())
-        requests=list(s.scalars(query.offset((page-1)*page_size).limit(page_size) if paginated else query.limit(500)))
+        ordered=query.order_by(PaymentRequest.due_date.asc(),PaymentRequest.id.asc())
+        if paginated:
+            page_rows=s.execute(ordered.add_columns(func.count().over()).offset((page-1)*page_size).limit(page_size)).all()
+            requests=[row[0] for row in page_rows]
+            # An empty later page still reports the real filtered total.
+            total=page_rows[0][1] if page_rows else (s.scalar(select(func.count()).select_from(query.subquery())) if page>1 else 0)
+        else:
+            requests=list(s.scalars(ordered.limit(500)))
         from .services import request_batch
         batch=request_batch(s,requests)
         items=[request_view(s,u,r,batch=batch) for r in requests]

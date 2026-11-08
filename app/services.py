@@ -2,7 +2,8 @@ from __future__ import annotations
 import json
 from decimal import Decimal, InvalidOperation
 from datetime import date, datetime, timedelta, timezone
-from sqlalchemy import select, func, or_, and_, case
+from sqlalchemy import select, func, or_, and_, case, cast, String, literal, union_all
+from sqlalchemy.orm import aliased
 from fastapi import HTTPException
 from .company_scope import get_setting
 from .security import PERMS, pay_right, perms_of, company_role, has_role, act_with_right
@@ -211,6 +212,43 @@ def budget_state(s,category,month,currency,extra=0,exclude_request=None):
     return {'id':b.id if b else None,'limit':b.amount if b else None,'mode':b.mode if b else 'soft',
             'spent':spent,'reserved':reserved,'used':used,'remaining':b.amount-used if b else None,
             'after':used+extra,'over':bool(b and used+extra>b.amount),'source':b.source if b else ''}
+
+def budget_states(s,categories,month,currency):
+    """Read the budget page in four scoped queries, without per-article reads.
+
+    Write guards continue using budget_state in their own transaction. Nothing
+    is cached across requests; fees and batch-funding exclusions match it.
+    """
+    ids=set(categories)
+    if not ids:return {}
+    try:start,end=month_bounds(month)
+    except (ValueError,TypeError):raise HTTPException(422,'Некорректный месяц бюджета.')
+    budgets={b.category_id:b for b in s.scalars(select(Budget).where(
+        Budget.category_id.in_(ids),Budget.month==month,Budget.currency==currency))}
+    spent=dict(s.execute(effective_cashflows(s).with_only_columns(Ledger.category_id,func.sum(Ledger.amount))
+        .join(Account,Account.id==Ledger.account_id).where(Ledger.category_id.in_(ids),
+            Ledger.kind=='out',Ledger.date>=start,Ledger.date<end,Account.currency==currency)
+        .group_by(Ledger.category_id)).all())
+    reserved=dict(s.execute(select(PaymentRequest.category_id,func.sum(PaymentRequest.amount))
+        .join(Account,Account.id==PaymentRequest.account_id).where(PaymentRequest.category_id.in_(ids),
+            PaymentRequest.status=='approved',PaymentRequest.due_date>=start,PaymentRequest.due_date<end,
+            PaymentRequest.id.not_in(batch_funding_request_ids()),Account.currency==currency)
+        .group_by(PaymentRequest.category_id)).all())
+    fees=s.execute(select(CashFunding.fee_category_id,func.sum(CashFunding.fee_amount))
+        .join(PaymentRequest,PaymentRequest.id==CashFunding.request_id)
+        .join(Account,Account.id==CashFunding.bank_account_id).where(CashFunding.fee_category_id.in_(ids),
+            CashFunding.state=='unfunded',PaymentRequest.status=='approved',
+            PaymentRequest.due_date>=start,PaymentRequest.due_date<end,Account.currency==currency)
+        .group_by(CashFunding.fee_category_id))
+    for category,total in fees:reserved[category]=reserved.get(category,0)+int(total)
+    result={}
+    for category in ids:
+        b=budgets.get(category);paid=int(spent.get(category,0));held=int(reserved.get(category,0));used=paid+held
+        result[category]={'id':b.id if b else None,'limit':b.amount if b else None,'mode':b.mode if b else 'soft',
+            'spent':paid,'reserved':held,'used':used,'remaining':b.amount-used if b else None,
+            'after':used,'over':bool(b and used>b.amount),'source':b.source if b else ''}
+    return result
+
 
 def enforce_budget(s,category,dt,currency,n,note,exclude=None):
     b=budget_state(s,category,str(dt)[:7],currency,n,exclude)
@@ -459,7 +497,7 @@ def backdated_flags(s,r):
         late_posted = bool(row and entered and row.date < local_date(entered))
     return late_created, late_posted
 
-def request_participant_history(s,ids):
+def request_participant_history(s,ids,*,journal_rows=None):
     """One scoped journal read for this list response, never reused by write guards.
 
     Round boundaries use audit IDs, as the single-request checks do. Legacy
@@ -477,7 +515,8 @@ def request_participant_history(s,ids):
                      or_(*(Audit.detail.like(prefix+';%') for prefix in prefixes))))
     rows=s.execute(select(Audit.id,Audit.entity,Audit.entity_id,Audit.action,Audit.user_id,Audit.created_at,
                           case((Audit.entity=='request_document',Audit.detail),else_='')).where(
-                              journal,Audit.action.in_(actions)))
+                              journal,Audit.action.in_(actions))) if journal_rows is None else (
+        (a.id,a.entity,a.entity_id,a.action,a.user_id,a.created_at,a.detail) for a in journal_rows if a.action in actions)
     returns={};edits=defaultdict(list);paid={}
     for aid,entity,entity_id,action,user_id,created_at,detail in rows:
         rid=string_ids.get(entity_id) if entity=='request' else prefixes.get((detail or '').partition(';')[0])
@@ -495,44 +534,81 @@ def request_participant_history(s,ids):
     return history,paid
 
 
-def request_batch(s,requests):
+def request_budget_totals(s,category_ids,months):
+    """One scoped aggregate result; never load the entire spending/reserve ledger.
+
+    UNION ALL retains independent spent/reserved/fee totals, including budgets
+    with no activity and activity without a budget, for every month/currency.
+    No response or financial state is cached between HTTP requests.
+    """
+    from collections import defaultdict
+    from types import SimpleNamespace
+    start=min(month_bounds(m)[0] for m in months);end=max(month_bounds(m)[1] for m in months)
+    lm=func.substr(cast(Ledger.date,String),1,7)
+    rm=func.substr(cast(PaymentRequest.due_date,String),1,7)
+    def columns(kind,category,month,value):
+        return (literal(kind),category,month,Account.currency,func.sum(value),literal(0),literal(''),literal(''))
+    spent=effective_cashflows(s).with_only_columns(*columns('spent',Ledger.category_id,lm,Ledger.amount))\
+        .join(Account,Account.id==Ledger.account_id).where(Ledger.category_id.in_(category_ids),
+            Ledger.kind=='out',Ledger.date>=start,Ledger.date<end).group_by(Ledger.category_id,lm,Account.currency)
+    reserved=select(*columns('reserved',PaymentRequest.category_id,rm,PaymentRequest.amount))\
+        .join(Account,Account.id==PaymentRequest.account_id).where(PaymentRequest.category_id.in_(category_ids),
+            PaymentRequest.status=='approved',PaymentRequest.due_date>=start,PaymentRequest.due_date<end,
+            PaymentRequest.id.not_in(batch_funding_request_ids())).group_by(PaymentRequest.category_id,rm,Account.currency)
+    fees=select(*columns('reserved',CashFunding.fee_category_id,rm,CashFunding.fee_amount))\
+        .join(PaymentRequest,PaymentRequest.id==CashFunding.request_id).join(Account,Account.id==CashFunding.bank_account_id)\
+        .where(CashFunding.fee_category_id.in_(category_ids),CashFunding.state=='unfunded',PaymentRequest.status=='approved',
+            PaymentRequest.due_date>=start,PaymentRequest.due_date<end).group_by(CashFunding.fee_category_id,rm,Account.currency)
+    budgets=select(literal('budget'),Budget.category_id,Budget.month,Budget.currency,Budget.amount,Budget.id,Budget.mode,Budget.source)\
+        .where(Budget.category_id.in_(category_ids),Budget.month.in_(months))
+    result={'budgets':{},'spent':defaultdict(int),'reserved':defaultdict(int)}
+    for kind,category,month,currency,total,bid,mode,source in s.execute(union_all(budgets,spent,reserved,fees)):
+        key=(category,month,currency)
+        if kind=='budget':result['budgets'][key]=SimpleNamespace(id=bid,amount=total,mode=mode,source=source)
+        else:result[kind][key]+=int(total)
+    return result
+
+
+def request_reference_query(ids):
+    """Request and its scoped account/article references in one database read."""
+    bank=aliased(Account);fee=aliased(Category)
+    return (select(PaymentRequest,Account,Category,CashFunding,bank,fee).select_from(PaymentRequest)
+        .join(Account,Account.id==PaymentRequest.account_id).join(Category,Category.id==PaymentRequest.category_id)
+        .outerjoin(CashFunding,CashFunding.request_id==PaymentRequest.id)
+        .outerjoin(bank,bank.id==CashFunding.bank_account_id).outerjoin(fee,fee.id==CashFunding.fee_category_id)
+        .where(PaymentRequest.id.in_(ids)))
+
+
+def request_batch(s,requests,*,documents=None,journal_rows=None,references=None):
     """Prefetch data used by request cards, within the current company scope."""
     from .department_catalog import catalog as department_catalog
     from collections import defaultdict
     ids=[r.id for r in requests]
     if not ids:return None
-    fundings={f.request_id:f for f in s.scalars(select(CashFunding).where(CashFunding.request_id.in_(ids)))}
+    if references is None:references=s.execute(request_reference_query(ids))
+    accounts={};categories={};fundings={}
+    for _,account,category,funding,bank_account,fee_category in references:
+        accounts[account.id]=account;categories[category.id]=category
+        if funding:fundings[funding.request_id]=funding
+        if bank_account:accounts[bank_account.id]=bank_account
+        if fee_category:categories[fee_category.id]=fee_category
     category_ids={r.category_id for r in requests}
     category_ids.update(f.fee_category_id for f in fundings.values())
-    accounts={a.id:a for a in s.scalars(select(Account))}
-    categories={c.id:c for c in s.scalars(select(Category).where(Category.id.in_(category_ids)))}
     for r in requests:get(s,Account,r.account_id);get(s,Category,r.category_id)
     months={str(r.due_date)[:7] for r in requests}
-    start=min(month_bounds(m)[0] for m in months);end=max(month_bounds(m)[1] for m in months)
-    budgets={(b.category_id,b.month,b.currency):b for b in s.scalars(select(Budget).where(Budget.category_id.in_(category_ids),Budget.month.in_(months)))}
-    spent=defaultdict(int);reserved=defaultdict(int)
-    for item in s.scalars(effective_cashflows(s).where(Ledger.category_id.in_(category_ids),Ledger.kind=='out',Ledger.date>=start,Ledger.date<end)):
-        a=accounts.get(item.account_id)
-        if a:spent[(item.category_id,str(item.date)[:7],a.currency)]+=item.amount
-    for item in s.scalars(select(PaymentRequest).where(PaymentRequest.category_id.in_(category_ids),PaymentRequest.status=='approved',PaymentRequest.due_date>=start,PaymentRequest.due_date<end,
-                                                     PaymentRequest.id.not_in(batch_funding_request_ids()))):
-        a=accounts.get(item.account_id)
-        if a:reserved[(item.category_id,str(item.due_date)[:7],a.currency)]+=item.amount
-    for funding,request in s.execute(select(CashFunding,PaymentRequest).join(PaymentRequest,PaymentRequest.id==CashFunding.request_id).where(
-        CashFunding.fee_category_id.in_(category_ids),CashFunding.state=='unfunded',PaymentRequest.status=='approved',
-        PaymentRequest.due_date>=start,PaymentRequest.due_date<end)):
-        a=accounts.get(funding.bank_account_id)
-        if a:reserved[(funding.fee_category_id,str(request.due_date)[:7],a.currency)]+=funding.fee_amount
+    totals=request_budget_totals(s,category_ids,months)
     docs=defaultdict(list)
-    for d in s.scalars(select(RequestDocument).where(RequestDocument.request_id.in_(ids),RequestDocument.active.is_(True)).order_by(RequestDocument.id)):
-        docs[d.request_id].append(d)
+    if documents is None:
+        documents=s.scalars(select(RequestDocument).where(RequestDocument.request_id.in_(ids),RequestDocument.active.is_(True)).order_by(RequestDocument.id))
+    for d in documents:
+        if d.active:docs[d.request_id].append(d)
     paid=[r.id for r in requests if r.status=='paid']
     paid_dates={}
     if paid:
-        for x in s.scalars(select(Ledger).where(Ledger.request_id.in_(paid))):
-            paid_dates.setdefault(x.request_id,x.date)
-    participant_history,paid_audits=request_participant_history(s,ids)
-    return {'accounts':accounts,'categories':categories,'fundings':fundings,'participant_history':participant_history,'departments':department_catalog(s)['items'],'budgets':budgets,'spent':spent,'reserved':reserved,'documents':docs,'paid_dates':paid_dates,'paid_audits':paid_audits}
+        for rid,day in s.execute(select(Ledger.request_id,Ledger.date).where(Ledger.request_id.in_(paid))):
+            paid_dates.setdefault(rid,day)
+    participant_history,paid_audits=request_participant_history(s,ids,journal_rows=journal_rows)
+    return {'accounts':accounts,'categories':categories,'fundings':fundings,'participant_history':participant_history,'departments':department_catalog(s)['items'],**totals,'documents':docs,'paid_dates':paid_dates,'paid_audits':paid_audits}
 
 
 def batch_budget_state(batch,r,account,extra=0,exclude_request=None):

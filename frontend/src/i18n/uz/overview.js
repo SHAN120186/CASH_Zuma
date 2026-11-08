@@ -1,6 +1,7 @@
 // Uzbek (Latin) translations: overview/*, CompanyCard.vue, PeriodFilter.vue.
 // Key: the exact Russian text; value: the Uzbek text with the same {placeholders}.
 export default {
+  'Проверяем бюджеты…': 'Byudjetlarni tekshiryapmiz…',
   'Раздел «Заявки» недоступен по вашим настройкам доступа.': 'Kirish sozlamalaringiz bo‘yicha «Arizalar» bo‘limi mavjud emas.',
   'План поступлений': 'Tushumlar rejasi',
   'План поступлений на 7 дней': '7 kunlik tushumlar rejasi',
