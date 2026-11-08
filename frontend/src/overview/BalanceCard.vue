@@ -16,6 +16,7 @@ const props = defineProps({
   change: {type: Object, default: null}, // {ratio, since}
   history: {type: Array, default: null}, // [{date, balance, income, expense}]
   historyNote: {type: String, default: ''},
+  historyDeferred: {type: Boolean, default: false},
   canOpenReport: Boolean,
   canAddAccount: Boolean,
   canOpenDay: Boolean,
@@ -184,7 +185,7 @@ function key(event) {
      <svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true"><path v-if="direction === 'up'" d="M4 12 12 4M6 4h6v6"/><path v-else-if="direction === 'down'" d="M4 4l8 8M12 6v6H6"/><path v-else d="M3 8h10"/></svg>
      <span>{{tx('{percent} за месяц', {percent: formatPercent(change.ratio)})}}</span>
     </span>
-    <span v-else class="bal-delta flat">{{tx('Нет данных для сравнения с прошлым месяцем')}}</span>
+    <span v-else-if="!historyDeferred" class="bal-delta flat">{{tx('Нет данных для сравнения с прошлым месяцем')}}</span>
    </div>
    <p class="bal-split">
     {{tx('На счетах')}} <b :title="amountTitle(onAccounts, currency)">{{formatAmount(onAccounts, currency)}}</b> · {{tx('в резерве утверждённых заявок')}} <b :title="amountTitle(reserved, currency)">{{formatAmount(reserved, currency)}}</b> {{currency}}
@@ -234,6 +235,7 @@ function key(event) {
     </div>
     <div class="bal-axis" aria-hidden="true"><span v-for="t in ticks" :key="'l' + t.i">{{formatShortDate(history[t.i].date)}}</span></div>
    </figure>
+   <p v-else-if="historyDeferred" class="bal-note">{{tx('График и сравнение загружаются по кнопке над обзором.')}}</p>
    <p v-else class="bal-note">{{tx('История остатка появится после первых операций.')}}</p>
    <p v-if="historyNote" class="bal-note">{{historyNote}}</p>
   </template>

@@ -35,6 +35,7 @@ function showRequest(request) {
 const HISTORY_DAYS = 30, PAGE = 100, MAX_PAGES = 30, MAX_REQUEST_PAGES = 10, SHOWN_ROWS = 6, PENDING_PREVIEW = 4;
 const HORIZONS = [7, 30, 90];
 const scenario = ref('A');
+const detailsRequested = ref(false);
 const horizon = computed(() => (HORIZONS.includes(props.days) ? props.days : 30));
 const s = ref(fresh());
 function fresh() {
@@ -80,7 +81,6 @@ async function load() {
   s.value = fresh();
   const c = props.currency, cid = props.companyId, today = props.today, days = horizon.value;
   const month = today.slice(0, 7), prevDay = sameDayPreviousMonth(today);
-  const start = addDays(today, -(HISTORY_DAYS - 1));
   const report = day => props.api(`/api/group-report?${q({company_id: cid, currency: c, scenario: 'A', month: day.slice(0, 7), day})}`);
 
   // Request lists may take several pages; they fill in after the balance and
@@ -116,11 +116,11 @@ async function load() {
     patch(gen, {budgets: result.ok ? result.v : null, budgetsLoading: false},
       {budgets: result.ok ? '' : result.e.message});
   });
-  loadReport(gen);
+  if (detailsRequested.value) loadReport(gen);
   const [dash, now, prev, active, archived, latest] = await Promise.all([
     settle(props.api(`/api/dashboard?${q({currency: c, days})}`)),
     settle(report(today)),
-    settle(report(prevDay)),
+    detailsRequested.value ? settle(report(prevDay)) : Promise.resolve({ok: true, v: null}),
     settle(props.api('/api/accounts?archived=false')),
     settle(props.api('/api/accounts?archived=true')),
     settle(props.api(`/api/ledger?${q({paginated: 'true', page: 1, page_size: 6, currency: c})}`)),
@@ -144,15 +144,21 @@ async function load() {
   if (dashGeneration === dashStart) Object.assign(first, {dash: take('dash', dash), dashDays: dash.ok ? days : null});
   patch(gen, first, errors);
 
-  // The balance history needs every ledger entry of the window; page through it.
-  if (first.accounts) {
+  if (detailsRequested.value) await loadHistory(gen);
+}
+
+async function loadHistory(gen = generation) {
+  const accounts = s.value.accounts, today = props.today, c = props.currency;
+  const start = addDays(today, -(HISTORY_DAYS - 1));
+  // History is optional and never starts after leaving this overview.
+  if (gen === generation && accounts && !props.requestsOnly) {
     try {
       const entries = await allPages('/api/ledger', {currency: c, date_from: start, date_to: today}, MAX_PAGES, gen);
       if (gen !== generation) return;
       if (entries.items.length < entries.total) {
         patch(gen, {historyNote: N_('За 30 дней слишком много операций для графика на этом экране. Полная история — в разделе «Операции».')});
       } else {
-        patch(gen, {history: balanceHistory({today, days: HISTORY_DAYS, accounts: first.accounts, entries: entries.items})});
+        patch(gen, {history: balanceHistory({today, days: HISTORY_DAYS, accounts, entries: entries.items})});
       }
     } catch (e) {
       if (e.name !== 'AbortError') patch(gen, {}, {history: e.message});
@@ -161,7 +167,7 @@ async function load() {
 }
 
 async function loadReport(gen = generation) {
-  if (props.requestsOnly) return;
+  if (props.requestsOnly || !detailsRequested.value) return;
   const year = props.today.slice(0, 4), wanted = scenario.value;
   // A slower answer for another scenario must not land under the selected button.
   const current = () => gen === generation && wanted === scenario.value;
@@ -192,6 +198,17 @@ watch(() => [props.refresh, props.currency, props.companyId, props.showRequestPa
 watch(horizon, (h, old) => { if (h !== old) reloadForecast(); });
 watch(scenario, () => { s.value = {...s.value, report: null, errors: {...s.value.errors, report: ''}}; loadReport(); });
 onBeforeUnmount(() => { generation++; dashGeneration++; });
+
+async function showDetails() {
+  if (detailsRequested.value || props.requestsOnly) return;
+  detailsRequested.value = true;
+  const gen = generation, day = sameDayPreviousMonth(props.today);
+  await Promise.all([
+    loadReport(gen), loadHistory(gen),
+    settle(props.api(`/api/group-report?${q({company_id: props.companyId, currency: props.currency, scenario: 'A', month: day.slice(0, 7), day})}`))
+      .then(result => { if (result.ok) patch(gen, {prev: result.v}); }),
+  ]);
+}
 
 // ---- derived figures ----
 const c = computed(() => props.currency);
@@ -366,6 +383,7 @@ const signedLedger = t => (t.kind === 'out' ? -1 : t.kind === 'in' ? 1 : 0) * (t
 
 <template>
  <div class="ov" :class="{'ov-requests-only': requestsOnly}">
+  <button v-if="!requestsOnly && !detailsRequested" type="button" class="secondary" :disabled="s.loading" @click="showDetails">{{tx('Показать график остатка и план-факт')}}</button>
   <section v-if="!requestsOnly" class="ov-today" :aria-label="tx('Что требует внимания сегодня')">
    <span class="ov-today-label">{{tx('Сегодня')}}</span>
    <template v-if="s.loading"><span class="ov-chip sk-chip" aria-hidden="true"></span><span class="ov-chip sk-chip" aria-hidden="true"></span></template>
@@ -385,7 +403,7 @@ const signedLedger = t => (t.kind === 'out' ? -1 : t.kind === 'in' ? 1 : 0) * (t
   <div v-if="!requestsOnly" class="ov-top">
    <BalanceCard class="ov-main" :state="balanceState" :error="s.errors.now" :company="company?.name || ''" :as-of="s.now?.day || today"
     :currency="currency" :available="available" :on-accounts="onAccounts" :reserved="reserved" :change="change"
-    :history="s.history" :history-note="s.errors.history ? tx('График не загрузился: {error}', {error: tx(s.errors.history)}) : s.errors.accounts ? tx('Счета не загрузились: {error}', {error: tx(s.errors.accounts)})
+    :history="s.history" :history-deferred="!detailsRequested" :history-note="s.errors.history ? tx('График не загрузился: {error}', {error: tx(s.errors.history)}) : s.errors.accounts ? tx('Счета не загрузились: {error}', {error: tx(s.errors.accounts)})
      : s.errors.archived ? tx('Архивные счета не загрузились, история остатка недоступна: {error}', {error: tx(s.errors.archived)}) : tx(s.historyNote)"
     :can-open-report="has('export')" :can-add-account="has('write')" :can-open-day="has('ledger')"
     @retry="load" @open-report="emit('go', 'report')" @add-account="emit('go', 'accounts')" @open-day="d => emit('go', 'ledger', {from: d, to: d})"/>
@@ -536,7 +554,7 @@ const signedLedger = t => (t.kind === 'out' ? -1 : t.kind === 'in' ? 1 : 0) * (t
     </template>
    </section>
 
-   <section v-if="!requestsOnly" class="panel" :class="showRequestPanels ? 'span-5' : 'span-12'" aria-labelledby="ov-pf-h">
+   <section v-if="!requestsOnly && detailsRequested" class="panel" :class="showRequestPanels ? 'span-5' : 'span-12'" aria-labelledby="ov-pf-h">
     <header class="panel-h">
      <h2 id="ov-pf-h">{{tx('План и факт месяца')}}</h2>
      <div class="seg" role="group" :aria-label="tx('Сценарий плана')">
