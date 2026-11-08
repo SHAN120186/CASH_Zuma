@@ -81,9 +81,8 @@ test('request cards and paginated table retain the server due-date order in each
  }
  mode='table';view.state.requestArchive='archived';view.state.requestStatus='paid';await view.state.load();await settle();assert.deepEqual(tableNumbers(),table.slice(0,15).map(row=>row.number));
  assert.equal(view.state.listPages,2);
- const next=()=>find(view.container,node=>node.tag==='button'&&text(node).trim()==='Далее →');
- assert.ok(next());assert.equal(next().props.disabled,false);
- await next().props.onClick();await settle();assert.deepEqual(tableNumbers(),[table[15].number]);assert.equal(view.state.listPage,2);assert.equal(next().props.disabled,true);assert.equal(calls.at(-1).params.get('page_size'),'15');assert.equal(calls.at(-1).params.get('archive'),'archived');assert.equal(calls.at(-1).params.get('state'),'paid');
+ assert.equal(find(view.container,node=>node.tag==='button'&&text(node).trim()==='Далее →'),undefined);
+ await view.state.loadMoreRequests();await settle();assert.deepEqual(tableNumbers(),table.map(row=>row.number));assert.equal(view.state.listPage,2);assert.equal(view.state.moreRequestsAvailable,false);assert.equal(calls.at(-1).params.get('page_size'),'15');assert.equal(calls.at(-1).params.get('archive'),'archived');assert.equal(calls.at(-1).params.get('state'),'paid');
  assert.equal(calls.some(call=>call.params.has('sort')||call.params.has('order')),false);
  setLang('uz');await settle();assert.match(text(view.container),/Avval eng erta to‘lov muddatlari: muddati o‘tgan, so‘ng bugungi va yaqin kunlardagi arizalar/);
 });
@@ -594,4 +593,26 @@ test('operations Cash Flow warns about an unreconciled bank in the selected curr
  view.state.currency='USD';await settle();assert.doesNotMatch(text(view.container),/Часть банковских строк остаётся на проверке/);
  view.state.currency='UZS';view.state.cashFlowBasis='osv';await settle();assert.doesNotMatch(text(view.container),/Часть банковских строк остаётся на проверке/);
  view.state.cashFlowBasis='operations';view.state.boot.accounts[0].unreconciled_statements=0;await settle();assert.doesNotMatch(text(view.container),/Часть банковских строк остаётся на проверке/);
+});
+
+
+test('request scroll ignores stale company results, prevents concurrent loads and removes duplicates',async t=>{
+ const pending=deferred();let calls=0;
+ const {view}=await fixture(t,async(url)=>{calls++;return {ok:true,status:200,json:async()=>pending.promise};});
+ Object.assign(view.state,{page:'requests',currency:'UZS',rows:[{id:1}],listTotal:40,listPage:1});await settle();
+ view.state.requestListKey=JSON.stringify([2,'requests','UZS','','','','active','']);
+ const first=view.state.loadMoreRequests();await view.state.loadMoreRequests();assert.equal(calls,1);
+ view.state.companyId=3;pending.resolve({items:[{id:2}],total:40});await first;assert.deepEqual(view.state.rows,[{id:1}]);assert.equal(view.state.moreRequestsBusy,false);
+ view.state.companyId=2;view.state.requestListKey=JSON.stringify([2,'requests','UZS','','','','active','']);
+ globalThis.fetch=async()=>({ok:true,status:200,json:async()=>({items:[{id:1},{id:2},{id:2},{id:3}],total:40})});
+ await view.state.loadMoreRequests();assert.deepEqual(view.state.rows.map(r=>r.id),[1,2,3]);assert.equal(view.state.listPage,2);
+});
+
+test('request scroll retains rows on failure, retries the same page and refresh resets the list',async t=>{
+ const pages=[];let fail=true;
+ const {view}=await fixture(t,async url=>{pages.push(new URL(url,'https://isolated.test').searchParams.get('page'));return fail?{ok:false,status:500,json:async()=>({detail:'Synthetic failure'})}:{ok:true,status:200,json:async()=>({items:[{id:2}],total:20})};});
+ Object.assign(view.state,{page:'requests',currency:'UZS',rows:[{id:1}],listTotal:20,listPage:1});await settle();view.state.requestListKey=JSON.stringify([2,'requests','UZS','','','','active','']);
+ await view.state.loadMoreRequests();assert.equal(view.state.listPage,1);assert.deepEqual(view.state.rows,[{id:1}]);assert.ok(view.state.moreRequestsError);
+ fail=false;await view.state.loadMoreRequests();assert.deepEqual(pages,['2','2']);assert.deepEqual(view.state.rows.map(r=>r.id),[1,2]);
+ await view.state.load();assert.equal(pages.at(-1),'1');assert.equal(view.state.listPage,1);assert.deepEqual(view.state.rows,[{id:2}]);
 });

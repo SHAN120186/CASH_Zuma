@@ -620,6 +620,10 @@ export default {
   'Закрыть справку': 'Yordamni yopish',
   'Загрузка готового отчёта': 'Tayyor hisobotni yuklash',
   'PDF и Excel одного отчёта загружаются парой, до 20 МБ на файл. Готовая пара сразу доступна на сайте и в Telegram-боте; удалённый отчёт можно восстановить через «Показать удалённые».': 'Bitta hisobotning PDF va Excel fayllari juftlikda yuklanadi, har bir fayl 20 MB gacha. Tayyor juftlik darhol saytda va Telegram-botda mavjud boʻladi; oʻchirilgan hisobotni «Oʻchirilganlarni koʻrsatish» orqali tiklash mumkin.',
+  'Показано {loaded} из {total}': '{total} tadan {loaded} tasi koʻrsatildi',
+  'Следующие заявки загружаются при прокрутке': 'Keyingi arizalar pastga aylantirganda yuklanadi',
+  'Повторить загрузку': 'Yuklashni takrorlash',
+  'Показать ещё': 'Yana koʻrsatish',
 };
 
 // [RegExp over the whole Russian message, Uzbek replacement with $1…] for texts with numbers or names.
