@@ -515,7 +515,7 @@ class CashFundingTests(base.SiteTests):
         self.assertIn('••9012',rows[0]['purpose'])
         self.funding_action(rid,'withdraw',*self.stage_user('check'))
         rows=items()
-        self.assertEqual([(r['assignee_user_id'],r['stage']) for r in rows],[(author_id,'cash_payment')])
+        self.assertEqual({(r['assignee_user_id'],r['stage']) for r in rows},{(author_id,'cash_payment'),(banker_id,'cash_payment')})
         self.assertEqual(rows[0]['stage_label'],'Получение наличных в кассу')
         # Receipt is not an expense: this cashier may receive their own cash
         # funding, but may not subsequently issue the expense to themself.

@@ -22,6 +22,7 @@ jobs:
       - run: python tests/test_site.py
       - run: python -m unittest tests.test_request_delete -q
       - run: python -m unittest tests.test_cash_funding -q
+      - run: python -m unittest tests.test_cash_funding_cancel -q
       - run: python -m unittest tests.test_cash_funding_batch -q
       - run: python -m unittest tests.test_cash_funding_audit -q
       - run: python -m unittest tests.test_cash_funding_group_availability -q
@@ -110,6 +111,7 @@ jobs:
       - run: python tests/test_site.py
       - run: python -m unittest tests.test_request_delete -q
       - run: python -m unittest tests.test_cash_funding -q
+      - run: python -m unittest tests.test_cash_funding_cancel -q
       - run: python -m unittest tests.test_cash_funding_batch -q
       - run: python -m unittest tests.test_cash_funding_audit -q
       - run: python -m unittest tests.test_cash_funding_group_availability -q

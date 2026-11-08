@@ -98,6 +98,7 @@ def request_actions(s, u, r, batch=None, director_limit=None):
         allowed=capabilities(s,u,r,funding,batch=batch)
         if allowed['can_withdraw']:actions.append('cash_withdraw')
         if allowed['can_receive']:actions.append('cash_receive')
+        if allowed['can_cancel']:actions.append('cash_cancel')
         if funding.state!='unfunded':
             actions=[a for a in actions if a not in ('edit','submit','documents','return','return_finance','reschedule')]
         if funding.state=='in_transit':actions=[a for a in actions if a not in ('close','delete')]

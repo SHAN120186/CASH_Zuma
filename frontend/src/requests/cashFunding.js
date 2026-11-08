@@ -6,6 +6,7 @@ export const CASH_FUNDING_STATES = {
   unfunded: N_('Ожидает снятия из банка'),
   in_transit: N_('Деньги в пути'),
   received: N_('Наличные получены в кассу'),
+  cancelled: N_('Снятие отменено'),
 };
 
 function units(value) {
@@ -46,7 +47,7 @@ export function cashFundingBody(value) {
 
 export function fundingActionAvailable(request, action) {
   const funding = request?.cash_funding;
-  const expected = {withdraw: 'unfunded', receive: 'in_transit'}[action];
+  const expected = {withdraw: 'unfunded', receive: 'in_transit', cancel: 'in_transit'}[action];
   return !!funding && request.status === 'approved' && (request.actions || []).includes(`cash_${action}`)
     && !!expected && funding.state === expected && funding[`can_${action}`] === true;
 }

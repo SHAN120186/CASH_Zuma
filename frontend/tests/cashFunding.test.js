@@ -307,3 +307,28 @@ test('current steps and operation-specific fields follow Uzbek without translati
   view.app._instance.props.request=request({actions:[],cash_funding:funding({state:'in_transit',can_withdraw:false})});await settle();
   assert.match(text(currentStep(view)),/4 bosqichdan 3-si · Hisob-kitob buxgalteri \/ kassir/);assert.doesNotMatch(text(view.container),/[А-Яа-яЁё]/);
 });
+
+
+test('cancel withdrawal requires signed preview and explicit error attestation, with no receipt',async t=>{
+  const calls=[],events=[];
+  const row=request({actions:['cash_cancel'],cash_funding:funding({state:'in_transit',can_withdraw:false,can_cancel:true,withdraw_date:'2026-11-04',withdraw_reference:'SYN-OLD'})});
+  const after=request({actions:['delete'],cash_funding:funding({state:'cancelled',version:2,can_withdraw:false,can_cancel:false})});
+  const view=mountPanel(t,async(url,options)=>{const body=JSON.parse(options.body);calls.push({url,body});return url.endsWith('/preview')?checkedPreview(body,'cancel'):after;},{request:row,onChanged:r=>events.push(r)});
+  await settle();await button(view,'Отменить снятие').props.onClick();await settle();
+  assert.match(text(view.container),/Только для ошибки ввода/);
+  assert.equal(all(view.container,n=>n.tag==='input'&&n.props.type==='date').length,0);
+  view.state.form.note='Ошибочная тестовая запись';await settle();await view.state.check();await settle();
+  assert.match(text(view.container),/включая комиссию/);
+  await view.state.commit();assert.equal(calls.length,1);
+  view.state.confirmed=true;await view.state.commit();await settle();
+  assert.equal(calls.length,2);assert.match(calls[1].url,/cancel\/commit$/);
+  assert.equal(calls[1].body.date,'2026-11-04');assert.equal(calls[1].body.reference,'SYN-OLD');
+  assert.equal(events[0].cash_funding.state,'cancelled');assert.equal(view.state.uncertain,false);
+});
+
+test('cancel action requires both server permission and in-transit state',()=>{
+  const row=request({actions:['cash_cancel'],cash_funding:funding({state:'in_transit',can_cancel:true})});
+  assert.equal(fundingActionAvailable(row,'cancel'),true);
+  assert.equal(fundingActionAvailable({...row,actions:[]},'cancel'),false);
+  assert.equal(fundingActionAvailable({...row,cash_funding:{...row.cash_funding,state:'received'}},'cancel'),false);
+});

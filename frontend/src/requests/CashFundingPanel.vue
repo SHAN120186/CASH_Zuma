@@ -10,19 +10,21 @@ const busy = ref(false), error = ref(''), notice = ref(''), uncertain = ref(fals
 const funding = computed(() => props.request.cash_funding);
 const batch = computed(() => funding.value?.mode === 'batch');
 const canWithdraw = computed(() => fundingActionAvailable(props.request, 'withdraw'));
+const canCancel = computed(() => fundingActionAvailable(props.request, 'cancel'));
 const canReceive = computed(() => fundingActionAvailable(props.request, 'receive'));
 const minimum = computed(() => action.value === 'receive' ? funding.value?.withdraw_date : props.request.approved_on);
-const actionAllowed = computed(() => action.value === 'withdraw' ? canWithdraw.value : action.value === 'receive' && canReceive.value);
-const statement = computed(() => action.value === 'withdraw'
+const actionAllowed = computed(() => action.value === 'withdraw' ? canWithdraw.value : action.value === 'cancel' ? canCancel.value : action.value === 'receive' && canReceive.value);
+const statement = computed(() => action.value === 'cancel' ? N_('Подтверждаю ошибку записи: фактического снятия и комиссии не было. Это не возврат денег из банка.') : action.value === 'withdraw'
   ? N_('Подтверждаю фактическое списание из банка, включая комиссию.')
   : N_('Подтверждаю фактическое получение наличных в кассу.'));
 const unknownState = computed(() => !['draft', 'returned', 'pending', 'paid', 'cancelled', 'rejected', 'deleted'].includes(props.request.status)
-  && (props.request.status !== 'approved' || !['unfunded', 'in_transit', 'received'].includes(funding.value?.state)));
+  && (props.request.status !== 'approved' || !['unfunded', 'in_transit', 'received', 'cancelled'].includes(funding.value?.state)));
 const needsStateCheck = computed(() => uncertain.value || unknownState.value);
 const flow = computed(() => {
   if (needsStateCheck.value) return {title: N_('Проверить результат операции'),
     description: N_('Сначала обновите состояние заявки. Повторно подтверждать денежный факт пока не нужно.')};
   const status = props.request.status;
+  if (funding.value.state === 'cancelled') return {done: true, title: N_('Снятие отменено'), description: N_('Ошибочные списание и комиссия отменены. Заявку можно удалить; история операций сохранится.')};
   if (funding.value.completed) return {number: 3, done: true, actor: N_('Расчётный бухгалтер / кассир'), title: N_('Касса пополнена'), description: N_('Документ пополнения завершён. Расходные заявки оплачиваются отдельно.')};
   if (status === 'paid') return {number: 4, done: true, actor: N_('Расчётный бухгалтер / кассир'), title: N_('Выдача наличных завершена'), description: N_('Оплата заявки подтверждена.')};
   if (['draft', 'returned'].includes(status)) return {number: 1, actor: N_('Автор заявки'), title: N_('Подготовка и согласование'),
@@ -56,13 +58,13 @@ function invalidPreview() { preview.value = null; confirmed.value = false; }
 watch(() => [form.value.date, form.value.reference, form.value.note], () => { generation++; invalidPreview(); });
 watch(() => [props.request, props.request.id, props.request.company_id, props.request.account_id, props.request.currency,
   props.request.status, props.request.version, props.request.actions?.join('|'), funding.value?.version, funding.value?.state,
-  funding.value?.can_withdraw, funding.value?.can_receive], () => {
+  funding.value?.can_withdraw, funding.value?.can_receive, funding.value?.can_cancel], () => {
   generation++; invalidPreview();
   if (!actionAllowed.value) action.value = '';
 });
 function start(which) {
   if (busy.value || uncertain.value || !fundingActionAvailable(props.request, which)) return;
-  action.value = which; form.value = {date: tashkentToday(), reference: '', note: ''};
+  action.value = which; form.value = {date: which === 'cancel' ? funding.value.withdraw_date : tashkentToday(), reference: which === 'cancel' ? funding.value.withdraw_reference : '', note: ''};
   error.value = ''; notice.value = ''; invalidPreview();
 }
 function working(value) { busy.value = value; emit('busy', value); }
@@ -103,11 +105,11 @@ async function commit() {
     if (!alive || current !== generation || props.request.id !== id) return;
     if (row?.id !== id || row.status !== 'approved' || row.cash_funding?.id !== funding.value.id
       || !(Number.isInteger(row.cash_funding?.version) && row.cash_funding.version > data.version)
-      || row.cash_funding.state !== (which === 'withdraw' ? 'in_transit' : 'received')
+      || row.cash_funding.state !== (which === 'cancel' ? 'cancelled' : which === 'withdraw' ? 'in_transit' : 'received')
       || row.cash_funding.gross_amount !== funding.value.gross_amount || row.cash_funding.net_amount !== funding.value.net_amount
       || row.cash_funding.fee_amount !== funding.value.fee_amount) throw new Error(tx('Ответ о проведении не получен. Проверьте состояние заявки перед дальнейшими действиями.'));
     action.value = ''; emit('changed', row);
-    notice.value = which === 'withdraw' ? batch.value ? N_('Списание банка и комиссия учтены. Выдача по выбранным заявкам ещё не проведена.') : N_('Списание банка и комиссия учтены. Заявка ещё не оплачена.') : batch.value ? N_('Наличные получены в кассу. Выберите заявки для групповой выдачи.') : N_('Наличные получены в кассу. Заявка готова к оплате по прежним правилам.');
+    notice.value = which === 'cancel' ? N_('Ошибочные списание и комиссия отменены. Заявку можно удалить; история операций сохранится.') : which === 'withdraw' ? batch.value ? N_('Списание банка и комиссия учтены. Выдача по выбранным заявкам ещё не проведена.') : N_('Списание банка и комиссия учтены. Заявка ещё не оплачена.') : batch.value ? N_('Наличные получены в кассу. Выберите заявки для групповой выдачи.') : N_('Наличные получены в кассу. Заявка готова к оплате по прежним правилам.');
   } catch (failure) {
     if (!alive || current !== generation) return;
     if (failure.status == null || failure.status >= 502) {
@@ -140,23 +142,25 @@ onUnmounted(() => { alive = false; generation++; emit('busy', false); });
     <div v-if="needsStateCheck" class="actions"><button type="button" class="secondary" :disabled="busy" @click="refresh">{{ tx('Проверить состояние заявки') }}</button></div>
     <div v-else-if="!action" class="actions">
       <button v-if="canWithdraw" type="button" :disabled="busy" @click="start('withdraw')">{{ tx('Зафиксировать списание банка') }}</button>
+      <button v-if="canCancel" type="button" class="secondary" :disabled="busy" @click="start('cancel')">{{ tx('Отменить снятие') }}</button>
       <button v-if="canReceive" type="button" :disabled="busy" @click="start('receive')">{{ tx('Принять наличные в кассу') }}</button>
     </div>
-    <form v-if="action && actionAllowed" class="cash-funding-action" :aria-label="action === 'withdraw' ? tx('Списание денег из банка') : tx('Получение наличных в кассу')" @submit.prevent="check">
+    <form v-if="action && actionAllowed" class="cash-funding-action" :aria-label="action === 'cancel' ? tx('Отменить снятие') : action === 'withdraw' ? tx('Списание денег из банка') : tx('Получение наличных в кассу')" @submit.prevent="check">
+      <p v-if="action === 'cancel'" class="notice">{{ tx('Только для ошибки ввода. Отменяются списание банка и комиссия на исходную дату. Касса не пополняется.') }}</p>
       <div class="form-grid">
-        <label>{{ action === 'withdraw' ? tx('Дата списания банка') : tx('Дата получения в кассу') }}<input v-model="form.date" type="date" :min="minimum || undefined" :max="tashkentToday()" :disabled="busy" required></label>
-        <label>{{ action === 'withdraw' ? tx('Номер банковского документа') : tx('Номер приходного кассового документа') }}<input v-model="form.reference" maxlength="120" :disabled="busy" required></label>
-        <label class="wide">{{ tx('Комментарий (необязательно)') }}<textarea v-model="form.note" maxlength="1000" :disabled="busy"></textarea></label>
+        <label v-if="action !== 'cancel'">{{ action === 'withdraw' ? tx('Дата списания банка') : tx('Дата получения в кассу') }}<input v-model="form.date" type="date" :min="minimum || undefined" :max="tashkentToday()" :disabled="busy" required></label>
+        <label v-if="action !== 'cancel'">{{ action === 'withdraw' ? tx('Номер банковского документа') : tx('Номер приходного кассового документа') }}<input v-model="form.reference" maxlength="120" :disabled="busy" required></label>
+        <label class="wide">{{ action === 'cancel' ? tx('Причина отмены (не менее 10 символов)') : tx('Комментарий (необязательно)') }}<textarea v-model="form.note" :required="action === 'cancel'" :minlength="action === 'cancel' ? 10 : undefined" maxlength="1000" :disabled="busy"></textarea></label>
       </div>
       <p v-if="action === 'withdraw'" class="sub">{{ batch ? tx('Учитывается выполненное списание. После получения наличных выдача по выбранным заявкам подтверждается отдельно.') : tx('Учитывается выполненное списание. Команда в банк не отправляется; выдача по заявке остаётся отдельным действием.') }}</p>
       <template v-if="preview">
-        <p class="notice">{{ action === 'withdraw' ? tx('Проверено списание банка: {gross} {currency}, комиссия {fee}, наличные {net}.', {gross: money(funding.gross_amount), fee: money(funding.fee_amount), net: money(funding.net_amount), currency: request.currency}) : tx('Проверено получение в кассу: {net} {currency}.', {net: money(funding.net_amount), currency: request.currency}) }}</p>
+        <p class="notice">{{ action === 'cancel' ? tx('Будет отменено: списание {gross} {currency}, включая комиссию {fee}.', {gross: money(funding.gross_amount), fee: money(funding.fee_amount), currency: request.currency}) : action === 'withdraw' ? tx('Проверено списание банка: {gross} {currency}, комиссия {fee}, наличные {net}.', {gross: money(funding.gross_amount), fee: money(funding.fee_amount), net: money(funding.net_amount), currency: request.currency}) : tx('Проверено получение в кассу: {net} {currency}.', {net: money(funding.net_amount), currency: request.currency}) }}</p>
         <label class="cash-funding-attest"><input v-model="confirmed" type="checkbox" :disabled="busy">{{ tx(statement) }}</label>
       </template>
       <div class="form-actions">
         <button type="button" class="secondary" :disabled="busy" @click="action = ''; invalidPreview()">{{ tx('Отмена') }}</button>
         <button v-if="!preview" type="submit" :disabled="busy">{{ busy ? tx('Проверяем…') : tx('Проверить данные') }}</button>
-        <button v-else type="button" :disabled="busy || !confirmed" @click="commit">{{ busy ? tx('Сохраняем…') : action === 'withdraw' ? tx('Подтвердить списание банка') : tx('Подтвердить получение в кассу') }}</button>
+        <button v-else type="button" :disabled="busy || !confirmed" @click="commit">{{ busy ? tx('Сохраняем…') : action === 'cancel' ? tx('Подтвердить отмену снятия') : action === 'withdraw' ? tx('Подтвердить списание банка') : tx('Подтвердить получение в кассу') }}</button>
       </div>
     </form>
     <dl class="kv cash-funding-details">
