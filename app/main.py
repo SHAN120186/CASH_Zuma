@@ -454,7 +454,7 @@ def requests_list(request:Request,date_from:Optional[date]=None,date_to:Optional
         perms=perms_of(u);channels=payment_channels(perms);checker='request_check' in perms
         if not ({'request','view'} & perms or channels or checker):raise HTTPException(403,'Недостаточно прав для просмотра заявок.')
         if date_from and date_to and date_from>date_to:raise HTTPException(422,'Начало периода позже окончания.')
-        query=select(PaymentRequest).where(PaymentRequest.status!='deleted').join(Account,Account.id==PaymentRequest.account_id)
+        query=request_reference_query(department_key=setting_key(s,'departments')).where(PaymentRequest.status!='deleted')
         if 'view' not in perms:
             # Граница та же, что у карточки заявки: свои заявки, заявки к оплате своего канала
             # и очередь проверки расчётного бухгалтера — по правам, включая замещение.
@@ -496,11 +496,12 @@ def requests_list(request:Request,date_from:Optional[date]=None,date_to:Optional
             page_rows=s.execute(ordered.add_columns(func.count().over()).offset((page-1)*page_size).limit(page_size)).all()
             requests=[row[0] for row in page_rows]
             # An empty later page still reports the real filtered total.
-            total=page_rows[0][1] if page_rows else (s.scalar(select(func.count()).select_from(query.subquery())) if page>1 else 0)
+            total=page_rows[0][-1] if page_rows else (s.scalar(select(func.count()).select_from(query.subquery())) if page>1 else 0)
         else:
-            requests=list(s.scalars(ordered.limit(500)))
+            page_rows=s.execute(ordered.limit(500)).all()
+            requests=[row[0] for row in page_rows]
         from .services import request_batch
-        batch=request_batch(s,requests)
+        batch=request_batch(s,requests,references=[row[:7] for row in page_rows])
         items=[request_view(s,u,r,batch=batch) for r in requests]
         return {'items':items,'total':total,'page':page,'page_size':page_size} if paginated else items
 @app.get('/api/budget-check')

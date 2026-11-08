@@ -7,7 +7,7 @@ the same boundary, including imports, downloads and aggregate subqueries.
 import json
 import re
 from fastapi import HTTPException
-from sqlalchemy import event, select, inspect, text, or_
+from sqlalchemy import event, select, inspect, text, or_, exists
 from sqlalchemy.orm import Session, with_loader_criteria
 from sqlalchemy.schema import CreateTable
 from .db import (Company, CompanyUser, User, Account, Category, Counterparty,
@@ -78,19 +78,24 @@ def activate(s, request, user):
     # Validate the current assignments on every request, in one round trip.
     # Staff with more than one valid company still have no access at all.
     from .security import COMPANY_ROLES
-    q=select(Company,CompanyUser).outerjoin(CompanyUser,
+    from .clock import today
+    day=today()
+    has_delegations=exists(select(Delegation.id).where(Delegation.company_id==Company.id,
+        Delegation.user_id==user.id,Delegation.revoked_at.is_(None),
+        Delegation.starts_on<=day,Delegation.ends_on>=day))
+    q=select(Company,CompanyUser,has_delegations).outerjoin(CompanyUser,
         (CompanyUser.company_id==Company.id)&(CompanyUser.user_id==user.id)).where(Company.active.is_(True))
     if user.role!='admin':q=q.where(Company.code!=SERVICE_CODE)
     if user.role not in ('admin','founder'):q=q.where(CompanyUser.role.in_(COMPANY_ROLES))
     choices=s.execute(q.execution_options(company_unscoped=True)).all()
     if user.role not in ('admin','founder') and len(choices)!=1:choices=[]
-    chosen=next(((c,m) for c,m in choices if (c.id==cid if raw else c.code=='UZGERMED')),None)
+    chosen=next(((c,m,d) for c,m,d in choices if (c.id==cid if raw else c.code=='UZGERMED')),None)
     if chosen is None:
         raise HTTPException(403, 'Нет доступа к выбранной компании.')
-    company,membership=chosen;cid=company.id
+    company,membership,has_acting=chosen;cid=company.id
     from .security import scope_user
     acting = []
-    for d in active_delegations(s, user.id, cid):
+    for d in (active_delegations(s, user.id, cid) if has_acting else []):
         replaced = s.get(User, d.replaced_user_id)
         acting.append({'id': d.id, 'role': d.role, 'replaced_user_id': d.replaced_user_id,
                        'replaced_name': replaced.name if replaced else '', 'ends_on': str(d.ends_on)})

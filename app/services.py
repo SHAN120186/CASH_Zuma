@@ -5,7 +5,7 @@ from datetime import date, datetime, timedelta, timezone
 from sqlalchemy import select, func, or_, and_, case, cast, String, literal, union_all
 from sqlalchemy.orm import aliased
 from fastapi import HTTPException
-from .company_scope import get_setting
+from .company_scope import get_setting, setting_key
 from .security import PERMS, pay_right, perms_of, company_role, has_role, act_with_right
 from .db import Account, Category, Budget, PaymentRequest, Receipt, Ledger, Audit, Setting, RequestDocument, CashFunding, now
 from . import clock
@@ -497,6 +497,42 @@ def backdated_flags(s,r):
         late_posted = bool(row and entered and row.date < local_date(entered))
     return late_created, late_posted
 
+def participant_journal(ids):
+    """Exact request/legacy-document boundary shared by the two read paths."""
+    actions=set(PARTICIPANT_ACTIONS+LEGACY_DOCUMENT_ACTIONS+EDIT_ACTIONS+('Действие по заявке: return','Оплата заявки'))
+    journal=or_(and_(Audit.entity=='request',Audit.entity_id.in_([str(rid) for rid in ids])),
+                and_(Audit.entity=='request_document',Audit.action.in_(LEGACY_DOCUMENT_ACTIONS),
+                     or_(*(Audit.detail.like(f'request={rid};%') for rid in ids))))
+    return and_(journal,Audit.action.in_(actions))
+
+
+def request_list_evidence(s,requests):
+    """Read only document presence, participants and paid dates in one round trip.
+
+    These detached values are used for presentation, never as write guards.
+    The document bytes and the full document/history metadata are not selected.
+    """
+    from types import SimpleNamespace
+    ids=[r.id for r in requests]
+    queries=[select(literal('audit'),Audit.id,Audit.entity,Audit.entity_id,Audit.action,Audit.user_id,Audit.created_at,
+                    case((Audit.entity=='request_document',Audit.detail),else_='')).where(participant_journal(ids)),
+             select(literal('document'),RequestDocument.id,literal('request'),cast(RequestDocument.request_id,String),
+                    RequestDocument.kind,RequestDocument.created_by,RequestDocument.created_at,literal('')).where(
+                    RequestDocument.request_id.in_(ids),RequestDocument.active.is_(True))]
+    paid=[r.id for r in requests if r.status=='paid']
+    if paid:
+        queries.append(select(literal('payment'),Ledger.id,literal('request'),cast(Ledger.request_id,String),
+            literal(''),literal(None),literal(None),cast(Ledger.date,String)).where(Ledger.request_id.in_(paid)))
+    documents=[];journal=[];paid_dates={}
+    for kind,identity,entity,entity_id,action,user_id,created_at,detail in s.execute(union_all(*queries)):
+        if kind=='document':
+            documents.append(SimpleNamespace(id=identity,request_id=int(entity_id),kind=action,active=True))
+        elif kind=='payment':paid_dates.setdefault(int(entity_id),date.fromisoformat(detail))
+        else:journal.append(SimpleNamespace(id=identity,entity=entity,entity_id=entity_id,action=action,
+            user_id=user_id,created_at=created_at,detail=detail))
+    return documents,journal,paid_dates
+
+
 def request_participant_history(s,ids,*,journal_rows=None):
     """One scoped journal read for this list response, never reused by write guards.
 
@@ -510,12 +546,10 @@ def request_participant_history(s,ids,*,journal_rows=None):
     string_ids={str(rid):rid for rid in ids}
     prefixes={f'request={rid}':rid for rid in ids}
     actions=set(PARTICIPANT_ACTIONS+LEGACY_DOCUMENT_ACTIONS+EDIT_ACTIONS+('Действие по заявке: return','Оплата заявки'))
-    journal=or_(and_(Audit.entity=='request',Audit.entity_id.in_(string_ids)),
-                and_(Audit.entity=='request_document',Audit.action.in_(LEGACY_DOCUMENT_ACTIONS),
-                     or_(*(Audit.detail.like(prefix+';%') for prefix in prefixes))))
+    journal=participant_journal(ids)
     rows=s.execute(select(Audit.id,Audit.entity,Audit.entity_id,Audit.action,Audit.user_id,Audit.created_at,
                           case((Audit.entity=='request_document',Audit.detail),else_='')).where(
-                              journal,Audit.action.in_(actions))) if journal_rows is None else (
+                              journal)) if journal_rows is None else (
         (a.id,a.entity,a.entity_id,a.action,a.user_id,a.created_at,a.detail) for a in journal_rows if a.action in actions)
     returns={};edits=defaultdict(list);paid={}
     for aid,entity,entity_id,action,user_id,created_at,detail in rows:
@@ -569,14 +603,21 @@ def request_budget_totals(s,category_ids,months):
     return result
 
 
-def request_reference_query(ids):
-    """Request and its scoped account/article references in one database read."""
+def request_reference_query(ids=None, *, department_key=None):
+    """Scoped references, optionally used as the paginated list query itself.
+
+    A missing/foreign category remains an error in request_batch, rather than
+    silently removing the request from the list or changing its total.
+    """
     bank=aliased(Account);fee=aliased(Category)
-    return (select(PaymentRequest,Account,Category,CashFunding,bank,fee).select_from(PaymentRequest)
-        .join(Account,Account.id==PaymentRequest.account_id).join(Category,Category.id==PaymentRequest.category_id)
+    query=(select(PaymentRequest,Account,Category,CashFunding,bank,fee).select_from(PaymentRequest)
+        .join(Account,Account.id==PaymentRequest.account_id).outerjoin(Category,Category.id==PaymentRequest.category_id)
         .outerjoin(CashFunding,CashFunding.request_id==PaymentRequest.id)
-        .outerjoin(bank,bank.id==CashFunding.bank_account_id).outerjoin(fee,fee.id==CashFunding.fee_category_id)
-        .where(PaymentRequest.id.in_(ids)))
+        .outerjoin(bank,bank.id==CashFunding.bank_account_id).outerjoin(fee,fee.id==CashFunding.fee_category_id))
+    if ids is not None:query=query.where(PaymentRequest.id.in_(ids))
+    if department_key is not None:
+        query=query.add_columns(Setting).outerjoin(Setting,Setting.key==department_key)
+    return query
 
 
 def request_batch(s,requests,*,documents=None,journal_rows=None,references=None):
@@ -585,10 +626,15 @@ def request_batch(s,requests,*,documents=None,journal_rows=None,references=None)
     from collections import defaultdict
     ids=[r.id for r in requests]
     if not ids:return None
-    if references is None:references=s.execute(request_reference_query(ids))
-    accounts={};categories={};fundings={}
-    for _,account,category,funding,bank_account,fee_category in references:
-        accounts[account.id]=account;categories[category.id]=category
+    if references is None:references=s.execute(request_reference_query(ids,department_key=setting_key(s,'departments')))
+    accounts={};categories={};fundings={};departments=None
+    for reference in references:
+        _,account,category,funding,bank_account,fee_category=reference[:6]
+        if departments is None and len(reference)>6:
+            from .department_catalog import from_row
+            departments=from_row(reference[6])['items']
+        if account:accounts[account.id]=account
+        if category:categories[category.id]=category
         if funding:fundings[funding.request_id]=funding
         if bank_account:accounts[bank_account.id]=bank_account
         if fee_category:categories[fee_category.id]=fee_category
@@ -597,18 +643,23 @@ def request_batch(s,requests,*,documents=None,journal_rows=None,references=None)
     for r in requests:get(s,Account,r.account_id);get(s,Category,r.category_id)
     months={str(r.due_date)[:7] for r in requests}
     totals=request_budget_totals(s,category_ids,months)
-    docs=defaultdict(list)
+    docs=defaultdict(list);paid_dates=None
+    if documents is None and journal_rows is None:
+        documents,journal_rows,paid_dates=request_list_evidence(s,requests)
     if documents is None:
         documents=s.scalars(select(RequestDocument).where(RequestDocument.request_id.in_(ids),RequestDocument.active.is_(True)).order_by(RequestDocument.id))
     for d in documents:
         if d.active:docs[d.request_id].append(d)
     paid=[r.id for r in requests if r.status=='paid']
-    paid_dates={}
-    if paid:
-        for rid,day in s.execute(select(Ledger.request_id,Ledger.date).where(Ledger.request_id.in_(paid))):
+    if paid_dates is None:
+        paid_dates={}
+        paid_to_read=paid
+    else:paid_to_read=[]
+    if paid_to_read:
+        for rid,day in s.execute(select(Ledger.request_id,Ledger.date).where(Ledger.request_id.in_(paid_to_read))):
             paid_dates.setdefault(rid,day)
     participant_history,paid_audits=request_participant_history(s,ids,journal_rows=journal_rows)
-    return {'accounts':accounts,'categories':categories,'fundings':fundings,'participant_history':participant_history,'departments':department_catalog(s)['items'],**totals,'documents':docs,'paid_dates':paid_dates,'paid_audits':paid_audits}
+    return {'accounts':accounts,'categories':categories,'fundings':fundings,'participant_history':participant_history,'departments':departments if departments is not None else department_catalog(s)['items'],**totals,'documents':docs,'paid_dates':paid_dates,'paid_audits':paid_audits}
 
 
 def batch_budget_state(batch,r,account,extra=0,exclude_request=None):
