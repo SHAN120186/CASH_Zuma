@@ -14,6 +14,7 @@ from .services import (get, log, money, amount, today, approval_stage, round_par
                        DOCUMENT_KINDS, REQUIRED_DOCUMENTS, REQUIRED_DOCUMENTS_BY_CHANNEL, REQUEST_DEPARTMENTS,
                        THRESHOLD_FIELDS, category_policy, request_json, request_journal, request_batch, request_reference_query)
 from .workdays import due_minimums, LEAD_DAYS
+from .company_scope import setting_key
 from .workflow_setup import DEFAULT_THRESHOLDS
 from .director_limits import limits_json
 
@@ -129,14 +130,14 @@ def names_of(s, ids):
     ids = {i for i in ids if i}
     if not ids:
         return {}
-    return {u.id: u.name for u in s.scalars(select(User).where(User.id.in_(ids)).execution_options(company_unscoped=True))}
+    return dict(s.execute(select(User.id,User.name).where(User.id.in_(ids)).execution_options(company_unscoped=True)).all())
 
 
 @router.get('/api/requests/{id}')
 def request_card(id: int, request: Request):
     with unit() as s:
         u, _ = session_user(s, request)
-        reference=s.execute(request_reference_query([id])).first()
+        reference=s.execute(request_reference_query([id],department_key=setting_key(s,'departments'))).first()
         if reference is None or not can_view_request(s,u,reference[0]):
             raise HTTPException(404,'Запись не найдена.')
         r=reference[0]

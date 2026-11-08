@@ -1,11 +1,13 @@
 """Read optimizations must preserve fresh money, access, history and pagination."""
 import unittest
-from datetime import date
+import json
+from datetime import date, datetime, timedelta
 from sqlalchemy import event, select
 from sqlalchemy.orm import Session
 import tests.test_site as base
 from tests.test_request_batch_history import RequestBatchHistoryTests
-from app.db import unit, engine, User, Account, Company, Ledger, PaymentRequest, CashFunding
+from app.db import unit, engine, User, Account, Company, Ledger, PaymentRequest, CashFunding, Setting, Delegation
+from app.company_scope import setting_key
 from app.services import request_batch
 from app.requests_api import request_view
 
@@ -64,7 +66,7 @@ class RequestReadTests(base.SiteTests):
             finally:event.remove(engine,'before_cursor_execute',record)
             self.assertEqual(response.status_code,200,response.text)
             selects=[sql for sql in statements if sql.lstrip().startswith('select')]
-            self.assertLessEqual(len(selects),9,(path,selects))
+            self.assertLessEqual(len(selects),5 if path==paths[0] else 7,(path,selects))
             self.assertFalse(any('insert into' in sql for sql in statements))
             if path==paths[1]:
                 self.assertEqual(sum('from request_documents' in sql for sql in selects),1)
@@ -81,6 +83,60 @@ class RequestReadTests(base.SiteTests):
         with unit(True) as s:s.get(PaymentRequest,ids[0]).amount=12345
         self.assertEqual(self.client.get(paths[1],headers=self.h).json()['amount'],'123.45')
         self.assertEqual(self.client.get(paths[0],headers=self.h).json()['items'][0]['amount'],'123.45')
+
+    def test_joined_departments_are_fresh_and_company_scoped(self):
+        ids,_=self.fixture(2)
+        with unit(True) as s:
+            s.get(PaymentRequest,ids[0]).department='qc'
+            s.info['company_id']=self.company
+            key=setting_key(s,'departments')
+            other=s.scalar(select(Company.id).where(Company.code=='ZUMA'))
+            s.info['company_id']=other
+            s.add(Setting(key=setting_key(s,'departments'),value=json.dumps({'version':1,'items':[
+                {'code':'qc','name_ru':'Чужой отдел','name_uz':'Begona','active':True}]})))
+        def read():
+            listed=self.client.get('/api/requests?paginated=true',headers=self.h)
+            card=self.client.get(f'/api/requests/{ids[0]}',headers=self.h)
+            self.assertEqual((listed.status_code,card.status_code),(200,200))
+            return [next(r for r in listed.json()['items'] if r['id']==ids[0]),card.json()]
+        defaults=read()
+        self.assertEqual(defaults[0]['department_label'],defaults[1]['department_label'])
+        self.assertNotEqual(defaults[0]['department_label'],'Чужой отдел')
+        for version in (1,2):
+            with unit(True) as s:
+                row=s.get(Setting,key)
+                if row is None:row=Setting(key=key,value='');s.add(row)
+                row.value=json.dumps({'version':version,'items':[{'code':'qc','name_ru':f'Отдел {version}',
+                    'name_uz':f'Bo‘lim {version}','active':True}]})
+            for result in read():
+                self.assertEqual(result['department_label'],f'Отдел {version}')
+                self.assertEqual(result['department_name_uz'],f'Bo‘lim {version}')
+
+    def test_delegation_changes_take_effect_on_the_next_list_read(self):
+        ids,actors=self.fixture(2)
+        client,headers=self.user_in(self.company,'employee','live_deputy')
+        day=base.today()
+        try:
+            def total():
+                response=client.get('/api/requests?paginated=true',headers=headers)
+                self.assertEqual(response.status_code,200,response.text)
+                return response.json()['total']
+            self.assertEqual(total(),0)
+            with unit(True) as s:
+                uid=s.scalar(select(User.id).where(User.username=='live_deputy'))
+                d=Delegation(company_id=self.company,user_id=uid,replaced_user_id=actors['finance'],
+                    role='finance',starts_on=day+timedelta(days=1),ends_on=day+timedelta(days=2),created_by=actors['director'])
+                s.add(d);s.flush();did=d.id
+            self.assertEqual(total(),0)
+            for changes,expected in (({'starts_on':day},2),({'ends_on':day-timedelta(days=1)},0),
+                    ({'ends_on':day},2),({'revoked_at':datetime.now()},0),({'revoked_at':None},2)):
+                with unit(True) as s:
+                    d=s.get(Delegation,did)
+                    for key,value in changes.items():setattr(d,key,value)
+                self.assertEqual(total(),expected,changes)
+            with unit(True) as s:s.get(User,actors['finance']).active=False
+            self.assertEqual(total(),0)
+        finally:client.close()
 
 
 def load_tests(loader,tests,pattern):

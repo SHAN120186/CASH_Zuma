@@ -9,8 +9,10 @@ from .company_scope import get_setting,setting_key
 router=APIRouter()
 UZ={'qc':'QC','ml':'ML','engineering':'Muhandislik bo‘limi (ITO)','warehouse':'Ombor','production':'Ishlab chiqarish','office':'Umumiy xaridlar (ofis)','facilities':'Xo‘jalik qismi'}
 def catalog(s):
+    return from_row(get_setting(s,'departments'))
+
+def from_row(row):
     from .services import REQUEST_DEPARTMENTS
-    row=get_setting(s,'departments')
     return json.loads(row.value) if row else {'version':0,'items':[{'code':k,'name_ru':v,'name_uz':UZ[k],'active':True} for k,v in REQUEST_DEPARTMENTS.items()]}
 def labels(s):return {x['code']:x['name_ru'] for x in catalog(s)['items']}
 def validate(s,code,old=None):

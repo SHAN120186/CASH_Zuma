@@ -1,7 +1,8 @@
 {
-  "version": "2.35.26",
+  "version": "2.35.27",
   "date": "2026-11-08",
   "changes": [
+    "Список и карточки заявок делают меньше последовательных обращений к базе: сведения об отделах, документах и участниках читаются вместе с нужными строками. Права, суммы, история и порядок согласования проверяются по актуальным данным.",
     "Ускорено чтение заявок: связанные данные и бюджетные итоги читаются пакетно, карточка повторно использует документы и историю текущего запроса. Проверки прав и финансовые правила сохранены. Успешные просмотры не создают технические строки журнала; отказы и изменения журналируются.",
     "Ускорено чтение бюджетов: расходы, резервы и комиссии собираются для всех статей за четыре запроса. Обзор показывает остатки и заявки, не ожидая бюджета; незавершённая проверка рисков обозначена отдельно.",
     "Ускорен расчёт бюджета статьи: суммы считает база данных вместо загрузки всех проводок и счетов на каждую строку списка заявок. Добавлены индексы под проводки, заявки, софинансирование и документы; они создаются при запуске и не меняют данные. Ключ подписи сессий читается один раз за процесс. Правила бюджета, резерва и оплаты не изменены.",
@@ -127,6 +128,7 @@
     "Длинные названия файлов и кнопки выбора шаблона переносятся на узком экране. В ТЭО дата архива отдельно обозначена и не подменяет начало финансового прогноза."
   ],
   "changes_uz": [
+    "Arizalar ro‘yxati va kartalari bazaga kamroq ketma-ket murojaat qiladi: bo‘limlar, hujjatlar va ishtirokchilar kerakli yozuvlar bilan birga o‘qiladi. Huquqlar, summalar, tarix va kelishuv tartibi joriy ma’lumotlar asosida tekshiriladi.",
     "Arizalarni o‘qish tezlashtirildi: bog‘liq ma’lumotlar va byudjet jamlari paketda olinadi, karta hujjatlar va tarixni qayta o‘qimaydi. Huquqlar va moliyaviy qoidalar saqlangan. Muvaffaqiyatli ko‘rishlar texnik jurnalga yozilmaydi; rad javoblari va o‘zgarishlar qayd etiladi.",
     "Byudjetlar tezroq yuklanadi: xarajatlar, zaxiralar va komissiyalar barcha moddalar uchun toʻrtta soʻrovda olinadi. Umumiy koʻrinish byudjetni kutmasdan qoldiqlar va arizalarni koʻrsatadi; xavflar tekshiruvi tugamaganligi alohida belgilanadi.",
     "Statya byudjetini hisoblash tezlashtirildi: summalarni ma’lumotlar bazasi hisoblaydi, har bir ariza qatoriga barcha o‘tkazmalar va hisoblarni yuklamaydi. O‘tkazmalar, arizalar, moliyalashtirish va hujjatlar uchun indekslar qo‘shildi; ular ishga tushirishda yaratiladi va ma’lumotlarni o‘zgartirmaydi. Seans kaliti jarayon uchun bir marta o‘qiladi. Byudjet, zaxira va to‘lov qoidalari o‘zgarmadi.",
