@@ -1,7 +1,8 @@
 {
-  "version": "2.36.0",
+  "version": "2.36.1",
   "date": "2026-11-08",
   "changes": [
+    "Убран из публичного репозитория файл с отпечатком финансовой таблицы. Удалены мёртвые переводы разделов, снятых в 2.36.0: справка, названия и подписи бизнес-планов, IFRS, отчётов и архива. Рабочие разделы и тексты интерфейса не изменены.",
     "Облегчён сайт: удалены генератор бизнес-планов и ТЭО, финансовые отчёты P&L и баланса, рейтинг IFRS, архив отчётов и технический HTTP-журнал вместе с их страницами и тестами. Таблицы базы данных и накопленные данные не удалялись; бизнес-журнал операций сохранён. Заявки, согласования, счета, банковские выписки, бюджеты, Cash Flow ОСВ, доступы, бот и основной отчёт движения денег работают без изменений.",
     "Список и карточки заявок делают меньше последовательных обращений к базе: сведения об отделах, документах и участниках читаются вместе с нужными строками. Права, суммы, история и порядок согласования проверяются по актуальным данным.",
     "Ускорено чтение заявок: связанные данные и бюджетные итоги читаются пакетно, карточка повторно использует документы и историю текущего запроса. Проверки прав и финансовые правила сохранены. Успешные просмотры не создают технические строки журнала; отказы и изменения журналируются.",
@@ -129,6 +130,7 @@
     "Длинные названия файлов и кнопки выбора шаблона переносятся на узком экране. В ТЭО дата архива отдельно обозначена и не подменяет начало финансового прогноза."
   ],
   "changes_uz": [
+    "Ommaviy repozitoriydan moliyaviy jadval xeshi saqlangan fayl olib tashlandi. 2.36.0 da olib tashlangan bo'limlarning ishlatilmaydigan tarjimalari o'chirildi. Ishchi bo'limlar va interfeys matni o'zgarmadi.",
     "Sayt yengillashtirildi: biznes-reja va TEO generatori, P&L va balans moliyaviy hisobotlari, IFRS reytingi, hisobotlar arxivi hamda texnik HTTP-jurnal sahifalari va testlari bilan birga olib tashlandi. Ma'lumotlar bazasi jadvallari va saqlangan ma'lumotlar o'chirilmadi; biznes-jurnal saqlanadi.",
     "Arizalar ro‘yxati va kartalari bazaga kamroq ketma-ket murojaat qiladi: bo‘limlar, hujjatlar va ishtirokchilar kerakli yozuvlar bilan birga o‘qiladi. Huquqlar, summalar, tarix va kelishuv tartibi joriy ma’lumotlar asosida tekshiriladi.",
     "Arizalarni o‘qish tezlashtirildi: bog‘liq ma’lumotlar va byudjet jamlari paketda olinadi, karta hujjatlar va tarixni qayta o‘qimaydi. Huquqlar va moliyaviy qoidalar saqlangan. Muvaffaqiyatli ko‘rishlar texnik jurnalga yozilmaydi; rad javoblari va o‘zgarishlar qayd etiladi.",
