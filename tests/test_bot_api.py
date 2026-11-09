@@ -573,8 +573,12 @@ class BotApiTests(unittest.TestCase):
         foreign=self.new_request(author,'50',account=cash);self.fully_approve(finance,foreign,director)
         own=self.new_request(cashier,'40',account=cash);self.fully_approve(finance,own,director)
         self.assertEqual(sorted((i['request_id'],i['stage'],i['assignee_user_id']) for i in self.pending()),
-                         sorted([(foreign,'cash_payment',cashier['id']),(foreign,'cash_payment',second['id']),(own,'cash_payment',second['id'])]))
-        with unit(True) as s:s.get(User,second['id']).active=False
+                         sorted([(foreign,'cash_payment',payer['id']) for payer in (accountant,book,cashier,second)] +
+                                [(own,'cash_payment',payer['id']) for payer in (accountant,book,second)]))
+        # Permanent accountant cash rights apply to reminders too; own payment stays excluded.
+        with unit(True) as s:
+            for payer in (accountant,book,second):
+                s.get(User,payer['id']).active=False
         # Nobody else may pay the cashier's own request, and the financier never pays: no reminder.
         self.assertEqual(sorted((i['request_id'],i['assignee_user_id']) for i in self.pending()),[(foreign,cashier['id'])])
 
