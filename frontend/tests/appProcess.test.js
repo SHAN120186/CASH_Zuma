@@ -176,18 +176,18 @@ test('mounted App ignores a late checked API response after logout without resto
   assert.equal(view.state.user,null);assert.deepEqual(view.state.globalProgress,idle);
 });
 
-test('mounted App progresses from zero to full only after the actual API response is checked',async t=>{
+test('mounted App tracks requests without a global floating progress overlay',async t=>{
   const response=deferred(),body=deferred();
   const {view}=await fixture(t,url=>{assert.equal(url,'/api/accounts');return response.promise;});
   const request=view.state.api('/api/accounts');await settle();
   const bar=()=>find(view.container,node=>node.props?.role==='progressbar');
-  assert.equal(view.state.globalProgress.active,true);assert.equal(bar().props['aria-valuenow'],0);
+  assert.equal(view.state.globalProgress.active,true);assert.equal(bar(),undefined);
   response.resolve({ok:true,status:200,json:()=>body.promise});await settle();
-  assert.equal(view.state.globalProgress.completed,0);assert.equal(bar().props['aria-valuenow'],0);
+  assert.equal(view.state.globalProgress.completed,0);assert.equal(bar(),undefined);
   body.resolve([{id:7,name:'Synthetic account'}]);assert.deepEqual(await request,[{id:7,name:'Synthetic account'}]);
   await settle();
   assert.equal(view.state.globalProgress.active,false);assert.equal(view.state.globalProgress.error,'');
-  assert.equal(view.state.globalProgress.completed,1);assert.equal(bar().props['aria-valuenow'],100);
+  assert.equal(view.state.globalProgress.completed,1);assert.equal(bar(),undefined);
 });
 
 test('sales has only overview and calendar, saves expected income and cannot confirm actual income',async t=>{

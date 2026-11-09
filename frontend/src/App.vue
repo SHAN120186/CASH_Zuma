@@ -109,7 +109,7 @@ async function downloadFile(event){
   if(epoch!==companyEpoch)throw new DOMException(N_('Компания изменена'),'AbortError');
   const blobUrl=URL.createObjectURL(result.blob),anchor=document.createElement('a');anchor.href=blobUrl;anchor.download=result.filename;anchor.dataset.browserDownload='true';anchor.hidden=true;document.body.append(anchor);anchor.click();anchor.remove();setTimeout(()=>URL.revokeObjectURL(blobUrl),60000);
   requestProgress.complete(ticket,N_('Файл передан браузеру'));
- }catch(e){if(epoch===companyEpoch)requestProgress.fail(ticket,e.name==='AbortError'?N_('Скачивание отменено'):e)}
+ }catch(e){if(epoch===companyEpoch){requestProgress.fail(ticket,e.name==='AbortError'?N_('Скачивание отменено'):e);error.value=e.name==='AbortError'?N_('Скачивание отменено'):e.message}}
  finally{pendingCalls.delete(controller)}
 }
 onMounted(()=>{document.addEventListener('invalid',showInvalidFields,true);document.addEventListener('input',updateInvalidFields,true);document.addEventListener('change',updateInvalidFields,true);document.addEventListener('click',downloadFile)});
@@ -246,7 +246,7 @@ watch(()=>[page.value,modal.value,editor.value,documents.value,companyId.value,!
 // Выход, истёкшая сессия или смена компании закрывают форму и карточку заявки.
 watch(()=>!!user.value&&companyReady.value,on=>{if(!on){editor.value=null;cardId.value=null}});
 function openRequest(r){if(canNavigate('requests')&&has('requests-view'))cardId.value=r.id}
-async function editorSaved(r){const back=editor.value?.request;editor.value=null;if(back)cardId.value=r.id;flash(r.resent?N_('Изменения сохранены: заявка {number} снова на согласовании.'):r.submitted?N_('Заявка {number} отправлена на согласование.'):N_('Черновик {number} сохранён.'),{number:r.number});await load()}
+async function editorSaved(r){editor.value=null;cardId.value=null;flash(r.resent?N_('Изменения сохранены: заявка {number} снова на согласовании.'):r.submitted?N_('Заявка {number} отправлена на согласование.'):N_('Черновик {number} сохранён.'),{number:r.number});await load()}
 function editorClosed(){const back=editor.value?.request;editor.value=null;if(back)cardId.value=back.id;load()}
 function editorOpenCard(id){editor.value=null;cardId.value=id;load()}
 function cardEdit(r){cardId.value=null;editor.value={request:r}}
@@ -488,14 +488,13 @@ async function uploadPlan(event){const file=event.target.files[0];if(!file)retur
 async function commit(){busy.value=true;try{const r=await post(`/api/import/${preview.value.id}/commit`);preview.value=null;flash(N_('Импортировано операций: {count}'),{count:r.count});await bootstrap()}catch(e){error.value=e.message}finally{busy.value=false}}
 async function commitPlan(){busy.value=true;error.value='';try{const r=await post(`/api/plan-import/${preview.value.id}/commit`,{mappings:planMappings.value,reason:planReason.value});preview.value=null;flash(N_('Обновлено плановых значений: {count}'),{count:r.updated});await bootstrap()}catch(e){error.value=e.message}finally{busy.value=false}}
 async function docs(r){try{documents.value={ledger:r,rows:await api(`/api/documents?ledger_id=${r.id}`)}}catch(e){error.value=e.message}}
-async function attach(event){const file=event.target.files[0];if(!file)return;saving.value=true;try{await api(`/api/ledger/${documents.value.ledger.id}/document`,{method:'POST',headers:{'Content-Type':'application/octet-stream','X-Filename':encodeURIComponent(file.name)},body:file});await docs(documents.value.ledger)}catch(e){error.value=e.message}finally{saving.value=false;event.target.value=''}}
+async function attach(event){const file=event.target.files[0];if(!file)return;saving.value=true;try{await api(`/api/ledger/${documents.value.ledger.id}/document`,{method:'POST',headers:{'Content-Type':'application/octet-stream','X-Filename':encodeURIComponent(file.name)},body:file});documents.value=null;flash(N_('Документ приложен.'))}catch(e){error.value=e.message}finally{saving.value=false;event.target.value=''}}
 async function reserve(amount){open(N_('Минимальный резерв'),[field('amount',N_('Сумма резерва'),'number',{min:0})],{amount:typeof amount==='string'?amount:dash.value?.reserve||'0'},d=>post('/api/reserve',{amount:String(d.amount),currency:currency.value}))}
 window.addEventListener('hashchange',()=>{const target=location.hash.slice(1);if(user.value&&companyReady.value&&target!==page.value&&nav.value.some(n=>n[0]===target)){page.value=target;load()}});
 onMounted(async()=>{try{const r=await api('/api/me');user.value=r.user;csrf.value=r.csrf;await enter()}catch{user.value=null}});
 </script>
 
 <template>
- <aside v-if="globalProgress.active||globalProgress.completed||globalProgress.error" class="global-operation" :aria-label="tx('Ход выполнения действия')"><OperationProgress v-bind="globalProgress"/><button v-if="!globalProgress.active" type="button" class="ghost tiny" :aria-label="tx('Скрыть индикатор выполнения')" @click="requestProgress.reset()">{{tx('Закрыть')}}</button></aside>
  <aside v-if="validationFields.length" id="form-validation-feedback" class="global-form-feedback" role="alert" aria-labelledby="form-validation-title"><strong id="form-validation-title">{{tx('Заполните или исправьте поля')}}</strong><p>{{tx('Нажмите название, чтобы перейти к полю.')}}</p><ul><li v-for="(field,index) in validationFields" :key="index"><button type="button" class="ghost" @click="focusInvalidField(field.control)">{{field.label}}</button><small>{{field.message}}</small></li></ul><button type="button" class="secondary tiny" @click="clearFieldFeedback">{{tx('Закрыть подсказку')}}</button></aside>
  <div v-if="availableRelease" class="release-notice" role="status"><span>{{tx('Доступна версия {version}. Сохраните текущие изменения перед обновлением.',{version:availableRelease.version})}}</span><button class="secondary tiny" @click="refreshVersion">{{tx('Обновить страницу')}}</button></div>
  <div v-if="showRelease" class="modal-backdrop" @click.self="showRelease=false" @keydown.esc="showRelease=false"><section class="modal release-dialog" role="dialog" aria-modal="true" aria-labelledby="release-title" v-modal-focus><div class="section-head"><h2 id="release-title">{{tx('Что нового · {version}',{version:release.version})}}</h2><button class="ghost icon-btn" :aria-label="tx('Закрыть список изменений')" @click="showRelease=false"><AppIcon name="x"/></button></div><p class="sub">{{release.date}}</p><ul><li v-for="change in (lang==='uz'&&release.changes_uz?.length?release.changes_uz:release.changes)" :key="change">{{change}}</li></ul></section></div>

@@ -1,6 +1,7 @@
 <script setup>
 import {ref,watch,computed} from 'vue';
 import {tx,N_} from '../i18n/index.js';
+const emit=defineEmits(['saved']);
 const props=defineProps({api:Function,user:Object,companies:Array});
 const company=ref(props.user.company_id||props.companies[0]?.id),policy=ref(null),choices=ref({}),reason=ref(''),busy=ref(false),error=ref(''),notice=ref('');
 const modes=[['hidden',N_('Нет доступа')],['view',N_('Только просмотр')],['edit',N_('Можно работать')]];
@@ -18,7 +19,7 @@ const allowedModes=m=>modes.filter(x=>x[0]!=='edit'||(!['users','audit'].include
 function reset(){if(!policy.value)return;choices.value=Object.fromEntries(policy.value.modules.map(m=>[m.key,savedMode(m)]));reason.value='';notice.value='';}
 let epoch=0;
 async function load(){const turn=++epoch,uid=props.user.id,cid=company.value;busy.value=true;error.value='';notice.value='';reason.value='';policy.value=null;try{const value=await props.api(`/api/admin/users/${uid}/sections?company_id=${cid}`);if(turn!==epoch||uid!==props.user.id||cid!==company.value)return;policy.value=value;reset();}catch(e){if(turn===epoch)error.value=e.message;}finally{if(turn===epoch)busy.value=false;}}
-async function save(){if(!canSave.value)return;busy.value=true;error.value='';notice.value='';try{await props.api(`/api/admin/users/${props.user.id}/sections`,{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify({company_id:Number(company.value),version:policy.value.version,sections:choices.value,reason:reason.value.trim()})});await load();notice.value=N_('Изменения сохранены. Новые права действуют при следующем входе сотрудника. Пароль остаётся прежним.');}catch(e){error.value=e.message;}finally{busy.value=false;}}
+async function save(){if(!canSave.value)return;busy.value=true;error.value='';notice.value='';try{await props.api(`/api/admin/users/${props.user.id}/sections`,{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify({company_id:Number(company.value),version:policy.value.version,sections:choices.value,reason:reason.value.trim()})});await load();emit('saved');notice.value=N_('Изменения сохранены. Новые права действуют при следующем входе сотрудника. Пароль остаётся прежним.');}catch(e){error.value=e.message;}finally{busy.value=false;}}
 watch(()=>[props.user.id,company.value],load,{immediate:true});
 </script>
 <template>
