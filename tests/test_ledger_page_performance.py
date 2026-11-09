@@ -67,7 +67,7 @@ class LedgerPageTests(base.SiteTests):
 
     def test_role_channel_and_company_boundaries(self):
         ids=self.seed()
-        for role,expected in (('cashier',{'expense','transfer'}),('accountant',{'original','transfer','dollar','independent'})):
+        for role,expected in (('cashier',{'expense','transfer'}),('accountant',{'original','transfer','dollar','independent','expense'})):
             client,headers=self.make_user(role,'page_'+role)
             try:
                 rows=self.listing(client=client,headers=headers)

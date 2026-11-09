@@ -1340,6 +1340,8 @@ app.include_router(counterparty_replace_router)
 from .bank_statement_category_rules import router as bank_statement_category_rules_router
 app.include_router(bank_statement_category_rules_router)
 from .bank_statement_api import router as bank_statement_router
+from .daily_reconciliation import router as daily_reconciliation_router
+app.include_router(daily_reconciliation_router)
 app.include_router(bank_statement_router)
 from .bank_statement_rule_allocation import router as bank_statement_rule_allocation_router
 app.include_router(bank_statement_rule_allocation_router)

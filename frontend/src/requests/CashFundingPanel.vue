@@ -126,7 +126,7 @@ onUnmounted(() => { alive = false; generation++; emit('busy', false); });
 
 <template>
   <section v-if="funding" class="cash-funding-panel" :aria-label="tx('Наличные через банк')">
-    <div class="section-head"><h3>{{ tx('Наличные через банк') }}</h3><span class="pill" :class="!needsStateCheck && funding.state === 'received' ? 'good' : 'warn'">{{ needsStateCheck ? tx('Состояние уточняется') : fundingStatus(request) }}</span></div>
+    <div class="section-head"><h3>{{ funding.source==='counterparty'?tx('Наличные через контрагента'):tx('Наличные через банк') }}</h3><span class="pill" :class="!needsStateCheck && funding.state === 'received' ? 'good' : 'warn'">{{ needsStateCheck ? tx('Состояние уточняется') : fundingStatus(request) }}</span></div>
     <p v-if="batch" class="sub"><b>{{ tx('Пополнение кассы для нескольких заявок') }}</b></p>
     <div v-if="flow" class="cash-funding-step" :class="{complete: flow.done}" aria-live="polite">
       <span class="cash-funding-step-number" aria-hidden="true">{{ flow.done ? '✓' : flow.number || '?' }}</span>
@@ -163,7 +163,8 @@ onUnmounted(() => { alive = false; generation++; emit('busy', false); });
         <button v-else type="button" :disabled="busy || !confirmed" @click="commit">{{ busy ? tx('Сохраняем…') : action === 'cancel' ? tx('Подтвердить отмену снятия') : action === 'withdraw' ? tx('Подтвердить списание банка') : tx('Подтвердить получение в кассу') }}</button>
       </div>
     </form>
-    <dl class="kv cash-funding-details">
+    <p v-if="funding.source==='counterparty'">{{tx('Фирма, передающая наличные')}}: {{funding.intermediary_name}} · {{funding.intermediary_inn}}<br>{{tx('Удержание относится к посреднику. Банковская комиссия проводится отдельно.')}}</p>
+      <dl class="kv cash-funding-details">
       <dt>{{ tx('Банковский счёт') }}</dt><dd>{{ funding.bank_account }}</dd>
       <dt>{{ tx('Касса') }}</dt><dd>{{ request.account }}</dd>
       <dt>{{ tx('Всего списать с банка') }}</dt><dd class="num">{{ money(funding.gross_amount) }} {{ request.currency }}</dd>

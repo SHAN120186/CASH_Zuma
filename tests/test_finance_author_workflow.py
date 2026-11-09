@@ -149,7 +149,9 @@ class FinanceAuthorWorkflowTests(CashFundingBatchTests):
         with unit() as s:self.assertFalse(s.get(PaymentRequest,id).finance_author)
 
     def test_delegated_finance_creation_persists_actual_creation_role(self):
-        actor=self.actor('accountant','delegated_author');finance=self.actor('finance','replaced_finance')
+        # A role without its own request right uses the delegated finance role.
+        # Accountants now create requests under their own role (2.36.5).
+        actor=self.actor('material_accountant','delegated_author');finance=self.actor('finance','replaced_finance')
         with unit(True) as s:
             admin=s.scalar(select(User).where(User.username=='admin'))
             uid=s.scalar(select(User.id).where(User.username=='delegated_author'));replaced=s.scalar(select(User.id).where(User.username=='replaced_finance'))
@@ -160,6 +162,21 @@ class FinanceAuthorWorkflowTests(CashFundingBatchTests):
         with unit() as s:
             audit=s.scalar(select(Audit).where(Audit.entity=='request',Audit.entity_id==str(created.json()['id']),Audit.action=='Создана заявка'))
             self.assertEqual(audit.role,'finance');self.assertEqual(audit.acting_for_id,replaced)
+
+    def test_accountant_uses_own_creation_right_even_with_finance_delegation(self):
+        actor=self.actor('accountant','own_accountant_author');self.actor('finance','own_replaced_finance')
+        with unit(True) as s:
+            admin=s.scalar(select(User).where(User.username=='admin'))
+            uid=s.scalar(select(User.id).where(User.username=='own_accountant_author'))
+            replaced=s.scalar(select(User.id).where(User.username=='own_replaced_finance'))
+            s.add(Delegation(company_id=self.company,user_id=uid,replaced_user_id=replaced,role='finance',
+                starts_on=today(),ends_on=today()+timedelta(days=2),reason='Synthetic delegated role with own creation right',created_by=admin.id))
+        created=self.request('100',client=actor[0],headers=actor[1])
+        self.assertEqual(created.status_code,200,created.text)
+        self.assertFalse(created.json()['route']['finance_author'])
+        with unit() as s:
+            audit=s.scalar(select(Audit).where(Audit.entity=='request',Audit.entity_id==str(created.json()['id']),Audit.action=='Создана заявка'))
+            self.assertEqual(audit.role,'accountant');self.assertIsNone(audit.acting_for_id)
 
     def test_admin_cash_workflow_and_replayed_group_are_denied_without_mutations(self):
         self.fixture();row=self.row(self.parent)

@@ -41,6 +41,7 @@ export function cashFundingBody(value) {
   if (!value) return null;
   return {bank_account_id: value.bank_account_id == null ? null : Number(value.bank_account_id),
     mode: value.mode || 'single',
+    ...(value.source==='counterparty'?{source:value.source,intermediary_name:value.intermediary_name||'',intermediary_inn:value.intermediary_inn||''}:value.source==='bank'?{source:'bank'}:{}),
     gross_amount: ungroupAmount(value.gross_amount), fee_percent: ungroupAmount(value.fee_percent),
     fee_category_id: value.fee_category_id == null ? null : Number(value.fee_category_id)};
 }

@@ -349,10 +349,11 @@ class AccessTests(base.SiteTests):
         cash_entry = self.ledger('50', 'in', 'CASH-IN', account_id=cash).json()['id']
         doc = self.client.post(f'/api/ledger/{bank_entry}/document', content=PDF,
                                headers={**self.h, 'Content-Type': 'application/pdf', 'X-Filename': 'bank.pdf'}).json()['id']
-        accountant = self.make_user('accountant', 'bank_only')
+        accountant = self.make_user('accountant', 'bank_and_cash')
         cashier = self.make_user('cashier', 'cash_only')
         try:
-            self.assertEqual([x['id'] for x in accountant[0].get('/api/ledger', headers=accountant[1]).json()], [bank_entry])
+            # The accountant has both payment channels since 2.36.5.
+            self.assertEqual([x['id'] for x in accountant[0].get('/api/ledger', headers=accountant[1]).json()], [cash_entry, bank_entry])
             self.assertEqual([x['id'] for x in cashier[0].get('/api/ledger', headers=cashier[1]).json()], [cash_entry])
             self.assertEqual(cashier[0].get(f'/api/documents?ledger_id={bank_entry}', headers=cashier[1]).status_code, 404)
             self.assertEqual(cashier[0].get(f'/api/documents/{doc}', headers=cashier[1]).status_code, 403)
