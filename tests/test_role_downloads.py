@@ -116,7 +116,9 @@ class RoleDownloadTests(base.SiteTests):
         self.assertEqual(self.approve(cash_rid).status_code, 200)
         cash_doc = self.row(cash_rid)['documents_list'][0]
         self.assertEqual(cashier[0].get(cash_doc['url'], headers=cashier[1]).status_code, 200)
-        self.assertEqual(accountant[0].get(cash_doc['url'], headers=accountant[1]).status_code, 403)
+        # Accountant has permanent pay_cash rights; visible request attachments follow that scope.
+        self.assertEqual(accountant[0].get(cash_doc['url'], headers=accountant[1]).status_code, 200)
+        self.assertEqual(foreign[0].get(cash_doc['url'], headers=foreign[1]).status_code, 404)
         user_id = accountant[0].get('/api/me').json()['user']['id']
         with unit(True) as s:
             s.get(User, user_id).active = False
