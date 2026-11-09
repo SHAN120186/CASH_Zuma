@@ -1,7 +1,8 @@
 {
-  "version": "2.36.10",
-  "date": "2026-11-08",
+  "version": "2.36.11",
+  "date": "2026-11-09",
   "changes": [
+    "После успешного завершения действия формы закрываются автоматически, включая повторную отправку и редактирование заявки. При ошибке форма остаётся открытой. Убран общий всплывающий индикатор запросов в нижнем углу.",
     "Ежедневная сверка по компании, дате и валюте открывается по запросу: банк, выписка, заявки, касса и деньги в пути. Сводка не создаёт финансовых операций; дубли и неподтверждённые остатки остаются на проверке.",
     "Для группового получения наличных добавлен источник «Через контрагента»: фирма и удержание сохраняются отдельно от банковской комиссии. Получение кассой и выдача по заявкам остаются отдельными фактами.",
     "Список заявок подгружает следующие строки при прокрутке без переключения страниц. Сохраняются фильтры и сортировка; повторная загрузка не добавляет дубли.",
@@ -140,6 +141,7 @@
     "Длинные названия файлов и кнопки выбора шаблона переносятся на узком экране. В ТЭО дата архива отдельно обозначена и не подменяет начало финансового прогноза."
   ],
   "changes_uz": [
+    "Amal muvaffaqiyatli yakunlangach oynalar avtomatik yopiladi; xatolikda ochiq qoladi. Pastki burchakdagi umumiy yuklash indikatori olib tashlandi.",
     "Kompaniya, sana va valyuta boʻyicha kunlik solishtirish soʻrov boʻyicha ochiladi: bank, koʻchirma, arizalar, kassa va yoʻldagi pul. Jamlanma moliyaviy operatsiya yaratmaydi.",
     "Guruhli naqd pul olishda «Kontragent orqali» manbasi qoʻshildi. Firma va ushlab qolish bank komissiyasidan alohida saqlanadi.",
     "Ommaviy repozitoriydan moliyaviy jadval xeshi saqlangan fayl olib tashlandi. 2.36.0 da olib tashlangan bo'limlarning ishlatilmaydigan tarjimalari o'chirildi. Ishchi bo'limlar va interfeys matni o'zgarmadi.",

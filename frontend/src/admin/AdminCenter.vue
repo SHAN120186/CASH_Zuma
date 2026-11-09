@@ -71,7 +71,7 @@ async function submit() {
   try {
     const result = await calls[f.kind]();
     if (result?.temporary_password) secret.value = {login: result.user.username, name: result.user.name, password: result.temporary_password};
-    if (f.kind === 'create') card.value = {id: result.user.id};
+    card.value = null; showSections.value = false;
     form.value = null;
     notice.value = N_('Сохранено. Изменение записано в журнал.');
     await load();
@@ -101,6 +101,13 @@ onUnmounted(() => document.removeEventListener('keydown', onKey));
         <button :disabled="!meta" @click="startCreate">{{ tx('Новый пользователь') }}</button></div></div>
     <p v-if="notice" class="notice" role="status">{{ tx(notice) }}</p>
     <p v-if="error && !card && !form" class="error" role="alert">{{ tx(error) }}</p>
+
+      <section v-if="secret" class="admin-secret" role="status">
+        <b>{{ tx('Пароль для {login}', {login: secret.login}) }}</b>
+        <code>{{ secret.password }}</code>
+        <p class="sub">{{ tx('Показывается один раз. Передайте сотруднику по защищённому каналу. Обязательной смены при входе нет.') }}</p>
+        <div class="actions"><button class="secondary tiny" @click="copy(secret.password)">{{ tx('Скопировать') }}</button><button class="ghost tiny" @click="secret = null">{{ tx('Скрыть') }}</button></div>
+      </section>
 
     <GroupRegistration v-if="meta" :api="api" :companies="meta.companies" />
 
@@ -146,12 +153,7 @@ onUnmounted(() => document.removeEventListener('keydown', onKey));
       <div class="section-head"><h2 id="admin-card-title">{{ form?.kind === 'create' ? tx('Новый пользователь') : card?.name || tx('Пользователь') }}</h2>
         <button class="ghost icon-btn" :aria-label="tx('Закрыть')" :disabled="busy" @click="closeCard(); form = null">✕</button></div>
 
-      <section v-if="secret" class="admin-secret" role="status">
-        <b>{{ tx('Пароль для {login}', {login: secret.login}) }}</b>
-        <code>{{ secret.password }}</code>
-        <p class="sub">{{ tx('Показывается один раз. Передайте сотруднику по защищённому каналу. Обязательной смены при входе нет.') }}</p>
-        <div class="actions"><button class="secondary tiny" @click="copy(secret.password)">{{ tx('Скопировать') }}</button><button class="ghost tiny" @click="secret = null">{{ tx('Скрыть') }}</button></div>
-      </section>
+
 
       <template v-if="card?.username">
         <dl class="kv admin-kv">
@@ -181,7 +183,7 @@ onUnmounted(() => document.removeEventListener('keydown', onKey));
         </div>
       </template>
 
-      <UserSections v-if="showSections&&card" :key="card.id" :api="api" :user="card" :companies="meta.companies"/>
+      <UserSections v-if="showSections&&card" :key="card.id" :api="api" :user="card" :companies="meta.companies" @saved="closeCard"/>
       <form v-if="form" class="form-grid admin-form" @submit.prevent="submit">
         <template v-if="form.kind === 'create'">
           <label>{{ tx('Логин') }}<input v-model="form.username" pattern="[a-z0-9_.\-]{3,80}" required placeholder="zuma.aziz" autocomplete="off"></label>

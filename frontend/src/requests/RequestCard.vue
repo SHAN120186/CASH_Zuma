@@ -52,13 +52,13 @@ async function load(afterAction = false) {
   }
 }
 
-// После действия карточка перечитывается; при конфликте версий — тоже, с сообщением сервера.
+// После успешного действия карточка закрывается; при конфликте версий — тоже, с сообщением сервера.
 // fn может вернуть строку — уточнённое сообщение вместо общего.
 async function run(fn, message) {
   busy.value = true; error.value = ''; notice.value = '';
   try {
     const extra = await fn();
-    await load(true); notice.value = typeof extra === 'string' && extra ? extra : message; emit('changed'); return true;
+    notice.value = typeof extra === 'string' && extra ? extra : message; emit('changed'); emit('close'); return true;
   } catch (e) {
     error.value = tx(e.message) + ([409, 428].includes(e.status) ? ' ' + tx('Карточка обновлена.') : '');
     if ([409, 428].includes(e.status)) { await load(true); emit('changed'); }
@@ -81,7 +81,7 @@ async function deleteRequest() {
 }
 
 function submit() {
-  run(() => props.api(`/api/requests/${r.value.id}/decision`, json({action: 'submit', version: r.value.version})), N_('Заявка отправлена на согласование.'));
+  return run(() => props.api(`/api/requests/${r.value.id}/decision`, json({action: 'submit', version: r.value.version})), N_('Заявка отправлена на согласование.'));
 }
 
 async function fundingChanged(row, result) {
@@ -100,8 +100,7 @@ async function batchPaymentsRecorded(result) {
   // Clear every child's stale payment action before any network refresh.
   emit('payments-recorded', result.paid_request_ids);
   error.value = '';
-  await load(true);
-  if (error.value) error.value = N_('Групповая выдача записана. Не удалось обновить карточку; оплату повторять не нужно.');
+  emit('close');
 }
 
 async function decide() {
@@ -127,7 +126,7 @@ async function decide() {
   }
   const ok = await run(() => props.api(`/api/requests/${r.value.id}/decision`, json({action, note, date: action === 'reschedule' ? date : null, version: r.value.version})),
     action === 'return' ? N_('Заявка возвращена на доработку.') : N_('Решение сохранено.'));
-  if (ok) { decision.value = {action: options.value[0]?.[0] || '', note: '', date: r.value?.date || ''}; if (['check','approve'].includes(action)) emit('close'); }
+  if (ok) { decision.value = {action: options.value[0]?.[0] || '', note: '', date: r.value?.date || ''}; }
 }
 
 function upload(kind, event) {

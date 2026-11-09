@@ -90,15 +90,22 @@ test('close confirmation and irreversible warning are translated to Uzbek',async
  assert.match(confirmations[0],/CF-00042.*barcha fayllari va tarixi/);assert.doesNotMatch(confirmations[0],/[А-Яа-яЁё]/);
 });
 
-test('returning for correction still refreshes the retained request without deletion confirmation',async t=>{
+test('returning for correction closes the card without a redundant reload or deletion confirmation',async t=>{
  const{view,calls,events,confirmations,submit}=await fixture(t,{response:request});
  view.state.decision.action='return';await submit();await settle();
- assert.equal(confirmations.length,0);assert.equal(calls.filter(call=>call.url==='/api/requests/42').length,2);
- assert.deepEqual(events,['changed']);assert.equal(view.state.notice,'Заявка возвращена на доработку.');
+ assert.equal(confirmations.length,0);assert.equal(calls.filter(call=>call.url==='/api/requests/42').length,1);
+ assert.deepEqual(events,['changed','close']);assert.equal(view.state.notice,'Заявка возвращена на доработку.');
 });
 
-for (const action of ['check','approve']) test(`successful ${action} closes the card after confirmation`,async t=>{
+for (const action of ['check','approve','reschedule']) test(`successful ${action} closes the card after confirmation`,async t=>{
  const {view,events,submit}=await fixture(t,{response:{ok:true}});
  view.state.decision={action,note:'',date:''};await settle();
  await submit();await settle();assert.deepEqual(events,['changed','close']);
+});
+
+for (const action of ['submit','return','approve']) test(`failed ${action} keeps the card open`,async t=>{
+ const {view,events}=await fixture(t,{failure:{status:503,message:'Save failed'}});
+ view.state.decision={action,note:reason,date:request.date};
+ if(action==='submit')await view.state.submit();else await view.state.decide();await settle();
+ assert.deepEqual(events,[]);assert.match(view.state.error,/Save failed/);
 });
