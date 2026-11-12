@@ -1,7 +1,8 @@
 {
-  "version": "2.36.11",
-  "date": "2026-11-09",
+  "version": "2.36.12",
+  "date": "2026-11-12",
   "changes": [
+    "При вводе суммы заявки тысячи разделяются пробелами.",
     "После успешного завершения действия формы закрываются автоматически, включая повторную отправку и редактирование заявки. При ошибке форма остаётся открытой. Убран общий всплывающий индикатор запросов в нижнем углу.",
     "Ежедневная сверка по компании, дате и валюте открывается по запросу: банк, выписка, заявки, касса и деньги в пути. Сводка не создаёт финансовых операций; дубли и неподтверждённые остатки остаются на проверке.",
     "Для группового получения наличных добавлен источник «Через контрагента»: фирма и удержание сохраняются отдельно от банковской комиссии. Получение кассой и выдача по заявкам остаются отдельными фактами.",
@@ -141,6 +142,7 @@
     "Длинные названия файлов и кнопки выбора шаблона переносятся на узком экране. В ТЭО дата архива отдельно обозначена и не подменяет начало финансового прогноза."
   ],
   "changes_uz": [
+    "Ariza summasini kiritishda mingliklar bo‘sh joy bilan ajratiladi.",
     "Amal muvaffaqiyatli yakunlangach oynalar avtomatik yopiladi; xatolikda ochiq qoladi. Pastki burchakdagi umumiy yuklash indikatori olib tashlandi.",
     "Kompaniya, sana va valyuta boʻyicha kunlik solishtirish soʻrov boʻyicha ochiladi: bank, koʻchirma, arizalar, kassa va yoʻldagi pul. Jamlanma moliyaviy operatsiya yaratmaydi.",
     "Guruhli naqd pul olishda «Kontragent orqali» manbasi qoʻshildi. Firma va ushlab qolish bank komissiyasidan alohida saqlanadi.",

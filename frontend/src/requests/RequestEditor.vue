@@ -290,7 +290,7 @@ onUnmounted(() => { document.removeEventListener('keydown', onKey); clearTimeout
           <p v-if="fundingProblem" class="field-error" role="status">{{ tx(fundingProblem) }}</p>
           <small class="sub">{{ batchFunding ? tx('Пополнение не является отдельным расходом. После получения наличных выберите согласованные заявки; расходы учитываются по их статьям, комиссия — отдельно.') : tx('Комиссия входит в списание банка. Заявка оплачивается из кассы после подтверждения получения наличных.') }}</small>
         </section>
-        <label>{{ batchFunding ? tx('Сумма пополнения кассы') : form.cash_funding ? tx('Сумма наличной заявки') : tx('Сумма') }}<MoneyInput v-if="form.cash_funding" v-model="form.amount" readonly required /><input v-else v-model="form.amount" type="text" inputmode="decimal" pattern="[0-9]+([.][0-9]{1,2})?" required autocomplete="off"></label>
+        <label>{{ batchFunding ? tx('Сумма пополнения кассы') : form.cash_funding ? tx('Сумма наличной заявки') : tx('Сумма') }}<MoneyInput v-model="form.amount" :readonly="!!form.cash_funding" required /></label>
         <label>{{ foreignBank ? tx('ИНН контрагента (необязательно)') : tx('ИНН контрагента') }}<input v-model.trim="partyInn" inputmode="numeric" pattern="[0-9]*" maxlength="20" autocomplete="off" aria-describedby="rq-inn-hint">
           <small id="rq-inn-hint" class="sub">{{ foreignBank ? tx('ИНН необязателен для USD и EUR. Для иностранного контрагента без ИНН введите название вручную.') : tx('Введите ИНН для поиска контрагента.') }}</small>
           <small v-if="partyStatus === 'loading'" class="sub" role="status">{{ tx('Ищем контрагента…') }}</small>
