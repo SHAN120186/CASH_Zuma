@@ -208,11 +208,11 @@ def funding_stage_label(funding,fallback):
     return fallback
 
 
-def transit_report_warnings(s,companies,accounts,as_of):
+def transit_report_warnings(s,companies,accounts,as_of,*,balance_reader=None):
     result=[]
     for account in accounts.values():
         if account.kind!='transit' or account.company_id not in companies:continue
-        balance=account_balance(s,account,as_of)
+        balance=balance_reader.closing(account,as_of) if balance_reader else account_balance(s,account,as_of)
         if balance<=0:continue
         company=companies[account.company_id]
         result.append({'company':mask_digits(company.name,80),'company_code':company.code,
@@ -344,7 +344,49 @@ def begin_report_snapshot(s):
         s.connection().exec_driver_sql('BEGIN')
 
 
-def statement_report_warnings(s, companies, accounts, report_date):
+class ReportBalances:
+    """Narrow raw-ledger snapshot, owned by one report's read transaction only.
+
+    Never shared across requests or used by write guards. Include both source
+    and target legs, including reversals, just like account_balance. Python
+    integer arithmetic retains exact values without SQL SUM overflow/rounding.
+    """
+    def __init__(self, s, accounts, through):
+        self.session = s
+        self.accounts = accounts
+        self.through = through
+        ids = list(accounts)
+        self.rows = list(s.execute(select(Ledger.account_id, Ledger.to_account_id,
+            Ledger.kind, Ledger.amount, Ledger.date).where(Ledger.date <= through,
+            or_(Ledger.account_id.in_(ids), Ledger.to_account_id.in_(ids))))) if ids else []
+        self.by_date = {}
+
+    def closing(self, account, day):
+        # Defensive fallback for malformed legacy statement dates, not normal reports.
+        if day > self.through:
+            return account_balance(self.session, account, day)
+        if day not in self.by_date:
+            values = {a.id: a.opening if a.opening_date <= day else 0 for a in self.accounts.values()}
+            active = {a.id for a in self.accounts.values() if a.opening_date <= day}
+            for source, target, kind, amount, posted in self.rows:
+                if posted > day:
+                    continue
+                if source in active:
+                    values[source] += amount if kind == 'in' else -amount
+                if target in active:
+                    values[target] += amount
+            self.by_date[day] = values
+        return self.by_date[day][account.id]
+
+    def opening(self, account, day):
+        if day < account.opening_date:
+            return 0
+        if day == account.opening_date:
+            return account.opening
+        return self.closing(account, day - timedelta(days=1))
+
+
+def statement_report_warnings(s, companies, accounts, report_date, *, balance_reader=None):
     """Latest confirmed file per account; bank totals never augment ledger totals."""
     from .bank_statement_models import BankStatementBatch, BankStatementLine
     from .bank_statement_guard import accounted_line_ids
@@ -369,10 +411,12 @@ def statement_report_warnings(s, companies, accounts, report_date):
         pending = [line for line in lines if line.id not in accounted]
         credit = sum(line.amount for line in pending if line.direction == 'in')
         debit = sum(line.amount for line in pending if line.direction == 'out')
-        closing = account_balance(s, account, batch.period_to)
+        closing = balance_reader.closing(account, batch.period_to) if balance_reader else account_balance(s, account, batch.period_to)
         totals_match = (sum(line.amount for line in lines if line.direction == 'in') == batch.credit_total
                         and sum(line.amount for line in lines if line.direction == 'out') == batch.debit_total)
-        full = (totals_match and batch.source_ready and opening_matches(s, batch, account) and not pending and closing == batch.closing)
+        opening_ok = (account.id == batch.account_id and batch.period_from >= account.opening_date
+                      and balance_reader.opening(account, batch.period_from) == batch.opening) if balance_reader else opening_matches(s, batch, account)
+        full = (totals_match and batch.source_ready and opening_ok and not pending and closing == batch.closing)
         common = {'company': mask_digits(companies[batch.company_id].name, 80),
                   'company_code': companies[batch.company_id].code}
         messages = [
@@ -396,9 +440,10 @@ def daily_summary_payload(s, chat_id, report_date, companies, codes, scope_id, c
     ordered = sorted((a for a in accounts.values() if a.opening_date <= report_date),
                      key=lambda a: (names[a.company_id], a.kind, currency_key(a.currency), a.name, a.id))
     balances, opening_balances = [], []
+    balance_reader = ReportBalances(s, accounts, report_date)
     for a in ordered:
-        closing = account_balance(s, a, report_date)
-        opening = day_start_balance(s, a, report_date)
+        closing = balance_reader.closing(a, report_date)
+        opening = balance_reader.opening(a, report_date)
         if a.archived and not (closing or opening or a.id in active_ids):
             continue
         common = {'company': names[a.company_id], 'company_code': companies[a.company_id].code,
@@ -448,7 +493,7 @@ def daily_summary_payload(s, chat_id, report_date, companies, codes, scope_id, c
               'companies': codes, 'scope_id': scope_id, 'balances': balances, 'opening_balances': opening_balances,
               'income': movements('in'), 'expense': movements('out'), 'operations': operations,
               'open_requests': open_requests, 'open_requests_as_of': str(current_day),
-              'warnings': statement_report_warnings(s, companies, accounts, report_date)+transit_report_warnings(s,companies,accounts,report_date)}
+              'warnings': statement_report_warnings(s, companies, accounts, report_date, balance_reader=balance_reader)+transit_report_warnings(s,companies,accounts,report_date,balance_reader=balance_reader)}
     if user_id is not None:
         result['user_id'] = user_id
     # Recipient routing and access have their own scope checks. A group upgrade
