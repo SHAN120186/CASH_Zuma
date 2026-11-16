@@ -3,6 +3,20 @@ import {tx} from '../i18n/index.js';
 
 export const STATE_CLASS = {ok: 'good', archived: 'gray', no_company: 'warn', conflict: 'bad', no_role: 'warn'};
 
+// A role belongs to the selected company. Holding roles apply across companies;
+// invalid/archived assignments stay visible with their actual access state.
+export function companyAccessRows(users, companyId, {q = '', role = '', state = ''} = {}) {
+  const needle = q.trim().toLowerCase();
+  return users.flatMap(user => {
+    const assignment = user.assignments.find(a => a.company_id === Number(companyId));
+    if (!user.holding_role && !assignment) return [];
+    const selectedRole = user.holding_role || assignment?.role;
+    if (needle && !user.name.toLowerCase().includes(needle) && !user.username.toLowerCase().includes(needle)) return [];
+    if (role && selectedRole !== role || state && user.state !== state) return [];
+    return [{user, assignment, role: selectedRole}];
+  });
+}
+
 export function filterUsers(users, {q = '', company = '', role = '', state = ''} = {}) {
   const needle = q.trim().toLowerCase();
   return users.filter(u =>
