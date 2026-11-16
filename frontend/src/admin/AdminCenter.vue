@@ -1,6 +1,6 @@
 <script setup>
 import {ref, computed, onMounted, onUnmounted, nextTick} from 'vue';
-import {STATE_CLASS, historyLine, filterUsers, stateCounts, canResolve} from './adminCenter.js';
+import {STATE_CLASS, historyLine, filterUsers, stateCounts, canResolve, companyAccessRows} from './adminCenter.js';
 import UserSections from './UserSections.vue';
 import GroupRegistration from './GroupRegistration.vue';
 import {tx, N_, formatDate} from '../i18n/index.js';
@@ -15,6 +15,10 @@ const filters = ref({q: '', company: '', role: '', state: ''});
 const card = ref(null), form = ref(null), secret = ref(null), dialog = ref(null);
 const showSections=ref(false);
 const journal = ref(null), journalPage = ref(1);
+const showDirectory = ref(false), directoryCompanyId = ref(null);
+const directoryFilters = ref({q: '', role: '', state: ''});
+const directoryCompany = computed(() => meta.value?.companies.find(c => c.id === directoryCompanyId.value) || meta.value?.companies[0]);
+const directoryRows = computed(() => directoryCompany.value ? companyAccessRows(users.value, directoryCompany.value.id, directoryFilters.value) : []);
 
 const shown = computed(() => filterUsers(users.value, filters.value));
 const counts = computed(() => stateCounts(users.value));
@@ -51,6 +55,10 @@ function start(kind) {
   if (['archive', 'password', 'sessions'].includes(kind)) form.value = {kind, ...base};
 }
 function startCreate() { card.value = null; secret.value = null; form.value = {kind: 'create', username: '', name: '', holding_role: '', company_id: meta.value.companies[0]?.id ?? null, role: 'employee', reason: ''}; }
+async function resetFromDirectory(user) {
+  await openCard(user);
+  if (card.value?.id === user.id) start('password');
+}
 
 async function submit() {
   const f = form.value, id = card.value?.id;
@@ -98,6 +106,7 @@ onUnmounted(() => document.removeEventListener('keydown', onKey));
   <section class="admin-center">
     <div class="tb"><div><h3>{{ tx('Центр администрирования') }}</h3><p class="sub">{{ tx('Все учётные записи холдинга. Действия не зависят от выбранной компании и записываются в журнал.') }}</p></div>
       <div class="grow actions"><button class="secondary" @click="journal ? journal = null : loadJournal()">{{ journal ? tx('Скрыть журнал холдинга') : tx('Журнал холдинга') }}</button>
+        <button class="secondary" :disabled="!meta" :aria-expanded="showDirectory" aria-controls="company-access-directory" @click="showDirectory = !showDirectory">{{ tx('Доступы по компаниям') }}</button>
         <button :disabled="!meta" @click="startCreate">{{ tx('Новый пользователь') }}</button></div></div>
     <p v-if="notice" class="notice" role="status">{{ tx(notice) }}</p>
     <p v-if="error && !card && !form" class="error" role="alert">{{ tx(error) }}</p>
@@ -108,6 +117,32 @@ onUnmounted(() => document.removeEventListener('keydown', onKey));
         <p class="sub">{{ tx('Показывается один раз. Передайте сотруднику по защищённому каналу. Обязательной смены при входе нет.') }}</p>
         <div class="actions"><button class="secondary tiny" @click="copy(secret.password)">{{ tx('Скопировать') }}</button><button class="ghost tiny" @click="secret = null">{{ tx('Скрыть') }}</button></div>
       </section>
+
+    <section v-if="showDirectory && meta" id="company-access-directory" class="card admin-directory" aria-labelledby="company-access-title">
+      <div class="card-h"><h3 id="company-access-title">{{ tx('Доступы по компаниям') }}</h3></div>
+      <div class="card-b">
+        <p class="sub">{{ tx('Логины, роли и состояние доступа в выбранной компании. Статус холдинга действует во всех компаниях.') }}</p>
+        <p class="sub">{{ tx('Текущие пароли не отображаются. Новый пароль показывается один раз после создания пользователя или сброса с указанием причины.') }}</p>
+        <div class="admin-company-tabs" role="group" :aria-label="tx('Компания в справочнике доступов')">
+          <button v-for="c in meta.companies" :key="c.id" class="secondary" :class="{on: directoryCompany?.id === c.id}" :aria-pressed="directoryCompany?.id === c.id" @click="directoryCompanyId = c.id">{{ c.name }}</button>
+        </div>
+        <div class="admin-filters">
+          <label class="search"><span class="sr-only">{{ tx('Поиск в справочнике доступов') }}</span><input v-model="directoryFilters.q" type="search" :placeholder="tx('Имя или логин')" :aria-label="tx('Поиск в справочнике доступов')"></label>
+          <select v-model="directoryFilters.role" :aria-label="tx('Роль в справочнике доступов')"><option value="">{{ tx('Все роли') }}</option><option v-for="[k, label] in [...meta.holding_roles, ...meta.company_roles]" :key="k" :value="k">{{ tx(label) }}</option></select>
+          <select v-model="directoryFilters.state" :aria-label="tx('Состояние в справочнике доступов')"><option value="">{{ tx('Все состояния') }}</option><option v-for="(label, key) in meta.states" :key="key" :value="key">{{ tx(label) }}</option></select>
+        </div>
+        <div class="table-card rsp-wrap"><table class="rsp"><thead><tr><th>{{ tx('Логин') }}</th><th>{{ tx('Роль') }}</th><th>{{ tx('Сотрудник') }}</th><th>{{ tx('Состояние') }}</th><th></th></tr></thead><tbody>
+          <tr v-for="row in directoryRows" :key="row.user.id">
+            <td :data-l="tx('Логин')"><code>{{ row.user.username }}</code></td>
+            <td :data-l="tx('Роль')">{{ row.user.holding_role ? tx('{role} · все компании', {role: roleName(row.role)}) : row.role ? roleName(row.role) : tx('Без роли') }}</td>
+            <td :data-l="tx('Сотрудник')">{{ row.user.name }}</td>
+            <td :data-l="tx('Состояние')"><span class="pill" :class="STATE_CLASS[row.user.state]">{{ tx(row.user.state_label) }}</span></td>
+            <td data-l=""><div class="actions"><button class="secondary tiny" @click="openCard(row.user)">{{ tx('Открыть') }}</button><button v-if="row.user.active && row.user.id !== currentUserId" class="ghost tiny" @click="resetFromDirectory(row.user)">{{ tx('Сбросить пароль') }}</button></div></td>
+          </tr>
+          <tr v-if="!directoryRows.length"><td colspan="5" class="sub">{{ tx('Никого не найдено.') }}</td></tr>
+        </tbody></table></div>
+      </div>
+    </section>
 
     <GroupRegistration v-if="meta" :api="api" :companies="meta.companies" />
 

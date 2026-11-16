@@ -1,7 +1,7 @@
 import {test} from 'node:test';
 import assert from 'node:assert/strict';
 import {readFileSync} from 'node:fs';
-import {filterUsers, stateCounts, historyLine, canResolve} from '../src/admin/adminCenter.js';
+import {filterUsers, stateCounts, historyLine, canResolve, companyAccessRows} from '../src/admin/adminCenter.js';
 
 const users = [
   {id: 1, name: 'Азиз Каримов', username: 'zuma.aziz', holding_role: null, state: 'ok', assignments: [{company_id: 2, role: 'procurement'}]},
@@ -18,6 +18,19 @@ test('search, company, role and state filters combine', () => {
   assert.deepEqual(stateCounts(users), {ok: 2, conflict: 1, archived: 1});
   assert.equal(canResolve(users[1]), true);
   assert.equal(canResolve(users[0]), false);
+});
+
+test('company directory filters the selected assignment while retaining holding and invalid roles', () => {
+  const multi={id:5,name:'Synthetic multi',username:'multi',state:'conflict',holding_role:null,
+    assignments:[{company_id:1,role:'employee'},{company_id:2,role:'accountant'}]};
+  const all=[...users,multi];
+  assert.deepEqual(companyAccessRows(all,2).map(row=>row.user.id),[1,2,3,5]);
+  assert.deepEqual(companyAccessRows(all,2,{role:'employee'}),[],'a role in another company is not a match');
+  assert.deepEqual(companyAccessRows(all,1,{role:'employee'}).map(row=>row.user.id),[5]);
+  assert.deepEqual(companyAccessRows(all,2,{q:'UZGERMED',state:'conflict'}).map(row=>row.user.id),[2]);
+  assert.deepEqual(companyAccessRows(all,2,{role:'founder'}).map(row=>row.user.id),[3]);
+  const legacy={...multi,assignments:[{company_id:2,role:null}]};
+  assert.equal(companyAccessRows([legacy],2)[0].role,null,'legacy links keep their missing-role state');
 });
 
 test('access history shows before, after and the reason', () => {
