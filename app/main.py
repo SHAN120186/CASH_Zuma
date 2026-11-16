@@ -21,7 +21,7 @@ from .category_catalog import catalog as category_catalog
 from .security import *
 from .services import *
 from .company_scope import available_companies, setting_key, get_setting, active_delegations
-from . import access
+from . import access, credential_vault
 from .model_import import import_snapshot, MAX_SIZE
 from .bot_api import drop_groups_of, drop_orphan_groups, drop_shadowed_groups, revoke_telegram
 from .workdays import enforce_lead_time, due_minimums
@@ -223,7 +223,9 @@ def login(body:LoginIn,request:Request,response:Response):
                 token=issue_token(user.id);csrf=secrets.token_urlsafe(32)
                 if not user.password_hash.startswith('bcrypt_sha256$'):
                     # Старый хеш заменяется; пароль, не проходящий нынешние правила, нужно сменить.
-                    try:user.password_hash=hash_password(body.password)
+                    try:
+                        user.password_hash=hash_password(body.password)
+                        credential_vault.store(s,user,body.password,user.id)
                     except ValueError:user.must_change_password=True
                 access.scope_home(s,user)
                 s.add(LoginSession(token_hash=digest(token),user_id=user.id,csrf=csrf,expires_at=now()+timedelta(hours=1)))
@@ -259,6 +261,7 @@ def change_password(data:PasswordIn,request:Request):
         if verify_password(data.new_password,user.password_hash):raise HTTPException(422,'Новый пароль должен отличаться от текущего.')
         try:user.password_hash=hash_password(data.new_password)
         except ValueError as e:raise HTTPException(422,str(e))
+        credential_vault.store(s,user,data.new_password,user.id)
         forced=user.must_change_password;user.must_change_password=False
         s.execute(delete(LoginSession).where(LoginSession.user_id==user.id));revoke_telegram(s,user.id)
         log(s,user,'Временный пароль заменён; сессии отозваны' if forced else 'Изменён пароль; сессии отозваны','user',user.id)
@@ -1259,6 +1262,7 @@ def add_user(data:UserIn,request:Request):
         if s.scalar(select(User.id).where(User.username==data.username.lower()).execution_options(company_unscoped=True)):raise HTTPException(409,'Такой логин уже занят.')
         # Пароль, заданный администратором, временный: при первом входе его нужно сменить.
         u=User(username=data.username.lower(),name=data.name,password_hash=pw,role=data.role,role_id=s.scalar(select(Role.id).where(Role.name==data.role)),must_change_password=True);s.add(u);s.flush()
+        credential_vault.store(s,u,data.password,admin.id)
         # Пользователь холдинга видит компании по своей роли; сотруднику нужна роль в выбранной компании.
         if data.role not in HOLDING_ROLES:access.business_company(s,s.info['company_id']);s.add(CompanyUser(company_id=s.info['company_id'],user_id=u.id,role=data.role));s.flush()
         access.record(s,admin,'Создан пользователь',u,None,'Создание в выбранной компании',None,request)
@@ -1286,6 +1290,7 @@ def edit_user(id:int,data:UserEdit,request:Request):
         if data.password:
             try:u.password_hash=hash_password(data.password)
             except ValueError as e:raise HTTPException(422,str(e))
+            credential_vault.store(s,u,data.password,admin.id)
             u.must_change_password=True
             access.revoke_links_and_sessions(s,u,admin)
             log(s,admin,'Сброшен пароль; сессии отозваны','user',id,'временный пароль задан администратором')
@@ -1300,6 +1305,7 @@ def reset_user_password(id:int,data:ResetPasswordIn,request:Request):
         if not u.active:raise HTTPException(409,'Учётная запись в архиве: восстановите её с новым назначением.')
         try:u.password_hash=hash_password(data.password)
         except ValueError as e:raise HTTPException(422,str(e))
+        credential_vault.store(s,u,data.password,admin.id)
         u.must_change_password=True
         access.revoke_links_and_sessions(s,u,admin)
         log(s,admin,'Сброшен пароль; сессии отозваны','user',id)

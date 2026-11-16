@@ -616,3 +616,60 @@ test('request scroll retains rows on failure, retries the same page and refresh 
  fail=false;await view.state.loadMoreRequests();assert.deepEqual(pages,['2','2']);assert.deepEqual(view.state.rows.map(r=>r.id),[1,2]);
  await view.state.load();assert.equal(pages.at(-1),'1');assert.equal(view.state.listPage,1);assert.deepEqual(view.state.rows,[{id:2}]);
 });
+
+test('typing in request and operation search sends only the final debounced query',async t=>{
+ const calls=[];
+ const {view}=await fixture(t,async url=>{calls.push(url);return {ok:true,status:200,json:async()=>({items:[],total:0})};});
+ t.mock.timers.enable({apis:['setTimeout']});
+ view.state.user={...user,permissions:['view','ledger','request']};
+ for(const [page,label] of [['requests','Поиск заявки'],['ledger','Поиск операции']]){
+  Object.assign(view.state,{page,currency:'UZS',search:'',listPage:4});await settle();calls.length=0;
+  const input=find(view.container,node=>node.tag==='input'&&node.props['aria-label']===label);
+  const type=value=>{input.props['onUpdate:modelValue'](value);input.props.onInput({target:{composing:false}});};
+  type('1');t.mock.timers.tick(100);await settle();
+  type('166');t.mock.timers.tick(299);await settle();assert.equal(calls.length,0);
+  t.mock.timers.tick(1);await settle();assert.equal(calls.length,1);
+  const url=new URL(calls[0],'https://isolated.test');
+  assert.equal(url.pathname,`/api/${page}`);assert.equal(url.searchParams.get('q'),'166');assert.equal(url.searchParams.get('page'),'1');
+  t.mock.timers.tick(400);await settle();assert.equal(calls.length,1);
+ }
+});
+
+test('navigation and currency reset a search with one list request instead of a second delayed request',async t=>{
+ const calls=[];
+ const {view}=await fixture(t,async url=>{calls.push(url);return {ok:true,status:200,json:async()=>({items:[],total:0})};});
+ t.mock.timers.enable({apis:['setTimeout']});
+ view.state.user={...user,permissions:['view','ledger','request']};
+ const changes=[
+  {run:()=>view.state.go('ledger'),path:'/api/ledger',currency:'UZS'},
+  {run:()=>view.state.goWith('requests',{from:'2026-10-01',to:'2026-10-31'}),path:'/api/requests',currency:'UZS'},
+  {run:()=>view.state.switchCurrency('USD'),path:'/api/requests',currency:'USD'},
+ ];
+ for(const change of changes){
+  Object.assign(view.state,{page:'requests',currency:'UZS',search:'previous supplier'});await settle();calls.length=0;
+  await change.run();await settle();
+  t.mock.timers.tick(400);await settle();assert.equal(calls.length,1,calls);
+  const url=new URL(calls[0],'https://isolated.test');
+  assert.equal(url.pathname,change.path);assert.equal(url.searchParams.get('currency'),change.currency);assert.equal(url.searchParams.get('q'),'');
+ }
+});
+
+test('explicit filters cancel pending search reads and a changed company discards a queued search',async t=>{
+ const calls=[];
+ const {view}=await fixture(t,async url=>{calls.push(url);return {ok:true,status:200,json:async()=>({items:[],total:0})};});
+ t.mock.timers.enable({apis:['setTimeout']});
+ Object.assign(view.state,{page:'requests',currency:'UZS',user:{...user,permissions:['view','ledger','request']}});await settle();
+ const type=value=>{
+  const input=find(view.container,node=>node.tag==='input'&&node.props['aria-label']==='Поиск заявки');
+  input.props['onUpdate:modelValue'](value);input.props.onInput({target:{composing:false}});
+ };
+ type('166');t.mock.timers.tick(100);await settle();
+ await view.state.applyPeriod({from:'2026-10-01',to:'2026-10-31'});await settle();
+ t.mock.timers.tick(400);await settle();assert.equal(calls.length,1);
+ assert.equal(new URL(calls[0],'https://isolated.test').searchParams.get('date_from'),'2026-10-01');
+ calls.length=0;type('167');view.state.requestStatus='approved';await view.state.load();await settle();
+ t.mock.timers.tick(400);await settle();assert.equal(calls.length,1);
+ assert.equal(new URL(calls[0],'https://isolated.test').searchParams.get('state'),'approved');
+ calls.length=0;type('168');view.state.companyId=3;await settle();
+ t.mock.timers.tick(400);await settle();assert.equal(calls.length,0,'old company search must not run in the next company');
+});

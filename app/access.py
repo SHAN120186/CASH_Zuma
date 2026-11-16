@@ -48,11 +48,11 @@ def valid_assignments(s, user):
     return [m for m in links(s, user.id) if m.company_id in companies and m.role in COMPANY_ROLES]
 
 
-def access_state(s, user):
-    """Состояние доступа для реестра: ok, archived, no_company, conflict, no_role."""
-    rows = links(s, user.id)
-    companies = business_companies(s)
-    valid = [m for m in rows if m.company_id in companies and m.role in COMPANY_ROLES]
+def access_state_from_rows(user, rows, companies):
+    """Request-local access presentation from already loaded assignments."""
+    business_ids = {cid for cid, company in companies.items()
+                    if company.active and company.code != SERVICE_CODE}
+    valid = [m for m in rows if m.company_id in business_ids and m.role in COMPANY_ROLES]
     stale = [m for m in rows if m not in valid]
     if not user.active:
         state = 'archived'
@@ -65,6 +65,11 @@ def access_state(s, user):
     else:
         state = 'ok'
     return {'state': state, 'valid': valid, 'stale': stale}
+
+
+def access_state(s, user):
+    """Состояние доступа для реестра: ok, archived, no_company, conflict, no_role."""
+    return access_state_from_rows(user, links(s, user.id), business_companies(s))
 
 
 def staff_company_ids(s, user):
@@ -263,6 +268,8 @@ def archive(s, actor, user, reason, request=None):
         raise HTTPException(409, 'Учётная запись уже в архиве.')
     before = snapshot(s, user)
     user.active = False
+    from .credential_vault import forget
+    forget(s, user)
     user.must_change_password = True
     s.execute(delete(CompanyUser).where(CompanyUser.user_id == user.id))
     revoke_links_and_sessions(s, user, actor)
@@ -293,12 +300,14 @@ def restore(s, actor, user, reason, holding_role=None, company_id=None, role=Non
     user.must_change_password = False
     user.active = True
     s.flush()
+    from .credential_vault import store
+    store(s, user, password, actor.id if actor else None)
     end_sessions(s, user.id)
     record(s, actor, 'Пользователь восстановлен из архива', user, before, reason, {'holding_role': holding_role}, request)
     return password
 
 
-def reset_password(s, actor, user, reason, request=None):
+def reset_password(s, actor, user, reason, request=None, password=None):
     """Явный сброс выдаёт постоянный пароль; прежние сеансы и Telegram отключаются."""
     from .security import hash_password
     if actor is not None and user.id == actor.id:
@@ -306,9 +315,14 @@ def reset_password(s, actor, user, reason, request=None):
     if not user.active:
         raise HTTPException(409, 'Учётная запись в архиве: восстановите её с новым назначением.')
     before = snapshot(s, user)
-    password = temporary_password()
-    user.password_hash = hash_password(password)
+    password = temporary_password() if password is None else password
+    try:
+        user.password_hash = hash_password(password)
+    except ValueError as e:
+        raise HTTPException(422, str(e)) from None
     user.must_change_password = False
+    from .credential_vault import store
+    store(s, user, password, actor.id if actor else None)
     revoke_links_and_sessions(s, user, actor)
     s.flush()
     record(s, actor, 'Сброшен пароль; сеансы и Telegram отключены', user, before, reason, None, request)

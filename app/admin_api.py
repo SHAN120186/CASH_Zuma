@@ -4,13 +4,13 @@
 администратора холдинга; проверка выполняется на сервере для каждого запроса.
 """
 from datetime import timedelta
-from typing import Literal, Optional
+from typing import Annotated, Literal, Optional
 from fastapi import APIRouter, Request, HTTPException, Query
-from pydantic import BaseModel, Field, ConfigDict
+from pydantic import BaseModel, Field, ConfigDict, StringConstraints
 from sqlalchemy import select, func
 from .db import unit, User, Company, CompanyUser, LoginSession, Audit, TelegramLink, now
-from .security import session_user, ROLES, HOLDING_ROLES, COMPANY_ROLES, hash_password
-from . import access
+from .security import session_user, ROLES, HOLDING_ROLES, COMPANY_ROLES, hash_password, verify_password
+from . import access, credential_vault
 
 router = APIRouter()
 STATES = {'ok': 'Действует', 'archived': 'В архиве', 'no_company': 'Нет компании',
@@ -28,12 +28,13 @@ def holding_admin(s, request):
     return user
 
 
-def user_row(s, u, companies, sessions, telegram, last_login):
-    state = access.access_state(s, u)
+def user_row(s, u, companies, sessions, telegram, last_login, assignments_by_user=None):
+    rows = access.links(s, u.id) if assignments_by_user is None else assignments_by_user.get(u.id, [])
+    state = access.access_state_from_rows(u, rows, companies)
     assignments = [{'company_id': m.company_id, 'company': companies[m.company_id].name if m.company_id in companies else '—',
                     'code': companies[m.company_id].code if m.company_id in companies else '', 'role': m.role,
                     'role_label': ROLES.get(m.role, 'Без роли'), 'valid': m in state['valid']}
-                   for m in access.links(s, u.id)]
+                   for m in rows]
     assignments.sort(key=lambda x: x['company'])
     holding = u.role if u.role in HOLDING_ROLES else None
     valid = [a for a in assignments if a['valid']]
@@ -52,7 +53,12 @@ def registry(s):
     telegram = set(s.scalars(select(TelegramLink.user_id)))
     last_login = {uid: str(at) for uid, at in s.execute(select(Audit.user_id, func.max(Audit.created_at))
                   .where(Audit.action == 'Вход в систему').group_by(Audit.user_id).execution_options(company_unscoped=True)).all()}
-    return companies, sessions, telegram, last_login
+    # Reuse one current membership read for the entire holding registry.
+    # It is rebuilt for each request and after each successful mutation.
+    assignments = {}
+    for row in s.scalars(select(CompanyUser).execution_options(company_unscoped=True)):
+        assignments.setdefault(row.user_id, []).append(row)
+    return companies, sessions, telegram, last_login, assignments
 
 
 @router.get('/api/admin/meta')
@@ -62,7 +68,7 @@ def admin_meta(request: Request):
         companies = access.business_companies(s)
         return {'companies': [{'id': c.id, 'code': c.code, 'name': c.name} for c in sorted(companies.values(), key=lambda c: c.name)],
                 'company_roles': [[r, ROLES[r]] for r in COMPANY_ROLES], 'holding_roles': [[r, ROLES[r]] for r in HOLDING_ROLES],
-                'states': STATES}
+                'states': STATES, 'credential_vault_enabled': credential_vault.configured()}
 
 
 @router.get('/api/admin/users')
@@ -90,6 +96,7 @@ def admin_user(id: int, request: Request):
         holding_admin(s, request)
         u = access.unscoped_user(s, id)
         row = user_row(s, u, *registry(s))
+        row['credential_state'] = credential_vault.states(s, [u])[u.id] if u.active else 'archived'
         names = {x.id: x.name for x in s.scalars(select(User).execution_options(company_unscoped=True))}
         history = s.scalars(select(Audit).where(Audit.entity == 'user', Audit.entity_id == str(id))
                             .order_by(Audit.id.desc()).limit(100).execution_options(company_unscoped=True))
@@ -109,7 +116,7 @@ class CreateIn(Input):
 
 @router.post('/api/admin/users')
 def create_user(data: CreateIn, request: Request):
-    """Новая учётная запись со случайным временным паролем; сменить его нужно при первом входе."""
+    """Новая учётная запись со случайным постоянным паролем."""
     with unit(True) as s:
         admin = holding_admin(s, request)
         if s.scalar(select(User.id).where(User.username == data.username).execution_options(company_unscoped=True)):
@@ -122,6 +129,7 @@ def create_user(data: CreateIn, request: Request):
                  role=data.holding_role or data.role, must_change_password=False)
         s.add(u)
         s.flush()
+        credential_vault.store(s, u, password, admin.id)
         if not data.holding_role:
             s.add(CompanyUser(company_id=data.company_id, user_id=u.id, role=data.role))
             s.flush()
@@ -218,13 +226,54 @@ def restore_user(id: int, data: HoldingIn, request: Request):
         return {'user': user_row(s, u, *registry(s)), 'temporary_password': password}
 
 
+class PasswordResetIn(ReasonIn):
+    password: Optional[Annotated[str, StringConstraints(strip_whitespace=False, min_length=12, max_length=128)]] = None
+
+
 @router.post('/api/admin/users/{id}/password')
-def reset_password(id: int, data: ReasonIn, request: Request):
+def reset_password(id: int, data: PasswordResetIn, request: Request):
     with unit(True) as s:
         admin = holding_admin(s, request)
         u = access.unscoped_user(s, id)
-        password = access.reset_password(s, admin, u, data.reason, request)
+        password = access.reset_password(s, admin, u, data.reason, request, password=data.password)
         return {'user': user_row(s, u, *registry(s)), 'temporary_password': password}
+
+
+@router.post('/api/admin/users/{id}/credential/reveal')
+def reveal_password(id: int, data: ReasonIn, request: Request):
+    """Explicit, audited admin action; ordinary user reads never decrypt a password."""
+    with unit(True) as s:
+        admin = holding_admin(s, request)
+        u = access.unscoped_user(s, id)
+        if not u.active:
+            raise HTTPException(409, 'Учётная запись в архиве.')
+        try:
+            password = credential_vault.reveal(s, u)
+        except credential_vault.VaultError as e:
+            status = {'missing': 404, 'stale': 409, 'locked': 503}[e.state]
+            raise HTTPException(status, str(e)) from None
+        access.record(s, admin, 'Просмотрен сохранённый пароль', u, access.snapshot(s, u), data.reason, None, request)
+        return {'username': u.username, 'password': password}
+
+
+class CredentialIn(ReasonIn):
+    password: Annotated[str, StringConstraints(strip_whitespace=False, min_length=1, max_length=128)]
+
+
+@router.post('/api/admin/users/{id}/credential/import')
+def import_password(id: int, data: CredentialIn, request: Request):
+    """Save a known, verified current password without resetting access or sessions."""
+    with unit(True) as s:
+        admin = holding_admin(s, request)
+        u = access.unscoped_user(s, id)
+        if not u.active:
+            raise HTTPException(409, 'Учётная запись в архиве.')
+        if not verify_password(data.password, u.password_hash):
+            raise HTTPException(409, 'Пароль не совпадает с текущим. Доступ сотрудника не изменён.')
+        if not credential_vault.store(s, u, data.password, admin.id):
+            raise HTTPException(503, 'Хранилище паролей недоступно. Обратитесь к администратору сервера.')
+        access.record(s, admin, 'Сохранён действующий пароль без сброса', u, access.snapshot(s, u), data.reason, None, request)
+        return {'ok': True, 'credential_state': 'stored'}
 
 
 @router.post('/api/admin/users/{id}/sessions/end')
