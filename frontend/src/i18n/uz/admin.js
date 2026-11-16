@@ -1,6 +1,14 @@
 // Uzbek (Latin) translations: admin/*, loginPreferences.js.
 // Key: the exact Russian text; value: the Uzbek text with the same {placeholders}.
 export default {
+  'Доступы по компаниям': 'Kompaniyalar bo‘yicha kirishlar',
+  'Логины, роли и состояние доступа в выбранной компании. Статус холдинга действует во всех компаниях.': 'Tanlangan kompaniyadagi loginlar, rollar va kirish holati. Xolding maqomi barcha kompaniyalarda amal qiladi.',
+  'Текущие пароли не отображаются. Новый пароль показывается один раз после создания пользователя или сброса с указанием причины.': 'Amaldagi parollar ko‘rsatilmaydi. Yangi parol foydalanuvchi yaratilganda yoki sabab ko‘rsatib qayta o‘rnatilganda bir marta ko‘rsatiladi.',
+  'Компания в справочнике доступов': 'Kirishlar ro‘yxatidagi kompaniya',
+  'Поиск в справочнике доступов': 'Kirishlar ro‘yxatida qidirish',
+  'Роль в справочнике доступов': 'Kirishlar ro‘yxatidagi rol',
+  'Состояние в справочнике доступов': 'Kirishlar ro‘yxatidagi holat',
+  'Все состояния': 'Barcha holatlar',
   "Нет доступа": "Kirish yo‘q",
   "Только просмотр": "Faqat koʻrish",
   "Можно работать": "Ishlash mumkin",

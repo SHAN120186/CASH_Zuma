@@ -482,7 +482,7 @@ class Document(Base):
     mime = Column(String(100), nullable=False)
     storage_key = Column(String(80), unique=True, nullable=False)
     sha256 = Column(String(64), nullable=False)
-    content = Column(LargeBinary, nullable=False)
+    content = deferred(Column(LargeBinary, nullable=False))
     created_by = Column(Integer, ForeignKey('users.id'), nullable=False)
     created_at = Column(DateTime, default=now, nullable=False)
 
@@ -777,3 +777,5 @@ def initialize():
     migrate_director_thresholds(engine)
     from .finance_author import migrate_finance_authors
     migrate_finance_authors(engine)
+    from .company_expansion import migrate_company_expansion
+    migrate_company_expansion(engine)

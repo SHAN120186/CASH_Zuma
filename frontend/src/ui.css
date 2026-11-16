@@ -622,6 +622,9 @@ button:active:not(:disabled),.button:active{transform:translateY(1px)}
 .admin-filters .search{flex:1 1 240px;min-width:0}
 .admin-filters .search input{width:100%}
 .admin-filters select{flex:0 1 220px;min-width:0}
+.admin-directory{margin-bottom:18px}
+.admin-company-tabs{display:flex;flex-wrap:wrap;gap:8px;margin:12px 0}
+.admin-company-tabs .on{outline:2px solid var(--focus);outline-offset:2px}
 .modal.admin-card{width:min(760px,100%)}
 .admin-kv{display:grid;grid-template-columns:max-content 1fr;gap:6px 18px;margin:10px 0 14px;font-size:14px}
 .admin-kv dt{color:var(--mut);font-weight:700}
