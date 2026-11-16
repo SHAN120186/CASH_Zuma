@@ -13,7 +13,7 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.middleware.trustedhost import TrustedHostMiddleware
 from starlette.concurrency import run_in_threadpool
 from pydantic import BaseModel, Field, ConfigDict
-from sqlalchemy import select, delete, func, or_, and_, cast, String
+from sqlalchemy import select, delete, func, or_, and_, cast, String, case
 from sqlalchemy.exc import IntegrityError, OperationalError
 from sqlalchemy.orm.exc import StaleDataError
 from .db import *
@@ -453,11 +453,19 @@ def requests_list(request:Request,date_from:Optional[date]=None,date_to:Optional
         # A selected period always includes both active and archived requests.
         if not date_from and not date_to and archive!='all':
             cutoff=now()-timedelta(days=1)
-            closed_at=select(func.max(Audit.created_at)).where(
-                Audit.entity=='request', Audit.entity_id==cast(PaymentRequest.id,String),
-                or_(and_(PaymentRequest.status=='cancelled',Audit.action.in_(['Действие по заявке: cancel','Действие по заявке: close'])),
-                    and_(PaymentRequest.status=='rejected',Audit.action=='Действие по заявке: reject'))
-            ).correlate(PaymentRequest).scalar_subquery()
+            # Read closure times once for this company. A correlated aggregate
+            # rescanned the entire journal for each closed request before paging.
+            cancel_actions=('Действие по заявке: cancel','Действие по заявке: close')
+            reject_action='Действие по заявке: reject'
+            closures=select(Audit.entity_id.label('request_id'),
+                func.max(case((Audit.action.in_(cancel_actions),Audit.created_at))).label('cancelled_at'),
+                func.max(case((Audit.action==reject_action,Audit.created_at))).label('rejected_at')
+            ).where(Audit.company_id==s.info['company_id'],Audit.entity=='request',
+                    Audit.action.in_((*cancel_actions,reject_action)))\
+             .group_by(Audit.entity_id).subquery('request_closures')
+            query=query.outerjoin(closures,closures.c.request_id==cast(PaymentRequest.id,String))
+            closed_at=case((PaymentRequest.status=='cancelled',closures.c.cancelled_at),
+                           (PaymentRequest.status=='rejected',closures.c.rejected_at))
             archived=or_(
                 PaymentRequest.status=='paid',
                 PaymentRequest.id.in_(select(CashFunding.request_id).where(CashFunding.mode=='batch',CashFunding.state=='received')),
