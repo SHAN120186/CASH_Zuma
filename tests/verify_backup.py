@@ -7,6 +7,7 @@ load_config()
 import worker
 import psycopg
 from psycopg import sql
+from deploy.credential_backup import credential_snapshot, credential_snapshots_match
 url=worker.engine.url;name='zuma_restore_'+uuid.uuid4().hex[:12]
 dump=worker.backup_postgres()
 def connect(db):return psycopg.connect(host=url.host,port=url.port,user=url.username,password=url.password,dbname=db,autocommit=True,connect_timeout=10)
@@ -16,6 +17,7 @@ with connect('postgres') as admin:
         env={**worker.pg_environment(),'PGDATABASE':name}
         subprocess.run([worker.pg_tool('pg_restore'),'--no-owner','--exit-on-error','--dbname',name,str(dump)],env=env,check=True,capture_output=True)
         with connect(url.database) as source,connect(name) as restored:
+            assert credential_snapshots_match(credential_snapshot(source), credential_snapshot(restored)), 'Credential backup verification failed'
             for table in ('users','company_users','accounts','ledger','categories','budgets','payment_requests','expected_receipts','model_versions','documents','companies','cash_plans','plan_notes','plan_import_batches','import_batches','settings',
                           'request_documents','calendar_days','delegations','audit_log'):
                 query=sql.SQL('SELECT count(*) FROM {}').format(sql.Identifier(table))

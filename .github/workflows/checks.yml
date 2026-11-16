@@ -77,6 +77,7 @@ jobs:
       - run: python -m unittest tests.test_section_access -q
       - run: python tests/test_access.py
       - run: python -m unittest tests.test_credential_vault -q
+      - run: python -m unittest tests.test_credential_backup -q
       - run: python -m unittest tests.test_admin_credentials -q
       - run: python -m unittest tests.test_admin_read_performance -q
       - run: python -m unittest tests.test_role_downloads -q
@@ -172,6 +173,7 @@ jobs:
       - run: python -m unittest tests.test_section_access -q
       - run: python tests/test_access.py
       - run: python -m unittest tests.test_credential_vault -q
+      - run: python -m unittest tests.test_credential_backup -q
       - run: python -m unittest tests.test_admin_credentials -q
       - run: python -m unittest tests.test_admin_read_performance -q
       - run: python -m unittest tests.test_role_downloads -q
