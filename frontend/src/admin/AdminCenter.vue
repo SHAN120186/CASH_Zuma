@@ -37,7 +37,11 @@ async function load() {
   try {
     if (!meta.value) meta.value = await props.api('/api/admin/meta');
     users.value = await props.api('/api/admin/users');
-    if (card.value) card.value = await props.api(`/api/admin/users/${card.value.id}`);
+    const id = card.value?.id, sequence = cardSequence;
+    if (id) {
+      const result = await props.api(`/api/admin/users/${id}`);
+      if (sequence === cardSequence && card.value?.id === id) card.value = result;
+    }
   } catch (e) { error.value = e.message; }
 }
 

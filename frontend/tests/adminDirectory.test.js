@@ -22,7 +22,7 @@ async function fixture(t,{failReset=false,cardReply=null}={}) {
     calls.push([url,options]);
     if(url==='/api/admin/meta')return meta;
     if(url==='/api/admin/users')return users;
-    if(url==='/api/admin/users/7')return cardReply || {...users[1],sessions:0,history:[]};
+    if(url==='/api/admin/users/7')return typeof cardReply==='function' ? cardReply() : cardReply || {...users[1],sessions:0,history:[]};
     if(url==='/api/admin/users/7/password'&&options?.method==='POST') {
       if(failReset)throw new Error('Synthetic reset error');
       return {user:users[1],temporary_password:'Synthetic-New-Secret-123!'};
@@ -111,4 +111,14 @@ test('custom reset submits exact entered password only after confirmation',async
   await view.state.submit();await settle();
   const reset=view.calls.find(([url,options])=>url.endsWith('/password')&&options?.method==='POST');
   assert.equal(JSON.parse(reset[1].body).password,' Synthetic-Manual-Secret_2026! ');
+});
+
+test('a late registry refresh cannot reopen a user card after it was closed',async t=>{
+  let resolveRefresh,cardCalls=0;
+  const view=await fixture(t,{cardReply:()=>++cardCalls===1 ? {...users[1],sessions:0,history:[]} : new Promise(resolve=>{resolveRefresh=resolve;})});
+  await view.state.openCard(users[1]);await settle();
+  const refreshing=view.state.load();await settle();
+  view.state.closeCard();await settle();
+  resolveRefresh({...users[1],sessions:0,history:[]});await refreshing;await settle();
+  assert.equal(view.state.card,null);
 });
