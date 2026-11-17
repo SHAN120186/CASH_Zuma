@@ -240,10 +240,10 @@ class GroupDailySummaryTests(unittest.TestCase):
 
     def test_report_is_consistent_if_a_new_posting_commits_between_reads(self):
         from app import bot_api
-        original_balance = bot_api.account_balance
+        original_reader = bot_api.ReportBalances
         injected = False
 
-        def balance_with_concurrent_posting(s, account, report_date):
+        def reader_with_concurrent_posting(s, accounts, report_date):
             nonlocal injected
             if not injected:
                 injected = True
@@ -251,10 +251,11 @@ class GroupDailySummaryTests(unittest.TestCase):
                     author = writer.scalar(select(User).where(User.username == 'admin'))
                     writer.add(Ledger(account_id=self.acc, category_id=self.cat, kind='in', amount=500,
                                       date=self.today, reference='CONCURRENT-IN', creator_id=author.id))
-            return original_balance(s, account, report_date)
+            return original_reader(s, accounts, report_date)
 
-        with patch('app.bot_api.account_balance', side_effect=balance_with_concurrent_posting):
+        with patch('app.bot_api.ReportBalances', side_effect=reader_with_concurrent_posting):
             before = self.data()
+        self.assertTrue(injected)
         self.assertEqual(before['operations'], [])
         self.assertEqual(before['balances'][0]['amount'], '1000000.00')
         after = self.data()

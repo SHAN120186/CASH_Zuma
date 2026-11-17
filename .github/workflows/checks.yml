@@ -85,6 +85,7 @@ jobs:
       - run: python -m unittest tests.test_group_registration -q
       - run: python tests/test_bot_api.py
       - run: python -m unittest tests.test_group_daily_summary -q
+      - run: python -m unittest tests.test_report_balance_transfer -q
       - run: python -m unittest tests.test_financial_model_import_disabled -q
       - run: python -m unittest discover -s tests -p test_preview.py
       - run: python -m unittest discover -s tests -p test_open_site.py
@@ -179,6 +180,7 @@ jobs:
       - run: python -m unittest tests.test_role_downloads -q
       - run: python tests/test_bot_api.py
       - run: python -m unittest tests.test_group_daily_summary -q
+      - run: python -m unittest tests.test_report_balance_transfer -q
       - run: python -m unittest tests.test_financial_model_import_disabled -q
       - run: python -m unittest tests.test_group_registration -q
       - run: python -m unittest tests.test_future_reservations -q
