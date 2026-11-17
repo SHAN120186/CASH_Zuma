@@ -51,6 +51,20 @@ class User(Base):
     # Временный пароль (создание, сброс, восстановление): до смены работает только смена пароля.
     must_change_password = Column(Boolean, nullable=False, default=False)
 
+class UserCredential(Base):
+    """Recoverable credentials are encrypted separately from login hashes.
+
+    Ciphertext is never read by the ordinary user registry. The encryption key
+    belongs to the deployment environment, not to this database.
+    """
+    __tablename__ = 'user_credentials'
+    user_id = Column(Integer, ForeignKey('users.id', ondelete='CASCADE'), primary_key=True)
+    ciphertext = deferred(Column(LargeBinary, nullable=False))
+    hash_fingerprint = Column(String(64), nullable=False)
+    key_id = Column(String(16), nullable=False)
+    updated_by = Column(Integer, ForeignKey('users.id'), nullable=True)
+    updated_at = Column(DateTime, default=now, nullable=False)
+
 class CompanyUser(Base):
     __tablename__ = 'company_users'
     company_id = Column(Integer, ForeignKey('companies.id'), primary_key=True)
