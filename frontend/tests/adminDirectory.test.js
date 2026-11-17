@@ -14,7 +14,7 @@ const users=[
 const meta={companies,company_roles:[['accountant','Расчётный бухгалтер'],['employee','Заявитель']],
   holding_roles:[['admin','Администратор холдинга']],states:{ok:'Действует'}};
 
-async function fixture(t,{failReset=false}={}) {
+async function fixture(t,{failReset=false,cardReply=null}={}) {
   const previous=Object.getOwnPropertyDescriptor(globalThis,'document');
   globalThis.document={activeElement:null,addEventListener(){},removeEventListener(){}};
   const calls=[];
@@ -22,7 +22,7 @@ async function fixture(t,{failReset=false}={}) {
     calls.push([url,options]);
     if(url==='/api/admin/meta')return meta;
     if(url==='/api/admin/users')return users;
-    if(url==='/api/admin/users/7')return {...users[1],sessions:0,history:[]};
+    if(url==='/api/admin/users/7')return typeof cardReply==='function' ? cardReply() : cardReply || {...users[1],sessions:0,history:[]};
     if(url==='/api/admin/users/7/password'&&options?.method==='POST') {
       if(failReset)throw new Error('Synthetic reset error');
       return {user:users[1],temporary_password:'Synthetic-New-Secret-123!'};
@@ -80,9 +80,45 @@ test('failed directory password reset keeps the confirmation form and reason',as
   assert.equal(view.state.secret,null);assert.match(text(view.container),/Synthetic reset error/);
 });
 
-test('Uzbek directory explains the one-time password display',async t=>{
+test('Uzbek directory explains explicit audited password recovery',async t=>{
   const previous=lang.value;t.after(()=>setLang(previous));setLang('uz');
   const view=await fixture(t);view.state.showDirectory=true;await settle();
   assert.match(text(directory(view)),/Kompaniyalar bo‘yicha kirishlar/);
-  assert.match(text(directory(view)),/Amaldagi parollar ko‘rsatilmaydi/);
+  assert.match(text(directory(view)),/parolni/);
+  assert.match(text(directory(view)),/administrator/);
+});
+
+test('changing directory company discards a pending earlier user card and one-time secret',async t=>{
+  let resolveCard;
+  const cardReply=new Promise(resolve=>{resolveCard=resolve;});
+  const view=await fixture(t,{cardReply});
+  view.state.directoryCompanyId=4;await settle();
+  const pending=view.state.openCard(users[1]);await settle();
+  view.state.secret={password:'Synthetic-Secret-Not-For-Next-Company'};
+  view.state.directoryCompanyId=5;await settle();
+  assert.equal(view.state.secret,null);
+  resolveCard({...users[1],sessions:0,history:[]});await pending;await settle();
+  assert.equal(view.state.card,null);
+  assert.doesNotMatch(text(view.container),/Synthetic-Secret-Not-For-Next-Company/);
+});
+
+test('custom reset submits exact entered password only after confirmation',async t=>{
+  const view=await fixture(t);
+  await view.state.resetFromDirectory(users[1]);
+  view.state.form.password=' Synthetic-Manual-Secret_2026! ';
+  view.state.form.reason='Explicit synthetic password change';
+  assert.equal(view.calls.filter(([,options])=>options).length,0);
+  await view.state.submit();await settle();
+  const reset=view.calls.find(([url,options])=>url.endsWith('/password')&&options?.method==='POST');
+  assert.equal(JSON.parse(reset[1].body).password,' Synthetic-Manual-Secret_2026! ');
+});
+
+test('a late registry refresh cannot reopen a user card after it was closed',async t=>{
+  let resolveRefresh,cardCalls=0;
+  const view=await fixture(t,{cardReply:()=>++cardCalls===1 ? {...users[1],sessions:0,history:[]} : new Promise(resolve=>{resolveRefresh=resolve;})});
+  await view.state.openCard(users[1]);await settle();
+  const refreshing=view.state.load();await settle();
+  view.state.closeCard();await settle();
+  resolveRefresh({...users[1],sessions:0,history:[]});await refreshing;await settle();
+  assert.equal(view.state.card,null);
 });

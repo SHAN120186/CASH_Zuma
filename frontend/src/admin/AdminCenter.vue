@@ -1,8 +1,9 @@
 <script setup>
-import {ref, computed, onMounted, onUnmounted, nextTick} from 'vue';
+import {ref, computed, watch, onMounted, onUnmounted, nextTick} from 'vue';
 import {STATE_CLASS, historyLine, filterUsers, stateCounts, canResolve, companyAccessRows} from './adminCenter.js';
 import UserSections from './UserSections.vue';
 import GroupRegistration from './GroupRegistration.vue';
+import UserCredential from './UserCredential.vue';
 import {tx, N_, formatDate} from '../i18n/index.js';
 
 const props = defineProps({
@@ -14,11 +15,14 @@ const meta = ref(null), users = ref([]), error = ref(''), notice = ref(''), busy
 const filters = ref({q: '', company: '', role: '', state: ''});
 const card = ref(null), form = ref(null), secret = ref(null), dialog = ref(null);
 const showSections=ref(false);
+let cardSequence = 0;
 const journal = ref(null), journalPage = ref(1);
 const showDirectory = ref(false), directoryCompanyId = ref(null);
 const directoryFilters = ref({q: '', role: '', state: ''});
 const directoryCompany = computed(() => meta.value?.companies.find(c => c.id === directoryCompanyId.value) || meta.value?.companies[0]);
 const directoryRows = computed(() => directoryCompany.value ? companyAccessRows(users.value, directoryCompany.value.id, directoryFilters.value) : []);
+// Changing company must not leave another company's selected user or password open.
+watch(directoryCompanyId, () => closeCard(true));
 
 const shown = computed(() => filterUsers(users.value, filters.value));
 const counts = computed(() => stateCounts(users.value));
@@ -33,16 +37,26 @@ async function load() {
   try {
     if (!meta.value) meta.value = await props.api('/api/admin/meta');
     users.value = await props.api('/api/admin/users');
-    if (card.value) card.value = await props.api(`/api/admin/users/${card.value.id}`);
+    const id = card.value?.id, sequence = cardSequence;
+    if (id) {
+      const result = await props.api(`/api/admin/users/${id}`);
+      if (sequence === cardSequence && card.value?.id === id) card.value = result;
+    }
   } catch (e) { error.value = e.message; }
 }
 
 async function openCard(u) {
+  const sequence = ++cardSequence;
+  card.value = null;
   showSections.value=false;form.value = null; secret.value = null; error.value = '';
-  try { card.value = await props.api(`/api/admin/users/${u.id}`); } catch (e) { error.value = e.message; return; }
+  try {
+    const result = await props.api(`/api/admin/users/${u.id}`);
+    if (sequence !== cardSequence) return;
+    card.value = result;
+  } catch (e) { if (sequence === cardSequence) error.value = e.message; return; }
   await nextTick(); dialog.value?.querySelector('button')?.focus();
 }
-function closeCard() { if (!busy.value) { card.value = null; form.value = null; secret.value = null; } }
+function closeCard(force = false) { if (!busy.value || force) { ++cardSequence; card.value = null; form.value = null; secret.value = null; showSections.value = false; } }
 
 // Каждое действие — отдельная форма с обязательной причиной; сервер повторно проверяет права.
 function start(kind) {
@@ -52,9 +66,9 @@ function start(kind) {
   if (kind === 'assign') form.value = {kind, ...base, company_id: c.company_id ?? c.assignments[0]?.company_id ?? firstCompany, role: c.company_role || c.assignments[0]?.role || 'employee'};
   if (kind === 'holding') form.value = {kind, ...base, holding_role: c.holding_role || '', company_id: firstCompany, role: 'employee'};
   if (kind === 'restore') form.value = {kind, ...base, holding_role: '', company_id: firstCompany, role: 'employee'};
-  if (['archive', 'password', 'sessions'].includes(kind)) form.value = {kind, ...base};
+  if (['archive', 'password', 'sessions'].includes(kind)) form.value = {kind, ...base, ...(kind === 'password' ? {password: ''} : {})};
 }
-function startCreate() { card.value = null; secret.value = null; form.value = {kind: 'create', username: '', name: '', holding_role: '', company_id: meta.value.companies[0]?.id ?? null, role: 'employee', reason: ''}; }
+function startCreate() { closeCard(true); form.value = {kind: 'create', username: '', name: '', holding_role: '', company_id: meta.value.companies[0]?.id ?? null, role: 'employee', reason: ''}; }
 async function resetFromDirectory(user) {
   await openCard(user);
   if (card.value?.id === user.id) start('password');
@@ -71,7 +85,7 @@ async function submit() {
     holding: () => props.api(`/api/admin/users/${id}/holding`, json('PUT', {holding_role: holding, ...staff, reason: f.reason})),
     archive: () => props.api(`/api/admin/users/${id}/archive`, json('POST', {reason: f.reason})),
     restore: () => props.api(`/api/admin/users/${id}/restore`, json('POST', {holding_role: holding, ...staff, reason: f.reason})),
-    password: () => props.api(`/api/admin/users/${id}/password`, json('POST', {reason: f.reason})),
+    password: () => props.api(`/api/admin/users/${id}/password`, json('POST', {reason: f.reason, ...(f.password ? {password: f.password} : {})})),
     sessions: () => props.api(`/api/admin/users/${id}/sessions/end`, json('POST', {reason: f.reason})),
     unassign: () => props.api(`/api/admin/users/${id}/unassign`, json('POST', {company_id: f.company_id, reason: f.reason})),
   };
@@ -99,7 +113,7 @@ const when = s => s ? formatDate(new Date(s.replace(' ', 'T') + 'Z'), {timeZone:
 // Escape не скрывает показанный один раз временный пароль: его убирают кнопкой «Скрыть».
 function onKey(e) { if (e.key === 'Escape' && !secret.value) { if (form.value && !busy.value) form.value = null; else closeCard(); } }
 onMounted(() => { load(); document.addEventListener('keydown', onKey); });
-onUnmounted(() => document.removeEventListener('keydown', onKey));
+onUnmounted(() => { ++cardSequence; secret.value = null; document.removeEventListener('keydown', onKey); });
 </script>
 
 <template>
@@ -122,7 +136,7 @@ onUnmounted(() => document.removeEventListener('keydown', onKey));
       <div class="card-h"><h3 id="company-access-title">{{ tx('Доступы по компаниям') }}</h3></div>
       <div class="card-b">
         <p class="sub">{{ tx('Логины, роли и состояние доступа в выбранной компании. Статус холдинга действует во всех компаниях.') }}</p>
-        <p class="sub">{{ tx('Текущие пароли не отображаются. Новый пароль показывается один раз после создания пользователя или сброса с указанием причины.') }}</p>
+        <p class="sub">{{ tx('Откройте пользователя, чтобы посмотреть сохранённый пароль или изменить его. Просмотр доступен только администратору и записывается в журнал.') }}</p>
         <div class="admin-company-tabs" role="group" :aria-label="tx('Компания в справочнике доступов')">
           <button v-for="c in meta.companies" :key="c.id" class="secondary" :class="{on: directoryCompany?.id === c.id}" :aria-pressed="directoryCompany?.id === c.id" @click="directoryCompanyId = c.id">{{ c.name }}</button>
         </div>
@@ -203,6 +217,7 @@ onUnmounted(() => document.removeEventListener('keydown', onKey));
         </dl>
         <p v-if="card.state === 'conflict'" class="warning">{{ tx('Сотрудник назначен в нескольких компаниях. Доступ приостановлен, пока вы не выберете одну компанию: «Выбрать компанию».') }}</p>
         <p v-if="card.state === 'no_role'" class="warning">{{ tx('Связь с компанией без действующей роли доступа не даёт. Назначьте роль или уберите связь.') }}</p>
+        <UserCredential :key="card.id" :api="api" :user="card" :enabled="!!meta?.credential_vault_enabled" @updated="openCard(card)" />
 
         <div class="actions admin-actions" v-if="!form">
           <template v-if="card.active">
@@ -235,7 +250,8 @@ onUnmounted(() => document.removeEventListener('keydown', onKey));
         <p v-if="form.kind === 'holding'" class="form-note wide">{{ tx('Все прежние назначения снимаются. Администратор холдинга получает полный доступ во всех компаниях.') }}</p>
         <p v-if="form.kind === 'unassign'" class="form-note wide">{{ tx('Назначение в {company} будет снято, сеансы сотрудника завершены.', {company: form.company}) }}</p>
         <p v-if="form.kind === 'archive'" class="form-note wide">{{ tx('Вход, сеансы, Telegram и все назначения будут отключены. Документы и журнал сохранят автора.') }}</p>
-        <p v-if="['password', 'restore', 'create'].includes(form.kind)" class="form-note wide">{{ tx('Будет создан случайный постоянный пароль (20 символов). Обязательной смены при входе нет.') }}</p>
+        <label v-if="form.kind === 'password'" class="wide">{{ tx('Новый пароль (необязательно)') }}<input v-model="form.password" type="password" minlength="12" maxlength="128" autocomplete="new-password"><small>{{ tx('Оставьте пустым для случайного пароля. После изменения прежние сеансы завершатся.') }}</small></label>
+        <p v-if="['password', 'restore', 'create'].includes(form.kind)" class="form-note wide">{{ tx('Если пароль не задан, будет создан случайный постоянный пароль (20 символов). Обязательной смены при входе нет.') }}</p>
         <label class="wide">{{ tx('Причина') }}<textarea v-model="form.reason" minlength="10" maxlength="1000" required></textarea></label>
         <p v-if="error" class="error wide" role="alert">{{ tx(error) }}</p>
         <div class="form-actions wide"><button type="button" class="secondary" :disabled="busy" @click="form = null">{{ tx('Отмена') }}</button><button :disabled="busy">{{ busy ? tx('Сохраняем…') : tx('Подтвердить') }}</button></div>

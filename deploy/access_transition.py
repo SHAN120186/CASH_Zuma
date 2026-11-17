@@ -95,6 +95,7 @@ def verify_backup(db, dump):
     import subprocess, uuid, psycopg
     from psycopg import sql
     from deploy.postgres_backup import pg_environment, pg_tool
+    from deploy.credential_backup import credential_snapshot
     url = db.engine.url
     name = 'zuma_restore_' + uuid.uuid4().hex[:12]
 
@@ -109,6 +110,7 @@ def verify_backup(db, dump):
                            env=env, check=True, capture_output=True, timeout=600)
             result = {}
             with connect(name) as restored:
+                result['user_credentials'] = [credential_snapshot(admin), credential_snapshot(restored)]
                 for table in VERIFY_TABLES:
                     q = sql.SQL('SELECT count(*) FROM {}').format(sql.Identifier(table))
                     result[table] = [admin.execute(q).fetchone()[0], restored.execute(q).fetchone()[0]]

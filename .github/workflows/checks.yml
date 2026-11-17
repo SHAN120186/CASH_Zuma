@@ -76,6 +76,10 @@ jobs:
           done
       - run: python -m unittest tests.test_section_access -q
       - run: python tests/test_access.py
+      - run: python -m unittest tests.test_credential_vault -q
+      - run: python -m unittest tests.test_credential_backup -q
+      - run: python -m unittest tests.test_admin_credentials -q
+      - run: python -m unittest tests.test_admin_read_performance -q
       - run: python -m unittest tests.test_role_downloads -q
       - run: python -m unittest tests.test_future_reservations -q
       - run: python -m unittest tests.test_group_registration -q
@@ -168,6 +172,10 @@ jobs:
           done
       - run: python -m unittest tests.test_section_access -q
       - run: python tests/test_access.py
+      - run: python -m unittest tests.test_credential_vault -q
+      - run: python -m unittest tests.test_credential_backup -q
+      - run: python -m unittest tests.test_admin_credentials -q
+      - run: python -m unittest tests.test_admin_read_performance -q
       - run: python -m unittest tests.test_role_downloads -q
       - run: python tests/test_bot_api.py
       - run: python -m unittest tests.test_group_daily_summary -q

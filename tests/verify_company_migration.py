@@ -19,6 +19,7 @@ from settings_loader import load_config
 load_config()
 import psycopg
 from psycopg import sql
+from deploy.credential_backup import credential_snapshot, credential_snapshots_match
 from sqlalchemy.engine import make_url
 
 
@@ -61,12 +62,15 @@ def main():
         admin.execute(sql.SQL('CREATE DATABASE {}').format(sql.Identifier(name)))
         try:
             subprocess.run([tool('pg_restore'),'--no-owner','--exit-on-error','--dbname',name,str(dump)],env=env,check=True,capture_output=True)
-            with connect(name) as conn:before=fingerprint(conn)
+            with connect(name) as conn:
+                before=fingerprint(conn)
+                credentials_before=credential_snapshot(conn)
             with tempfile.TemporaryDirectory() as data:
                 test_env={**os.environ,'DATABASE_URL':url.set(database=name).render_as_string(hide_password=False),'DATA_DIR':data}
                 for iteration in range(2):
                     subprocess.run([sys.executable,'-c','from app.db import initialize; initialize()'],cwd=ROOT,env=test_env,check=True,capture_output=True)
                     with connect(name) as conn:
+                        assert credential_snapshots_match(credentials_before,credential_snapshot(conn),allow_new_empty=True), 'Credential storage changed during migration'
                         after=fingerprint(conn)
                         if after!=before:
                             for table in before:

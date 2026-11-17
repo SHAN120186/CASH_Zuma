@@ -87,7 +87,7 @@ function showInvalidFields(event){if(!event.target?.form)return;event.preventDef
 function updateInvalidFields(event){if(feedbackForm===event.target?.form)updateFieldFeedback(feedbackForm)}
 // Field names and messages are read from the rendered form, so they are rebuilt after a language switch.
 watch(lang,()=>{if(feedbackForm)nextTick(()=>{if(feedbackForm)updateFieldFeedback(feedbackForm)})});
-function cancelPending(){companyEpoch++;for(const call of pendingCalls)call.abort();pendingCalls.clear();requestProgress.reset();clearFieldFeedback()}
+function cancelPending(){clearTimeout(searchTimer);searchTimer=null;companyEpoch++;for(const call of pendingCalls)call.abort();pendingCalls.clear();requestProgress.reset();clearFieldFeedback()}
 const localProgressUrl=url=>/^\/api\/cashflow-osv(?:\/|\?|$)/.test(url);
 function requestLabel(url,method='GET'){
  if(url==='/api/login')return N_('Входим в систему…');
@@ -197,7 +197,19 @@ const requestStatuses=computed(()=>Object.fromEntries(Object.entries(status).fil
 watch(currency,()=>{listPage.value=1},{flush:'sync'});
 async function applyPeriod(v){dateFrom.value=v.from;dateTo.value=v.to;listPage.value=1;await load()}
 async function changeListPage(n){listPage.value=n;expandedRequest.value=null;await load()}
-let searchTimer;watch(search,()=>{if(['ledger','requests'].includes(page.value)){clearTimeout(searchTimer);searchTimer=setTimeout(()=>{listPage.value=1;load()},300)}});
+let searchTimer;
+// Navigation resets search and loads immediately. Debounce only user input,
+// so that reset cannot schedule an identical second request.
+function queueSearch(event){
+ clearTimeout(searchTimer);
+ if(event?.target?.composing||!['ledger','requests'].includes(page.value))return;
+ const epoch=companyEpoch,context=requestsKey();
+ searchTimer=setTimeout(()=>{
+  searchTimer=null;
+  if(epoch!==companyEpoch||context!==requestsKey()||!companyReady.value)return;
+  listPage.value=1;load();
+ },300);
+}
 onUnmounted(()=>clearTimeout(searchTimer));
 function archiveAccount(a){if(a.kind==='transit')return;open(a.archived?N_('Восстановить счёт'):N_('Убрать счёт в архив'),[field('reason',N_('Причина'),'textarea',{minlength:10})],{reason:''},d=>post(`/api/accounts/${a.id}/archive`,{...d,archived:!a.archived}),N_('История сохраняется. В архив можно убрать счёт с нулевым остатком и без незавершённых заявок.'))}
 
@@ -314,7 +326,7 @@ async function openStatementCashFlow(data){
  await go('report');
  if(context.crossYear)flash(N_('Cash Flow открыт за год окончания выписки. Предыдущий год откройте отдельно.'));
 }
-async function load(options={}){if(!companyReady.value)return;const epoch=companyEpoch,id=++loadRequestId,requestedPage=page.value,requestedCurrency=currency.value;busy.value=true;error.value='';
+async function load(options={}){clearTimeout(searchTimer);searchTimer=null;if(!companyReady.value)return;const epoch=companyEpoch,id=++loadRequestId,requestedPage=page.value,requestedCurrency=currency.value;busy.value=true;error.value='';
  const key=requestsKey();
  if(requestedPage==='requests'){listPage.value=1;listRequestId++;moreRequestsBusy.value=false;moreRequestsError.value='';}
  const current=()=>id===loadRequestId&&epoch===companyEpoch&&page.value===requestedPage&&currency.value===requestedCurrency&&(requestedPage!=='requests'||key===requestsKey());
@@ -619,7 +631,7 @@ onMounted(async()=>{try{const r=await api('/api/me');user.value=r.user;csrf.valu
      <DailyReconciliation v-if="(has('view')||has('pay_bank'))&&companyId&&(user.holding_role||['finance','director','accountant'].includes(user.company_role))" :key="`reconciliation-${companyId}`" :api="api" :company-id="companyId" :currency="currency" :today="boot.today" :refresh="homeRefresh" @open-request="openRequest"/>
      <BankStatements v-if="has('ledger')&&companyId" :key="`bank-statements-${companyId}`" :api="api" :company-id="companyId" :accounts="boot.accounts" :categories="boot.categories" :can-import="has('pay_bank')||has('import')" :can-review="has('pay_bank')" :can-link-existing-bank-facts="user.holding_role==='admin'&&has('write')" :can-allocate="has('pay_bank')||has('write')" :can-post="has('write')||has('pay_bank')" :can-manage-fee="has('write')" :can-delete-statements="user.holding_role==='admin'" :can-resolve-exceptions="user.holding_role==='admin'&&has('pay_bank')&&has('write')" :can-view-cash-flow="canNavigate('report')" :can-view-history="!!user.permissions?.some(p => p === 'pay_bank' || p === 'import')" @cash-flow="openStatementCashFlow" @changed="bankStatementsChanged"/>
      <label v-if="user.holding_role==='admin'" class="sub"><input type="checkbox" v-model="showDeletedOperations" @change="listPage=1;load()"> {{tx('Показать удалённые операции')}}</label>
-     <PeriodFilter :key="page" :date-from="dateFrom" :date-to="dateTo" @apply="applyPeriod"><label class="search"><AppIcon name="search"/><input v-model="search" :placeholder="tx('Поиск: контрагент, статья, документ')" :aria-label="tx('Поиск операции')"></label><div class="grow actions"><a v-if="has('download')" class="button secondary" :href="companyUrl('/api/export/ledger.csv')"><AppIcon name="download"/> CSV</a><button v-if="has('write')&&user.role!=='cashier'" @click="transaction()"><AppIcon name="plus"/> {{tx('Новая операция')}}</button></div></PeriodFilter>
+     <PeriodFilter :key="page" :date-from="dateFrom" :date-to="dateTo" @apply="applyPeriod"><label class="search"><AppIcon name="search"/><input v-model="search" @input="queueSearch" :placeholder="tx('Поиск: контрагент, статья, документ')" :aria-label="tx('Поиск операции')"></label><div class="grow actions"><a v-if="has('download')" class="button secondary" :href="companyUrl('/api/export/ledger.csv')"><AppIcon name="download"/> CSV</a><button v-if="has('write')&&user.role!=='cashier'" @click="transaction()"><AppIcon name="plus"/> {{tx('Новая операция')}}</button></div></PeriodFilter>
      <div v-if="visibleRows.length" class="table-card rsp-wrap"><table class="rsp"><thead><tr><th>{{tx('Дата / документ')}}</th><th>{{tx('Операция')}}</th><th>{{tx('Контрагент / статья')}}</th><th>{{tx('Счёт')}}</th><th class="num">{{tx('Сумма')}}</th><th>{{tx('Документы')}}</th><th></th></tr></thead><tbody>
       <tr v-for="r in visibleRows" :key="r.id"><td :data-l="tx('Дата')">{{r.date}}<small>{{r.reference}}</small></td><td :data-l="tx('Операция')"><span class="pill" :class="{in:'good',out:'bad',transfer:'plan'}[r.kind]">{{{in:tx('Поступление'),out:tx('Расход'),transfer:tx('Перевод')}[r.kind]}}</span><small v-if="r.deleted">{{tx('Удалена')}}</small><small v-if="r.reversed||r.reversal_of">{{tx('Сторно')}}</small></td><td :data-l="tx('Контрагент')">{{r.counterparty||tx('Между своими счетами')}}<small>{{r.category}}</small></td><td :data-l="tx('Счёт')">{{r.account}}<template v-if="r.to_account"> → {{r.to_account}}</template></td><td class="num" :data-l="tx('Сумма')"><b :class="{pos:r.kind==='in'}">{{r.kind==='in'?'+':r.kind==='out'?'−':''}}{{money(r.amount)}}</b> {{r.currency}}</td><td :data-l="tx('Документы')"><button class="secondary tiny" @click="docs(r)"><AppIcon name="file"/> {{tx('Документы')}}</button></td><td data-l=""><button v-if="r.can_edit&&user.holding_role==='admin'" class="secondary tiny" @click="editOperation(r)">{{tx('Изменить')}}</button><button v-if="has('budget')&&r.can_reverse!==false&&!r.deleted&&!r.reversed&&!r.reversal_of" class="ghost tiny" @click="reverse(r)">{{tx('Сторно')}}</button><button v-if="r.can_delete&&user.holding_role==='admin'" class="ghost tiny" @click="deleteOperation(r)">{{tx('Удалить')}}</button></td></tr>
      </tbody></table></div>
@@ -631,7 +643,7 @@ onMounted(async()=>{try{const r=await api('/api/me');user.value=r.user;csrf.valu
      <div v-if="!dateFrom&&!dateTo" class="seg" role="group" :aria-label="tx('Список заявок')"><button :class="{on:requestArchive==='active'}" @click="requestArchive='active';listPage=1;load()">{{tx('Основной список')}}</button><button :class="{on:requestArchive==='archived'}" @click="requestArchive='archived';listPage=1;load()">{{tx('Архив заявок')}}</button></div>
      <p class="sub">{{dateFrom||dateTo?tx('За выбранный период показаны все заявки, включая архивные.'):tx('На согласовании, на доработке и утверждённые неоплаченные заявки остаются в основном списке. Оплаченные сразу переходят в архив.')}}</p>
      <p class="sub">{{tx('Сначала ранние сроки оплаты: просроченные, затем сегодняшние и ближайшие.')}}</p>
-     <PeriodFilter :key="page" :date-from="dateFrom" :date-to="dateTo" @apply="applyPeriod"><select :aria-label="tx('Статус заявки')" v-model="requestStatus" @change="listPage=1;load()"><option value="">{{tx('Статус: все')}}</option><option v-for="(label,key) in requestStatuses" :key="key" :value="key">{{tx(label)}}</option></select><label class="search"><AppIcon name="search"/><input v-model="search" :placeholder="tx('Номер заявки, контрагент или назначение')" :aria-label="tx('Поиск заявки')"></label><div class="grow actions"><button v-if="has('request')" @click="requestForm()"><AppIcon name="plus"/> {{tx('Создать заявку')}}</button></div></PeriodFilter>
+     <PeriodFilter :key="page" :date-from="dateFrom" :date-to="dateTo" @apply="applyPeriod"><select :aria-label="tx('Статус заявки')" v-model="requestStatus" @change="listPage=1;load()"><option value="">{{tx('Статус: все')}}</option><option v-for="(label,key) in requestStatuses" :key="key" :value="key">{{tx(label)}}</option></select><label class="search"><AppIcon name="search"/><input v-model="search" @input="queueSearch" :placeholder="tx('Номер заявки, контрагент или назначение')" :aria-label="tx('Поиск заявки')"></label><div class="grow actions"><button v-if="has('request')" @click="requestForm()"><AppIcon name="plus"/> {{tx('Создать заявку')}}</button></div></PeriodFilter>
      <p class="sumline"><span>{{tx('Найдено')}} <b>{{listTotal}}</b></span><span>{{listTotal<=4?tx('До 4 заявок — карточки'):tx('Следующие заявки загружаются при прокрутке')}}</span></p>
      <div v-if="listTotal<=4&&visibleRows.length" class="rq-grid"><section v-for="r in visibleRows" :key="r.id" class="card rq-card" :class="{backdated: isBackdated(r)}" :title="isBackdated(r)?tx(BACKDATED_HINT):null">
       <div class="rq-top"><span>{{r.number}}</span><span class="pill" :class="statusClass(r)">{{stageLabel(r)}}</span></div>

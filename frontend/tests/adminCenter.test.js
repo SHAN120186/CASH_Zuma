@@ -47,7 +47,7 @@ test('access history shows before, after and the reason', () => {
   assert.deepEqual(historyLine(''), []);
 });
 
-test('the admin center never shows or stores a password beyond the one-time notice', () => {
+test('the admin center keeps password notices in memory and uses the holding API only', () => {
   const source = readFileSync(new URL('../src/admin/AdminCenter.vue', import.meta.url), 'utf8');
   assert.doesNotMatch(source, /localStorage|sessionStorage/, 'temporary passwords stay in memory only');
   assert.match(source, /Показывается один раз/);
