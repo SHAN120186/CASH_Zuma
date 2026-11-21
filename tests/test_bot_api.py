@@ -329,7 +329,7 @@ class BotApiTests(unittest.TestCase):
         self.assertEqual(r['group'],{'chat_id':chat,'allowed':True,'companies':['ZUMA'],'scope_id':self.scope(chat).json()['scope_id']})
         self.assertEqual(r['user'],{'linked':True,'user_id':finance['id'],'is_admin':False,'companies':['UZGERMED'],'director_companies':[]})
         self.assertTrue(r['checked_at'])
-        self.assertEqual(check(telegram_user_id=556002).json()['user'],{'linked':True,'user_id':founder['id'],'is_admin':False,'companies':['FAZO','SAMO','UZGERMED','ZUMA'],'director_companies':[]})
+        self.assertEqual(check(telegram_user_id=556002).json()['user'],{'linked':True,'user_id':founder['id'],'is_admin':False,'companies':['FAZO','SAMO','UZGERMED','UZYARN','ZUMA'],'director_companies':[]})
         self.assertEqual(check(telegram_user_id=556003).json()['user']['is_admin'],True)
         self.assertEqual(check(chat_id=GROUP).json()['group'],{'chat_id':GROUP,'allowed':True,'companies':['UZGERMED'],'scope_id':self.groups()[GROUP]['scope_id']})
         self.assertEqual(check(telegram_user_id=556999).json()['user'],{'linked':False,'user_id':None,'is_admin':False,'companies':[],'director_companies':[]})
@@ -766,7 +766,8 @@ class BotApiTests(unittest.TestCase):
         self.account('Zuma bank','bank','UZS','777.00',headers=self.zuma())
         self.assertEqual(self.summary(chat=chat).status_code,403)
         choices=[{'code':'FAZO','name':'FAZO'},{'code':'SAMO','name':'SAMO'},
-                 {'code':'UZGERMED','name':'UZGERMED'},{'code':'ZUMA','name':'Zuma'}]
+                 {'code':'UZGERMED','name':'UZGERMED'},{'code':'UZYARN','name':'Uzyarn'},
+                 {'code':'ZUMA','name':'Zuma'}]
         self.assertEqual(self.group(chat,555300).json(),{'chat_id':chat,'connected':False,'source':None,'companies':[],
                                                        'can_manage':True,'choices':choices})
         r=self.connect(chat,['zuma'],555300,title='  Финансы \n Zuma ');self.assertEqual(r.status_code,200,r.text)
@@ -915,7 +916,8 @@ class BotApiTests(unittest.TestCase):
         self.assertEqual(self.summary(chat=zuma_only).status_code,403)
         state=self.group(both,555600).json()
         self.assertEqual((state['companies'],state['choices']),([],[{'code':'FAZO','name':'FAZO'},
-            {'code':'SAMO','name':'SAMO'},{'code':'UZGERMED','name':'UZGERMED'}]))
+            {'code':'SAMO','name':'SAMO'},{'code':'UZGERMED','name':'UZGERMED'},
+            {'code':'UZYARN','name':'Uzyarn'}]))
         # Still registered: the administrator sees it and can switch it off.
         self.assertEqual((self.group(zuma_only,555600).json()['connected'],self.group(zuma_only,555600).json()['companies']),(True,[]))
         self.assertEqual(self.disconnect(zuma_only,555600).json(),{'removed':True})
