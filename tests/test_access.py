@@ -96,7 +96,7 @@ class AccessTests(base.SiteTests):
                     if not s.get(CompanyUser, (c.id, uid)):
                         s.add(CompanyUser(company_id=c.id, user_id=uid, role=None))
             initialize(); initialize()
-            self.assertEqual(self.links('legacy_staff'), [('FAZO', None), ('SAMO', None), ('UNASSIGNED', None), ('UZGERMED', 'employee'), ('ZUMA', None)])
+            self.assertEqual(self.links('legacy_staff'), [('FAZO', None), ('SAMO', None), ('UNASSIGNED', None), ('UZGERMED', 'employee'), ('UZYARN', None), ('ZUMA', None)])
             self.assertEqual([c['code'] for c in cl.get('/api/companies').json()['companies']], ['UZGERMED'])
             self.assertEqual(cl.get('/api/bootstrap', headers={**h, 'X-Company-ID': str(ids['ZUMA'])}).status_code, 403)
             # Действующие роли в двух компаниях — конфликт: доступ приостановлен до решения администратора.

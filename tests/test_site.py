@@ -2032,8 +2032,8 @@ class SiteTests(unittest.TestCase):
         rid=self.request('600').json()['id']
         cl,h=self.user_in(ids['UZGERMED'],'founder','owner')
         try:
-            self.assertEqual(sorted(c['code'] for c in cl.get('/api/companies').json()['companies']),['FAZO','SAMO','UZGERMED','ZUMA'])
-            for code in ('FAZO','SAMO','UZGERMED','ZUMA'):
+            self.assertEqual(sorted(c['code'] for c in cl.get('/api/companies').json()['companies']),['FAZO','SAMO','UZGERMED','UZYARN','ZUMA'])
+            for code in ('FAZO','SAMO','UZGERMED','UZYARN','ZUMA'):
                 hh={**h,'X-Company-ID':str(ids[code])}
                 me=cl.get('/api/bootstrap',headers=hh).json()['user']
                 self.assertEqual((me['holding_role'],me['company_role']),('founder',None))
