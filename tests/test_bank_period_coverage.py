@@ -47,7 +47,7 @@ class BankPeriodCoverageTests(BankStatementTests):
         self.assertEqual(self.coverage(previous, previous).json()['rows'], [])
         with unit(True) as s:
             original = s.scalar(select(Ledger).where(Ledger.request_id == rid))
-            s.add(Ledger(company_id=self.company, account_id=self.acc, kind='in', date=original.date,
+            s.add(Ledger(account_id=self.acc, kind='in', date=original.date,
                          amount=original.amount, reference='Reversal', creator_id=original.creator_id,
                          reversal_of=original.id))
         self.assertEqual(self.coverage().json()['rows'], [])
