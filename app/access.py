@@ -50,16 +50,18 @@ def valid_assignments(s, user):
 
 def access_state_from_rows(user, rows, companies):
     """Request-local access presentation from already loaded assignments."""
-    business_ids = {cid for cid, company in companies.items()
-                    if company.active and company.code != SERVICE_CODE}
-    valid = [m for m in rows if m.company_id in business_ids and m.role in COMPANY_ROLES]
+    business_ids = {cid for cid, company in companies.items() if company.code != SERVICE_CODE}
+    assigned = [m for m in rows if m.company_id in business_ids and m.role in COMPANY_ROLES]
+    valid = [m for m in assigned if companies[m.company_id].active]
     stale = [m for m in rows if m not in valid]
     if not user.active:
         state = 'archived'
     elif user.role in HOLDING_ROLES:
         state = 'ok'
-    elif len(valid) > 1:
+    elif len(assigned) > 1:
         state = 'conflict'
+    elif len(assigned) == 1 and not valid:
+        state = 'company_suspended'
     elif not valid:
         state = 'no_role' if stale else 'no_company'
     else:
@@ -69,14 +71,21 @@ def access_state_from_rows(user, rows, companies):
 
 def access_state(s, user):
     """Состояние доступа для реестра: ok, archived, no_company, conflict, no_role."""
-    return access_state_from_rows(user, links(s, user.id), business_companies(s))
+    companies = {c.id: c for c in s.scalars(select(Company).execution_options(company_unscoped=True))}
+    return access_state_from_rows(user, links(s, user.id), companies)
 
 
 def staff_company_ids(s, user):
     """Компании сотрудника. Конфликт (назначения в нескольких компаниях) приостанавливает доступ,
     пока администратор явно не выберет компанию: предупреждения недостаточно."""
-    valid = valid_assignments(s, user)
-    return [valid[0].company_id] if len(valid) == 1 else []
+    rows = assignment_availability(s,user)
+    return [rows[0][0].company_id] if len(rows) == 1 and rows[0][1] else []
+
+
+def assignment_availability(s, user):
+    return list(s.execute(select(CompanyUser, Company.active).join(Company, Company.id==CompanyUser.company_id)
+        .where(CompanyUser.user_id==user.id, CompanyUser.role.in_(COMPANY_ROLES), Company.code!=SERVICE_CODE)
+        .execution_options(company_unscoped=True)))
 
 
 def snapshot(s, user):
@@ -93,8 +102,8 @@ def scope_home(s, user):
     if user.role in HOLDING_ROLES:
         scope_user(user, None)
         return
-    valid = valid_assignments(s, user)
-    scope_user(user, valid[0].role if len(valid) == 1 else None)
+    rows = assignment_availability(s,user)
+    scope_user(user, rows[0][0].role if len(rows)==1 and rows[0][1] else None)
 
 
 def end_sessions(s, user_id):

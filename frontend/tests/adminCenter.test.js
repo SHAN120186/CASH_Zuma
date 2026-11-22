@@ -53,3 +53,10 @@ test('the admin center keeps password notices in memory and uses the holding API
   assert.match(source, /Показывается один раз/);
   assert.doesNotMatch(source, /\/api\/users\//, 'the registry uses the holding admin API only');
 });
+
+test('company availability audit shows changed status and the supplied reason', () => {
+  const off = historyLine(JSON.stringify({before: true, after: false, reason: 'Технические работы'}));
+  assert.deepEqual(off, ['Было: Включена', 'Стало: Отключена', 'Причина: Технические работы']);
+  assert.deepEqual(historyLine(JSON.stringify({before: false, after: true})),
+    ['Было: Отключена', 'Стало: Включена']);
+});

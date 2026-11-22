@@ -9,7 +9,7 @@ MARKER = 'company_expansion_samo_fazo_v1'
 UZYARN_MARKER = 'company_expansion_uzyarn_v1'
 EXPANSIONS = (
     (MARKER, tuple((code, code) for code in NEW_COMPANIES)),
-    (UZYARN_MARKER, (('UZYARN', 'Uzyarn'),)),
+    (UZYARN_MARKER, (('UZYARN', 'UZYARN'),)),
 )
 
 

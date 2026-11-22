@@ -43,9 +43,11 @@ def active_delegations(s, user_id, company_id=None):
 SERVICE_CODE = 'UNASSIGNED'
 
 
-def available_companies(s, user):
+def available_companies(s, user, include_inactive=False):
     """Единственный источник допустимых компаний: список, заголовок и параметр запроса."""
-    q = select(Company).where(Company.active.is_(True))
+    q = select(Company)
+    if not include_inactive:
+        q = q.where(Company.active.is_(True))
     if user.role != 'admin':
         # Служебное пространство хранит исторические записи без подтверждённого владельца.
         # Интерфейс его скрывает; сервер тоже не принимает его как контекст сотрудника,
@@ -55,9 +57,12 @@ def available_companies(s, user):
             # Учредитель видит все компании холдинга. Сотрудник — ровно одну: связь без
             # действующей роли доступа не даёт, а назначения в нескольких компаниях
             # приостанавливают доступ до явного решения администратора.
-            from .access import staff_company_ids
-            q = q.where(Company.id.in_(staff_company_ids(s, user)))
-    return list(s.scalars(q.order_by(Company.code == 'UNASSIGNED', Company.name)))
+            from .security import COMPANY_ROLES
+            assigned = list(s.scalars(select(CompanyUser.company_id).join(Company, Company.id==CompanyUser.company_id)
+                .where(CompanyUser.user_id==user.id, CompanyUser.role.in_(COMPANY_ROLES), Company.code!=SERVICE_CODE)
+                .execution_options(company_unscoped=True)))
+            q = q.where(Company.id.in_(assigned if len(assigned)==1 else []))
+    return list(s.scalars(q.order_by(Company.code == 'UNASSIGNED', Company.name).execution_options(company_unscoped=True)))
 
 
 def activate(s, request, user):
@@ -86,7 +91,7 @@ def activate(s, request, user):
     policy_key=literal('sections:')+cast(Company.id,String)+literal(':'+str(user.id))
     q=select(Company,CompanyUser,has_delegations,Setting).outerjoin(CompanyUser,
         (CompanyUser.company_id==Company.id)&(CompanyUser.user_id==user.id))\
-        .outerjoin(Setting,Setting.key==policy_key).where(Company.active.is_(True))
+        .outerjoin(Setting,Setting.key==policy_key)
     if user.role!='admin':q=q.where(Company.code!=SERVICE_CODE)
     if user.role not in ('admin','founder'):q=q.where(CompanyUser.role.in_(COMPANY_ROLES))
     choices=s.execute(q.execution_options(company_unscoped=True)).all()
@@ -95,6 +100,8 @@ def activate(s, request, user):
     if chosen is None:
         raise HTTPException(403, 'Нет доступа к выбранной компании.')
     company,membership,has_acting,policy=chosen;cid=company.id
+    if not company.active:
+        raise HTTPException(403, 'Компания отключена. Обратитесь к администратору.')
     from .security import scope_user
     acting = []
     for d in (active_delegations(s, user.id, cid) if has_acting else []):

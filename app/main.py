@@ -271,7 +271,7 @@ def change_password(data:PasswordIn,request:Request):
 def company_choices(request:Request):
     with unit() as s:
         user,session=session_user(s,request);access.scope_home(s,user)
-        return {'companies':[{'id':c.id,'code':c.code,'name':c.name} for c in available_companies(s,user)],'user':user_json(user),'csrf':session.csrf}
+        return {'companies':[{'id':c.id,'code':c.code,'name':c.name,'active':c.active} for c in available_companies(s,user,include_inactive=True)],'user':user_json(user),'csrf':session.csrf}
 
 @app.get('/api/bootstrap')
 def bootstrap(request:Request):

@@ -766,7 +766,7 @@ class BotApiTests(unittest.TestCase):
         self.account('Zuma bank','bank','UZS','777.00',headers=self.zuma())
         self.assertEqual(self.summary(chat=chat).status_code,403)
         choices=[{'code':'FAZO','name':'FAZO'},{'code':'SAMO','name':'SAMO'},
-                 {'code':'UZGERMED','name':'UZGERMED'},{'code':'UZYARN','name':'Uzyarn'},
+                 {'code':'UZGERMED','name':'UZGERMED'},{'code':'UZYARN','name':'UZYARN'},
                  {'code':'ZUMA','name':'Zuma'}]
         self.assertEqual(self.group(chat,555300).json(),{'chat_id':chat,'connected':False,'source':None,'companies':[],
                                                        'can_manage':True,'choices':choices})
@@ -917,7 +917,7 @@ class BotApiTests(unittest.TestCase):
         state=self.group(both,555600).json()
         self.assertEqual((state['companies'],state['choices']),([],[{'code':'FAZO','name':'FAZO'},
             {'code':'SAMO','name':'SAMO'},{'code':'UZGERMED','name':'UZGERMED'},
-            {'code':'UZYARN','name':'Uzyarn'}]))
+            {'code':'UZYARN','name':'UZYARN'}]))
         # Still registered: the administrator sees it and can switch it off.
         self.assertEqual((self.group(zuma_only,555600).json()['connected'],self.group(zuma_only,555600).json()['companies']),(True,[]))
         self.assertEqual(self.disconnect(zuma_only,555600).json(),{'removed':True})

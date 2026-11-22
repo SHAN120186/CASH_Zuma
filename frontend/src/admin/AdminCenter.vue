@@ -4,12 +4,14 @@ import {STATE_CLASS, historyLine, filterUsers, stateCounts, canResolve, companyA
 import UserSections from './UserSections.vue';
 import GroupRegistration from './GroupRegistration.vue';
 import UserCredential from './UserCredential.vue';
+import CompanyAvailability from './CompanyAvailability.vue';
 import {tx, N_, formatDate} from '../i18n/index.js';
 
 const props = defineProps({
   api: {type: Function, required: true},
   currentUserId: {type: Number, required: true},
 });
+const emit=defineEmits(['companies-changed']);
 
 const meta = ref(null), users = ref([]), error = ref(''), notice = ref(''), busy = ref(false);
 const filters = ref({q: '', company: '', role: '', state: ''});
@@ -19,8 +21,16 @@ let cardSequence = 0;
 const journal = ref(null), journalPage = ref(1);
 const showDirectory = ref(false), directoryCompanyId = ref(null);
 const directoryFilters = ref({q: '', role: '', state: ''});
-const directoryCompany = computed(() => meta.value?.companies.find(c => c.id === directoryCompanyId.value) || meta.value?.companies[0]);
+const managedCompanies = computed(() => meta.value?.managed_companies||meta.value?.companies||[]);
+const directoryCompany = computed(() => managedCompanies.value.find(c => c.id === directoryCompanyId.value) || managedCompanies.value[0]);
 const directoryRows = computed(() => directoryCompany.value ? companyAccessRows(users.value, directoryCompany.value.id, directoryFilters.value) : []);
+async function refreshCompanies(){try{meta.value=await props.api('/api/admin/meta');}catch(e){error.value=e.message;}}
+async function companyChanged(company){
+ const managed=(meta.value.managed_companies||meta.value.companies).map(c=>c.id===company.id?company:c);
+ meta.value={...meta.value,managed_companies:managed,companies:managed.filter(c=>c.active!==false)};
+ emit('companies-changed',company);
+ await load();
+}
 // Changing company must not leave another company's selected user or password open.
 watch(directoryCompanyId, () => closeCard(true));
 
@@ -124,6 +134,7 @@ onUnmounted(() => { ++cardSequence; secret.value = null; document.removeEventLis
         <button :disabled="!meta" @click="startCreate">{{ tx('Новый пользователь') }}</button></div></div>
     <p v-if="notice" class="notice" role="status">{{ tx(notice) }}</p>
     <p v-if="error && !card && !form" class="error" role="alert">{{ tx(error) }}</p>
+    <details v-if="meta" class="admin-company-management"><summary>{{tx('Управление компаниями')}}</summary><CompanyAvailability :api="api" :companies="meta.managed_companies||meta.companies" @changed="companyChanged" @refresh="refreshCompanies"/></details>
 
       <section v-if="secret" class="admin-secret" role="status">
         <b>{{ tx('Пароль для {login}', {login: secret.login}) }}</b>
@@ -138,7 +149,7 @@ onUnmounted(() => { ++cardSequence; secret.value = null; document.removeEventLis
         <p class="sub">{{ tx('Логины, роли и состояние доступа в выбранной компании. Статус холдинга действует во всех компаниях.') }}</p>
         <p class="sub">{{ tx('Откройте пользователя, чтобы посмотреть сохранённый пароль или изменить его. Просмотр доступен только администратору и записывается в журнал.') }}</p>
         <div class="admin-company-tabs" role="group" :aria-label="tx('Компания в справочнике доступов')">
-          <button v-for="c in meta.companies" :key="c.id" class="secondary" :class="{on: directoryCompany?.id === c.id}" :aria-pressed="directoryCompany?.id === c.id" @click="directoryCompanyId = c.id">{{ c.name }}</button>
+          <button v-for="c in managedCompanies" :key="c.id" class="secondary" :class="{on: directoryCompany?.id === c.id}" :aria-pressed="directoryCompany?.id === c.id" @click="directoryCompanyId = c.id">{{ c.name }}<small v-if="c.active===false"> · {{tx('Отключена')}}</small></button>
         </div>
         <div class="admin-filters">
           <label class="search"><span class="sr-only">{{ tx('Поиск в справочнике доступов') }}</span><input v-model="directoryFilters.q" type="search" :placeholder="tx('Имя или логин')" :aria-label="tx('Поиск в справочнике доступов')"></label>
@@ -166,7 +177,7 @@ onUnmounted(() => { ++cardSequence; secret.value = null; document.removeEventLis
     </div>
     <div class="admin-filters">
       <label class="search"><span class="sr-only">{{ tx('Поиск') }}</span><input v-model="filters.q" type="search" :placeholder="tx('Имя или логин')" :aria-label="tx('Поиск по имени и логину')"></label>
-      <select v-model="filters.company" :aria-label="tx('Компания')"><option value="">{{ tx('Все компании') }}</option><option v-for="c in meta?.companies || []" :key="c.id" :value="c.id">{{ c.name }}</option></select>
+      <select v-model="filters.company" :aria-label="tx('Компания')"><option value="">{{ tx('Все компании') }}</option><option v-for="c in managedCompanies" :key="c.id" :value="c.id">{{ c.name }}</option></select>
       <select v-model="filters.role" :aria-label="tx('Роль')"><option value="">{{ tx('Все роли') }}</option>
         <option v-for="[k, label] in [...(meta?.holding_roles || []), ...(meta?.company_roles || [])]" :key="k" :value="k">{{ tx(label) }}</option></select>
     </div>
@@ -217,11 +228,12 @@ onUnmounted(() => { ++cardSequence; secret.value = null; document.removeEventLis
         </dl>
         <p v-if="card.state === 'conflict'" class="warning">{{ tx('Сотрудник назначен в нескольких компаниях. Доступ приостановлен, пока вы не выберете одну компанию: «Выбрать компанию».') }}</p>
         <p v-if="card.state === 'no_role'" class="warning">{{ tx('Связь с компанией без действующей роли доступа не даёт. Назначьте роль или уберите связь.') }}</p>
+        <p v-if="card.state === 'company_suspended'" class="warning">{{tx('Компания отключена. Роль и назначение сотрудника сохранены. Включите компанию в разделе «Управление компаниями».')}}</p>
         <UserCredential :key="card.id" :api="api" :user="card" :enabled="!!meta?.credential_vault_enabled" @updated="openCard(card)" />
 
         <div class="actions admin-actions" v-if="!form">
           <template v-if="card.active">
-            <button class="secondary tiny" @click="showSections=!showSections">{{tx('Доступ к разделам')}}</button>
+            <button class="secondary tiny" :disabled="card.state==='company_suspended'" @click="showSections=!showSections">{{tx('Доступ к разделам')}}</button>
             <button class="secondary tiny" @click="start('name')">{{ tx('Имя') }}</button>
             <button v-if="card.holding_role !== 'founder' && card.id !== currentUserId" class="secondary tiny" @click="start('assign')">{{ canResolve(card) ? tx('Выбрать компанию') : tx('Назначение') }}</button>
             <button v-if="card.id !== currentUserId" class="secondary tiny" @click="start('holding')">{{ tx('Статус холдинга') }}</button>

@@ -31,7 +31,7 @@ class ExpansionTests(base.SiteTests):
             self.assertEqual([c['name'] for c in data['categories']], [c['name'] for c in original['categories']])
             self.assertTrue({c['id'] for c in data['categories']}.isdisjoint(c['id'] for c in original['categories']))
         self.assertEqual(next(c['name'] for c in self.client.get('/api/companies').json()['companies']
-                              if c['code']=='UZYARN'), 'Uzyarn')
+                              if c['code']=='UZYARN'), 'UZYARN')
         cl, h = self.user_in(ids['SAMO'], 'employee', 'samo_employee')
         try:
             self.assertEqual([c['code'] for c in cl.get('/api/companies').json()['companies']], ['SAMO'])
@@ -95,7 +95,7 @@ class MigrationTests(unittest.TestCase):
                 self.assertEqual(s.get(Setting, f'company:{fazo.id}:departments').value, '{"version":2,"items":[]}')
                 self.assertEqual(list(s.scalars(select(CompanyUser))), [])
                 self.assertEqual(len(list(s.scalars(select(Category)))), 3)
-                self.assertEqual(s.scalar(select(Company.name).where(Company.code=='UZYARN')), 'Uzyarn')
+                self.assertEqual(s.scalar(select(Company.name).where(Company.code=='UZYARN')), 'UZYARN')
         finally:
             engine.dispose()
 
@@ -154,7 +154,7 @@ class MigrationTests(unittest.TestCase):
                 self.assertEqual(s.get(Setting, MARKER).value, 'legacy-complete')
                 self.assertIsNotNone(s.get(Setting, UZYARN_MARKER))
                 added = s.scalar(select(Company).where(Company.code=='UZYARN'))
-                self.assertEqual((added.name, added.active), ('Uzyarn', True))
+                self.assertEqual((added.name, added.active), ('UZYARN', True))
                 self.assertEqual(list(s.scalars(select(Account).where(Account.company_id==added.id))), [])
                 self.assertEqual(list(s.scalars(select(CompanyUser).where(CompanyUser.company_id==added.id))), [])
                 copied = s.scalar(select(Category).where(Category.company_id==added.id))
