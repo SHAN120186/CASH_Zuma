@@ -16,8 +16,9 @@ import cashflowOsv, {patterns as cashflowOsvPatterns} from './cashflow_osv.js';
 import bankStatements from './bank_statements.js';
 import bankRuleAllocation from './bank_rule_allocation.js';
 import cashFunding from './cash_funding.js';
+import companyControls from './company_controls.js';
 
-export const sources = {budgetImport, catalogs, common, app, reports, overview, requests, admin, server, counterparties, cashflow_osv: cashflowOsv, bank_statements:bankStatements, bank_rule_allocation:bankRuleAllocation, cash_funding:cashFunding};
-export const entries = Object.assign({}, budgetImport, catalogs, cashflowOsv, counterparties, server, admin, requests, overview, reports, app, common, bankStatements, bankRuleAllocation, cashFunding);
+export const sources = {budgetImport, catalogs, common, app, reports, overview, requests, admin, server, counterparties, cashflow_osv: cashflowOsv, bank_statements:bankStatements, bank_rule_allocation:bankRuleAllocation, cash_funding:cashFunding,company_controls:companyControls};
+export const entries = Object.assign({}, budgetImport, catalogs, cashflowOsv, counterparties, server, admin, requests, overview, reports, app, common, bankStatements, bankRuleAllocation, cashFunding,companyControls);
 export const patterns = [...cashflowOsvPatterns, ...commonPatterns, ...appPatterns, ...reportsPatterns,
   ...overviewPatterns, ...requestsPatterns, ...adminPatterns, ...serverPatterns];

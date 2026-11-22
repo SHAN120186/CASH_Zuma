@@ -18,9 +18,39 @@ test('company chooser contains only the company card and preserves accessible se
 });
 
 test('busy company selection disables the sole company card',async t=>{
-  const view=await fixture(t,{company,disabled:true});
+  const selected=[];const view=await fixture(t,{company,disabled:true,onSelect:id=>selected.push(id)});
   const buttons=all(view.container,node=>node.tag==='button');
   assert.equal(buttons.length,1);assert.equal(buttons[0].props.disabled,true);
+  buttons[0].props.onClick();assert.deepEqual(selected,[]);
+});
+
+test('a suspended company explains the restriction and cannot emit selection',async t=>{
+ const selected=[];const view=await fixture(t,{company:{...company,active:false},onSelect:id=>selected.push(id)});
+ const button=find(view.container,n=>n.tag==='button');
+ assert.equal(button.props.disabled,true);assert.equal(button.props['aria-label'],'Компания Synthetic Zuma отключена');
+ assert.match(text(find(button,n=>n.props?.class==='company-off-badge')),/Отключена/);
+ const explanation=find(view.container,n=>n.props?.id===button.props['aria-describedby']);
+ assert.equal(text(explanation),'Компания отключена. Обратитесь к администратору.');
+ button.props.onClick();assert.deepEqual(selected,[]);
+ view.app._instance.props.company={...company,active:true};await settle();
+ assert.equal(button.props.disabled,false);button.props.onClick();assert.deepEqual(selected,[2]);
+});
+
+test('all five available companies retain their names and share the same styling',async t=>{
+ for(const [index,code] of ['UZGERMED','ZUMA','SAMO','FAZO','UZYARN'].entries()){
+  const selected=[];const view=await fixture(t,{company:{id:index+1,code,name:code,active:true},onSelect:id=>selected.push(id)});
+  assert.equal(text(find(view.container,n=>n.tag==='b')),code);
+  const shell=find(view.container,n=>String(n.props?.class||'').includes('company-card-shell'));
+  assert.equal(shell.props.class,'company-card-shell');
+  find(view.container,n=>n.tag==='button').props.onClick();assert.deepEqual(selected,[index+1]);
+ }
+});
+
+test('the suspended company message is localized without translating its name',async t=>{
+ const previous=lang.value;t.after(()=>setLang(previous));setLang('uz');
+ const view=await fixture(t,{company:{id:6,code:'UZYARN',name:'UZYARN',active:false}});
+ assert.match(text(view.container),/Kompaniya o‘chirilgan\. Administratorga murojaat qiling\./);
+ assert.equal(find(view.container,n=>n.tag==='button').props['aria-label'],'UZYARN kompaniyasi o‘chirilgan');
 });
 
 test('the sole company card retains its Uzbek accessible label',async t=>{

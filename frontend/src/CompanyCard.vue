@@ -1,37 +1,22 @@
 <script setup>
+import {computed} from 'vue';
 import AppIcon from './AppIcon.vue';
 import {tx} from './i18n/index.js';
 
 const props=defineProps({company:{type:Object,required:true},disabled:Boolean});
-defineEmits(['select']);
-const finePointer=window.matchMedia('(hover: hover) and (pointer: fine)');
-const reducedMotion=window.matchMedia('(prefers-reduced-motion: reduce)');
-
-function reset(event){
- const style=event.currentTarget.style;
- for(const name of ['--spot-x','--spot-y','--tilt-x','--tilt-y'])style.removeProperty(name);
-}
-function followPointer(event){
- if(props.disabled||event.pointerType!=='mouse'||!finePointer.matches||reducedMotion.matches){reset(event);return}
- // Measure the stationary shell so tilting the button cannot move its own target.
- const card=event.currentTarget,box=card.parentElement.getBoundingClientRect();
- if(!box.width||!box.height)return;
- const x=Math.max(0,Math.min(1,(event.clientX-box.left)/box.width));
- const y=Math.max(0,Math.min(1,(event.clientY-box.top)/box.height));
- card.style.setProperty('--spot-x',`${(x*100).toFixed(1)}%`);
- card.style.setProperty('--spot-y',`${(y*100).toFixed(1)}%`);
- card.style.setProperty('--tilt-x',`${((.5-y)*5).toFixed(2)}deg`);
- card.style.setProperty('--tilt-y',`${((x-.5)*5).toFixed(2)}deg`);
-}
+const emit=defineEmits(['select']);
+const suspended=computed(()=>props.company.active===false);
+function select(){if(!props.disabled&&!suspended.value)emit('select',props.company.id);}
 </script>
 
 <template>
- <div class="company-card-shell">
-  <button class="company-card" :aria-label="tx('Открыть компанию {name}',{name:company.name})" :disabled="disabled"
-   @pointermove="followPointer" @pointerleave="reset" @pointercancel="reset" @blur="reset" @click="$emit('select',company.id)">
+ <div class="company-card-shell" :class="{'company-suspended':suspended}">
+  <button class="company-card" :aria-label="suspended?tx('Компания {name} отключена',{name:company.name}):tx('Открыть компанию {name}',{name:company.name})" :disabled="disabled||suspended" :aria-describedby="suspended?'company-unavailable-'+company.id:undefined" @click="select">
    <span class="company-symbol" aria-hidden="true">{{company.code.charAt(0)}}</span>
-   <b>{{company.code==='ZUMA'?'ZUMA':company.name}}</b>
-   <span class="company-enter" aria-hidden="true"><AppIcon name="arrow"/></span>
+   <span class="company-copy"><b>{{company.code==='ZUMA'?'ZUMA':company.name}}</b><small v-if="!suspended">{{tx('Рабочее пространство')}}</small></span>
+   <span v-if="suspended" class="company-off-badge"><AppIcon name="lock" aria-hidden="true"/>{{tx('Отключена')}}</span>
+   <span v-else class="company-enter" aria-hidden="true"><AppIcon name="arrow"/></span>
   </button>
+  <p v-if="suspended" :id="'company-unavailable-'+company.id" class="company-disabled-note" role="status">{{tx('Компания отключена. Обратитесь к администратору.')}}</p>
  </div>
 </template>

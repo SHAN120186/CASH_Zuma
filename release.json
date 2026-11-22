@@ -1,7 +1,8 @@
 {
-  "version": "2.36.17",
-  "date": "2026-11-21",
+  "version": "2.36.18",
+  "date": "2026-11-22",
   "changes": [
+    "Компании показаны компактными горизонтальными строками в едином стиле; отключённая фирма выделена красной плашкой. Администратор меняет доступ переключателем «Вкл / Выкл» с подтверждением и причиной. Данные и назначения сохраняются.",
     "Добавлена отдельная компания Uzyarn с теми же рабочими разделами и настройкой ролей. Справочники статей и отделов независимы; счета, остатки и сотрудники других компаний не копируются.",
     "Администратор может отдельно открыть сохранённый пароль сотрудника или задать новый. Пароли зашифрованы отдельным ключом, просмотр записывается в журнал; старые неизвестные пароли автоматически не сбрасываются.",
     "Список пользователей читает роли и назначения одним пакетом вместо повторных запросов для каждого сотрудника; разграничение компаний и прав сохранено.",
@@ -150,6 +151,7 @@
     "Длинные названия файлов и кнопки выбора шаблона переносятся на узком экране. В ТЭО дата архива отдельно обозначена и не подменяет начало финансового прогноза."
   ],
   "changes_uz": [
+    "Kompaniyalar bir xil uslubdagi ixcham gorizontal qatorlarda ko‘rsatiladi; o‘chirilgan kompaniya qizil belgi bilan ajratiladi. Administrator tasdiq va sabab bilan kirishni yoqadi yoki o‘chiradi. Maʼlumotlar va tayinlovlar saqlanadi.",
     "Uzyarn alohida kompaniya sifatida qoʻshildi. Ish boʻlimlari va rollar boshqa kompaniyalardagidek ishlaydi. Moddalar va boʻlimlar maʼlumotnomalari alohida; boshqa kompaniyalarning hisoblari, qoldiqlari va xodimlari koʻchirilmaydi.",
     "Administrator xodimning saqlangan parolini alohida ochishi yoki yangi parol belgilashi mumkin. Parollar alohida kalit bilan shifrlanadi, ko‘rish jurnalga yoziladi; eski noma’lum parollar avtomatik almashtirilmaydi.",
     "Foydalanuvchilar ro‘yxati rollar va tayinlovlarni har bir xodim uchun takroriy so‘rovlarsiz bir to‘plamda o‘qiydi; kompaniya va huquq chegaralari saqlanadi.",

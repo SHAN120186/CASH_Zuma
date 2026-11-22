@@ -122,3 +122,28 @@ test('a late registry refresh cannot reopen a user card after it was closed',asy
   resolveRefresh({...users[1],sessions:0,history:[]});await refreshing;await settle();
   assert.equal(view.state.card,null);
 });
+
+test('suspended company users stay in the directory while assignment controls retain active companies',async t=>{
+ const view=await fixture(t);
+ const suspended={...companies[1],active:false};
+ view.state.meta={...meta,managed_companies:companies.map(c=>c.id===suspended.id?suspended:{...c,active:true}),companies:companies.filter(c=>c.id!==suspended.id)};
+ const staff={...users[1],state:'company_suspended',state_label:'Компания отключена',company_id:null,company_role:null,
+  assignments:[{company_id:suspended.id,company:suspended.name,role:'accountant',role_label:'Расчётный бухгалтер',valid:false}]};
+ view.state.users=[users[0],staff];view.state.showDirectory=true;view.state.directoryCompanyId=suspended.id;await settle();
+ assert.match(text(directory(view)),/samo.accountant/);assert.match(text(directory(view)),/Компания отключена/);
+ assert.equal(view.state.meta.companies.some(c=>c.id===suspended.id),false);
+ assert.equal(view.state.managedCompanies.find(c=>c.id===suspended.id).active,false);
+ view.state.card={...staff,sessions:0,history:[]};await settle();
+ assert.match(text(view.container),/Роль и назначение сотрудника сохранены/);
+ assert.doesNotMatch(text(view.container),/Связь с компанией без действующей роли/);
+ assert.equal(find(view.container,n=>n.tag==='button'&&text(n)==='Доступ к разделам').props.disabled,true);
+});
+
+test('the admin refreshes company state without removing suspended entries from management',async t=>{
+ const view=await fixture(t);
+ await view.state.companyChanged({...companies[3],active:false});await settle();
+ assert.equal(view.state.meta.companies.some(c=>c.id===5),false);
+ assert.equal(view.state.meta.managed_companies.find(c=>c.id===5).active,false);
+ await view.state.companyChanged({...companies[3],active:true});await settle();
+ assert.equal(view.state.meta.companies.find(c=>c.id===5).active,true);
+});

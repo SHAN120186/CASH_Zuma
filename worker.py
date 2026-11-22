@@ -4,7 +4,7 @@ from datetime import datetime,timedelta,timezone
 from email.message import EmailMessage
 from settings_loader import load_config
 if __name__=='__main__':load_config()
-from app.db import engine,SQLITE,ROOT,DATA,ReportSchedule,Audit,User,unit,initialize,select
+from app.db import engine,SQLITE,ROOT,DATA,ReportSchedule,Audit,User,Company,unit,initialize,select
 from app import clock
 from app.erp import render_report
 from deploy.postgres_backup import create_dump, pg_tool, pg_environment as backup_environment
@@ -42,6 +42,8 @@ def report_tick():
         with unit(True) as s:
             r=s.get(ReportSchedule,id)
             if not r or not r.enabled or r.hour>current.hour or r.last_attempt==day:continue
+            company=s.get(Company,r.company_id)
+            if not company or not company.active:continue
             owner=s.get(User,r.created_by)
             if not owner or not owner.active or owner.role!='admin':
                 r.enabled=False;r.last_error='Создатель расписания больше не является активным администратором.';continue
@@ -50,6 +52,12 @@ def report_tick():
         try:
             with unit() as s:
                 attachments=[(f'cashflow-{day.year}-{currency}.xlsx',render_report(s,day.year,currency,'xlsx',company_id=r.company_id),'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'),(f'cashflow-{day.year}-{currency}.pdf',render_report(s,day.year,currency,'pdf',company_id=r.company_id),'application/pdf')]
+            with unit() as s:
+                r=s.get(ReportSchedule,id)
+                company=s.get(Company,r.company_id) if r else None
+                if not r or not r.enabled or not company or not company.active:continue
+            # Do not hold the global write lock during external SMTP delivery.
+            # A send already in flight can finish if availability changes concurrently.
             send_report(recipient,attachments)
             with unit(True) as s:
                 r=s.get(ReportSchedule,id)

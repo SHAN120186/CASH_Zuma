@@ -19,6 +19,7 @@ import {createOperationProgress} from './operationProgress.js';
 import {invalidFormFields,focusInvalidField} from './formFeedback.js';
 import {isAppFileLink,isRequestDocumentLink,fetchDownload} from './fileDownload.js';
 import CompanyCard from './CompanyCard.vue';
+import CompanyAvailability from './admin/CompanyAvailability.vue';
 import OverviewPage from './overview/OverviewPage.vue';
 import {canOpenOverview,canSeeFullOverview} from './overview/rights.js';
 import BankStatements from './BankStatements.vue';
@@ -59,6 +60,7 @@ const user=ref(null),csrf=ref(''),login=ref({username:'',password:''}),recentLog
 const loginSuggestions=computed(()=>matchingLogins(recentLogins.value,login.value.username));
 const page=ref(location.hash.slice(1)||'home'),currency=ref('UZS'),days=ref(30),year=ref(new Date().getFullYear()),month=ref(new Date().toLocaleDateString('en-CA',{timeZone:'Asia/Tashkent'}).slice(0,7));
 const companyId=ref(null),companyReady=ref(false),reportEditing=ref(false),reportScenario=ref('A');
+const showCompanyControls=ref(false);
 const cashFlowBasis=ref('operations');
 const reportSelection=ref(null);
 function changeReportSelection(value){
@@ -118,6 +120,15 @@ const companyUrl=url=>url+(url.includes('?')?'&':'?')+'company_id='+companyId.va
 const localBusinessDay=()=>new Date().toLocaleDateString('en-CA',{timeZone:'Asia/Tashkent'});
 const reportAsOf=ref(localBusinessDay()),bootstrapLocalDay=ref(null);
 const boot=ref({accounts:[],companies:[],categories:[],roles:{}}),rows=ref([]),dash=ref(null),report=ref(null),preview=ref(null),search=ref(''),modal=ref(null),form=ref({}),formError=ref(''),saving=ref(false),documents=ref(null);
+function clearWorkspace(){
+ companyReady.value=false;companyId.value=null;showCompanyControls.value=false;reportEditing.value=false;reportSelection.value=null;bootstrapLocalDay.value=null;
+ boot.value={accounts:[],companies:[],categories:[],counterparties:[],roles:{}};
+ rows.value=[];dash.value=null;report.value=null;preview.value=null;modal.value=null;documents.value=null;form.value={};formError.value='';saving.value=false;
+ editor.value=null;cardId.value=null;expandedRequest.value=null;planMappings.value={};planReason.value=defaultPlanReason();receiptPartyMatches.value=[];receiptPartyStatus.value='';clearTimeout(receiptPartyTimer);receiptPartyTimer=null;receiptPartySequence++;
+ tg.value=null;tgCode.value=null;tgNote.value='';tgGroups.value=null;tempPassword.value={old_password:'',new_password:'',repeat:''};tempError.value='';
+ notice.value='';noticeParams.value=null;menuOpen.value=false;helpOpen.value=false;search.value='';dateFrom.value='';dateTo.value='';moreRequestsError.value='';moreRequestsBusy.value=false;listTotal.value=0;requestListKey.value='';
+}
+function endSession(){cancelPending();clearWorkspace();user.value=null;csrf.value='';busy.value=false;}
 const selectableCompanies=computed(()=>boot.value.companies.filter(c=>c.code!=='UNASSIGNED'));
 const importMode=ref('operations'),planMonthFrom=ref(1),planMonthTo=ref(12),planMappings=ref({}),planReason=ref('');
 // The default import reason follows the interface language until the user edits it.
@@ -270,7 +281,7 @@ async function api(url,opts={}){
   const r=await fetch(url,{credentials:'same-origin',...opts,signal:controller.signal,headers:{'X-CSRF-Token':csrf.value,...(companyId.value?{'X-Company-ID':String(companyId.value)}:{}),...opts.headers}});
   let data;try{data=await r.json()}catch{throw Object.assign(Error(N_('Некорректный ответ сервера')),{status:r.status})}
   if(epoch!==companyEpoch)throw new DOMException(N_('Компания изменена'),'AbortError');
-  if(!r.ok){if(r.status===401)user.value=null;throw Object.assign(Error(Array.isArray(data.detail)?data.detail.map(x=>`${x.loc?.slice(1).join('.')}: ${x.msg}`).join('; '):data.detail||N_('Ошибка запроса')),{status:r.status})}
+  if(!r.ok){if(r.status===401)endSession();if(r.status===403&&data.detail===N_('Компания отключена. Обратитесь к администратору.')&&companyId.value!=null)leaveSuspendedCompany(companyId.value);throw Object.assign(Error(Array.isArray(data.detail)?data.detail.map(x=>`${x.loc?.slice(1).join('.')}: ${x.msg}`).join('; '):data.detail||N_('Ошибка запроса')),{status:r.status})}
   if(ticket)requestProgress.complete(ticket,N_('Действие завершено'));return data;
  }catch(e){if(ticket&&epoch===companyEpoch){if(url==='/api/me'&&e.status===401)requestProgress.reset();else requestProgress.fail(ticket,e.name==='AbortError'?N_('Действие отменено'):e)}throw e}
  finally{pendingCalls.delete(controller)}
@@ -281,7 +292,19 @@ async function bootstrap(){const epoch=companyEpoch,company=companyId.value,data
 async function changeReportYear(value){const cutOff=reportDateForYear(value,boot.value.today);if(!cutOff){flash(N_('Будущий год недоступен: дата факта не может быть позже сегодня.'));return}year.value=Number(value);reportAsOf.value=cutOff;reportSelection.value=normalizeReportSelection({...reportSelection.value,year:year.value});await load()}
 async function changeReportDate(value){if(!validReportDate(value,year.value,boot.value.today)){flash(N_('Дата отчёта должна быть в выбранном году и не позже сегодня.'));return}reportAsOf.value=value;await load()}
 async function enter(){companyId.value=null;companyReady.value=false;if(user.value?.must_change_password)return;const data=await api('/api/companies');boot.value={accounts:[],categories:[],...data};user.value=data.user;csrf.value=data.csrf;}
+function leaveSuspendedCompany(id){
+ cancelPending();companyReady.value=false;companyId.value=null;busy.value=false;
+ rows.value=[];dash.value=null;report.value=null;preview.value=null;modal.value=null;documents.value=null;editor.value=null;cardId.value=null;
+ boot.value={...boot.value,accounts:[],categories:[],counterparties:[],companies:boot.value.companies.map(c=>c.id===id?{...c,active:false}:c)};
+ error.value=N_('Компания отключена. Обратитесь к администратору.');
+}
+function companyAvailabilityChanged(company){
+ boot.value={...boot.value,companies:boot.value.companies.map(c=>c.id===company.id?company:c)};
+ if(company.active===false&&companyId.value===company.id)leaveSuspendedCompany(company.id);
+}
+async function refreshCompanyChoices(){try{const data=await api('/api/companies');boot.value={...boot.value,companies:data.companies};}catch(e){error.value=e.message;}}
 async function selectCompany(id){
+ if(selectableCompanies.value.find(c=>c.id===Number(id))?.active===false){error.value=N_('Компания отключена. Обратитесь к администратору.');return;}
  if(saving.value||modal.value||documents.value||editor.value||cardId.value){flash(N_('Закройте текущую форму перед сменой компании.'));return}
  cancelPending();clearTimeout(searchTimer);
  const selectionEpoch=companyEpoch;
@@ -302,6 +325,7 @@ async function signIn(event){
  // Read the submitted fields directly, including browser autofill without input events.
  const fields=new FormData(event.currentTarget);
  const credentials={username:String(fields.get('username')||'').trim(),password:String(fields.get('password')||'')};
+ endSession();
  busy.value=true;error.value='';
  try{
   const r=await post('/api/login',credentials);
@@ -313,7 +337,7 @@ async function signIn(event){
   await enter();
  }catch(e){error.value=e.message}finally{busy.value=false}
 }
-async function logout(){cancelPending();busy.value=true;try{await post('/api/logout')}finally{cancelPending();user.value=null;csrf.value='';companyReady.value=false;companyId.value=null;busy.value=false}}
+async function logout(){cancelPending();clearWorkspace();user.value=null;busy.value=true;try{await post('/api/logout')}finally{endSession()}}
 async function goWith(name,opts={}){if(!canNavigate(name))return;menuOpen.value=false;helpOpen.value=false;reportEditing.value=false;page.value=name;location.hash=name;search.value='';dateFrom.value=opts.from||'';dateTo.value=opts.to||'';requestStatus.value=opts.status||'';requestArchive.value='active';listPage.value=1;expandedRequest.value=null;rows.value=[];await load()}
 const canDecide=r=>canDecideRequest(r);
 async function go(name){if(!canNavigate(name))return;menuOpen.value=false;helpOpen.value=false;reportEditing.value=false;page.value=name;location.hash=name;search.value='';dateFrom.value='';dateTo.value='';requestStatus.value='';requestArchive.value='active';listPage.value=1;expandedRequest.value=null;rows.value=[];await load()}
@@ -442,9 +466,9 @@ const tempPassword=ref({old_password:'',new_password:'',repeat:''}),tempError=re
 async function replaceTemporaryPassword(){
  tempError.value='';const f=tempPassword.value;
  if(f.new_password!==f.repeat){tempError.value=N_('Новый пароль и повтор не совпадают.');return}
- busy.value=true;try{await post('/api/password',{old_password:f.old_password,new_password:f.new_password});tempPassword.value={old_password:'',new_password:'',repeat:''};user.value=null;csrf.value='';error.value='';flash(N_('Пароль изменён. Войдите с новым паролем.'))}catch(e){tempError.value=e.message}finally{busy.value=false}
+ busy.value=true;try{await post('/api/password',{old_password:f.old_password,new_password:f.new_password});endSession();error.value='';flash(N_('Пароль изменён. Войдите с новым паролем.'))}catch(e){tempError.value=e.message}finally{busy.value=false}
 }
-function changePassword(){open(N_('Смена пароля'),[field('old_password',N_('Текущий пароль'),'password'),field('new_password',N_('Новый пароль'),'password',{minlength:12})],{old_password:'',new_password:''},async d=>{await post('/api/password',d);user.value=null;location.reload()})}
+function changePassword(){open(N_('Смена пароля'),[field('old_password',N_('Текущий пароль'),'password'),field('new_password',N_('Новый пароль'),'password',{minlength:12})],{old_password:'',new_password:''},async d=>{await post('/api/password',d);endSession();location.reload()})}
 // Telegram: the one-time code lives only in memory and is dropped when the profile page is left.
 const tg=ref(null),tgCode=ref(null),tgNote=ref(''),tgBusy=ref(false);
 const tgBotLink=computed(()=>/^[A-Za-z0-9_]{5,32}$/.test(tg.value?.bot_username||'')?'https://t.me/'+tg.value.bot_username:null);
@@ -503,7 +527,7 @@ async function docs(r){try{documents.value={ledger:r,rows:await api(`/api/docume
 async function attach(event){const file=event.target.files[0];if(!file)return;saving.value=true;try{await api(`/api/ledger/${documents.value.ledger.id}/document`,{method:'POST',headers:{'Content-Type':'application/octet-stream','X-Filename':encodeURIComponent(file.name)},body:file});documents.value=null;flash(N_('Документ приложен.'))}catch(e){error.value=e.message}finally{saving.value=false;event.target.value=''}}
 async function reserve(amount){open(N_('Минимальный резерв'),[field('amount',N_('Сумма резерва'),'number',{min:0})],{amount:typeof amount==='string'?amount:dash.value?.reserve||'0'},d=>post('/api/reserve',{amount:String(d.amount),currency:currency.value}))}
 window.addEventListener('hashchange',()=>{const target=location.hash.slice(1);if(user.value&&companyReady.value&&target!==page.value&&nav.value.some(n=>n[0]===target)){page.value=target;load()}});
-onMounted(async()=>{try{const r=await api('/api/me');user.value=r.user;csrf.value=r.csrf;await enter()}catch{user.value=null}});
+onMounted(async()=>{const epoch=companyEpoch;try{const r=await api('/api/me');if(epoch!==companyEpoch)return;clearWorkspace();user.value=r.user;csrf.value=r.csrf;await enter()}catch{if(epoch===companyEpoch)endSession()}});
 </script>
 
 <template>
@@ -551,6 +575,7 @@ onMounted(async()=>{try{const r=await api('/api/me');user.value=r.user;csrf.valu
    <p v-if="error" class="error" role="alert">{{tx(error)}}</p><p v-if="busy" role="status">{{tx('Открываем компанию…')}}</p>
    <div class="company-grid"><CompanyCard v-for="c in selectableCompanies" :key="c.id" :company="c" :disabled="busy" @select="selectCompany"/></div>
    <p v-if="!busy&&!selectableCompanies.length" class="sub">{{tx('Нет доступных компаний. Обратитесь к администратору.')}}</p>
+   <template v-if="user.holding_role==='admin'"><button type="button" class="secondary company-manage-toggle" :disabled="busy" :aria-expanded="showCompanyControls" aria-controls="chooser-company-management" @click="showCompanyControls=!showCompanyControls">{{tx('Управление компаниями')}}</button><div v-if="showCompanyControls" id="chooser-company-management"><CompanyAvailability :api="api" :companies="selectableCompanies" @changed="companyAvailabilityChanged" @refresh="refreshCompanyChoices"/></div></template>
   </main>
   <footer class="company-credit">{{tx('Разработка и собственность компании')}} <strong>Sh.A.</strong></footer>
  </section>
@@ -722,7 +747,7 @@ onMounted(async()=>{try{const r=await api('/api/me');user.value=r.user;csrf.valu
     <!-- Согласование и пользователи -->
     <CounterpartiesPage v-if="page==='counterparties'&&has('counterparties')" :key="companyId" :api="api" :can-edit="user.sections?.counterparties!=='view'" @changed="bootstrap"/>
     <PolicyPage v-if="page==='approval'&&has('approval_policy')" :key="companyId" :api="api" :money="money" :can-edit="user.sections?.approval!=='view'" :can-edit-calendar="has('users')&&user.sections?.approval!=='view'"/>
-    <AdminCenter v-if="page==='users'&&user.holding_role==='admin'" :api="api" :current-user-id="user.id"/>
+    <AdminCenter v-if="page==='users'&&user.holding_role==='admin'" :api="api" :current-user-id="user.id" @companies-changed="companyAvailabilityChanged"/>
     <section v-if="page==='users'&&user.holding_role!=='admin'" class="card"><div class="card-h"><h2>{{tx('Пользователи')}}</h2></div><div class="table-scroll"><table><thead><tr><th>{{tx('ФИО')}}</th><th>{{tx('Логин')}}</th><th>{{tx('Роль')}}</th></tr></thead><tbody><tr v-for="r in rows" :key="r.id"><td>{{r.name}}</td><td>{{r.username}}</td><td>{{tx(r.role_label)}}</td></tr></tbody></table></div></section>
     <Delegations v-if="page==='users'&&has('users')" :key="companyId" :api="api" :roles="boot.roles" :company="company" :today="boot.today" :current-user-id="user.id"/>
      <section v-if="page==='users'&&user.holding_role==='admin'" class="card tg-groups" aria-labelledby="tg-groups-title"><div class="card-h"><h3 id="tg-groups-title">{{tx('Telegram-группы сводки')}}</h3></div><div class="card-b">

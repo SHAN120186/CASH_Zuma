@@ -6,15 +6,16 @@
 from datetime import timedelta
 from typing import Annotated, Literal, Optional
 from fastapi import APIRouter, Request, HTTPException, Query
-from pydantic import BaseModel, Field, ConfigDict, StringConstraints
+from pydantic import BaseModel, Field, ConfigDict, StringConstraints, StrictBool
 from sqlalchemy import select, func
-from .db import unit, User, Company, CompanyUser, LoginSession, Audit, TelegramLink, now
+from .db import unit, User, Company, CompanyUser, LoginSession, Audit, TelegramLink, Setting, now
 from .security import session_user, ROLES, HOLDING_ROLES, COMPANY_ROLES, hash_password, verify_password
 from . import access, credential_vault
 
 router = APIRouter()
 STATES = {'ok': 'Действует', 'archived': 'В архиве', 'no_company': 'Нет компании',
-          'conflict': 'Несколько компаний', 'no_role': 'Нет действующей роли'}
+          'conflict': 'Несколько компаний', 'no_role': 'Нет действующей роли',
+          'company_suspended': 'Компания отключена'}
 
 
 class Input(BaseModel):
@@ -37,7 +38,9 @@ def user_row(s, u, companies, sessions, telegram, last_login, assignments_by_use
                    for m in rows]
     assignments.sort(key=lambda x: x['company'])
     holding = u.role if u.role in HOLDING_ROLES else None
-    valid = [a for a in assignments if a['valid']]
+    # A conflicting account has no effective company even if only one of its
+    # multiple assignments currently points to an active company.
+    valid = [a for a in assignments if a['valid']] if state['state'] != 'conflict' else []
     return {'id': u.id, 'username': u.username, 'name': u.name, 'active': u.active, 'holding_role': holding,
             'holding_label': ROLES[holding] if holding else None, 'state': state['state'], 'state_label': STATES[state['state']],
             'assignments': assignments, 'company_role': valid[0]['role'] if len(valid) == 1 else None,
@@ -66,9 +69,56 @@ def admin_meta(request: Request):
     with unit() as s:
         holding_admin(s, request)
         companies = access.business_companies(s)
+        managed = list(s.scalars(select(Company).where(Company.code != access.SERVICE_CODE).order_by(Company.name).execution_options(company_unscoped=True)))
         return {'companies': [{'id': c.id, 'code': c.code, 'name': c.name} for c in sorted(companies.values(), key=lambda c: c.name)],
+                'managed_companies': [{'id': c.id, 'code': c.code, 'name': c.name, 'active': c.active} for c in managed],
                 'company_roles': [[r, ROLES[r]] for r in COMPANY_ROLES], 'holding_roles': [[r, ROLES[r]] for r in HOLDING_ROLES],
                 'states': STATES, 'credential_vault_enabled': credential_vault.configured()}
+
+
+class CompanyAvailabilityIn(Input):
+    active: StrictBool
+    expected_active: StrictBool
+    reason: str = Field(min_length=10, max_length=1000)
+
+
+@router.put('/api/admin/companies/{id}/availability')
+def company_availability(id: int, data: CompanyAvailabilityIn, request: Request):
+    """Suspend a business company without changing its data or memberships."""
+    import json
+    from .security import client_ip
+    with unit(True) as s:
+        admin = holding_admin(s, request)
+        company = s.scalar(select(Company).where(Company.id == id).execution_options(company_unscoped=True))
+        if company is None or company.code == access.SERVICE_CODE:
+            raise HTTPException(404, 'Компания не найдена.')
+        if company.active != data.expected_active:
+            raise HTTPException(409, 'Состояние компании изменилось. Обновите страницу.')
+        if company.active != data.active:
+            before=company.active
+            snapshot_key=f'inactive_reminder_snapshot:{company.id}'
+            snapshot=s.get(Setting,snapshot_key)
+            if not data.active:
+                # Keep only identities needed by the deployed bot's reminder cleanup.
+                # The bot must not mistake a paused company's reminders for closed ones.
+                # Its per-person /access check separately prevents sending anything for it.
+                from .bot_api import pending_items
+                keep=('request_id','status','stage','assignee_user_id','assignee_telegram_id','stage_entered_at','company_code')
+                items=[{**{k:item[k] for k in keep},'company':company.code,'amount':'0.00',
+                        'currency':'UZS','purpose':'','stage_label':'','url':''}
+                       for item in pending_items(s, company_id=company.id) if item.get('company_code')==company.code]
+                payload=json.dumps(items,ensure_ascii=False)
+                if snapshot:snapshot.value=payload
+                else:s.add(Setting(key=snapshot_key,value=payload))
+            elif snapshot:
+                s.delete(snapshot)
+            company.active=data.active
+            s.add(Audit(company_id=company.id,user_id=admin.id,role=admin.role,
+                        action='Компания включена' if data.active else 'Компания отключена',
+                        entity='company',entity_id=str(company.id),
+                        detail=json.dumps({'reason':data.reason,'before':before,'after':data.active},ensure_ascii=False),
+                        ip=client_ip(request)))
+        return {'company':{'id':company.id,'code':company.code,'name':company.name,'active':company.active}}
 
 
 @router.get('/api/admin/users')

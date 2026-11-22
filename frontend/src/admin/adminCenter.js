@@ -1,7 +1,7 @@
 // Чистая логика центра администрирования: фильтры, счётчики и чтение журнала изменений доступа.
 import {tx} from '../i18n/index.js';
 
-export const STATE_CLASS = {ok: 'good', archived: 'gray', no_company: 'warn', conflict: 'bad', no_role: 'warn'};
+export const STATE_CLASS = {ok: 'good', archived: 'gray', no_company: 'warn', conflict: 'bad', no_role: 'warn',company_suspended:'warn'};
 
 // A role belongs to the selected company. Holding roles apply across companies;
 // invalid/archived assignments stay visible with their actual access state.
@@ -47,6 +47,12 @@ export function historyLine(detail, roleName = r => r) {
   let d;
   try { d = JSON.parse(detail); } catch { return detail ? [detail] : []; }
   if (!d || typeof d !== 'object' || !('after' in d)) return detail ? [detail] : [];
+  if (typeof d.before === 'boolean' && typeof d.after === 'boolean') {
+    const label = on => on ? tx('Включена') : tx('Отключена');
+    const lines = [tx('Было: {value}', {value: label(d.before)}), tx('Стало: {value}', {value: label(d.after)})];
+    if (d.reason) lines.push(tx('Причина: {reason}', {reason: d.reason}));
+    return lines;
+  }
   const lines = [d.before ? tx('Было: {value}', {value: describe(d.before, roleName)}) : tx('Было: учётной записи не было'),
     tx('Стало: {value}', {value: describe(d.after, roleName)})];
   if (d.reason) lines.push(tx('Причина: {reason}', {reason: d.reason}));

@@ -807,7 +807,7 @@ def acting_roles(s):
     return acting
 
 
-def pending_items(s, user_id=None):
+def pending_items(s, user_id=None, company_id=None):
     """Requests waiting for an action, one row per responsible person with a linked Telegram,
     ordered by request. With ``user_id`` only that person's rows, chosen by the same rules."""
     origin = os.getenv('PUBLIC_ORIGIN', '').rstrip('/')
@@ -818,15 +818,19 @@ def pending_items(s, user_id=None):
     users = list(s.scalars(people_query.order_by(User.id)))
     if not users:
         return []
-    companies = {c.id: c for c in s.scalars(select(Company).where(Company.active.is_(True)))}
-    accounts = {a.id: a for a in s.scalars(select(Account))}
+    company_query = select(Company).where(Company.active.is_(True))
+    if company_id is not None:
+        company_query = company_query.where(Company.id == company_id)
+    companies = {c.id: c for c in s.scalars(company_query)}
+    all_business_ids = set(s.scalars(select(Company.id).where(Company.code != SERVICE_CODE)))
+    accounts = {a.id: a for a in s.scalars(select(Account).where(Account.company_id.in_(list(companies))))}
     categories = {c.id: c.name for c in s.scalars(select(Category))}
     fundings={f.request_id:f for f in s.scalars(select(CashFunding).where(CashFunding.company_id.in_(list(companies))))}
     links = {link.user_id: link.telegram_user_id for link in s.scalars(select(TelegramLink))}
     members = {}
     for m in s.scalars(select(CompanyUser)):
         members.setdefault(m.company_id, {})[m.user_id] = m.role
-        if m.role in COMPANY_ROLES and m.company_id in companies and companies[m.company_id].code != SERVICE_CODE:
+        if m.role in COMPANY_ROLES and m.company_id in all_business_ids:
             members.setdefault('_valid', {}).setdefault(m.company_id, set()).add(m.user_id)
     acting = acting_roles(s)
     # Every change of a request (creation, edit, decision, payment reversal) is audited
@@ -839,7 +843,7 @@ def pending_items(s, user_id=None):
 
     items = []
     current = tashkent_today()
-    for r in s.scalars(select(PaymentRequest).where(PaymentRequest.status.in_(['pending', 'approved']))
+    for r in s.scalars(select(PaymentRequest).where(PaymentRequest.status.in_(['pending', 'approved']), PaymentRequest.account_id.in_(list(accounts)))
                        .order_by(PaymentRequest.id)):
         if r.status == 'approved' and r.due_date > current:
             continue  # payment is due later; the payer is reminded from the due date
@@ -882,7 +886,22 @@ def pending_items(s, user_id=None):
 def pending_requests(request: Request):
     authenticate_bot(request)
     with unit() as s:
+        # A resume between the two reads must not make both the live list and
+        # the paused snapshot disappear from the bot's complete-list response.
+        # Establish one read snapshot before any query, without a write lock.
+        if s.get_bind().dialect.name == 'sqlite':
+            s.connection().exec_driver_sql('BEGIN')
+        else:
+            s.connection(execution_options={'isolation_level':'REPEATABLE READ'})
         items = pending_items(s)
+        # Keep paused reminder identities in the legacy complete-list contract:
+        # missing identities would cause the deployed bot to remove old reminders.
+        # Values are redacted on suspension; /access still refuses delivery.
+        inactive = list(s.scalars(select(Company).where(Company.active.is_(False),Company.code!=SERVICE_CODE)))
+        for company in inactive:
+            row=s.get(Setting,f'inactive_reminder_snapshot:{company.id}')
+            if row:
+                items.extend(json.loads(row.value))
     audit(None, 'Бот: заявки для напоминаний', '', f'Строк: {len(items)}')
     return {'items': items}
 
