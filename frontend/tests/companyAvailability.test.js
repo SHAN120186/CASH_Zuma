@@ -14,7 +14,11 @@ test('company availability requires explicit confirmation and reason before a pr
  const view=await fixture(t,async()=>({company:{...companies[0],active:false}}));
  assert.doesNotMatch(text(view.container),/Service/);
  assert.equal(all(view.container,n=>n.tag==='li').length,3);
- find(view.container,n=>n.tag==='button'&&n.props['aria-label']==='Отключить компанию UZGERMED').props.onClick();await settle();
+ const on=find(view.container,n=>n.props?.role==='switch'&&n.props['aria-label']==='Доступ к компании UZGERMED');
+ const off=find(view.container,n=>n.props?.role==='switch'&&n.props['aria-label']==='Доступ к компании ZUMA');
+ assert.equal(on.props['aria-checked'],true);assert.equal(off.props['aria-checked'],false);
+ assert.match(text(on),/Вкл/);assert.match(text(off),/Выкл/);
+ on.props.onClick();await settle();
  assert.equal(view.calls.length,0);assert.equal(view.state.canSave,false);
  view.state.reason='Owner confirms temporary closure';await view.state.save();assert.equal(view.calls.length,0);
  view.state.confirmed=true;await view.state.save();await settle();

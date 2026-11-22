@@ -16,6 +16,48 @@ const deferred=()=>{let resolve;const promise=new Promise(done=>{resolve=done;})
 const otherCompany={id:3,code:'UZGERMED',name:'Other synthetic company'};
 const bootstrapBody=(selectedUser=user)=>({accounts:[],categories:[],counterparties:[],roles:{},companies:[company,otherCompany],today:'2026-10-10',user:selectedUser,csrf:'synthetic'});
 
+test('admin logout then employee login never shows old company cards while employee choices are pending',async t=>{
+ const {view}=await fixture(t,async()=>({ok:true,status:200,json:async()=>[]}),reportEntryApp);
+ const adminOnly={id:44,code:'ADMIN_ONLY',name:'Previous admin private company',active:true};
+ Object.assign(view.state,{user:{...user,role:'admin',holding_role:'admin'},companyReady:false,companyId:null,showCompanyControls:true,
+  boot:{...bootstrapBody(),companies:[adminOnly,company],accounts:[{id:7,name:'Old private bank'}]},rows:[{id:9,note:'Old private operation'}],form:{note:'Old private note'},tgGroups:[{title:'Old private group'}]});await settle();
+ assert.match(text(view.container),/Previous admin private company/);
+ await view.state.logout();await settle();
+ assert.deepEqual(view.state.boot.companies,[]);assert.deepEqual(view.state.boot.accounts,[]);assert.deepEqual(view.state.rows,[]);assert.deepEqual(view.state.form,{});assert.equal(view.state.tgGroups,null);assert.equal(view.state.showCompanyControls,false);
+ const oldFormData=Object.getOwnPropertyDescriptor(globalThis,'FormData');
+ globalThis.FormData=class{get(name){return name==='username'?'employee.synthetic':'Synthetic-Password-123!';}};
+ t.after(()=>{if(oldFormData)Object.defineProperty(globalThis,'FormData',oldFormData);else delete globalThis.FormData;});
+ const employee={...user,id:77,username:'employee.synthetic',role:'employee',holding_role:null,permissions:['request']};
+ const choices=deferred(),priorFetch=globalThis.fetch;
+ globalThis.fetch=async(url,options)=>url==='/api/login'?{ok:true,status:200,json:async()=>({user:employee,csrf:'employee-csrf'})}:url==='/api/companies'?choices.promise:priorFetch(url,options);
+ const signingIn=view.state.signIn({currentTarget:{}});await settle();
+ assert.equal(view.state.user.id,77);assert.equal(view.state.companyReady,false);assert.deepEqual(view.state.boot.companies,[]);
+ assert.equal(all(view.container,n=>n.tag==='button'&&n.props.class==='company-card').length,0);
+ assert.doesNotMatch(text(view.container),/Previous admin private company|Old private|Управление компаниями/);
+ choices.resolve({ok:true,status:200,json:async()=>({user:employee,csrf:'employee-csrf',companies:[{...company,active:true}]})});await signingIn;await settle();
+ assert.equal(all(view.container,n=>n.tag==='button'&&n.props.class==='company-card').length,1);
+ assert.deepEqual(view.state.boot.companies.map(c=>c.id),[company.id]);assert.doesNotMatch(text(view.container),/Previous admin private company/);
+});
+
+test('expired session clears company choices and private caches before another login',async t=>{
+ const {view}=await fixture(t,async()=>({ok:false,status:401,json:async()=>({detail:'Synthetic session expired'})}),reportEntryApp);
+ Object.assign(view.state,{boot:{...bootstrapBody(),accounts:[{id:7,name:'Expired private bank'}]},rows:[{id:3,note:'Expired private operation'}],showCompanyControls:true});await settle();
+ await assert.rejects(view.state.api('/api/private-synthetic'),/Synthetic session expired/);await settle();
+ assert.equal(view.state.user,null);assert.equal(view.state.csrf,'');assert.equal(view.state.companyId,null);assert.equal(view.state.companyReady,false);
+ assert.deepEqual(view.state.boot.companies,[]);assert.deepEqual(view.state.boot.accounts,[]);assert.deepEqual(view.state.rows,[]);assert.equal(view.state.showCompanyControls,false);
+ assert.doesNotMatch(text(view.container),/Expired private|Synthetic company|Other synthetic company/);
+});
+
+test('late startup session restoration cannot clear a newer authenticated session',async t=>{
+ const initial=deferred();const {view}=await fixture(t,async()=>({ok:true,status:200,json:async()=>[]}),reportEntryApp,initial.promise);
+ view.state.endSession();
+ const employee={...user,id:77,username:'new.employee',role:'employee',holding_role:null,permissions:['request']};
+ Object.assign(view.state,{user:employee,csrf:'new-session-token',boot:{...bootstrapBody(employee),companies:[company]}});await settle();
+ initial.resolve({ok:true,status:200,json:async()=>({user:{...user,role:'admin',holding_role:'admin'},csrf:'old-admin-token'})});await settle();
+ assert.equal(view.state.user.id,77);assert.equal(view.state.csrf,'new-session-token');assert.deepEqual(view.state.boot.companies.map(c=>c.id),[company.id]);
+ assert.equal(find(view.container,n=>n.tag==='button'&&text(n)==='Управление компаниями'),undefined);
+});
+
 test('a suspended company cannot be selected and logout remains available',async t=>{
  const calls=[];const {view}=await fixture(t,async(url)=>{calls.push(url);return {ok:true,status:200,json:async()=>[]};},reportEntryApp);
  Object.assign(view.state,{user:{...user,holding_role:null},companyReady:false,companyId:null,boot:{...bootstrapBody(),companies:[{...company,active:false}]}});await settle();
@@ -53,7 +95,7 @@ test('holding admin can explicitly reactivate a company when every workspace is 
   boot:{...bootstrapBody(),companies:[{...company,active:false},{...otherCompany,active:false}]}});await settle();calls.length=0;
  const toggle=find(view.container,n=>n.props?.['aria-controls']==='chooser-company-management');assert.ok(toggle);toggle.props.onClick();await settle();
  assert.equal(calls.length,0);
- find(view.container,n=>n.tag==='button'&&n.props['aria-label']===`Включить компанию ${company.name}`).props.onClick();await settle();
+ find(view.container,n=>n.tag==='button'&&n.props.role==='switch'&&n.props['aria-label']===`Доступ к компании ${company.name}`).props.onClick();await settle();
  const confirmation=find(view.container,n=>n.tag==='form'&&n.props.class==='availability-form');
  find(confirmation,n=>n.tag==='textarea').props['onUpdate:modelValue']('Restore after administrator review');
  find(confirmation,n=>n.tag==='input'&&n.props.type==='checkbox').props['onUpdate:modelValue'](true);await settle();
@@ -63,7 +105,7 @@ test('holding admin can explicitly reactivate a company when every workspace is 
  const companyButtons=all(view.container,n=>n.tag==='button'&&n.props.class==='company-card');assert.equal(companyButtons[0].props.disabled,false);assert.equal(companyButtons[1].props.disabled,true);
 });
 
-async function fixture(t,handle,component=appComponent) {
+async function fixture(t,handle,component=appComponent,startupMe=null) {
   const keys=['window','location','document','fetch','Document','ShadowRoot'];
   const original=keys.map(key=>[key,Object.getOwnPropertyDescriptor(globalThis,key)]);
   const originalCreate=Object.getOwnPropertyDescriptor(URL,'createObjectURL');
@@ -80,7 +122,7 @@ async function fixture(t,handle,component=appComponent) {
   URL.createObjectURL=()=>{files.blobs++;return 'blob:synthetic-file';};
   URL.revokeObjectURL=()=>{};
   globalThis.fetch=async(url,options={})=>{
-    if(url==='/api/me')return {ok:false,status:401,json:async()=>({detail:'Synthetic unauthenticated startup'})};
+    if(url==='/api/me')return startupMe||{ok:false,status:401,json:async()=>({detail:'Synthetic unauthenticated startup'})};
     if(url==='/api/logout')return {ok:true,status:200,json:async()=>({ok:true})};
     if(url==='/api/companies')return {ok:true,status:200,json:async()=>({user,csrf:'synthetic',companies:[company]})};
     return handle(url,options);

@@ -28,6 +28,7 @@ test('a suspended company explains the restriction and cannot emit selection',as
  const selected=[];const view=await fixture(t,{company:{...company,active:false},onSelect:id=>selected.push(id)});
  const button=find(view.container,n=>n.tag==='button');
  assert.equal(button.props.disabled,true);assert.equal(button.props['aria-label'],'Компания Synthetic Zuma отключена');
+ assert.match(text(find(button,n=>n.props?.class==='company-off-badge')),/Отключена/);
  const explanation=find(view.container,n=>n.props?.id===button.props['aria-describedby']);
  assert.equal(text(explanation),'Компания отключена. Обратитесь к администратору.');
  button.props.onClick();assert.deepEqual(selected,[]);
@@ -35,15 +36,14 @@ test('a suspended company explains the restriction and cannot emit selection',as
  assert.equal(button.props.disabled,false);button.props.onClick();assert.deepEqual(selected,[2]);
 });
 
-test('all five companies retain their names and distinct visual identities',async t=>{
- const tones=[];
+test('all five available companies retain their names and share the same styling',async t=>{
  for(const [index,code] of ['UZGERMED','ZUMA','SAMO','FAZO','UZYARN'].entries()){
   const selected=[];const view=await fixture(t,{company:{id:index+1,code,name:code,active:true},onSelect:id=>selected.push(id)});
   assert.equal(text(find(view.container,n=>n.tag==='b')),code);
-  tones.push(String(find(view.container,n=>String(n.props?.class||'').includes('company-card-shell')).props.class).match(/company-tone-\w+/)[0]);
+  const shell=find(view.container,n=>String(n.props?.class||'').includes('company-card-shell'));
+  assert.equal(shell.props.class,'company-card-shell');
   find(view.container,n=>n.tag==='button').props.onClick();assert.deepEqual(selected,[index+1]);
  }
- assert.equal(new Set(tones).size,5);
 });
 
 test('the suspended company message is localized without translating its name',async t=>{
