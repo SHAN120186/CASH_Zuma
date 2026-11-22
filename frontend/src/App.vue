@@ -19,6 +19,7 @@ import {createOperationProgress} from './operationProgress.js';
 import {invalidFormFields,focusInvalidField} from './formFeedback.js';
 import {isAppFileLink,isRequestDocumentLink,fetchDownload} from './fileDownload.js';
 import CompanyCard from './CompanyCard.vue';
+import CompanyPaused from './CompanyPaused.vue';
 import CompanyAvailability from './admin/CompanyAvailability.vue';
 import OverviewPage from './overview/OverviewPage.vue';
 import {canOpenOverview,canSeeFullOverview} from './overview/rights.js';
@@ -120,7 +121,9 @@ const companyUrl=url=>url+(url.includes('?')?'&':'?')+'company_id='+companyId.va
 const localBusinessDay=()=>new Date().toLocaleDateString('en-CA',{timeZone:'Asia/Tashkent'});
 const reportAsOf=ref(localBusinessDay()),bootstrapLocalDay=ref(null);
 const boot=ref({accounts:[],companies:[],categories:[],roles:{}}),rows=ref([]),dash=ref(null),report=ref(null),preview=ref(null),search=ref(''),modal=ref(null),form=ref({}),formError=ref(''),saving=ref(false),documents=ref(null);
+const checkingPausedCompany=ref(false),pauseFeedback=ref(''),pauseError=ref('');
 function clearWorkspace(){
+ checkingPausedCompany.value=false;pauseFeedback.value='';pauseError.value='';
  companyReady.value=false;companyId.value=null;showCompanyControls.value=false;reportEditing.value=false;reportSelection.value=null;bootstrapLocalDay.value=null;
  boot.value={accounts:[],companies:[],categories:[],counterparties:[],roles:{}};
  rows.value=[];dash.value=null;report.value=null;preview.value=null;modal.value=null;documents.value=null;form.value={};formError.value='';saving.value=false;
@@ -130,6 +133,10 @@ function clearWorkspace(){
 }
 function endSession(){cancelPending();clearWorkspace();user.value=null;csrf.value='';busy.value=false;}
 const selectableCompanies=computed(()=>boot.value.companies.filter(c=>c.code!=='UNASSIGNED'));
+const pausedCompany=computed(()=>{
+ const choices=selectableCompanies.value;
+ return user.value&&!user.value.holding_role&&!companyReady.value&&choices.length===1&&choices[0].active===false?choices[0]:null;
+});
 const importMode=ref('operations'),planMonthFrom=ref(1),planMonthTo=ref(12),planMappings=ref({}),planReason=ref('');
 // The default import reason follows the interface language until the user edits it.
 const defaultPlanReason=()=>tx('Загрузка планов расходов из проверенной книги Cash Flow');
@@ -293,10 +300,27 @@ async function changeReportYear(value){const cutOff=reportDateForYear(value,boot
 async function changeReportDate(value){if(!validReportDate(value,year.value,boot.value.today)){flash(N_('Дата отчёта должна быть в выбранном году и не позже сегодня.'));return}reportAsOf.value=value;await load()}
 async function enter(){companyId.value=null;companyReady.value=false;if(user.value?.must_change_password)return;const data=await api('/api/companies');boot.value={accounts:[],categories:[],...data};user.value=data.user;csrf.value=data.csrf;}
 function leaveSuspendedCompany(id){
- cancelPending();companyReady.value=false;companyId.value=null;busy.value=false;
- rows.value=[];dash.value=null;report.value=null;preview.value=null;modal.value=null;documents.value=null;editor.value=null;cardId.value=null;
- boot.value={...boot.value,accounts:[],categories:[],counterparties:[],companies:boot.value.companies.map(c=>c.id===id?{...c,active:false}:c)};
+ const companies=boot.value.companies.map(c=>c.id===id?{...c,active:false}:c);
+ cancelPending();clearWorkspace();busy.value=false;
+ boot.value={...boot.value,companies};
  error.value=N_('Компания отключена. Обратитесь к администратору.');
+}
+async function retryPausedCompany(){
+ if(checkingPausedCompany.value||!pausedCompany.value)return;
+ const epoch=companyEpoch,owner=user.value.id;
+ checkingPausedCompany.value=true;pauseFeedback.value='';pauseError.value='';
+ try{
+  const data=await api('/api/companies');
+  if(epoch!==companyEpoch||user.value?.id!==owner)return;
+  if(data.user.id!==owner){endSession();return;}
+  boot.value={...boot.value,companies:data.companies};
+  user.value=data.user;csrf.value=data.csrf;error.value='';
+  if(pausedCompany.value)pauseFeedback.value=N_('Доступ пока не восстановлен.');
+ }catch(e){
+  if(epoch===companyEpoch&&e.name!=='AbortError')pauseError.value=N_('Не удалось проверить доступ. Попробуйте ещё раз.');
+ }finally{
+  if(epoch===companyEpoch)checkingPausedCompany.value=false;
+ }
 }
 function companyAvailabilityChanged(company){
  boot.value={...boot.value,companies:boot.value.companies.map(c=>c.id===company.id?company:c)};
@@ -568,6 +592,7 @@ onMounted(async()=>{const epoch=companyEpoch;try{const r=await api('/api/me');if
    <p v-if="tempError" class="error" role="alert">{{tx(tempError)}}</p>
    <div class="form-actions"><button :disabled="busy">{{busy?tx('Сохраняем…'):tx('Сменить пароль')}}</button></div></div></form></main>
  </section>
+ <CompanyPaused v-else-if="pausedCompany" :company="pausedCompany" :checking="checkingPausedCompany" :feedback="pauseFeedback" :error="pauseError" @retry="retryPausedCompany" @logout="logout"/>
  <!-- Рабочее пространство -->
  <section v-else-if="!companyReady" class="company-choice">
   <header><div class="brand"><span class="mark" aria-hidden="true">CF</span><h1 class="bname">Cash Flow</h1></div><div class="head-actions"><LanguageSwitch compact/><button class="secondary" @click="logout">{{tx('Выйти')}}</button></div></header>

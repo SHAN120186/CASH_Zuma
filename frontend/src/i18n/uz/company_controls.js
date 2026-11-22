@@ -1,4 +1,10 @@
 export default {
+ 'Работа компании временно приостановлена.':'Kompaniya faoliyati vaqtincha to‘xtatilgan.',
+ 'Обратитесь к администратору.':'Administratorga murojaat qiling.',
+ 'Проверить доступ':'Kirishni tekshirish',
+ 'Проверяем доступ…':'Kirish tekshirilmoqda…',
+ 'Доступ пока не восстановлен.':'Kirish hali tiklanmagan.',
+ 'Не удалось проверить доступ. Попробуйте ещё раз.':'Kirishni tekshirib bo‘lmadi. Qayta urinib ko‘ring.',
  'Компания отключена':'Kompaniya o‘chirilgan',
  'Компания включена':'Kompaniya yoqilgan',
  'Компания включена':'Kompaniya yoqilgan',

@@ -596,7 +596,7 @@ class SiteTests(unittest.TestCase):
     def test_38_schedule_failures_not_retried_repeatedly(self):
         from unittest.mock import patch
         import worker
-        with unit(True) as s:s.add(ReportSchedule(recipient='recipient@example.invalid',currency='UZS',hour=0,enabled=True,created_by=1))
+        with unit(True) as s:s.add(ReportSchedule(company_id=self.company,recipient='recipient@example.invalid',currency='UZS',hour=0,enabled=True,created_by=1))
         with patch.object(worker,'send_report',side_effect=RuntimeError('secret must not be logged')) as send:
             worker.report_tick();worker.report_tick();self.assertEqual(send.call_count,1)
         with unit() as s:
