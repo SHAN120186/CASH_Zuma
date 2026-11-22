@@ -8,7 +8,8 @@ const periodComponent=await compileComponent(new URL('../src/PeriodFilter.vue',i
 const appComponent=await compileComponent(new URL('../src/App.vue',import.meta.url),{'./OperationProgress.vue':progressComponent,'./PeriodFilter.vue':periodComponent});
 const companyCard=await compileComponent(new URL('../src/CompanyCard.vue',import.meta.url));
 const companyAvailability=await compileComponent(new URL('../src/admin/CompanyAvailability.vue',import.meta.url));
-const reportEntryApp=await compileComponent(new URL('../src/App.vue',import.meta.url),{'./CompanyCard.vue':companyCard,'./admin/CompanyAvailability.vue':companyAvailability,'./OperationProgress.vue':progressComponent});
+const companyPaused=await compileComponent(new URL('../src/CompanyPaused.vue',import.meta.url));
+const reportEntryApp=await compileComponent(new URL('../src/App.vue',import.meta.url),{'./CompanyCard.vue':companyCard,'./CompanyPaused.vue':companyPaused,'./admin/CompanyAvailability.vue':companyAvailability,'./OperationProgress.vue':progressComponent});
 const idle={active:false,label:'',completed:0,total:0,error:''};
 const user={id:1,username:'synthetic',name:'Synthetic',role:'director',permissions:['view','export','download']};
 const company={id:2,code:'ZUMA',name:'Synthetic company'};
@@ -58,15 +59,20 @@ test('late startup session restoration cannot clear a newer authenticated sessio
  assert.equal(find(view.container,n=>n.tag==='button'&&text(n)==='Управление компаниями'),undefined);
 });
 
-test('a suspended company cannot be selected and logout remains available',async t=>{
+test('staff assigned only to a suspended company see a separate paused screen and can log out',async t=>{
  const calls=[];const {view}=await fixture(t,async(url)=>{calls.push(url);return {ok:true,status:200,json:async()=>[]};},reportEntryApp);
  Object.assign(view.state,{user:{...user,holding_role:null},companyReady:false,companyId:null,boot:{...bootstrapBody(),companies:[{...company,active:false}]}});await settle();
  const before=calls.length;await view.state.selectCompany(company.id);await settle();
  assert.equal(calls.length,before);assert.equal(view.state.companyId,null);assert.equal(view.state.companyReady,false);
- assert.match(text(view.container),/Компания отключена\. Обратитесь к администратору/);
- assert.equal(find(view.container,n=>n.tag==='button'&&String(n.props.class||'')==='company-card').props.disabled,true);
+ const paused=find(view.container,n=>String(n.props?.class||'').split(/\s+/).includes('company-paused'));assert.ok(paused);
+ const heading=find(paused,n=>(n.tag==='h1'||n.tag==='h2')&&text(n)==='Работа компании временно приостановлена.');assert.ok(heading);
+ assert.equal(find(paused,n=>n.tag==='main').props['aria-labelledby'],heading.props.id);
+ assert.equal(heading.props.tabindex,'-1');assert.equal(globalThis.document.activeElement?.props?.id,heading.props.id);
+ assert.match(text(paused),/Обратитесь к администратору\./);
+ assert.equal(all(view.container,n=>n.tag==='button'&&String(n.props.class||'')==='company-card').length,0);
+ assert.ok(find(paused,n=>n.tag==='button'&&text(n)==='Проверить доступ'));
  assert.equal(find(view.container,n=>n.tag==='button'&&text(n)==='Управление компаниями'),undefined);
- await view.state.logout();await settle();assert.equal(view.state.user,null);
+ await find(paused,n=>n.tag==='button'&&text(n)==='Выйти').props.onClick();await settle();assert.equal(view.state.user,null);
 });
 
 test('a stale company selection denied at bootstrap becomes disabled without getting financial data',async t=>{
@@ -75,15 +81,114 @@ test('a stale company selection denied at bootstrap becomes disabled without get
  await view.state.selectCompany(company.id);await settle();
  assert.deepEqual(calls,['/api/bootstrap']);assert.equal(view.state.companyId,null);assert.equal(view.state.companyReady,false);assert.equal(view.state.busy,false);
  assert.equal(view.state.boot.companies[0].active,false);assert.deepEqual(view.state.boot.accounts,[]);
- assert.match(text(view.container),/Компания отключена\. Обратитесь к администратору/);
+ assert.match(text(view.container),/Работа компании временно приостановлена\./);
 });
 
 test('a suspended active workspace clears private content and returns to the company list',async t=>{
  const {view}=await fixture(t,async()=>({ok:false,status:403,json:async()=>({detail:'Компания отключена. Обратитесь к администратору.'})}),reportEntryApp);
- Object.assign(view.state,{page:'ledger',rows:[{id:1,note:'Synthetic private content'}],boot:{...bootstrapBody(),accounts:[{id:7,name:'Private account',currency:'UZS'}]},user:{...user,permissions:['view','ledger']}});await settle();
+ Object.assign(view.state,{page:'ledger',rows:[{id:1,note:'Synthetic private content'}],boot:{...bootstrapBody(),companies:[company],accounts:[{id:7,name:'Private account',currency:'UZS'}]},user:{...user,permissions:['view','ledger']}});await settle();
  await assert.rejects(view.state.api('/api/ledger'),/Компания отключена/);await settle();
  assert.equal(view.state.companyReady,false);assert.equal(view.state.companyId,null);assert.deepEqual(view.state.rows,[]);assert.deepEqual(view.state.boot.accounts,[]);
  assert.doesNotMatch(text(view.container),/Synthetic private content|Private account/);
+ assert.match(text(view.container),/Работа компании временно приостановлена\./);
+});
+
+test('holding users and ambiguous or partially available company lists retain the normal picker',async t=>{
+ const {view}=await fixture(t,async()=>({ok:true,status:200,json:async()=>[]}),reportEntryApp);
+ const inactive={...company,active:false},active={...otherCompany,active:true};
+ for(const holding_role of ['admin','founder']){
+  Object.assign(view.state,{user:{...user,role:holding_role,holding_role},companyReady:false,companyId:null,boot:{...bootstrapBody(),companies:[inactive]}});await settle();
+  assert.equal(find(view.container,n=>String(n.props?.class||'').split(/\s+/).includes('company-paused')),undefined);
+  assert.equal(all(view.container,n=>n.tag==='button'&&n.props.class==='company-card').length,1);
+ }
+ for(const companies of [[],[inactive,active],[inactive,{...otherCompany,active:false}]]){
+  Object.assign(view.state,{user:{...user,role:'employee',holding_role:null},boot:{...bootstrapBody(),companies}});await settle();
+  assert.equal(find(view.container,n=>String(n.props?.class||'').split(/\s+/).includes('company-paused')),undefined);
+  assert.equal(all(view.container,n=>n.tag==='button'&&n.props.class==='company-card').length,companies.length);
+ }
+});
+
+test('paused screen applies to every staff role regardless of stale broad permission flags',async t=>{
+ const {view}=await fixture(t,async()=>({ok:true,status:200,json:async()=>[]}),reportEntryApp);
+ for(const role of ['director','finance','accountant','cashier','employee','auditor','sales','procurement']){
+  Object.assign(view.state,{user:{...user,role,holding_role:null,permissions:['view','ledger','users','write','import','download']},companyReady:false,companyId:null,
+   boot:{...bootstrapBody(),companies:[{...company,active:false}],accounts:[],categories:[]}});await settle();
+  assert.ok(find(view.container,n=>String(n.props?.class||'').split(/\s+/).includes('company-paused')),role);
+  assert.equal(find(view.container,n=>n.tag==='button'&&text(n)==='Управление компаниями'),undefined);
+  assert.equal(all(view.container,n=>n.tag==='button'&&n.props.class==='company-card').length,0);
+ }
+});
+
+test('paused staff can only recheck their available company list and return to the picker after restoration',async t=>{
+ const {view}=await fixture(t,async()=>{throw new Error('No financial requests expected');},reportEntryApp);
+ const employee={...user,role:'employee',holding_role:null,permissions:['request']};
+ Object.assign(view.state,{user:employee,companyReady:false,companyId:null,boot:{...bootstrapBody(employee),companies:[{...company,active:false}]}});await settle();
+ const checked=deferred(),calls=[],priorFetch=globalThis.fetch;
+ globalThis.fetch=async(url,options={})=>{calls.push([url,options]);assert.equal(url,'/api/companies');return checked.promise;};
+ const button=find(view.container,n=>n.tag==='button'&&text(n)==='Проверить доступ');assert.ok(button);
+ const checking=button.props.onClick();await settle();assert.equal(calls.length,1);assert.equal(button.props.disabled,true);
+ assert.equal(calls[0][1].method||'GET','GET');assert.equal(view.state.companyReady,false);
+ checked.resolve({ok:true,status:200,json:async()=>({user:employee,csrf:'synthetic',companies:[{...company,active:true}]})});await checking;await settle();
+ assert.equal(find(view.container,n=>String(n.props?.class||'').split(/\s+/).includes('company-paused')),undefined);
+ assert.equal(view.state.companyReady,false);assert.equal(view.state.companyId,null);
+ const picker=find(view.container,n=>n.tag==='button'&&n.props.class==='company-card');assert.ok(picker);assert.equal(picker.props.disabled,false);
+ assert.equal(calls.length,1,'restoration must not automatically enter the workspace or fetch financial data');
+ globalThis.fetch=priorFetch;
+});
+
+test('failed paused-screen recheck leaves the screen blocked and shows the error',async t=>{
+ const {view}=await fixture(t,async()=>{throw new Error('No financial requests expected');},reportEntryApp);
+ Object.assign(view.state,{user:{...user,role:'employee',holding_role:null},companyReady:false,companyId:null,boot:{...bootstrapBody(),companies:[{...company,active:false}]}});await settle();
+ const calls=[];globalThis.fetch=async(url,options={})=>{calls.push([url,options]);return {ok:false,status:503,json:async()=>({detail:'Synthetic access check unavailable'})};};
+ await find(view.container,n=>n.tag==='button'&&text(n)==='Проверить доступ').props.onClick();await settle();
+ assert.deepEqual(calls.map(([url])=>url),['/api/companies']);assert.equal(view.state.companyReady,false);assert.equal(view.state.boot.companies[0].active,false);
+ const paused=find(view.container,n=>String(n.props?.class||'').split(/\s+/).includes('company-paused'));assert.ok(paused);assert.match(text(paused),/Не удалось проверить доступ\. Попробуйте ещё раз\./);
+ assert.equal(all(view.container,n=>n.tag==='button'&&n.props.class==='company-card').length,0);
+ assert.ok(find(paused,n=>n.tag==='button'&&text(n)==='Выйти'));
+});
+
+test('a successful check of still-paused staff access gives feedback without requesting financial data',async t=>{
+ const {view}=await fixture(t,async()=>{throw new Error('No financial requests expected');},reportEntryApp);
+ const staff={...user,role:'employee',holding_role:null};
+ Object.assign(view.state,{user:staff,companyReady:false,companyId:null,boot:{...bootstrapBody(staff),companies:[{...company,active:false}]}});await settle();
+ const calls=[];globalThis.fetch=async(url,options={})=>{calls.push([url,options]);return {ok:true,status:200,json:async()=>({user:staff,csrf:'synthetic',companies:[{...company,active:false}]})};};
+ await find(view.container,n=>n.tag==='button'&&text(n)==='Проверить доступ').props.onClick();await settle();
+ assert.deepEqual(calls.map(([url])=>url),['/api/companies']);assert.equal(calls[0][1].method||'GET','GET');
+ const paused=find(view.container,n=>String(n.props?.class||'').split(/\s+/).includes('company-paused'));assert.ok(paused);
+ assert.match(text(paused),/Доступ пока не восстановлен\./);assert.equal(view.state.companyReady,false);assert.equal(view.state.companyId,null);
+ assert.equal(find(paused,n=>n.tag==='button'&&text(n)==='Проверить доступ').props.disabled,false);
+});
+
+test('paused access check never imports company choices belonging to another user',async t=>{
+ const {view}=await fixture(t,async()=>{throw new Error('No financial requests expected');},reportEntryApp);
+ Object.assign(view.state,{user:{...user,role:'employee',holding_role:null},companyReady:false,companyId:null,boot:{...bootstrapBody(),companies:[{...company,active:false}]}});await settle();
+ globalThis.fetch=async()=>({ok:true,status:200,json:async()=>({user:{id:999,role:'admin',holding_role:'admin',permissions:['users','view']},csrf:'foreign-csrf',companies:[{id:99,name:'Foreign private company',code:'PRIVATE',active:true}]})});
+ await find(view.container,n=>n.tag==='button'&&text(n)==='Проверить доступ').props.onClick();await settle();
+ assert.equal(view.state.user,null);assert.equal(view.state.csrf,'');assert.deepEqual(view.state.boot.companies,[]);assert.equal(view.state.companyReady,false);
+ assert.doesNotMatch(text(view.container),/Foreign private company|Управление компаниями/);
+});
+
+test('late paused-screen access response cannot restore an employee after logout',async t=>{
+ const {view}=await fixture(t,async()=>({ok:true,status:200,json:async()=>[]}),reportEntryApp);
+ const employee={...user,role:'employee',holding_role:null};
+ Object.assign(view.state,{user:employee,companyReady:false,companyId:null,boot:{...bootstrapBody(employee),companies:[{...company,active:false}]}});await settle();
+ const checked=deferred(),priorFetch=globalThis.fetch;
+ globalThis.fetch=async(url,options)=>url==='/api/companies'?checked.promise:priorFetch(url,options);
+ const checking=find(view.container,n=>n.tag==='button'&&text(n)==='Проверить доступ').props.onClick();await settle();
+ await find(view.container,n=>n.tag==='button'&&text(n)==='Выйти').props.onClick();await settle();
+ checked.resolve({ok:true,status:200,json:async()=>({user:employee,csrf:'old-token',companies:[{...company,active:true}]})});await checking;await settle();
+ assert.equal(view.state.user,null);assert.equal(view.state.csrf,'');assert.deepEqual(view.state.boot.companies,[]);
+ assert.equal(find(view.container,n=>String(n.props?.class||'').split(/\s+/).includes('company-paused')),undefined);
+ assert.equal(all(view.container,n=>n.tag==='button'&&n.props.class==='company-card').length,0);
+});
+
+test('paused screen translates its heading and actions into Uzbek without other company details',async t=>{
+ const prior=lang.value;t.after(()=>setLang(prior));setLang('uz');
+ const {view}=await fixture(t,async()=>({ok:true,status:200,json:async()=>[]}),reportEntryApp);
+ Object.assign(view.state,{user:{...user,role:'employee',holding_role:null},companyReady:false,companyId:null,boot:{...bootstrapBody(),companies:[{...company,active:false}]}});await settle();
+ const paused=find(view.container,n=>String(n.props?.class||'').split(/\s+/).includes('company-paused'));assert.ok(paused);
+ assert.doesNotMatch(text(paused),/[А-Яа-яЁё]/);assert.doesNotMatch(text(paused),/Other synthetic company/);
+ const buttons=all(paused,n=>n.tag==='button');assert.equal(buttons.length,2);assert.ok(buttons.every(b=>text(b).trim()));
 });
 
 test('holding admin can explicitly reactivate a company when every workspace is suspended',async t=>{
