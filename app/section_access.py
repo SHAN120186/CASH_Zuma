@@ -89,7 +89,8 @@ def enforce(user,request):
     if not names:return
     available=[n for n in names if modes.get(n,'hidden')!='hidden']
     if not available:raise HTTPException(403,'Раздел скрыт администратором.')
-    if request.method not in ('GET','HEAD') and not any(modes[n]=='edit' for n in available):
+    read_only_upload = request.method == 'POST' and request.url.path == '/api/bank-statements/compare-period'
+    if request.method not in ('GET','HEAD') and not read_only_upload and not any(modes[n]=='edit' for n in available):
         raise HTTPException(403,'Для этого раздела доступен только просмотр.')
     if request.method in ('GET','HEAD'):
         # Do not alter the role's normal read permissions; write endpoints are gated above.

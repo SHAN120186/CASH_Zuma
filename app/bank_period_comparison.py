@@ -1,0 +1,306 @@
+"""Compare bank evidence to request payments on demand. All operations are reads."""
+from collections import Counter, defaultdict
+from datetime import date
+import re
+from types import SimpleNamespace
+import unicodedata
+from urllib.parse import unquote
+
+from fastapi import APIRouter, HTTPException, Query, Request
+from sqlalchemy import or_, select
+
+from .bank_period_parser import parse_period_statement
+from .bank_statement_api import _fingerprint, _line_data, _minor, _statement
+from .bank_statement_expenses import _fee_evidence
+from .bank_statement_guard import REQUEST_PAID_BANK_STATUSES, accounted_line_ids
+from .bank_statement_models import BankStatementBatch, BankStatementLine
+from .bank_statement_parser import MAX_BYTES, StatementParseError
+from .daily_reconciliation import balances, revision
+from .db import Account, Company, Ledger, PaymentRequest, unit
+from .erp import read_upload
+from .requests_api import can_view_request
+from .security import HOLDING_ROLES, company_role, session_user
+from .services import deleted_ledger_ids, effective_cashflows, get, money
+
+router = APIRouter(prefix='/api/bank-statements')
+currency_param = Query(pattern=r'^(UZS|USD|EUR)$')
+CF_REFERENCE = re.compile(r'(?<!\w)[CС]F[\s\-–—‑]*0*([1-9][0-9]*)(?!\w)', re.I)
+
+
+def _context(s, request, account_id, currency):
+    user, _ = session_user(s, request, ('view', 'pay_bank'))
+    if user.role not in HOLDING_ROLES and company_role(user) not in ('finance', 'director', 'accountant'):
+        raise HTTPException(403, 'Сверка доступна финансовой службе и руководству.')
+    if getattr(user, '_sections', None) and user._sections.get('requests') == 'hidden':
+        raise HTTPException(403, 'Для сверки необходим доступ к заявкам.')
+    account = get(s, Account, account_id)
+    if account.kind != 'bank' or account.currency != currency or account.archived:
+        raise HTTPException(422, 'Выберите действующий банковский счёт с этой валютой.')
+    return user, account
+
+
+def _binding(s, account, source):
+    number = source['account_number']
+    known = s.execute(select(BankStatementBatch.account_id, BankStatementBatch.account_number,
+        BankStatementBatch.owner_inn).where(BankStatementBatch.status == 'committed',
+        (BankStatementBatch.account_id == account.id) | (BankStatementBatch.account_number == number)).distinct()).all()
+    if known:
+        if any(account_id != account.id or bank_number != number or inn != source['owner_inn']
+               for account_id, bank_number, inn in known):
+            raise HTTPException(409, 'Реквизиты выписки расходятся с подтверждёнными реквизитами счёта.')
+        return 'confirmed'
+    # Old site accounts have no stored bank number. On first use the operator
+    # must verify the selected account and currency after seeing source metadata.
+    company = get(s, Company, account.company_id)
+    owner_words = set(re.findall(r'[^\W_]+', source['owner_name'].casefold()))
+    if company.code.casefold() not in owner_words:
+        raise HTTPException(409, 'Владелец выписки не совпадает с выбранной компанией.')
+    return 'owner_only'
+
+
+def _check_currency(account, source):
+    # Uzbek corporate 202xx accounts carry a currency code in positions 6–8.
+    # Only recognized codes in this account family supplement source metadata.
+    number = source['account_number']
+    encoded = None
+    if re.fullmatch(r'202[0-9]{17}', number):
+        encoded = {'000': 'UZS', '840': 'USD', '978': 'EUR'}.get(number[5:8])
+    if any(value and value != account.currency for value in (source.get('currency'), encoded)):
+        raise HTTPException(409, 'Валюта выписки расходится с валютой выбранного счёта.')
+
+
+def _request_references(row):
+    # CF identifiers and bank order numbers are independent namespaces.
+    return {int(digits) for field in ('purpose', 'document_number') for digits in CF_REFERENCE.findall(row[field])
+            if len(digits) <= 18}
+
+
+def _active_requests(s, user, account, source, start, end):
+    # In-period totals need every active site payment in the period. A bounded
+    # neighbouring window also catches payments booked a few days late. Exact
+    # request or order references still work beyond that window.
+    first = date.fromordinal(max(date.min.toordinal(), start.toordinal() - 31))
+    last = date.fromordinal(min(date.max.toordinal(), end.toordinal() + 31))
+    outgoing = [row for row in source['rows'] if row['direction'] == 'out']
+    amounts = {_minor(row['amount']) for row in outgoing}
+    references = {rid for row in outgoing for rid in _request_references(row)}
+    documents = {row['document_number'] for row in outgoing}
+    candidates = effective_cashflows(s).where(Ledger.account_id == account.id,
+        Ledger.kind == 'out', Ledger.request_id.is_not(None),
+        or_(Ledger.date.between(first, last), Ledger.request_id.in_(references), Ledger.reference.in_(documents)))
+    deleted = deleted_ledger_ids(s)
+    facts = {entry.request_id: entry for entry in s.scalars(candidates) if entry.id not in deleted}
+    request_query = select(PaymentRequest).where(PaymentRequest.account_id == account.id,
+        PaymentRequest.status.in_(('approved', 'paid')), or_(PaymentRequest.id.in_(references),
+        PaymentRequest.id.in_(candidates.with_only_columns(Ledger.request_id)),
+        PaymentRequest.due_date.between(first, last) & PaymentRequest.amount.in_(amounts)))
+    requests = {req.id: req for req in s.scalars(request_query) if can_view_request(s, user, req)}
+    facts = {rid: entry for rid, entry in facts.items() if rid in requests and requests[rid].status == 'paid'}
+    return requests, facts
+
+
+def _stored_evidence(s, account, source, start, end):
+    lines = list(s.scalars(select(BankStatementLine).join(BankStatementBatch,
+        BankStatementBatch.id == BankStatementLine.batch_id).where(
+        BankStatementBatch.status == 'committed',
+        BankStatementBatch.account_number == source['account_number'], BankStatementBatch.owner_inn == source['owner_inn'],
+        BankStatementLine.account_id == account.id, BankStatementLine.date.between(start, end))))
+    active = accounted_line_ids(s, lines, account) if lines else set()
+    groups = defaultdict(list)
+    for line in lines:
+        groups[line.fingerprint].append(line)
+    # Uncertain, reversed and overlapping claims must also be visible to the
+    # matcher. Discarding them would allow a coincidental number to go green.
+    claimed = {line.ledger_id for line in lines if line.ledger_id is not None}
+    return groups, active, claimed
+
+
+def _indexes(requests, facts):
+    by_payee, by_name, by_document = defaultdict(set), defaultdict(set), defaultdict(set)
+    for req in requests.values():
+        if req.counterparty_inn:
+            by_payee[(req.amount, req.counterparty_inn)].add(req.id)
+        name = _payee_name(req.counterparty)
+        if name:
+            by_name[(req.amount, name)].add(req.id)
+    for rid, fact in facts.items():
+        by_document[fact.reference].add(rid)
+    return by_payee, by_name, by_document
+
+
+def _payee_name(value):
+    tokens = re.findall(r'[^\W_]+', unicodedata.normalize('NFKC', value or '').casefold())
+    forms = {'ооо', 'мчж', 'mchj', 'llc', 'ао', 'aj', 'оао', 'ип', 'oao'}
+    name = ' '.join(token for token in tokens if token not in forms)
+    return name if len(name) >= 5 and any(ch.isalpha() for ch in name) else ''
+
+
+def _comparison_rows(source, requests, facts, evidence):
+    by_payee, by_name, by_document = _indexes(requests, facts)
+    stored, active_lines, claimed_ledgers = evidence
+    rows = []
+    matched, possible = set(), set()
+    outgoing = [row for row in source['rows'] if row['direction'] == 'out']
+    fingerprints = Counter(_fingerprint(source['account_number'], row) for row in outgoing)
+    order_counts = Counter(row['document_number'] for row in outgoing)
+    exact_by_request = Counter()
+    for row in source['rows']:
+        day, amount = date.fromisoformat(row['date']), _minor(row['amount'])
+        status, reason, related = 'incoming', 'Поступление по выписке.', set()
+        if row['direction'] == 'out':
+            fingerprint = _fingerprint(source['account_number'], row)
+            old = stored.get(fingerprint, [])
+            cf_ids = _request_references(row)
+            ids = cf_ids.intersection(requests)
+            same_payee = set(by_payee.get((amount, row['correspondent_inn']), ()))
+            name = _payee_name(row['correspondent_name'])
+            for rid in by_name.get((amount, name), ()):
+                if not row['correspondent_inn'] or not requests[rid].counterparty_inn:
+                    same_payee.add(rid)
+            for rid in same_payee:
+                site_day = facts[rid].date if rid in facts else requests[rid].due_date
+                if abs((day - site_day).days) <= 31:
+                    ids.add(rid)
+            same_doc = by_document.get(row['document_number'], set())
+            for rid in same_doc:
+                if facts[rid].amount == amount or (row['correspondent_inn']
+                        and requests[rid].counterparty_inn == row['correspondent_inn']):
+                    ids.add(rid)
+            status, reason = 'bank_only', 'Для банковского списания не найдена подтверждённая заявка.'
+            duplicate = fingerprints[fingerprint] > 1
+            proven = old[0] if (len(old) == 1 and source['ready'] and not duplicate
+                and old[0].id in active_lines and not old[0].uncertain and old[0].include_in_daily) else None
+            if (proven and proven.status in REQUEST_PAID_BANK_STATUSES and proven.request_id in facts
+                    and facts[proven.request_id].id == proven.ledger_id):
+                status, reason, related = 'matched', 'Связь с действующей оплатой сохранена в подтверждённой выписке.', {proven.request_id}
+            elif proven and proven.request_id is None:
+                if proven.classification == 'bank_fee' or proven.status in ('auto_fee_posted', 'fee_matched'):
+                    status, reason = 'fee', 'Комиссия учтена отдельной банковской операцией.'
+                else:
+                    status, reason = 'other', 'Строка связана с действующей операцией без оплаты заявки.'
+            elif old:
+                related = ids | {line.request_id for line in old if line.request_id in requests}
+                status = 'candidate'
+                reason = 'Сохранённая строка требует проверки: проверьте связь, сторно, повторы и итог выписки.'
+            else:
+                hint_line = SimpleNamespace(**{**row, 'date': day, 'amount': amount,
+                                               'classification': '', 'reviewed_by': None})
+                fee = _fee_evidence(SimpleNamespace(owner_inn=source['owner_inn']), hint_line)
+                exact = {rid for rid in same_doc if facts[rid].date == day and facts[rid].amount == amount
+                         and facts[rid].id not in claimed_ledgers and requests[rid].amount == amount
+                         and row['correspondent_inn'].strip('0') and row['document_number'].strip('0 ')
+                         and requests[rid].counterparty_inn == row['correspondent_inn']}
+                if (source['ready'] and len(exact) == 1 and order_counts[row['document_number']] == 1
+                        and (not cf_ids or cf_ids == exact) and not old and not fee):
+                    related = exact
+                    status, reason = 'matched', 'Совпали платёжка, дата, сумма и ИНН получателя с действующей оплатой.'
+                elif ids or duplicate or cf_ids:
+                    related = ids
+                    status = 'candidate'
+                    if duplicate:
+                        reason = 'В выписке повторяется строка. Требуется проверить оригинал.'
+                    elif cf_ids and cf_ids != ids:
+                        reason = 'Номер заявки в назначении расходится с доступными данными. Проверьте реквизиты.'
+                    else:
+                        reason = 'Возможное совпадение. Сверьте номер платёжки, дату, сумму и получателя.'
+                elif fee:
+                    status = 'fee' if fee[0] == 'bank_fee' else 'other'
+                    reason = 'Комиссия банка по реквизитам выписки.' if status == 'fee' else 'Банковские проценты по реквизитам выписки.'
+            if status == 'matched':
+                exact_by_request.update(related)
+            else:
+                possible.update(related)
+        selected = sorted(related)[:12]
+        details = [{'request_id': rid, 'amount': money(requests[rid].amount),
+                    'counterparty': requests[rid].counterparty, 'status': requests[rid].status,
+                    'date': str(facts[rid].date) if rid in facts else None,
+                    'document_number': facts[rid].reference if rid in facts else None}
+                   for rid in selected]
+        rows.append({key: row[key] for key in ('line', 'date', 'direction', 'amount',
+            'document_number', 'correspondent_name', 'purpose')} | {'status': status, 'reason': reason,
+            'request_ids': selected, 'request_count': len(related), 'request_details': details})
+    # Two different bank debits must never both count as one paid request.
+    for row in rows:
+        if row['status'] == 'matched':
+            rid = row['request_ids'][0]
+            if exact_by_request[rid] > 1:
+                row.update(status='candidate', reason='На одну оплату претендуют несколько списаний.')
+                possible.add(rid)
+            else:
+                matched.add(rid)
+    return rows, matched, possible
+
+
+def _report(s, user, account, source, binding):
+    stamp = revision(s)
+    start, end = (date.fromisoformat(source[key]) for key in ('period_from', 'period_to'))
+    requests, facts = _active_requests(s, user, account, source, start, end)
+    evidence = _stored_evidence(s, account, source, start, end)
+    rows, matched, possible = _comparison_rows(source, requests, facts, evidence)
+    unmatched = [{'request_id': rid, 'document_number': fact.reference, 'amount': money(fact.amount),
+                  'date': str(fact.date), 'counterparty': requests[rid].counterparty,
+                  'status': 'candidate' if rid in possible else 'app_only'}
+                 for rid, fact in sorted(facts.items(), key=lambda pair: (pair[1].date, pair[0]))
+                 if start <= fact.date <= end and rid not in matched]
+    first = balances(s, [account], start)[account.id] if start >= account.opening_date else None
+    last = first
+    if start != end:
+        last = balances(s, [account], end)[account.id] if end >= account.opening_date else None
+    if revision(s) != stamp:
+        raise HTTPException(409, 'Данные изменились во время сверки. Откройте выписку повторно.')
+    return {'account': {'id': account.id, 'name': account.name, 'currency': account.currency},
+            'statement': {k: v for k, v in source.items() if k != 'rows'}, 'binding': binding,
+            'site': {'opening_balance': money(first['opening']) if first else None,
+                     'closing_balance': money(last['closing']) if last else None,
+                     'opening_difference': money(_minor(source['opening_balance']) - first['opening']) if first else None,
+                     'closing_difference': money(_minor(source['closing_balance']) - last['closing']) if last else None},
+            'rows': rows, 'unmatched_payments': unmatched}
+
+
+@router.get('/period-sources/list')
+def saved_sources(request: Request, account_id: int, currency: str = currency_param):
+    with unit() as s:
+        _, account = _context(s, request, account_id, currency)
+        items = s.execute(select(BankStatementBatch.id, BankStatementBatch.filename,
+            BankStatementBatch.period_from, BankStatementBatch.period_to).where(
+            BankStatementBatch.account_id == account.id, BankStatementBatch.status == 'committed'
+            ).order_by(BankStatementBatch.period_to.desc(), BankStatementBatch.id.desc()))
+        return {'items': [dict(row._mapping) for row in items]}
+
+
+@router.get('/period-sources/{id}')
+def compare_saved(id: int, request: Request, account_id: int, currency: str = currency_param):
+    with unit() as s:
+        user, account = _context(s, request, account_id, currency)
+        batch = get(s, BankStatementBatch, id)
+        if batch.account_id != account.id or batch.status != 'committed' or batch.currency != account.currency:
+            raise HTTPException(404, 'Подтверждённая выписка для этого счёта не найдена.')
+        source = _statement(batch)
+        _check_currency(account, source)
+        source['rows'] = [_line_data(line) for line in s.scalars(select(BankStatementLine).where(
+            BankStatementLine.batch_id == batch.id).order_by(BankStatementLine.line))]
+        return _report(s, user, account, source, 'confirmed')
+
+
+@router.post('/compare-period')
+async def compare_file(request: Request, account_id: int, currency: str = currency_param, confirm_account: bool = False):
+    with unit() as s:
+        _context(s, request, account_id, currency)
+    filename = unquote(request.headers.get('X-Filename', ''))
+    if len(filename) > 220 or not filename.lower().endswith(('.xlsx', '.xls', '.html', '.htm')):
+        raise HTTPException(422, 'Выберите банковскую выписку IABS в формате XLSX, XLS или HTML.')
+    raw = await read_upload(request, limit=MAX_BYTES, too_large='Файл больше 5 МБ.')
+    try:
+        source = parse_period_statement(raw)
+    except StatementParseError as exc:
+        raise HTTPException(422, str(exc)) from exc
+    with unit() as s:
+        user, account = _context(s, request, account_id, currency)
+        _check_currency(account, source)
+        binding = _binding(s, account, source)
+        if binding == 'owner_only' and not confirm_account:
+            return {'requires_confirmation': True, 'binding': binding,
+                    'account': {'id': account.id, 'name': account.name, 'currency': account.currency},
+                    'statement': {k: v for k, v in source.items() if k != 'rows'},
+                    'rows': [], 'unmatched_payments': []}
+        return _report(s, user, account, source, binding)

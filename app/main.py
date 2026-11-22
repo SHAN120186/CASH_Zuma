@@ -52,7 +52,7 @@ async def safety(request,call_next):
         limit=MAX_SIZE if request.url.path=='/api/model/upload' else 5*1024*1024 if request.url.path in ('/api/import/preview','/api/plan-import/preview') or request.url.path.endswith('/document') or '/documents' in request.url.path else 65536
         if request.url.path=='/api/cashflow-osv/preview':limit=24*1024*1024
         if request.url.path=='/api/budgets/import/preview':limit=15*1024*1024
-        if request.url.path=='/api/bank-statements/preview' and request.method=='POST':limit=5*1024*1024
+        if request.url.path in ('/api/bank-statements/preview','/api/bank-statements/compare-period') and request.method=='POST':limit=5*1024*1024
         if request.url.path=='/api/counterparties/replace' and request.method=='POST':limit=5*1024*1024
         if request.method=='POST' and re.fullmatch(r'/api/requests/[0-9]+/documents',request.url.path):limit=MAX_DOCUMENT
         if length<0 or length>limit:return JSONResponse({'detail':'Неверный размер запроса.'},status_code=413)
@@ -1354,8 +1354,12 @@ app.include_router(counterparty_replace_router)
 from .bank_statement_category_rules import router as bank_statement_category_rules_router
 app.include_router(bank_statement_category_rules_router)
 from .bank_statement_api import router as bank_statement_router
+from .bank_period_comparison import router as bank_period_router
+from .bank_period_coverage import router as bank_period_coverage_router
 from .daily_reconciliation import router as daily_reconciliation_router
 app.include_router(daily_reconciliation_router)
+app.include_router(bank_period_router)
+app.include_router(bank_period_coverage_router)
 app.include_router(bank_statement_router)
 from .bank_statement_rule_allocation import router as bank_statement_rule_allocation_router
 app.include_router(bank_statement_rule_allocation_router)
