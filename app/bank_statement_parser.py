@@ -136,7 +136,7 @@ class _Tables(HTMLParser):
 
 
 def _metadata(tables):
-    texts = [_clean(''.join(cell)) for table in tables for row in table for cell in row]
+    texts = (cell for table in tables for row in table for cell in row)
     period = []
     opening = []
     closing = []
@@ -164,7 +164,7 @@ def _metadata(tables):
     return account[0], start, end, opening[0], closing[0]
 
 
-def parse_bank_statement(raw: bytes) -> dict:
+def parse_bank_statement(raw: bytes, *, allow_empty=False) -> dict:
     """Parse a bank HTML statement and calculate, but do not change, financial data.
 
     ``ready`` is false if balances or declared turnovers are missing or do not
@@ -189,30 +189,37 @@ def parse_bank_statement(raw: bytes) -> dict:
         raise
     except Exception:
         raise StatementParseError('Не удалось прочитать банковскую выписку.') from None
-    (account, owner_name, owner_inn), start, end, opening, closing = _metadata(parser.tables)
+    tables = [[[_clean(''.join(cell)) for cell in row] for row in table] for table in parser.tables]
+    return parse_statement_tables(tables, allow_empty=allow_empty)
+
+
+def parse_statement_tables(tables, *, allow_empty=False):
+    """Validate normalized IABS cells from either the HTML or the XLSX export."""
+    (account, owner_name, owner_inn), start, end, opening, closing = _metadata(tables)
     aliases = ('дата', 'номер документа', 'мфо коррес', 'счет корреспондент',
                'наименование коррес', 'инн корреспондент', 'назначение платежа', 'дебет', 'кредит')
     candidates = []
-    for table in parser.tables:
+    for table in tables:
         for i, row in enumerate(table):
-            cols = [_clean(''.join(c)).lower().replace('ё', 'е') for c in row]
+            cols = [c.lower().replace('ё', 'е') for c in row]
             if len(cols) == 9 and all(cols[n].startswith(label) for n, label in enumerate(aliases)):
                 candidates.append((table, i))
     if len(candidates) != 1:
         raise StatementParseError('Не найдены необходимые столбцы банковской выписки.')
     table, header = candidates[0]
-    table_number = next(i for i, candidate in enumerate(parser.tables) if candidate is table)
-    previous_rows = sum(len(previous) for previous in parser.tables[:table_number])
+    table_number = next(i for i, candidate in enumerate(tables) if candidate is table)
+    previous_rows = sum(len(previous) for previous in tables[:table_number])
     rows = []
     debit_total = credit_total = Decimal('0.00')
     declared = None
-    for index, row in enumerate(table[header + 1:], start=header + 2):
-        cells = [_clean(''.join(cell)) for cell in row]
+    declared_any_amount = False
+    for index, cells in enumerate(table[header + 1:], start=header + 2):
         if not any(cells):
             continue
         if cells[0].lower().startswith('итоговый оборот'):
             if declared is not None or len(cells) < 3:
                 raise StatementParseError('Итог оборотов в выписке указан неверно.')
+            declared_any_amount = bool(cells[-2] or cells[-1])
             declared = (_amount(cells[-2], blank=True), _amount(cells[-1], blank=True))
             continue
         if declared is not None or len(cells) != 9 or len(rows) >= MAX_ROWS:
@@ -236,12 +243,14 @@ def parse_bank_statement(raw: bytes) -> dict:
                      'correspondent_name': cells[4], 'correspondent_inn': cells[5], 'purpose': cells[6],
                      'debit': _money(debit), 'credit': _money(credit),
                      'amount': _money(debit if debit else credit), 'direction': 'out' if debit else 'in'})
-    if not rows:
+    if not rows and not allow_empty:
         raise StatementParseError('В банковской выписке нет операций.')
     calculated = opening + credit_total - debit_total
     balance_difference = closing - calculated
     balance_matches = balance_difference == 0
     totals_match = None if declared is None else declared == (debit_total, credit_total)
+    if not rows and not declared_any_amount:
+        totals_match = None
     storage_safe = all(abs(value) <= MAX_DATABASE_AMOUNT for value in
                        (opening, closing, debit_total, credit_total, calculated, balance_difference))
     operation_limit_safe = all(Decimal(row['amount']) <= MAX_OPERATION_AMOUNT for row in rows)

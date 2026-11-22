@@ -26,6 +26,7 @@ import {canOpenOverview,canSeeFullOverview} from './overview/rights.js';
 import BankStatements from './BankStatements.vue';
 import BankStatementDaily from './overview/BankStatementDaily.vue';
 const DailyReconciliation = lazySection(() => import('./overview/DailyReconciliation.vue'));
+const StatementPeriod = lazySection(() => import('./overview/StatementPeriod.vue'));
 const AdminCenter = lazySection(() => import('./admin/AdminCenter.vue'));
 import {groupCompanyInfo} from './admin/groupRegistration.js';
 import {loadRecentLogins,rememberLogin,matchingLogins,offerPasswordSave} from './loginPreferences.js';
@@ -678,6 +679,7 @@ onMounted(async()=>{const epoch=companyEpoch;try{const r=await api('/api/me');if
 
     <!-- Операции -->
     <template v-if="page==='ledger'">
+     <StatementPeriod v-if="companyId&&canNavigate('ledger')&&canNavigate('requests')&&has('requests-view')&&(has('view')||has('pay_bank'))&&(user.holding_role||['finance','director','accountant'].includes(user.company_role))" :key="`statement-period-${companyId}`" :api="api" :company-id="companyId" :accounts="boot.accounts" :currency="currency" :today="boot.today" :refresh="homeRefresh" @open-request="openRequest"/>
      <DailyReconciliation v-if="(has('view')||has('pay_bank'))&&companyId&&(user.holding_role||['finance','director','accountant'].includes(user.company_role))" :key="`reconciliation-${companyId}`" :api="api" :company-id="companyId" :currency="currency" :today="boot.today" :refresh="homeRefresh" @open-request="openRequest"/>
      <BankStatements v-if="has('ledger')&&companyId" :key="`bank-statements-${companyId}`" :api="api" :company-id="companyId" :accounts="boot.accounts" :categories="boot.categories" :can-import="has('pay_bank')||has('import')" :can-review="has('pay_bank')" :can-link-existing-bank-facts="user.holding_role==='admin'&&has('write')" :can-allocate="has('pay_bank')||has('write')" :can-post="has('write')||has('pay_bank')" :can-manage-fee="has('write')" :can-delete-statements="user.holding_role==='admin'" :can-resolve-exceptions="user.holding_role==='admin'&&has('pay_bank')&&has('write')" :can-view-cash-flow="canNavigate('report')" :can-view-history="!!user.permissions?.some(p => p === 'pay_bank' || p === 'import')" @cash-flow="openStatementCashFlow" @changed="bankStatementsChanged"/>
      <label v-if="user.holding_role==='admin'" class="sub"><input type="checkbox" v-model="showDeletedOperations" @change="listPage=1;load()"> {{tx('Показать удалённые операции')}}</label>

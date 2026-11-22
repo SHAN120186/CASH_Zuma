@@ -58,7 +58,7 @@ jobs:
       - run: python -m unittest tests.test_director_limits -q
       - run: python -m unittest tests.test_finance_author_workflow -q
       - run: python -m unittest tests.test_cashflow_osv -q
-      - run: python -m unittest tests.test_bank_statement_parser -q
+      - run: python -m unittest tests.test_bank_statement_parser tests.test_bank_period_parser tests.test_bank_period_comparison tests.test_bank_period_coverage -q
       - run: python -m unittest tests.test_bank_statement_category_rules -q
       - run: python -m unittest tests.test_bank_statement_rule_allocation -q
       - run: python -m unittest tests.test_bank_rule_allocation_audit -q
@@ -155,7 +155,7 @@ jobs:
       - run: python -m unittest tests.test_ledger_delete -q
       - run: python -m unittest tests.test_approval_funding -q
       - run: python -m unittest tests.test_cashflow_osv -q
-      - run: python -m unittest tests.test_bank_statement_parser -q
+      - run: python -m unittest tests.test_bank_statement_parser tests.test_bank_period_parser tests.test_bank_period_comparison tests.test_bank_period_coverage -q
       - run: python -m unittest tests.test_bank_statement_category_rules -q
       - run: python -m unittest tests.test_bank_statement_rule_allocation -q
       - run: python -m unittest tests.test_bank_rule_allocation_audit -q
