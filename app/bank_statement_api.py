@@ -20,6 +20,8 @@ from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy import or_, select
 
 from .bank_statement_models import BankStatementBatch, BankStatementLine
+from .bank_period_parser import parse_xlsx_statement
+from .bank_statement_identity import check_statement_currency, confirmed_bank_binding
 from .bank_statement_parser import MAX_BYTES, StatementParseError, parse_bank_statement
 from .db import Account, Audit, Category, Ledger, PaymentRequest, Setting, now, unit
 from .erp import read_upload
@@ -267,12 +269,12 @@ def _previous_fingerprints(s, batch):
     return Counter(fingerprints)
 
 
-def _validate_bank_binding(s, account, bank_number):
-    """A confirmed bank number and site account remain a one-to-one binding."""
-    for prior in s.scalars(select(BankStatementBatch).where(BankStatementBatch.status == 'committed')):
-        if (prior.account_id == account.id and prior.account_number != bank_number
-                or prior.account_number == bank_number and prior.account_id != account.id):
-            raise HTTPException(409, 'Банковский счёт уже связан с другим счётом сайта. Проверьте соответствие.')
+def _validate_bank_binding(s, account, filename, source):
+    if filename.lower().endswith('.xlsx'):
+        check_statement_currency(account, source)
+        confirmed_bank_binding(s, account, source['account_number'], source['owner_inn'])
+    else:
+        confirmed_bank_binding(s, account, source['account_number'])
 
 
 def _fee_category(s, category_id):
@@ -634,7 +636,7 @@ def resume_preview(id: int, data: ReprocessInput, request: Request):
         account = get(s, Account, batch.account_id)
         if account.archived or account.kind != 'bank' or account.currency != batch.currency:
             raise HTTPException(409, 'Счёт или валюта изменились. Проверьте настройки банковского счёта.')
-        _validate_bank_binding(s, account, batch.account_number)
+        _validate_bank_binding(s, account, batch.filename, _statement(batch))
         if s.scalar(select(BankStatementBatch.id).where(BankStatementBatch.account_id == account.id,
                 BankStatementBatch.sha256 == batch.sha256, BankStatementBatch.status == 'committed')):
             raise HTTPException(409, 'Эта выписка уже обработана. Откройте её в истории выписок.')
@@ -654,11 +656,11 @@ async def preview(request: Request, account_id: int, currency: str = Query(patte
         if account.currency != currency:
             raise HTTPException(422, 'Выбранная валюта не совпадает с валютой счёта.')
     filename = unquote(request.headers.get('X-Filename', '')).replace('\\', '/').split('/')[-1].strip()
-    if not filename or len(filename) > 220 or not filename.lower().endswith(('.xls', '.html', '.htm')):
-        raise HTTPException(422, 'Выберите выписку банка в формате XLS или HTML.')
+    if not filename or len(filename) > 220 or not filename.lower().endswith(('.xlsx', '.xls', '.html', '.htm')):
+        raise HTTPException(422, 'Выберите банковскую выписку IABS в формате XLSX, XLS или HTML.')
     raw = await read_upload(request, limit=MAX_BYTES, too_large='Файл больше 5 МБ.')
     try:
-        source = parse_bank_statement(raw)
+        source = parse_xlsx_statement(raw) if filename.lower().endswith('.xlsx') else parse_bank_statement(raw)
     except StatementParseError as exc:
         raise HTTPException(422, str(exc)) from exc
     digest = sha256(raw).hexdigest()
@@ -667,7 +669,7 @@ async def preview(request: Request, account_id: int, currency: str = Query(patte
         account = get(s, Account, account_id)
         if account.kind != 'bank' or account.archived or account.currency != currency:
             raise HTTPException(409, 'Счёт изменился. Обновите страницу и проверьте выбранные данные.')
-        _validate_bank_binding(s, account, source['account_number'])
+        _validate_bank_binding(s, account, filename, source)
         existing = s.scalar(select(BankStatementBatch).where(BankStatementBatch.account_id == account.id,
                                                              BankStatementBatch.sha256 == digest,
                                                              BankStatementBatch.status == 'committed'))
@@ -723,7 +725,7 @@ def commit(id: int, data: Confirmation, request: Request):
         account = get(s, Account, batch.account_id)
         if account.archived or account.kind != 'bank' or account.currency != batch.currency:
             raise HTTPException(409, 'Счёт или валюта изменились. Проверьте настройки банковского счёта.')
-        _validate_bank_binding(s, account, batch.account_number)
+        _validate_bank_binding(s, account, batch.filename, _statement(batch))
         if not batch.source_ready:
             raise HTTPException(409, 'Остатки или обороты выписки не подтверждены. Обработка заблокирована.')
         existing = s.scalar(select(BankStatementBatch.id).where(BankStatementBatch.account_id == account.id,
@@ -849,7 +851,7 @@ def _reprocess_context(s, id):
     account = get(s, Account, batch.account_id)
     if account.archived or account.kind != 'bank' or account.currency != batch.currency:
         raise HTTPException(409, 'Счёт или валюта изменились. Проверьте выписку.')
-    _validate_bank_binding(s, account, batch.account_number)
+    _validate_bank_binding(s, account, batch.filename, _statement(batch))
     lines = list(s.scalars(select(BankStatementLine).where(BankStatementLine.batch_id == batch.id)
                            .order_by(BankStatementLine.line, BankStatementLine.id)))
     return batch, account, lines

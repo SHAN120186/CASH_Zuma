@@ -1,7 +1,8 @@
 {
-  "version": "2.36.22",
+  "version": "2.36.23",
   "date": "2026-11-23",
   "changes": [
+    "Кнопка «Загрузить выписку» в разделе «Операции» принимает банковский XLSX и открывает предпросмотр. Проведение по-прежнему требует отдельного подтверждения.",
     "Сверка с банком находит заявки с общим номером платёжки и дробными номерами её частей. Видны сумма по каждой заявке, итог и разница с выпиской.",
     "В сверке с банком различающиеся заполненные реквизиты заявки выделяются красным. Номер договора сравнивается по назначению платежа и заявки.",
     "В «Операциях» можно сравнить выписку за период с заявками. Видны остатки и обороты банка, подтверждённые связи и расхождения для проверки бухгалтером.",
@@ -155,6 +156,7 @@
     "Длинные названия файлов и кнопки выбора шаблона переносятся на узком экране. В ТЭО дата архива отдельно обозначена и не подменяет начало финансового прогноза."
   ],
   "changes_uz": [
+    "«Operatsiyalar» bo‘limidagi «Ko‘chirmani yuklash» tugmasi bankning XLSX faylini qabul qiladi va dastlabki ko‘rishni ochadi. Operatsiyalarni o‘tkazish uchun alohida tasdiq kerak.",
     "Bank bilan solishtirishda bitta to‘lov topshiriqnomasi va uning qism raqamlari bo‘yicha arizalar topiladi. Har bir arizaning summasi, jami va ko‘chirmadagi summadan farqi ko‘rsatiladi.",
     "Bank bilan solishtirishda arizaning farq qiluvchi to‘ldirilgan rekvizitlari qizil rangda ko‘rsatiladi. Shartnoma raqami to‘lov va ariza maqsadi bo‘yicha solishtiriladi.",
     "Faoliyati to‘xtatilgan kompaniya xodimi kirganidan keyin kompaniya nomi, holati va kirishni qayta tekshirish tugmasi bo‘lgan alohida ekranni ko‘radi.",

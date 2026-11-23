@@ -4,7 +4,8 @@ from datetime import date, timedelta
 from fastapi import APIRouter, HTTPException, Request
 from sqlalchemy import select
 
-from .bank_period_comparison import _binding, _check_currency, _context, currency_param
+from .bank_period_comparison import _binding, _context, currency_param
+from .bank_statement_identity import check_statement_currency
 from .bank_statement_models import BankStatementBatch
 from .daily_reconciliation import revision
 from .db import Ledger, PaymentRequest, unit
@@ -32,7 +33,7 @@ def _covered_dates(s, account, start, end):
                         'owner_name': statement.owner_name, 'currency': statement.currency}
             # If the account's historical bindings conflict, showing any definitive
             # coverage would be misleading. Surface the same conflict as normal comparison.
-            _check_currency(account, metadata)
+            check_statement_currency(account, metadata)
             if _binding(s, account, metadata) != 'confirmed':
                 continue
             verified.add(identity)

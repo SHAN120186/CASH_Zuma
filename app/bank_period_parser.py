@@ -1,4 +1,4 @@
-"""Read a bank export for comparison. No files, batches or ledger entries are saved."""
+"""Decode a bounded IABS XLSX for statement preview or read-only period comparison."""
 import io
 import math
 import posixpath
@@ -144,12 +144,10 @@ def _xlsx_table(raw):
     return table
 
 
-def parse_period_statement(raw: bytes) -> dict:
-    """Return normalized statement rows and independently validated totals for display only."""
+def parse_xlsx_statement(raw: bytes, *, allow_empty=False) -> dict:
+    """Parse one IABS worksheet under the same validation rules as an HTML statement."""
     if not isinstance(raw, bytes) or not raw or len(raw) > MAX_BYTES:
         raise StatementParseError('Размер банковской выписки недопустим.')
-    if not raw.startswith(b'PK'):
-        return parse_bank_statement(raw, allow_empty=True)
     try:
         table = _xlsx_table(raw)
     except StatementParseError:
@@ -157,4 +155,11 @@ def parse_period_statement(raw: bytes) -> dict:
     except (ValueError, OverflowError, KeyError, InvalidOperation, ParseError, DefusedXmlException,
             OSError, RuntimeError, zipfile.BadZipFile, zlib.error):
         raise StatementParseError('Не удалось прочитать банковскую выписку IABS в формате XLSX.') from None
-    return parse_statement_tables([table], allow_empty=True)
+    return parse_statement_tables([table], allow_empty=allow_empty)
+
+
+def parse_period_statement(raw: bytes) -> dict:
+    """A day without movement can still be compared using the declared balances."""
+    if isinstance(raw, bytes) and raw.startswith(b'PK'):
+        return parse_xlsx_statement(raw, allow_empty=True)
+    return parse_bank_statement(raw, allow_empty=True)

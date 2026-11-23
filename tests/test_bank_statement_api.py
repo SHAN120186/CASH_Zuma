@@ -3,9 +3,12 @@ import unittest
 import json
 from datetime import timedelta
 from unittest.mock import patch
-from sqlalchemy import select
+from sqlalchemy import func, select
 
 from tests.test_site import SiteTests
+from tests.test_bank_period_parser import raw, workbook
+from tests import test_bank_statement_parser as html_fixture
+from app.bank_statement_models import BankStatementBatch, BankStatementLine
 from app.db import PaymentRequest, Ledger, Account, Company, Setting, User, unit, engine
 from app.section_access import key
 
@@ -52,6 +55,75 @@ class BankStatementTests(SiteTests):
         cl, headers = self.payer
         return cl.post(f'/api/bank-statements/{id}/commit',headers=headers,
                        json=kwargs or {'confirm_account':True,'confirm_currency':True})
+
+    def xlsx_upload(self, content, filename='Synthetic.XLSX', currency='UZS'):
+        client, headers = self.payer
+        return client.post('/api/bank-statements/preview', params={'account_id': self.acc, 'currency': currency},
+                           content=content, headers={**headers, 'X-Filename': filename})
+
+    def test_xlsx_upload_creates_one_resumable_preview_without_posting(self):
+        book = workbook()
+        book.active['A3'] = 'Счет: 20214000111111111111 OOO UZGERMED TEST ИНН: 111000222'
+        content = raw(book)
+        rid = self.approved()
+        with unit() as s:
+            ledger_before = s.scalar(select(func.count()).select_from(Ledger))
+
+        first = self.xlsx_upload(content)
+        self.assertEqual(first.status_code, 200, first.text)
+        draft = first.json()
+        self.assertEqual((draft['status'], draft['filename']), ('preview', 'Synthetic.XLSX'))
+        statement = draft['statement']
+        self.assertEqual((statement['period_from'], statement['period_to']), ('2025-04-01', '2025-04-05'))
+        self.assertEqual((statement['opening_balance'], statement['credit_total'], statement['debit_total'],
+                          statement['closing_balance']), ('25.00', '30.15', '10.00', '45.15'))
+        rows = draft['rows']
+        self.assertEqual([(r['document_number'], r['direction'], r['amount']) for r in rows],
+                         [('0008', 'in', '30.15'), ('77', 'out', '10.00')])
+        self.assertTrue(all(r['ledger_id'] is None for r in rows))
+        repeated = self.xlsx_upload(content)
+        self.assertEqual(repeated.status_code, 200, repeated.text)
+        client, headers = self.payer
+        resumed = client.post(f"/api/bank-statements/{draft['id']}/resume", json={}, headers=headers)
+        self.assertEqual(resumed.status_code, 200, resumed.text)
+        for response in (repeated, resumed):
+            self.assertEqual(response.json()['id'], draft['id'])
+            self.assertEqual(response.json()['statement'], statement)
+            self.assertEqual([r['id'] for r in response.json()['rows']], [r['id'] for r in rows])
+        with unit() as s:
+            self.assertEqual(s.scalar(select(func.count()).select_from(BankStatementBatch)), 1)
+            self.assertEqual(s.scalar(select(func.count()).select_from(BankStatementLine)), 2)
+            self.assertEqual(s.scalar(select(func.count()).select_from(Ledger)), ledger_before)
+            self.assertEqual(s.get(PaymentRequest, rid).status, 'approved')
+
+    def test_xlsx_upload_rejects_invalid_or_empty_workbook_before_saving(self):
+        empty = workbook()
+        empty.active.delete_rows(6, 2)
+        empty.active['H6'] = empty.active['I6'] = 0
+        empty.active['B4'] = 'Остаток на конец периода: 25.00'
+        formula = workbook()
+        formula.active['H7'] = '=1+9'
+        html = html_fixture.raw(html_fixture.HEADER, html_fixture.OUT, html_fixture.IN, html_fixture.FOOTER)
+        for description, content in [('damaged archive', b'PK invalid'), ('renamed HTML', html),
+                                     ('zero movements', raw(empty)), ('formula', raw(formula))]:
+            with self.subTest(file=description):
+                response = self.xlsx_upload(content)
+                self.assertEqual(response.status_code, 422, response.text)
+        with unit() as s:
+            self.assertEqual(s.scalar(select(func.count()).select_from(BankStatementBatch)), 0)
+            self.assertEqual(s.scalar(select(func.count()).select_from(BankStatementLine)), 0)
+
+    def test_xlsx_upload_checks_encoded_currency_and_previously_bound_owner(self):
+        book = workbook()
+        book.active['A3'] = 'Счет: 20214840111111111111 OOO UZGERMED TEST ИНН: 300000001'
+        self.assertEqual(self.xlsx_upload(raw(book)).status_code, 409)
+
+        saved = self.preview(self.source()).json()
+        self.assertEqual(self.commit(saved['id']).status_code, 200)
+        book.active['A3'] = 'Счет: 20200000000000000001 OOO UZGERMED TEST ИНН: 300000099'
+        self.assertEqual(self.xlsx_upload(raw(book)).status_code, 409)
+        with unit() as s:
+            self.assertEqual(s.scalar(select(func.count()).select_from(BankStatementBatch)), 1)
 
     def test_unique_match_without_cf_and_no_preview_posting(self):
         rid = self.approved()
