@@ -1,11 +1,13 @@
 """Read-only period comparison, scope, source identity and evidence strength."""
 from datetime import date, timedelta
 import unittest
+from types import SimpleNamespace
 from unittest.mock import patch
 
 from sqlalchemy import func, select
 
 from tests.test_bank_statement_api import BankStatementTests
+from app.bank_period_comparison import _active_requests
 from app.bank_statement_models import BankStatementBatch, BankStatementLine
 from app.db import Account, Company, Ledger, PaymentRequest, User, engine, unit
 
@@ -25,6 +27,145 @@ class PeriodComparisonTests(BankStatementTests):
         with unit() as s:
             return [s.scalar(select(func.count()).select_from(model))
                     for model in (BankStatementBatch, BankStatementLine, Ledger, PaymentRequest)]
+
+    def payment_part(self, session, document, minor, *, account=None, inn='300000002'):
+        """An existing paid request and its outgoing fact; amounts are in minor units."""
+        bank = session.get(Account, account or self.acc)
+        day = date.fromisoformat(self.date)
+        req = PaymentRequest(account_id=bank.id, category_id=self.cat, creator_id=bank.created_by,
+            due_date=day, status='paid', amount=minor, counterparty='Synthetic supplier',
+            counterparty_inn=inn, purpose='Synthetic invoice')
+        session.add(req)
+        session.flush()
+        session.add(Ledger(account_id=bank.id, category_id=self.cat, creator_id=bank.created_by,
+            request_id=req.id, reference=document, date=day, amount=minor, kind='out'))
+        return req.id
+
+    def test_payment_group_uses_paid_facts_and_exact_document_parts_without_writes(self):
+        other = self.post('/api/accounts', {'name': 'Other synthetic bank', 'kind': 'bank',
+            'currency': 'UZS', 'opening': '0', 'opening_date': self.date}).json()['id']
+        with unit(True) as s:
+            base = self.payment_part(s, '0078', 12135)
+            second = self.payment_part(s, '0078/1', 20124)
+            third = self.payment_part(s, '0078/2', 27741)
+            s.get(PaymentRequest, third).amount = 27740
+            for alias in ('78/3', '00780/3', '0078/0', '0078/3x', '0078/3/4'):
+                self.payment_part(s, alias, 999)
+            self.payment_part(s, '0078/3', 999, account=other)
+        counts = self.counts()
+        bank_day = str(date.fromisoformat(self.date) - timedelta(days=3))
+        for debit, difference in [('600.00', '0.00'), ('600.01', '-0.01')]:
+            with self.subTest(bank_amount=debit):
+                bank = self.bank_row('0078', date=bank_day, amount=debit)
+                source = {**self.statement([bank]), 'period_from': bank_day, 'period_to': self.date}
+                response = self.compare(source)
+                self.assertEqual(response.status_code, 200, response.text)
+                report = response.json()
+                row, = report['rows']
+                self.assertEqual(row['status'], 'candidate')
+                group = row['payment_group']
+                self.assertCountEqual(group['request_ids'], [base, second, third])
+                self.assertEqual((group['total_amount'], group['difference']), ('600.00', difference))
+                self.assertEqual({r['request_id']: (r['document_number'], r['amount'], r['date'])
+                                  for r in row['request_details']}, {
+                    base: ('0078', '121.35', self.date), second: ('0078/1', '201.24', self.date),
+                    third: ('0078/2', '277.41', self.date)})
+                candidates = {p['request_id'] for p in report['unmatched_payments'] if p['status'] == 'candidate'}
+                self.assertEqual(candidates, {base, second, third})
+        with patch('app.bank_period_comparison.can_view_request', side_effect=lambda s, u, req: req.id != second):
+            restricted = self.compare(self.statement([self.bank_row('0078')])).json()
+        self.assertNotIn(second, restricted['rows'][0]['request_ids'])
+        self.assertNotIn(second, [p['request_id'] for p in restricted['unmatched_payments']])
+        group = restricted['rows'][0].get('payment_group')
+        if group:
+            self.assertEqual(group['total_amount'], '398.76')
+        self.assertEqual(self.counts(), counts)
+
+    def test_all_parts_visible_beyond_alternative_candidate_limit(self):
+        with unit(True) as s:
+            members = [self.payment_part(s, f'863/{n}' if n else '863', 100) for n in range(13)]
+        row, = self.compare(self.statement([self.bank_row('863', amount='13.00')])).json()['rows']
+        self.assertEqual(row['status'], 'candidate')
+        self.assertEqual(row['payment_group']['total_amount'], '13.00')
+        self.assertCountEqual(row['payment_group']['request_ids'], members)
+        self.assertCountEqual([r['request_id'] for r in row['request_details']], members)
+
+    def test_exact_part_references_still_work_outside_neighbouring_date_window(self):
+        with unit(True) as s:
+            members = [self.payment_part(s, doc, 30000) for doc in ('68', '68/1')]
+        bank_day = str(date.fromisoformat(self.date) - timedelta(days=60))
+        source = {**self.statement([self.bank_row('68', date=bank_day)]),
+                  'period_from': bank_day, 'period_to': bank_day}
+        report = self.compare(source).json()
+        row, = report['rows']
+        self.assertEqual(row['status'], 'candidate')
+        self.assertCountEqual(row['payment_group']['request_ids'], members)
+        self.assertEqual(report['unmatched_payments'], [])
+
+    def test_saved_payment_link_takes_precedence_over_a_document_suffix(self):
+        rid = self.approved()
+        self.assertEqual(self.ledger('600', 'out', reference='825', request_id=rid).status_code, 200)
+        source = self.statement([self.bank_row('825')])
+        batch = self.preview(source).json()['id']
+        self.assertEqual(self.commit(batch).status_code, 200)
+        with unit(True) as s:
+            self.payment_part(s, '825/1', 10000)
+        before = self.counts()
+        row, = self.compare(source).json()['rows']
+        self.assertEqual((row['status'], row['request_ids']), ('matched', [rid]))
+        self.assertFalse(row.get('payment_group'))
+        self.assertEqual(self.counts(), before)
+
+    def test_separately_listed_suffix_or_repeated_bank_debit_cannot_use_same_group_twice(self):
+        with unit(True) as s:
+            self.payment_part(s, '87', 30000)
+            second = self.payment_part(s, '87/1', 30000)
+        original = self.bank_row('87')
+        separate = self.bank_row('87/1', line=7, amount='300.00')
+        report = self.compare(self.statement([original, separate])).json()['rows']
+        self.assertNotIn(second, (report[0].get('payment_group') or {}).get('request_ids', []))
+        self.assertFalse(report[1].get('payment_group'))
+        self.assertEqual(report[1]['request_ids'], [second])
+        repeated = self.compare(self.statement([original, dict(original, line=7)])).json()['rows']
+        for row in repeated:
+            self.assertEqual(row['status'], 'candidate')
+            self.assertFalse(row.get('payment_group'))
+
+    def test_reversed_or_other_payee_fact_is_not_included_in_group(self):
+        with unit(True) as s:
+            self.payment_part(s, '695', 20000)
+            self.payment_part(s, '695/1', 10000)
+            foreign = self.payment_part(s, '695/2', 20000, inn='300009999')
+            reversed_id = self.payment_part(s, '695/3', 10000)
+            paid = s.scalar(select(Ledger).where(Ledger.request_id == reversed_id))
+            s.add(Ledger(account_id=paid.account_id, category_id=paid.category_id, kind='in',
+                date=paid.date, amount=paid.amount, reference='REV-PART-TEST', reversal_of=paid.id,
+                creator_id=paid.creator_id))
+        row, = self.compare(self.statement([self.bank_row('695')])).json()['rows']
+        self.assertEqual(row['status'], 'candidate')
+        group = row.get('payment_group')
+        if group:
+            self.assertEqual(group['total_amount'], '300.00')
+            self.assertNotIn(foreign, group['request_ids'])
+            self.assertNotIn(reversed_id, group['request_ids'])
+
+    def test_duplicate_suffix_in_legacy_facts_is_not_summed(self):
+        with unit(True) as s:
+            self.payment_part(s, '681', 20000)
+            self.payment_part(s, '681/1', 20000)
+            last = self.payment_part(s, '681/2', 20000)
+
+        def duplicate_suffix(*args):
+            requests, facts = _active_requests(*args)
+            # Keep the database uniqueness constraint intact while simulating ambiguous input to the matcher.
+            entry = facts[last]
+            facts[last] = SimpleNamespace(id=entry.id, amount=entry.amount, date=entry.date, reference='681/1')
+            return requests, facts
+
+        with patch('app.bank_period_comparison._active_requests', side_effect=duplicate_suffix):
+            row, = self.compare(self.statement([self.bank_row('681')])).json()['rows']
+        self.assertEqual(row['status'], 'candidate')
+        self.assertFalse(row.get('payment_group'))
 
     def test_first_time_confirmation_then_exact_payment_and_unmatched_mirror(self):
         rid = self.approved()
