@@ -1,6 +1,6 @@
 import {test} from 'node:test';
 import assert from 'node:assert/strict';
-import {compileComponent, mount, settle, text, find} from './helpers/mountVue.js';
+import {all, compileComponent, mount, settle, text, find} from './helpers/mountVue.js';
 
 const component = await compileComponent(new URL('../src/overview/StatementPeriod.vue', import.meta.url));
 const uncovered = await compileComponent(new URL('../src/overview/UncoveredBankPayments.vue', import.meta.url));
@@ -55,6 +55,37 @@ test('uploaded file only goes to read-only comparison and a new file clears evid
   view.state.chooseFile({target:{files:[]}}); await settle();
   assert.equal(view.state.data,null);
   assert.equal(view.state.ready,false);
+});
+test('the period view marks only the individual fields that differ for each request', async t => {
+  const result = report();
+  const row = result.rows[0];
+  Object.assign(row, {correspondent_name:'Example LLC', correspondent_inn:'123456789', contract_number:'ABC-97'});
+  const same = {request_id:42, counterparty:'“EXAMPLE”   llc.', counterparty_inn:row.correspondent_inn,
+    contract_number:'ABC‑97', contract_mismatch:false, date:row.date, document_number:row.document_number, amount:'150'};
+  const different = {request_id:43, counterparty:'Example JSC', counterparty_inn:'987654321',
+    contract_number:'ABC-98', contract_mismatch:true, date:'2026-11-11', document_number:'42', amount:'150.01'};
+  row.request_details = [same, different];
+  const view = mount(component, props(async url => url.includes('/list?') ? {items:[source]} : result));
+  t.after(view.unmount); view.state.opened = true; await settle(); await view.state.compare(); await settle();
+  const [first, second] = all(view.container, n => n.props?.class === 'request-match');
+  const red = el => all(el, n => n.props?.class === 'field-mismatch').map(text);
+  assert.deepEqual(red(first), []);
+  assert.deepEqual(red(second), [
+    'Example JSC · Наименование отличается', 'ИНН 987654321 · Расхождение', 'Договор №ABC-98 · Расхождение',
+    '150,01 UZS · Расхождение', 'Оплачено на сайте 2026-11-11 · Расхождение', 'Документ сайта №42 · Расхождение',
+  ]);
+  assert.match(text(view.container), /Возможное совпадение/);
+});
+test('missing or placeholder evidence stays neutral even when the other side has a value', async t => {
+  const result = report();
+  Object.assign(result.rows[0], {correspondent_name:'', correspondent_inn:'000000000', contract_number:'ABC-96',
+    document_number:'0', request_details:[{request_id:42, counterparty:'Test party', counterparty_inn:'123456789',
+      contract_number:null, date:null, document_number:'123', amount:null}]});
+  const view = mount(component, props(async url => url.includes('/list?') ? {items:[source]} : result));
+  t.after(view.unmount); view.state.opened = true; await settle(); await view.state.compare(); await settle();
+  assert.match(text(view.container),/ИНН не указан/);
+  assert.match(text(view.container),/Номер договора в назначении не определён/);
+  assert.equal(all(view.container, n => n.props?.class === 'field-mismatch').length, 0);
 });
 test('a late response cannot restore rows across a change of company; mismatched responses are rejected', async t => {
   let finish;

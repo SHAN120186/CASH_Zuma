@@ -57,6 +57,47 @@ class PeriodComparisonTests(BankStatementTests):
         self.assertEqual(result['rows'][0]['status'], 'candidate')
         self.assertEqual(result['unmatched_payments'][0]['request_id'], rid)
 
+    def test_contract_conflict_stays_for_review_and_absent_or_ambiguous_is_unknown(self):
+        rid = self.approved()
+        with unit(True) as s:
+            s.get(PaymentRequest, rid).purpose = 'Услуги по договору № TEST-17-Т'
+        self.assertEqual(self.ledger('600', 'out', reference='A7', request_id=rid).status_code, 200)
+        counts = self.counts()
+        for purpose, bank_number, conflict in (
+            ('Договор № TEST-19-Т', 'TEST-19-Т', True),
+            ('Shartnoma № Test–17-T', 'TEST-17-T', False),
+            ('Счёт № 41 за услуги', None, False),
+            ('Договор № 41, № 42', None, False),
+            ('Договор № 41 и договор № 42', None, False),
+        ):
+            with self.subTest(purpose=purpose):
+                bank = dict(self.bank_row('A7'), purpose=purpose)
+                result = self.compare(self.statement([bank])).json()
+                row = result['rows'][0]
+                detail, = row['request_details']
+                self.assertEqual((row['contract_number'], detail['contract_number']), (bank_number, 'TEST-17-Т'))
+                self.assertEqual((row['correspondent_inn'], detail['counterparty_inn']), ('300000002', '300000002'))
+                self.assertEqual(detail['contract_mismatch'], conflict)
+                self.assertEqual(row['status'], 'candidate' if conflict else 'matched')
+                self.assertEqual(bool(result['unmatched_payments']), conflict)
+        self.assertEqual(self.counts(), counts)
+
+    def test_conflicting_inn_on_saved_link_is_visible_without_changing_the_link(self):
+        rid = self.approved()
+        self.assertEqual(self.ledger('600', 'out', reference='A8', request_id=rid).status_code, 200)
+        source = self.statement([self.bank_row('A8')])
+        batch_id = self.preview(source).json()['id']
+        self.assertEqual(self.commit(batch_id).status_code, 200)
+        with unit(True) as s:
+            s.get(PaymentRequest, rid).counterparty_inn = '300000003'
+        counts = self.counts()
+        row = self.compare(source).json()['rows'][0]
+        self.assertEqual((row['status'], row['request_ids']), ('candidate', [rid]))
+        self.assertEqual(self.counts(), counts)
+        with unit() as s:
+            self.assertEqual(s.scalar(select(BankStatementLine.request_id).where(
+                BankStatementLine.batch_id == batch_id)), rid)
+
     def test_repeated_document_wrong_cf_and_unpaid_do_not_match(self):
         rid = self.approved()
         self.assertEqual(self.compare(self.statement()).json()['rows'][0]['status'], 'candidate')

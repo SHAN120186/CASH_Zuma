@@ -1,7 +1,8 @@
 {
-  "version": "2.36.20",
+  "version": "2.36.21",
   "date": "2026-11-23",
   "changes": [
+    "В сверке с банком различающиеся заполненные реквизиты заявки выделяются красным. Номер договора сравнивается по назначению платежа и заявки.",
     "В «Операциях» можно сравнить выписку за период с заявками. Видны остатки и обороты банка, подтверждённые связи и расхождения для проверки бухгалтером.",
     "Сотрудник отключённой компании после входа видит отдельный экран с названием компании, сообщением о приостановке и кнопкой проверки восстановления доступа.",
     "Компании показаны компактными горизонтальными строками в едином стиле; отключённая фирма выделена красной плашкой. Администратор меняет доступ переключателем «Вкл / Выкл» с подтверждением и причиной. Данные и назначения сохраняются.",
@@ -153,6 +154,7 @@
     "Длинные названия файлов и кнопки выбора шаблона переносятся на узком экране. В ТЭО дата архива отдельно обозначена и не подменяет начало финансового прогноза."
   ],
   "changes_uz": [
+    "Bank bilan solishtirishda arizaning farq qiluvchi to‘ldirilgan rekvizitlari qizil rangda ko‘rsatiladi. Shartnoma raqami to‘lov va ariza maqsadi bo‘yicha solishtiriladi.",
     "Faoliyati to‘xtatilgan kompaniya xodimi kirganidan keyin kompaniya nomi, holati va kirishni qayta tekshirish tugmasi bo‘lgan alohida ekranni ko‘radi.",
     "Kompaniyalar bir xil uslubdagi ixcham gorizontal qatorlarda ko‘rsatiladi; o‘chirilgan kompaniya qizil belgi bilan ajratiladi. Administrator tasdiq va sabab bilan kirishni yoqadi yoki o‘chiradi. Maʼlumotlar va tayinlovlar saqlanadi.",
     "Uzyarn alohida kompaniya sifatida qoʻshildi. Ish boʻlimlari va rollar boshqa kompaniyalardagidek ishlaydi. Moddalar va boʻlimlar maʼlumotnomalari alohida; boshqa kompaniyalarning hisoblari, qoldiqlari va xodimlari koʻchirilmaydi.",
