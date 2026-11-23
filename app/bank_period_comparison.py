@@ -7,7 +7,7 @@ import unicodedata
 from urllib.parse import unquote
 
 from fastapi import APIRouter, HTTPException, Query, Request
-from sqlalchemy import or_, select
+from sqlalchemy import func, or_, select
 
 from .bank_period_parser import parse_period_statement
 from .bank_statement_api import _fingerprint, _line_data, _minor, _statement
@@ -25,6 +25,7 @@ from .services import deleted_ledger_ids, effective_cashflows, get, money
 router = APIRouter(prefix='/api/bank-statements')
 currency_param = Query(pattern=r'^(UZS|USD|EUR)$')
 CF_REFERENCE = re.compile(r'(?<!\w)[CС]F[\s\-–—‑]*0*([1-9][0-9]*)(?!\w)', re.I)
+PAYMENT_PART = re.compile(r'([0-9]+)(?:/([1-9][0-9]*))?')
 CONTRACT_REFERENCE = re.compile(
     r'\b(?:договор(?:у|а|ом)?|контракт(?:у|а|ом)?|shartnoma(?:si)?|шартнома(?:си)?|contract)'
     r'\s*(?:№|#|no?\.|no?(?=[\s\d]))\s*(\w+(?:[-/.]\w+)*)', re.I)
@@ -107,26 +108,40 @@ def _active_requests(s, user, account, source, start, end):
     amounts = {_minor(row['amount']) for row in outgoing}
     references = {rid for row in outgoing for rid in _request_references(row)}
     documents = {row['document_number'] for row in outgoing}
-    candidates = effective_cashflows(s).where(Ledger.account_id == account.id,
-        Ledger.kind == 'out', Ledger.request_id.is_not(None),
-        or_(Ledger.date.between(first, last), Ledger.request_id.in_(references), Ledger.reference.in_(documents)))
-    deleted = deleted_ledger_ids(s)
-    facts = {entry.request_id: entry for entry in s.scalars(candidates) if entry.id not in deleted}
-    request_query = select(PaymentRequest).where(PaymentRequest.account_id == account.id,
-        PaymentRequest.status.in_(('approved', 'paid')), or_(PaymentRequest.id.in_(references),
-        PaymentRequest.id.in_(candidates.with_only_columns(Ledger.request_id)),
+    criteria = [Ledger.date.between(first, last), Ledger.request_id.in_(references), Ledger.reference.in_(documents)]
+    base_numbers = {doc for doc in documents if re.fullmatch(r'[0-9]+', doc) and doc.strip('0')}
+    if base_numbers:
+        # Look up all referenced families in one query, even when the payment date is outside the window.
+        base = (func.split_part(Ledger.reference, '/', 1) if s.get_bind().dialect.name == 'postgresql'
+                else func.substr(Ledger.reference, 1, func.instr(Ledger.reference, '/') - 1))
+        criteria.append(Ledger.reference.contains('/') & base.in_(base_numbers))
+    request_scope = (PaymentRequest.account_id == account.id, PaymentRequest.status.in_(('approved', 'paid')))
+    candidates = (effective_cashflows(s).join(PaymentRequest, Ledger.request_id == PaymentRequest.id)
+                  .add_columns(PaymentRequest).where(Ledger.account_id == account.id, Ledger.kind == 'out',
+                                                    *request_scope, or_(*criteria)))
+    request_query = select(PaymentRequest).where(*request_scope, or_(PaymentRequest.id.in_(references),
         PaymentRequest.due_date.between(first, last) & PaymentRequest.amount.in_(amounts)))
-    requests = {req.id: req for req in s.scalars(request_query) if can_view_request(s, user, req)}
-    facts = {rid: entry for rid, entry in facts.items() if rid in requests and requests[rid].status == 'paid'}
+    requests = {req.id: req for req in s.scalars(request_query)}
+    facts = {}
+    deleted = deleted_ledger_ids(s)
+    for entry, req in s.execute(candidates):
+        requests[req.id] = req
+        if entry.id not in deleted and req.status == 'paid':
+            facts[req.id] = entry
+    requests = {rid: req for rid, req in requests.items() if can_view_request(s, user, req)}
+    facts = {rid: entry for rid, entry in facts.items() if rid in requests}
     return requests, facts
 
 
-def _stored_evidence(s, account, source, start, end):
+def _stored_evidence(s, account, source, start, end, part_ledgers):
+    relevant = BankStatementLine.date.between(start, end)
+    if part_ledgers:
+        relevant = or_(relevant, BankStatementLine.ledger_id.in_(part_ledgers))
     lines = list(s.scalars(select(BankStatementLine).join(BankStatementBatch,
         BankStatementBatch.id == BankStatementLine.batch_id).where(
         BankStatementBatch.status == 'committed',
         BankStatementBatch.account_number == source['account_number'], BankStatementBatch.owner_inn == source['owner_inn'],
-        BankStatementLine.account_id == account.id, BankStatementLine.date.between(start, end))))
+        BankStatementLine.account_id == account.id, relevant)))
     active = accounted_line_ids(s, lines, account) if lines else set()
     groups = defaultdict(list)
     for line in lines:
@@ -157,7 +172,49 @@ def _payee_name(value):
     return name if len(name) >= 5 and any(ch.isalpha() for ch in name) else ''
 
 
-def _comparison_rows(source, requests, facts, evidence):
+def _numbered_parts(source, facts):
+    bank_orders = {row['document_number'] for row in source['rows'] if row['direction'] == 'out'}
+    grouped = defaultdict(list)
+    for rid, fact in facts.items():
+        match = PAYMENT_PART.fullmatch(fact.reference)
+        if match and match[1] in bank_orders and match[1].strip('0'):
+            suffix = match[2] or ''
+            grouped[match[1]].append((len(suffix), suffix, rid))
+    # An unsuffixed payment is the anchor. Sort canonical suffixes numerically, keeping leading zeros in the base.
+    families = {}
+    for number, parts in grouped.items():
+        suffixes = {suffix for _, suffix, _ in parts}
+        if len(parts) > 1 and '' in suffixes and len(parts) == len(suffixes):
+            families[number] = [rid for _, _, rid in sorted(parts)]
+    return families
+
+
+def _recipient_matches(row, req):
+    bank_inn, site_inn = row['correspondent_inn'], req.counterparty_inn or ''
+    if bank_inn.strip('0') and site_inn.strip('0'):
+        return bank_inn == site_inn
+    name = _payee_name(row['correspondent_name'])
+    return bool(name and name == _payee_name(req.counterparty))
+
+
+def _eligible_parts(row, members, requests, facts, order_counts, claimed, cf_ids):
+    number = row['document_number']
+    if not members or order_counts[number] != 1:
+        return []
+    parts = [rid for rid in members if _recipient_matches(row, requests[rid])]
+    if len(parts) < 2 or facts[parts[0]].reference != number or not cf_ids.issubset(parts):
+        return []
+    known_inns = {requests[rid].counterparty_inn for rid in parts if (requests[rid].counterparty_inn or '').strip('0')}
+    if len(known_inns) > 1:
+        return []
+    if any(facts[rid].id in claimed for rid in parts):
+        return []
+    if any(facts[rid].reference in order_counts for rid in parts[1:]):
+        return []
+    return parts
+
+
+def _comparison_rows(source, requests, facts, evidence, parts_by_order):
     by_payee, by_name, by_document = _indexes(requests, facts)
     request_contracts = {rid: _contract_number(req.purpose) for rid, req in requests.items()}
     stored, active_lines, claimed_ledgers = evidence
@@ -171,6 +228,7 @@ def _comparison_rows(source, requests, facts, evidence):
         day, amount = date.fromisoformat(row['date']), _minor(row['amount'])
         bank_contract = _contract_number(row['purpose']) if row['direction'] == 'out' else None
         status, reason, related = 'incoming', 'Поступление по выписке.', set()
+        parts = []
         if row['direction'] == 'out':
             fingerprint = _fingerprint(source['account_number'], row)
             old = stored.get(fingerprint, [])
@@ -192,6 +250,12 @@ def _comparison_rows(source, requests, facts, evidence):
                     ids.add(rid)
             status, reason = 'bank_only', 'Для банковского списания не найдена подтверждённая заявка.'
             duplicate = fingerprints[fingerprint] > 1
+            # A saved link or overlapping bank lines take precedence over a shared document number.
+            unlinked = (len(old) == 1 and old[0].ledger_id is None and old[0].request_id is None
+                        and not old[0].classification)
+            if not old or unlinked:
+                parts = _eligible_parts(row, parts_by_order.get(row['document_number']), requests, facts,
+                                        order_counts, claimed_ledgers, cf_ids)
             proven = old[0] if (len(old) == 1 and source['ready'] and not duplicate
                 and old[0].id in active_lines and not old[0].uncertain and old[0].include_in_daily) else None
             if (proven and proven.status in REQUEST_PAID_BANK_STATUSES and proven.request_id in facts
@@ -203,7 +267,7 @@ def _comparison_rows(source, requests, facts, evidence):
                 else:
                     status, reason = 'other', 'Строка связана с действующей операцией без оплаты заявки.'
             elif old:
-                related = ids | {line.request_id for line in old if line.request_id in requests}
+                related = ids | set(parts) | {line.request_id for line in old if line.request_id in requests}
                 status = 'candidate'
                 reason = 'Сохранённая строка требует проверки: проверьте связь, сторно, повторы и итог выписки.'
             else:
@@ -214,7 +278,12 @@ def _comparison_rows(source, requests, facts, evidence):
                          and facts[rid].id not in claimed_ledgers and requests[rid].amount == amount
                          and row['correspondent_inn'].strip('0') and row['document_number'].strip('0 ')
                          and requests[rid].counterparty_inn == row['correspondent_inn']}
-                if (source['ready'] and len(exact) == 1 and order_counts[row['document_number']] == 1
+                if fee:
+                    parts = []
+                if parts:
+                    related = ids | set(parts)
+                    status, reason = 'candidate', 'Найдены части платёжки. Сверьте даты, реквизиты и общую сумму.'
+                elif (source['ready'] and len(exact) == 1 and order_counts[row['document_number']] == 1
                         and (not cf_ids or cf_ids == exact) and not old and not fee):
                     related = exact
                     status, reason = 'matched', 'Совпали платёжка, дата, сумма и ИНН получателя с действующей оплатой.'
@@ -234,8 +303,9 @@ def _comparison_rows(source, requests, facts, evidence):
                 exact_by_request.update(related)
             else:
                 possible.update(related)
-        selected = sorted(related)[:12]
-        details = [{'request_id': rid, 'amount': money(requests[rid].amount),
+        part_ids = set(parts)
+        selected = parts + sorted(related - part_ids)[:max(0, 12 - len(parts))]
+        details = [{'request_id': rid, 'amount': money(facts[rid].amount if rid in part_ids else requests[rid].amount),
                     'counterparty': requests[rid].counterparty, 'status': requests[rid].status,
                     'counterparty_inn': requests[rid].counterparty_inn,
                     'contract_number': request_contracts[rid],
@@ -247,6 +317,10 @@ def _comparison_rows(source, requests, facts, evidence):
             'document_number', 'correspondent_name', 'correspondent_inn', 'purpose')} | {'status': status, 'reason': reason,
             'contract_number': bank_contract,
             'request_ids': selected, 'request_count': len(related), 'request_details': details})
+        if parts:
+            total = sum(facts[rid].amount for rid in parts)
+            rows[-1]['payment_group'] = {'request_ids': parts, 'total_amount': money(total),
+                                         'difference': money(total - amount)}
     # Two different bank debits must never both count as one paid request.
     for row in rows:
         if row['status'] == 'matched':
@@ -270,8 +344,10 @@ def _report(s, user, account, source, binding):
     stamp = revision(s)
     start, end = (date.fromisoformat(source[key]) for key in ('period_from', 'period_to'))
     requests, facts = _active_requests(s, user, account, source, start, end)
-    evidence = _stored_evidence(s, account, source, start, end)
-    rows, matched, possible = _comparison_rows(source, requests, facts, evidence)
+    parts = _numbered_parts(source, facts)
+    part_ledgers = {facts[rid].id for members in parts.values() for rid in members}
+    evidence = _stored_evidence(s, account, source, start, end, part_ledgers)
+    rows, matched, possible = _comparison_rows(source, requests, facts, evidence, parts)
     unmatched = [{'request_id': rid, 'document_number': fact.reference, 'amount': money(fact.amount),
                   'date': str(fact.date), 'counterparty': requests[rid].counterparty,
                   'status': 'candidate' if rid in possible else 'app_only'}

@@ -87,6 +87,34 @@ test('missing or placeholder evidence stays neutral even when the other side has
   assert.match(text(view.container),/Номер договора в назначении не определён/);
   assert.equal(all(view.container, n => n.props?.class === 'field-mismatch').length, 0);
 });
+test('a split payment shows each posted amount and document, the total, and only genuine discrepancies', async t => {
+  const result = report();
+  const row = result.rows[0];
+  const part = (id, document, amount) => ({request_id:id, document_number:document, amount,
+    counterparty:'Bank supplier', counterparty_inn:'123456789', date:row.date});
+  const alternative = part(55, '900', '150.00');
+  Object.assign(row, {correspondent_inn:'123456789', request_ids:[42,43,44,55],
+    request_details:[alternative, part(44, '178/2', '70.45'), part(42, '178', '54.45'),
+      {...part(43, '178/1', '25.10'), date:'2026-11-12'}],
+    payment_group:{request_ids:[42,43,44], total_amount:'150.00', difference:'0.00'}});
+  const opened = [];
+  const view = mount(component, {...props(async url => url.includes('/list?') ? {items:[source]} : result),
+    onOpenRequest:request => opened.push(request.id)});
+  t.after(view.unmount); view.state.opened = true; await settle(); await view.state.compare(); await settle();
+  const group = find(view.container, n => n.props?.class === 'payment-group');
+  const headings = all(group, n => n.props?.class === 'part-heading');
+  assert.deepEqual(headings.map(text), ['CF-00042№ 17854,45 UZS', 'CF-00043№ 178/125,10 UZS', 'CF-00044№ 178/270,45 UZS']);
+  find(headings[1], n => n.tag === 'button').props.onClick();
+  assert.deepEqual(opened, [43]);
+  assert.deepEqual(all(group, n => n.props?.class === 'field-mismatch').map(text), ['Оплачено на сайте 2026-11-12 · Расхождение']);
+  assert.match(text(group), /Итого по заявкам150 UZSСумма по выписке150 UZSРазница \(заявки − выписка\)0 UZS/);
+  assert.doesNotMatch(text(group), /CF-00055/);
+  assert.match(text(view.container), /Другие возможные совпаденияCF-00055/);
+  row.amount = '150.01'; row.payment_group.difference = '-0.01';
+  await view.state.compare(); await settle();
+  const totals = find(view.container, n => n.props?.class === 'part-totals');
+  assert.match(text(find(totals, n => n.props?.class === 'field-mismatch')), /−0,01 UZS/);
+});
 test('a late response cannot restore rows across a change of company; mismatched responses are rejected', async t => {
   let finish;
   const view=mount(component,props(async url => url.includes('/list?') ? {items:[source]} : new Promise(resolve => {finish=resolve;})));

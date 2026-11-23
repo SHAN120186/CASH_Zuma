@@ -48,7 +48,7 @@ function payeeName(value) {
   const words = (value || '').normalize('NFKC').toLowerCase().replace(/[ʻʼ]/g, "'").match(/[\p{L}\p{N}]+/gu);
   return words?.join(' ') || null;
 }
-function comparisonFields(row, item) {
+function comparisonFields(row, item, isPart = false) {
   const differs = (a, b) => a != null && b != null && a !== b;
   const fields = [
     {key:'inn', text:innText(item.counterparty_inn), mismatch:differs(inn(row.correspondent_inn), inn(item.counterparty_inn))},
@@ -57,13 +57,26 @@ function comparisonFields(row, item) {
   ];
   if (item.counterparty) fields.unshift({key:'payee', text:item.counterparty,
     mismatch:differs(payeeName(row.correspondent_name), payeeName(item.counterparty)), warning:tx('Наименование отличается')});
-  if (item.amount != null) fields.push({key:'amount', text:money(item.amount) + ' ' + props.currency,
+  if (!isPart && item.amount != null) fields.push({key:'amount', text:money(item.amount) + ' ' + props.currency,
     mismatch:differs(toCents(row.amount), toCents(item.amount))});
   if (item.date) fields.push({key:'date', text:tx('Оплачено на сайте {date}', {date:item.date}),
     mismatch:differs(row.date || null, item.date)});
-  if (reference(item.document_number)) fields.push({key:'document', text:tx('Документ сайта №{number}', {number:item.document_number}),
+  if (!isPart && reference(item.document_number)) fields.push({key:'document', text:tx('Документ сайта №{number}', {number:item.document_number}),
     mismatch:differs(reference(row.document_number), reference(item.document_number))});
   return fields;
+}
+function paymentParts(row) {
+  const byId = new Map(row.request_details.map(item => [item.request_id, item]));
+  return row.payment_group.request_ids.map(id => {
+    const item = byId.get(id);
+    const fields = comparisonFields(row, item, true);
+    return {item, discrepancies:fields.filter(field => field.mismatch), evidence:fields.filter(field => !field.mismatch)};
+  });
+}
+function individualRequests(row) {
+  if (!row.payment_group) return row.request_details;
+  const members = new Set(row.payment_group.request_ids);
+  return row.request_details.filter(item => !members.has(item.request_id));
 }
 function difference(bank, site) {
   const a = toCents(bank), b = toCents(site);
@@ -206,7 +219,29 @@ async function compare(confirmAccount = false) {
        <td><span :class="['pill',{matched:'good',candidate:'warn',bank_only:'warn',app_only:'warn'}[row.status] || 'gray']">{{row.status==='app_only'?tx('Нет связи с выпиской'):labels[row.status]?tx(labels[row.status]):tx('Требует проверки')}}</span>
         <small v-if="row.reason">{{tx(row.reason)}}</small></td>
        <td><template v-if="tab==='bank' && row.request_details?.length">
-        <div v-for="item in row.request_details" :key="item.request_id" class="request-match">
+        <div v-if="row.payment_group" class="payment-group">
+         <strong>{{tx('Распределение по заявкам')}}</strong>
+         <ul>
+          <li v-for="{item,discrepancies,evidence} in paymentParts(row)" :key="item.request_id">
+           <div class="part-heading">
+            <button type="button" class="secondary tiny" @click="emit('open-request',{id:item.request_id})">{{number(item.request_id)}}</button>
+            <span>№ {{item.document_number}}</span><b>{{money(item.amount)}} {{currency}}</b>
+           </div>
+           <small v-for="field in discrepancies" :key="field.key" class="field-mismatch">{{field.text}} · {{field.warning || tx('Расхождение')}}</small>
+           <details v-if="evidence.length"><summary>{{tx('Реквизиты заявки')}}</summary>
+            <small v-for="field in evidence" :key="field.key">{{field.text}}</small>
+           </details>
+          </li>
+         </ul>
+         <dl class="part-totals">
+          <div><dt>{{tx('Итого по заявкам')}}</dt><dd>{{money(row.payment_group.total_amount)}} {{currency}}</dd></div>
+          <div><dt>{{tx('Сумма по выписке')}}</dt><dd>{{money(row.amount)}} {{currency}}</dd></div>
+          <div :class="{'field-mismatch': !!toCents(row.payment_group.difference)}"><dt>{{tx('Разница (заявки − выписка)')}}</dt>
+           <dd>{{formatCents(toCents(row.payment_group.difference),currency,{sign:true})}} {{currency}}</dd></div>
+         </dl>
+        </div>
+        <small v-if="row.payment_group && individualRequests(row).length">{{tx('Другие возможные совпадения')}}</small>
+        <div v-for="item in individualRequests(row)" :key="item.request_id" class="request-match">
          <button type="button" class="secondary tiny" @click="emit('open-request',{id:item.request_id})">{{number(item.request_id)}}</button>
          <small v-for="field in comparisonFields(row,item)" :key="field.key"
            :class="{'field-mismatch':field.mismatch}">{{field.text}}<strong v-if="field.mismatch"> · {{field.warning || tx('Расхождение')}}</strong></small>
@@ -224,6 +259,9 @@ async function compare(confirmAccount = false) {
 </template>
 <style scoped>
 .period .field-mismatch{color:var(--bad);border-inline-start:3px solid var(--bad);background:var(--badl);padding:2px 6px;margin-top:2px;overflow-wrap:anywhere}
+.payment-group{margin-bottom:8px}.payment-group ul{list-style:none;margin:0;padding:0}.payment-group li{padding:7px 0;border-bottom:1px solid var(--line)}
+.part-heading,.part-totals>div{display:flex;align-items:baseline;flex-wrap:wrap;gap:3px 8px}.part-heading span{color:var(--mut);overflow-wrap:anywhere}
+.part-heading b,.part-totals dd{margin-inline-start:auto;font-variant-numeric:tabular-nums}.part-totals{margin:7px 0 0}.part-totals dd{margin-block:0}.part-totals>div:first-child{font-weight:700}
 .check-account{padding:12px 16px;border-left:3px solid var(--warn);background:var(--warnl);border-radius:5px}.check-account p{margin:0 0 10px}.request-match+.request-match{margin-top:8px}
 .period{margin-bottom:16px}.period>.card-h{padding-bottom:16px}.period .card-b{padding-top:0}.controls,.views,.site-totals{display:flex;align-items:end;flex-wrap:wrap;gap:12px}.controls label{min-width:0;max-width:100%}.controls input,.controls select{max-width:100%}.period-title{margin:24px 0 4px}.source{overflow-wrap:anywhere}.totals{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(180px,100%),1fr));gap:10px;margin:14px 0}.totals>div{padding:12px 14px;background:var(--surface-muted);border-radius:10px}.totals dt,.site-totals{font-size:.85rem;color:var(--mut)}.totals dd{margin:6px 0 0;font-size:1.1rem;font-weight:800;font-variant-numeric:tabular-nums;overflow-wrap:anywhere}.site-totals b{display:block}.views{margin:24px 0 12px}.views button{white-space:normal}.filter{max-width:320px}.caution{color:var(--warn)}.table-scroll{overflow-x:auto;max-width:100%;margin-top:12px}.period table{border-collapse:collapse;width:100%}.period th,.period td{text-align:left;padding:9px;vertical-align:top;border-bottom:1px solid var(--line)}.period .num{white-space:nowrap;text-align:right;font-variant-numeric:tabular-nums}.period td small{display:block}.period td .pill{white-space:normal}.period .party{min-width:165px;overflow-wrap:anywhere}.period details{font-size:.8rem;margin-top:4px}.period summary{cursor:pointer}.more{margin-top:12px}
 @media(max-width:600px){.controls{display:grid;grid-template-columns:minmax(0,1fr)}.controls select,.controls input{width:100%}.totals{grid-template-columns:repeat(2,minmax(0,1fr))}.views button{flex:1 1 140px}.site-totals{display:grid;gap:5px}.site-totals b{display:inline}}
