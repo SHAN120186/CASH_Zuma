@@ -25,6 +25,28 @@ from .services import deleted_ledger_ids, effective_cashflows, get, money
 router = APIRouter(prefix='/api/bank-statements')
 currency_param = Query(pattern=r'^(UZS|USD|EUR)$')
 CF_REFERENCE = re.compile(r'(?<!\w)[CС]F[\s\-–—‑]*0*([1-9][0-9]*)(?!\w)', re.I)
+CONTRACT_REFERENCE = re.compile(
+    r'\b(?:договор(?:у|а|ом)?|контракт(?:у|а|ом)?|shartnoma(?:si)?|шартнома(?:си)?|contract)'
+    r'\s*(?:№|#|no?\.|no?(?=[\s\d]))\s*(\w+(?:[-/.]\w+)*)', re.I)
+CONTRACT_DASHES = str.maketrans('‐‑‒–—−', '------')
+CONTRACT_LOOKALIKES = str.maketrans('АВЕКМНОРСТХ', 'ABEKMHOPCTX')
+
+
+def _contract_number(purpose):
+    # Only compare a single explicitly labelled contract, never an invoice or a payment order.
+    text = (purpose or '').translate(CONTRACT_DASHES)
+    numbers = set()
+    for match in CONTRACT_REFERENCE.finditer(text):
+        number = match[1].upper()
+        if not number.strip('0') or not any(char.isdigit() for char in number) or re.match(
+                r'\s*(?:[-/]|(?:,|;|и\b|ва\b|and\b)\s*(?:№\s*)?\d|[,;]\s*№)', text[match.end():], re.I):
+            return None
+        numbers.add(number)
+    return numbers.pop() if len(numbers) == 1 else None
+
+
+def _contracts_differ(bank, site):
+    return bool(bank and site and bank.translate(CONTRACT_LOOKALIKES) != site.translate(CONTRACT_LOOKALIKES))
 
 
 def _context(s, request, account_id, currency):
@@ -137,6 +159,7 @@ def _payee_name(value):
 
 def _comparison_rows(source, requests, facts, evidence):
     by_payee, by_name, by_document = _indexes(requests, facts)
+    request_contracts = {rid: _contract_number(req.purpose) for rid, req in requests.items()}
     stored, active_lines, claimed_ledgers = evidence
     rows = []
     matched, possible = set(), set()
@@ -146,6 +169,7 @@ def _comparison_rows(source, requests, facts, evidence):
     exact_by_request = Counter()
     for row in source['rows']:
         day, amount = date.fromisoformat(row['date']), _minor(row['amount'])
+        bank_contract = _contract_number(row['purpose']) if row['direction'] == 'out' else None
         status, reason, related = 'incoming', 'Поступление по выписке.', set()
         if row['direction'] == 'out':
             fingerprint = _fingerprint(source['account_number'], row)
@@ -213,18 +237,29 @@ def _comparison_rows(source, requests, facts, evidence):
         selected = sorted(related)[:12]
         details = [{'request_id': rid, 'amount': money(requests[rid].amount),
                     'counterparty': requests[rid].counterparty, 'status': requests[rid].status,
+                    'counterparty_inn': requests[rid].counterparty_inn,
+                    'contract_number': request_contracts[rid],
+                    'contract_mismatch': _contracts_differ(bank_contract, request_contracts[rid]),
                     'date': str(facts[rid].date) if rid in facts else None,
                     'document_number': facts[rid].reference if rid in facts else None}
                    for rid in selected]
         rows.append({key: row[key] for key in ('line', 'date', 'direction', 'amount',
-            'document_number', 'correspondent_name', 'purpose')} | {'status': status, 'reason': reason,
+            'document_number', 'correspondent_name', 'correspondent_inn', 'purpose')} | {'status': status, 'reason': reason,
+            'contract_number': bank_contract,
             'request_ids': selected, 'request_count': len(related), 'request_details': details})
     # Two different bank debits must never both count as one paid request.
     for row in rows:
         if row['status'] == 'matched':
             rid = row['request_ids'][0]
+            detail = row['request_details'][0]
+            site_inn = (detail['counterparty_inn'] or '').strip()
+            bank_inn = (row['correspondent_inn'] or '').strip()
             if exact_by_request[rid] > 1:
                 row.update(status='candidate', reason='На одну оплату претендуют несколько списаний.')
+                possible.add(rid)
+            elif (detail['contract_mismatch'] or
+                  (site_inn.strip('0') and bank_inn.strip('0') and site_inn != bank_inn)):
+                row.update(status='candidate', reason='Реквизиты выписки и заявки расходятся. Проверьте ИНН и номер договора.')
                 possible.add(rid)
             else:
                 matched.add(rid)
