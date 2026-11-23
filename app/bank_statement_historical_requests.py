@@ -65,8 +65,8 @@ def _target(s, line_id, direction):
     allowed = ('', 'unresolved') if direction == 'out' else ('', 'unresolved', 'receipt')
     if line.classification not in allowed:
         raise HTTPException(409, 'Ранее выбранное назначение операции требует отдельной проверки.')
-    from .bank_statement_api import _validate_bank_binding
-    _validate_bank_binding(s, account, batch.account_number)
+    from .bank_statement_api import _statement, _validate_bank_binding
+    _validate_bank_binding(s, account, batch.filename, _statement(batch))
     return line, batch, account
 
 

@@ -507,8 +507,8 @@ async function upload(event) {
   feeTouched = true;
   invalidate();
   const current = generation;
-  if (!/\.(xls|html|htm)$/i.test(file.name) || !file.size) {
-    error.value = tx('Выберите непустую банковскую выписку в формате XLS или HTML.');
+  if (!/\.(xlsx?|html?)$/i.test(file.name) || !file.size) {
+    error.value = tx('Выберите непустую банковскую выписку IABS в формате XLSX, XLS или HTML.');
     return;
   }
   busy.value = true;
@@ -570,7 +570,7 @@ async function commit() {
   <section class="card bank-statements" aria-labelledby="bank-statements-title">
     <div class="card-h"><h2 id="bank-statements-title">{{tx('Банковские выписки')}}</h2></div>
     <div class="card-b">
-      <p class="sub">{{tx('Выберите счёт и валюту, затем загрузите выписку.')}}</p>
+      <p class="sub">{{tx('Выберите счёт и валюту, затем загрузите выписку IABS в формате XLSX, XLS или HTML.')}}</p>
       <details class="bank-help">
         <summary>{{tx('Как работает сверка')}}</summary>
         <p class="sub">{{tx('Загрузите выписку и проверьте счёт. После подтверждения совпадения обрабатываются с учётом прав и проверок; спорные операции попадут бухгалтеру.')}}</p>
@@ -609,7 +609,8 @@ async function commit() {
       <div v-if="canImport" class="bank-fields">
         <label>{{tx('Банковский счёт')}}<select v-model="accountId" :disabled="busy || reprocessBusy"><option value="">{{tx('Выберите счёт')}}</option><option v-for="a in bankAccounts" :key="a.id" :value="String(a.id)">{{a.name}} · {{a.currency}}</option></select></label>
         <label>{{tx('Валюта выписки')}}<select v-model="currency" :disabled="busy || reprocessBusy"><option value="">{{tx('Выберите валюту')}}</option><option v-for="c in ['UZS','USD','EUR']" :key="c" :value="c">{{c}}</option></select></label>
-        <label class="button secondary file-label" :class="{disabled: busy || reprocessBusy || !validSelection}">{{tx('Загрузить выписку')}}<input ref="fileInput" type="file" accept=".xls,.html,.htm" :disabled="busy || reprocessBusy || !validSelection" @change="upload"></label>
+        <button type="button" class="secondary" :disabled="busy || reprocessBusy || !validSelection" @click="fileInput?.click()">{{tx('Загрузить выписку')}}</button>
+        <input ref="fileInput" hidden type="file" accept=".xlsx,.xls,.html,.htm" :disabled="busy || reprocessBusy || !validSelection" @change="upload">
       </div>
       <label v-if="canImport || canPost" class="bank-category">{{tx('Статья банковских комиссий')}}<select v-model="feeCategoryId" :disabled="busy || reprocessBusy" @change="feeTouched = true; feeSettingsError = ''"><option value="">{{tx('Автоматический выбор статьи комиссии')}}</option><option v-for="c in feeCategories" :key="c.id" :value="String(c.id)">{{c.name}}</option></select></label>
       <p v-if="canPost && !canManageFee" class="sub">{{tx('Выбор статьи комиссии не меняет общую настройку компании.')}}</p>
@@ -772,5 +773,5 @@ async function commit() {
 
 <style scoped>
 .bank-help{margin:8px 0 12px}.bank-help summary{cursor:pointer;font-weight:600;font-size:13px}.bank-help p{max-width:85ch}
-.bank-statements{margin:16px 0}.bank-fields{display:flex;gap:12px;flex-wrap:wrap;align-items:end}.bank-fields label:not(.file-label),.bank-category{display:grid;gap:4px;min-width:170px}.bank-category{max-width:420px;margin-top:12px}.file-label input{display:none}.file-label.disabled{opacity:.5;pointer-events:none}.bank-preview,.review-list{margin-top:20px}.bank-summary{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:10px}.bank-summary div{display:grid;gap:4px;padding:10px;background:#f5f6fb;border-radius:8px}.bank-summary b{font-variant-numeric:tabular-nums}.good-text{color:#167145}.confirm{display:block;margin:10px 0}.table-scroll td{max-width:340px;white-space:normal;overflow-wrap:anywhere}.table-scroll small{display:block}.form-actions{margin-top:12px}.review-actions{display:grid;gap:7px;margin-top:8px;min-width:200px}.review-actions label{display:grid;gap:3px}
+.bank-statements{margin:16px 0}.bank-fields{display:flex;gap:12px;flex-wrap:wrap;align-items:end}.bank-fields label,.bank-category{display:grid;gap:4px;min-width:170px}.bank-category{max-width:420px;margin-top:12px}.bank-preview,.review-list{margin-top:20px}.bank-summary{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:10px}.bank-summary div{display:grid;gap:4px;padding:10px;background:#f5f6fb;border-radius:8px}.bank-summary b{font-variant-numeric:tabular-nums}.good-text{color:#167145}.confirm{display:block;margin:10px 0}.table-scroll td{max-width:340px;white-space:normal;overflow-wrap:anywhere}.table-scroll small{display:block}.form-actions{margin-top:12px}.review-actions{display:grid;gap:7px;margin-top:8px;min-width:200px}.review-actions label{display:grid;gap:3px}
 </style>

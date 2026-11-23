@@ -11,6 +11,7 @@ from sqlalchemy import func, or_, select
 
 from .bank_period_parser import parse_period_statement
 from .bank_statement_api import _fingerprint, _line_data, _minor, _statement
+from .bank_statement_identity import check_statement_currency, confirmed_bank_binding
 from .bank_statement_expenses import _fee_evidence
 from .bank_statement_guard import REQUEST_PAID_BANK_STATUSES, accounted_line_ids
 from .bank_statement_models import BankStatementBatch, BankStatementLine
@@ -63,14 +64,7 @@ def _context(s, request, account_id, currency):
 
 
 def _binding(s, account, source):
-    number = source['account_number']
-    known = s.execute(select(BankStatementBatch.account_id, BankStatementBatch.account_number,
-        BankStatementBatch.owner_inn).where(BankStatementBatch.status == 'committed',
-        (BankStatementBatch.account_id == account.id) | (BankStatementBatch.account_number == number)).distinct()).all()
-    if known:
-        if any(account_id != account.id or bank_number != number or inn != source['owner_inn']
-               for account_id, bank_number, inn in known):
-            raise HTTPException(409, 'Реквизиты выписки расходятся с подтверждёнными реквизитами счёта.')
+    if confirmed_bank_binding(s, account, source['account_number'], source['owner_inn']):
         return 'confirmed'
     # Old site accounts have no stored bank number. On first use the operator
     # must verify the selected account and currency after seeing source metadata.
@@ -79,17 +73,6 @@ def _binding(s, account, source):
     if company.code.casefold() not in owner_words:
         raise HTTPException(409, 'Владелец выписки не совпадает с выбранной компанией.')
     return 'owner_only'
-
-
-def _check_currency(account, source):
-    # Uzbek corporate 202xx accounts carry a currency code in positions 6–8.
-    # Only recognized codes in this account family supplement source metadata.
-    number = source['account_number']
-    encoded = None
-    if re.fullmatch(r'202[0-9]{17}', number):
-        encoded = {'000': 'UZS', '840': 'USD', '978': 'EUR'}.get(number[5:8])
-    if any(value and value != account.currency for value in (source.get('currency'), encoded)):
-        raise HTTPException(409, 'Валюта выписки расходится с валютой выбранного счёта.')
 
 
 def _request_references(row):
@@ -387,7 +370,7 @@ def compare_saved(id: int, request: Request, account_id: int, currency: str = cu
         if batch.account_id != account.id or batch.status != 'committed' or batch.currency != account.currency:
             raise HTTPException(404, 'Подтверждённая выписка для этого счёта не найдена.')
         source = _statement(batch)
-        _check_currency(account, source)
+        check_statement_currency(account, source)
         source['rows'] = [_line_data(line) for line in s.scalars(select(BankStatementLine).where(
             BankStatementLine.batch_id == batch.id).order_by(BankStatementLine.line))]
         return _report(s, user, account, source, 'confirmed')
@@ -407,7 +390,7 @@ async def compare_file(request: Request, account_id: int, currency: str = curren
         raise HTTPException(422, str(exc)) from exc
     with unit() as s:
         user, account = _context(s, request, account_id, currency)
-        _check_currency(account, source)
+        check_statement_currency(account, source)
         binding = _binding(s, account, source)
         if binding == 'owner_only' and not confirm_account:
             return {'requires_confirmation': True, 'binding': binding,

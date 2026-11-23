@@ -13,6 +13,46 @@ const statement={id:7,status:'preview',preview_token:'snapshot-7',full_reconcili
 const file={name:'statement.xls',size:100};
 function event(f=file){return {target:{files:[f],value:'file'}}}
 
+test('the upload button opens the file picker and previews an XLSX without committing', async t => {
+  const requests = [];
+  const api = async (url, options = {}) => {
+    if (options.method === 'POST') {
+      requests.push({url, options});
+      return statement;
+    }
+    return url.endsWith('/settings') ? {fee_category_id:null} : {items:[]};
+  };
+  const view = mount(component, {api, companyId:1, accounts, canImport:true});
+  t.after(view.unmount);
+  await settle();
+  const button = find(view.container, n => n.tag === 'button' && text(n) === 'Загрузить выписку');
+  const input = find(view.container, n => n.props?.type === 'file');
+  assert.equal(button.props.disabled, true);
+  assert.deepEqual(input.props.accept.split(',').sort(), ['.htm', '.html', '.xls', '.xlsx']);
+  view.state.accountId = '21';
+  view.state.currency = 'UZS';
+  await settle();
+  assert.equal(button.props.disabled, false);
+  let opened = 0;
+  input.click = () => opened++;
+  button.props.onClick();
+  assert.equal(opened, 1);
+
+  await input.props.onChange(event({name:'Test.xlsx.exe', size:100}));
+  await input.props.onChange(event({name:'Empty.xlsx', size:0}));
+  assert.equal(requests.length, 0);
+  const workbook = {name:'Учебная выписка.XLSX', size:100};
+  await input.props.onChange(event(workbook));
+  await settle();
+  assert.equal(requests.length, 1);
+  const [{url, options}] = requests;
+  assert.equal(url, '/api/bank-statements/preview?account_id=21&currency=UZS');
+  assert.equal(options.body, workbook);
+  assert.equal(options.headers['X-Filename'], encodeURIComponent(workbook.name));
+  assert.match(text(view.container), /Проверка выписки/);
+  assert.equal(view.state.ready, false);
+});
+
 test('statement expense groups keep unclassified debits, fees, transfers and uncertain rows separate',async t=>{
  const lines=[
   {id:1,direction:'out',amount:'1000.10',status:'auto_pay_candidate',request_id:44},
