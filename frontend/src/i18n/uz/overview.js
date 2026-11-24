@@ -163,6 +163,7 @@ export default {
   'По сравнению с {date}': '{date} bilan solishtirganda',
   '{percent} за месяц': 'bir oyda {percent}',
   'Нет данных для сравнения с прошлым месяцем': 'Oʻtgan oy bilan solishtirish uchun maʼlumot yoʻq',
+  'Не хватает': 'Yetishmaydi',
   'На счетах': 'Hisoblarda',
   'в резерве утверждённых заявок': 'tasdiqlangan arizalar zaxirasida',
   'график': 'grafik',

@@ -81,6 +81,12 @@ class BankStatementTests(SiteTests):
         self.assertEqual([(r['document_number'], r['direction'], r['amount']) for r in rows],
                          [('0008', 'in', '30.15'), ('77', 'out', '10.00')])
         self.assertTrue(all(r['ledger_id'] is None for r in rows))
+        client, headers = self.payer
+        for day, has_draft in [('2025-04-05', True), ('2025-04-06', False)]:
+            daily = client.get('/api/bank-statements/daily', params={'date': day, 'currency': 'UZS'}, headers=headers)
+            self.assertEqual(daily.status_code, 200, daily.text)
+            self.assertIs(daily.json()['draft_exists'], has_draft)
+            self.assertIs(daily.json()['available'], False)
         repeated = self.xlsx_upload(content)
         self.assertEqual(repeated.status_code, 200, repeated.text)
         client, headers = self.payer

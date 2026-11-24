@@ -1099,8 +1099,16 @@ def daily(request: Request, date: date, currency: str = Query(pattern=r'^(UZS|US
         batches = {batch.id: batch for batch in s.scalars(select(BankStatementBatch).where(
             BankStatementBatch.status == 'committed', BankStatementBatch.currency == currency,
             BankStatementBatch.period_from <= date, BankStatementBatch.period_to >= date))}
+        draft_exists = False
+        if set(perms_of(user)).intersection({'pay_bank', 'import'}) and can_edit_section(user, 'ledger'):
+            query = select(BankStatementBatch.id).where(
+                BankStatementBatch.status == 'preview', BankStatementBatch.currency == currency,
+                BankStatementBatch.period_from <= date, BankStatementBatch.period_to >= date)
+            if user.role != 'admin':
+                query = query.where(BankStatementBatch.created_by == user.id)
+            draft_exists = s.scalar(query.limit(1)) is not None
         if not batches:
-            return {'date': str(date), 'currency': currency, 'credit_total': '0.00', 'debit_total': '0.00',
+            return {'draft_exists': draft_exists, 'date': str(date), 'currency': currency, 'credit_total': '0.00', 'debit_total': '0.00',
                     'accounts': [], 'source': 'bank_statements', 'available': False, 'uncertain': False}
         all_lines = list(s.scalars(select(BankStatementLine).where(BankStatementLine.batch_id.in_(list(batches)),
                     BankStatementLine.date == date)))
@@ -1112,7 +1120,7 @@ def daily(request: Request, date: date, currency: str = Query(pattern=r'^(UZS|US
             values = totals.setdefault(account.id, {'account_id': account.id, 'name': account.name,
                                                      'credit': 0, 'debit': 0})
             values['credit' if line.direction == 'in' else 'debit'] += line.amount
-        return {'date': str(date), 'currency': currency,
+        return {'draft_exists': draft_exists, 'date': str(date), 'currency': currency,
                 'credit_total': money(sum(v['credit'] for v in totals.values())),
                 'debit_total': money(sum(v['debit'] for v in totals.values())),
                 'accounts': [{'account_id': v['account_id'], 'name': v['name'],

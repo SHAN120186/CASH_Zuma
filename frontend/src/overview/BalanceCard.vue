@@ -187,9 +187,11 @@ function key(event) {
     </span>
     <span v-else-if="!historyDeferred" class="bal-delta flat">{{tx('Нет данных для сравнения с прошлым месяцем')}}</span>
    </div>
-   <p class="bal-split">
-    {{tx('На счетах')}} <b :title="amountTitle(onAccounts, currency)">{{formatAmount(onAccounts, currency)}}</b> · {{tx('в резерве утверждённых заявок')}} <b :title="amountTitle(reserved, currency)">{{formatAmount(reserved, currency)}}</b> {{currency}}
-   </p>
+   <dl class="bal-split">
+    <div><dt>{{tx('На счетах')}}</dt><dd>{{onAccounts == null ? '—' : amountTitle(onAccounts, currency)}}</dd></div>
+    <div><dt>{{tx('Зарезервировано')}}</dt><dd>{{reserved == null ? '—' : amountTitle(reserved, currency)}}</dd></div>
+    <div><dt>{{tx('Не хватает')}}</dt><dd>{{onAccounts == null || reserved == null ? '—' : amountTitle(Math.max(0, reserved - onAccounts), currency)}}</dd></div>
+   </dl>
 
    <figure v-if="points.length > 1" class="bal-chart">
     <figcaption class="sr">{{summary}}</figcaption>
@@ -273,7 +275,7 @@ h2{font-size:21px;font-weight:600;letter-spacing:-.012em;color:var(--text)}
 .bal-delta.down{background:var(--expense-soft);color:var(--expense-ink)}
 .bal-delta.flat{background:var(--surface-muted);color:var(--muted);font-weight:600;font-size:13px}
 .bal-split{font-size:13px;color:var(--muted);font-weight:600;font-variant-numeric:tabular-nums}
-.bal-split b{color:var(--text);font-weight:700}
+.bal-split{display:grid;grid-template-columns:repeat(auto-fit,minmax(145px,1fr));gap:10px}.bal-split dd{margin:4px 0 0;color:var(--text);font-weight:700}
 .bal-chart{margin:4px 0 0;min-width:0}
 .bal-plot{position:relative;height:150px;border-radius:12px;outline-offset:4px;touch-action:pan-y}
 .bal-plot.clickable{cursor:pointer}

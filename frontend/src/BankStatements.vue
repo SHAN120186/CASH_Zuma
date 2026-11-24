@@ -15,6 +15,7 @@ import {statementCategoryName} from './cashflow/statementCategory.js';
 import CashFundingBankCaption from './CashFundingBankCaption.vue';
 
 const props = defineProps({
+  openSaved: Boolean,
   api: {type: Function, required: true},
   companyId: {type: Number, required: true},
   accounts: {type: Array, default: () => []},
@@ -615,7 +616,7 @@ async function commit() {
       <label v-if="canImport || canPost" class="bank-category">{{tx('Статья банковских комиссий')}}<select v-model="feeCategoryId" :disabled="busy || reprocessBusy" @change="feeTouched = true; feeSettingsError = ''"><option value="">{{tx('Автоматический выбор статьи комиссии')}}</option><option v-for="c in feeCategories" :key="c.id" :value="String(c.id)">{{c.name}}</option></select></label>
       <p v-if="canPost && !canManageFee" class="sub">{{tx('Выбор статьи комиссии не меняет общую настройку компании.')}}</p>
       <p v-if="feeSettingsError" class="error" role="alert">{{feeSettingsError}}</p>
-      <SavedBankStatements :api="api" :company-id="companyId" :can-resume="canImport" :busy="busy || reprocessBusy" :refresh-key="savedRefresh" @resume="resumeSaved"/>
+      <SavedBankStatements :api="api" :company-id="companyId" :can-resume="canImport" :busy="busy || reprocessBusy" :refresh-key="savedRefresh" :initially-open="openSaved" @resume="resumeSaved"/>
       <p v-if="canImport && !canPost" class="sub">{{tx('Для проведения поступлений и комиссий требуется право записи операций.')}}</p>
       <p v-if="account && currency && !validSelection" class="error" role="alert">{{tx('Валюта выписки должна совпадать с валютой выбранного счёта.')}}</p>
       <p v-if="busy" role="status">{{tx('Обрабатываем выписку…')}}</p>

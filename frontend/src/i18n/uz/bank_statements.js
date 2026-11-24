@@ -302,6 +302,8 @@ export default {
   'В Cash Flow попадают только проведённые операции. Выберите источник «Операции сайта».': 'Cash Flow hisobotiga faqat o‘tkazilgan operatsiyalar kiradi. «Saytdagi operatsiyalar» manbasini tanlang.',
   'Открыть Cash Flow': 'Cash Flow hisobotini ochish',
   'Поступления по валютам за день': 'Kunlik tushumlar valyutalar bo‘yicha',
+  'Черновик сохранён': 'Qoralama saqlandi',
+  'Открыть сохранённые проверки': 'Saqlangan tekshiruvlarni ochish',
   'Нет выписки': 'Ko‘chirma yo‘q',
   'Ошибка загрузки': 'Yuklashda xatolik',
   'Требует проверки': 'Tekshirish kerak',
