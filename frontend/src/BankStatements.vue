@@ -352,7 +352,7 @@ async function refreshResolution(changed=false,message=N_('Учёт банков
   if(props.companyId!==company)return;
 }
 async function findCandidates(row, draft = false) {
-  if (!props.canReview || reviewBusy.value !== null || row.status !== 'review' || row.direction !== 'out') return;
+  if (!(draft ? props.canPost : props.canReview) || reviewBusy.value !== null || row.status !== 'review' || row.direction !== 'out') return;
   const current = reviewGeneration, operation = ++reviewOperation;
   reviewBusy.value = row.id; reviewError.value = '';
   try {
@@ -365,7 +365,7 @@ async function findCandidates(row, draft = false) {
 async function matchRequest(row, draft = false) {
   const action = matchActions.value[row.id];
   const candidate = action?.items.find(item => String(item.id) === String(action.selected));
-  if (!props.canReview || reviewBusy.value !== null || !candidate || !action.confirm || (action.note || '').trim().length < 10) return;
+  if (!(draft ? props.canPost : props.canReview) || reviewBusy.value !== null || !candidate || !action.confirm || (action.note || '').trim().length < 10) return;
   const current = reviewGeneration, company = props.companyId, operation = ++reviewOperation;
   reviewBusy.value = row.id; reviewError.value = '';
   try {
@@ -659,7 +659,7 @@ async function commit() {
         <details class="statement-source"><summary>{{tx('Исходные строки и статусы проведения')}}</summary>
         <div class="table-scroll"><table><thead><tr><th>{{tx('Дата')}}</th><th>{{tx('Контрагент / документ')}}</th><th>{{tx('Назначение')}}</th><th>{{tx('Движение')}}</th><th>{{tx('Результат сверки')}}</th></tr></thead><tbody>
           <tr v-for="row in rows" :key="row.id"><td>{{formatShortDate(row.date)}}</td><td>{{row.correspondent_name}}<small>{{row.correspondent_inn || '—'}} · {{row.document_number}}</small></td><td>{{row.purpose}}</td><td>{{directionLabel(row.direction)}}<small>{{money(row.amount)}} {{currency}}</small></td><td>{{rowLabel(row,preview.full_reconciliation)}}<CashFundingBankCaption :row="row" :currency="currency"/><small v-if="categoryName(row)">{{tx('Статья')}}: {{categoryName(row)}}</small><small v-if="categoryRuleLabel(row)">{{categoryRuleLabel(row)}}</small><small v-if="row.reason">{{tx(row.reason)}}</small><small v-if="row.request_id">{{tx('Заявка №{id}',{id:row.request_id})}}</small><small v-if="row.status === 'manual_match' && row.classification?.startsWith('paid:')">{{tx('Дата оплаты')}}: {{row.classification.slice(5)}}</small>
-            <div v-if="canReview && row.status === 'review' && row.direction === 'out' && !row.uncertain" class="review-actions">
+            <div v-if="canPost && row.status === 'review' && row.direction === 'out' && !row.uncertain" class="review-actions">
               <button type="button" class="secondary" :disabled="reviewBusy !== null" @click="findCandidates(row,true)">{{tx('Найти учтённую оплату')}}</button>
               <template v-if="matchActions[row.id]">
                 <p>{{tx('Дата по выписке')}}: {{formatShortDate(row.date)}}</p>

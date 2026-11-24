@@ -1054,7 +1054,7 @@ def _draft_payment_line(s, id, user):
 @router.get('/api/bank-statements/lines/{id}/candidates')
 def candidates(id: int, request: Request, draft: bool = False):
     with unit() as s:
-        user, _ = session_user(s, request, 'pay_bank')
+        user, _ = session_user(s, request, ('pay_bank', 'write') if draft else 'pay_bank')
         if not _can_read_requests(user) or not can_edit_section(user, 'requests', 'ledger'):
             raise HTTPException(403, 'Для сопоставления нужен доступ к заявкам и операциям.')
         line = _draft_payment_line(s, id, user) if draft else _review_line(s, id)
@@ -1078,7 +1078,7 @@ def match(id: int, data: MatchInput, request: Request, draft: bool = False):
     if not data.confirm:
         raise HTTPException(422, 'Подтвердите сопоставление.')
     with unit(True) as s:
-        user, _ = session_user(s, request, 'pay_bank')
+        user, _ = session_user(s, request, ('pay_bank', 'write') if draft else 'pay_bank')
         if not _can_read_requests(user) or not can_edit_section(user, 'requests', 'ledger'):
             raise HTTPException(403, 'Для сопоставления нужен доступ к заявкам и операциям.')
         line = _draft_payment_line(s, id, user) if draft else _review_line(s, id)

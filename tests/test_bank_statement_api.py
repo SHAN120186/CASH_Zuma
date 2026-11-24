@@ -79,6 +79,12 @@ class BankStatementTests(SiteTests):
         path = f"/api/bank-statements/lines/{row['id']}"
         body = dict(request_id=rid, request_version=version, payment_date=day,
                     confirm=True, note='Verified contract and bank receipt')
+        with unit(True) as s:
+            payer_id = s.get(BankStatementBatch, draft['id']).created_by
+            s.get(User, payer_id).role = 'finance'
+        found = client.get(path + '/candidates?draft=true', headers=headers)
+        self.assertEqual(found.status_code, 200, found.text)
+        self.assertEqual(found.json()['items'][0]['date'], day)
         response = client.post(path + '/match?draft=true', headers=headers, json=body)
         self.assertEqual(response.status_code, 200, response.text)
         response = client.post(f"/api/bank-statements/{draft['id']}/resume", headers=headers, json={})
