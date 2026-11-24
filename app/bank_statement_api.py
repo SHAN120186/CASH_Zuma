@@ -35,7 +35,7 @@ from .bank_statement_existing import classify_existing, process_existing
 from .bank_statement_unallocated_out import classify_unallocated_out, process_unallocated_out
 from .bank_statement_unallocated import category_id as unallocated_category_id, ensure_category
 from .category_catalog import catalog
-from .bank_statement_guard import (accounted_line_ids, set_statement_reconciliation,
+from .bank_statement_guard import (matching_payment_date, accounted_line_ids, set_statement_reconciliation,
     unreconciled_batch_ids, CREATED_BANK_STATUSES, REQUEST_PAID_BANK_STATUSES)
 from .bank_statement_interest import classify_interest, post_interest
 from .bank_statement_reprocess_payments import classify_reprocess_payments, process_reprocess_payments
@@ -91,6 +91,7 @@ class MatchInput(BaseModel):
     model_config = ConfigDict(extra='forbid', str_strip_whitespace=True)
     request_id: int = Field(ge=1)
     request_version: int = Field(ge=1)
+    payment_date: date | None = None
     confirm: bool
     note: str = Field(min_length=10, max_length=1000)
 
@@ -192,12 +193,15 @@ def _classify(s, lines, account, previous, user):
                 and req.amount == line.amount
                 and (req.due_date == line.date
                      or (req.status == 'paid' and line.date in actual_dates.get(req.id, set()))))
+    used_batch = or_(BankStatementBatch.status == 'committed',
+        (BankStatementBatch.status == 'preview') & BankStatementLine.classification.like('paid:%')
+        & BankStatementLine.batch_id.not_in({line.batch_id for line in lines}))
     old_request_ids = set(s.scalars(select(BankStatementLine.request_id).join(BankStatementBatch,
-        BankStatementBatch.id == BankStatementLine.batch_id).where(BankStatementBatch.status == 'committed',
+        BankStatementBatch.id == BankStatementLine.batch_id).where(used_batch,
         BankStatementLine.account_id == account.id, BankStatementLine.request_id.is_not(None),
         BankStatementLine.status.in_(REQUEST_PAID_BANK_STATUSES))))
     old_ledger_ids = set(s.scalars(select(BankStatementLine.ledger_id).join(BankStatementBatch,
-        BankStatementBatch.id == BankStatementLine.batch_id).where(BankStatementBatch.status == 'committed',
+        BankStatementBatch.id == BankStatementLine.batch_id).where(used_batch,
         BankStatementLine.account_id == account.id, BankStatementLine.ledger_id.is_not(None),
         BankStatementLine.status.in_(REQUEST_PAID_BANK_STATUSES))))
     # Count all plausible pairs before choosing any. Even an already-linked
@@ -212,6 +216,17 @@ def _classify(s, lines, account, previous, user):
             if matches_request(past, req):
                 reverse[req.id] += 1
     for line in lines:
+        if line.status == 'manual_match' and line.classification.startswith('paid:'):
+            req = requests.get(line.request_id)
+            entry = s.scalar(effective_cashflows(s).where(Ledger.id == line.ledger_id))
+            if (req and req.status == 'paid' and entry and entry.request_id == req.id
+                    and req.counterparty_inn == line.correspondent_inn and req.amount == line.amount
+                    and entry.account_id == account.id and entry.kind == 'out' and entry.amount == line.amount
+                    and matching_payment_date(line, entry) and entry.id not in deleted_ledger_ids(s)
+                    and entry.id not in old_ledger_ids and not previous.get(line.fingerprint)
+                    and counts[line.fingerprint] == 1):
+                continue
+            line.classification = ''
         line.request_id = line.ledger_id = None
         # Preserve multiplicity. Identical records in overlapping files lack a
         # reliable bank ID, so count only the additional occurrences, and mark
@@ -387,7 +402,7 @@ def _evaluated(s, batch, lines, account, user, fee_category_id, *, reprocess=Fal
             decision = outgoing[line.id]
         elif decision is None and line.id in outgoing:
             decision = outgoing[line.id]
-        if decision:
+        if decision and line.status != 'manual_match':
             row.update({key: value for key, value in decision.items()
                         if key in ('status', 'reason', 'category_id', 'category_source', 'category_name', 'category_code', 'receipt_id', 'ledger_id', 'attach_receipt',
                                    'request_id', 'request_version', 'category_rule_ids', 'category_rule_status',
@@ -415,7 +430,7 @@ def _evaluated(s, batch, lines, account, user, fee_category_id, *, reprocess=Fal
             same_side = bool(entry and ((entry.kind == line.direction and entry.account_id == account.id) or
                 (entry.kind == 'transfer' and ((line.direction == 'out' and entry.account_id == account.id) or
                                                (line.direction == 'in' and entry.to_account_id == account.id)))))
-            if (not entry or entry.id in deleted_ids or not same_side or entry.date != line.date or entry.amount != line.amount):
+            if (not entry or entry.id in deleted_ids or not same_side or not matching_payment_date(line, entry) or entry.amount != line.amount):
                 row['status'] = 'review'; row['reason'] = 'Связанная операция изменилась или была отменена.'
             elif entry.request_id is None and entry.category_id in rules['categories']:
                 row.update(category_id=entry.category_id, category_name=rules['categories'][entry.category_id][0].name,
@@ -1025,32 +1040,48 @@ def _review_line(s, id):
     return line
 
 
+def _draft_payment_line(s, id, user):
+    line = get(s, BankStatementLine, id)
+    batch = get(s, BankStatementBatch, line.batch_id)
+    if batch.created_by != user.id and user.role != 'admin':
+        raise HTTPException(403, 'Черновик доступен автору или администратору.')
+    if (batch.status != 'preview' or line.status != 'review' or line.uncertain
+            or line.direction != 'out' or not line.correspondent_inn):
+        raise HTTPException(409, 'Строка недоступна для привязки к оплате.')
+    return line
+
+
 @router.get('/api/bank-statements/lines/{id}/candidates')
-def candidates(id: int, request: Request):
+def candidates(id: int, request: Request, draft: bool = False):
     with unit() as s:
-        user, _ = session_user(s, request, 'pay_bank')
+        user, _ = session_user(s, request, ('pay_bank', 'write') if draft else 'pay_bank')
         if not _can_read_requests(user) or not can_edit_section(user, 'requests', 'ledger'):
             raise HTTPException(403, 'Для сопоставления нужен доступ к заявкам и операциям.')
-        line = _review_line(s, id)
+        line = _draft_payment_line(s, id, user) if draft else _review_line(s, id)
         items = []
         for req in _requests(s, line.account_id).values():
             if (req.status in ('approved', 'paid') and line.correspondent_inn and req.counterparty_inn == line.correspondent_inn
                     and req.amount == line.amount and can_view_request(s, user, req)):
+                if draft:
+                    entries = list(s.scalars(effective_cashflows(s).where(Ledger.request_id == req.id,
+                        Ledger.kind == 'out', Ledger.account_id == line.account_id, Ledger.amount == line.amount)))
+                    if req.status != 'paid' or len(entries) != 1 or entries[0].id in deleted_ledger_ids(s):
+                        continue
                 items.append({'id': req.id, 'number': f'CF-{req.id:05d}', 'counterparty': req.counterparty,
                               'counterparty_inn': req.counterparty_inn, 'amount': money(req.amount),
-                              'date': str(req.due_date), 'status': req.status, 'version': req.version})
+                              'date': str(entries[0].date if draft else req.due_date), 'status': req.status, 'version': req.version})
         return {'items': items}
 
 
 @router.post('/api/bank-statements/lines/{id}/match')
-def match(id: int, data: MatchInput, request: Request):
+def match(id: int, data: MatchInput, request: Request, draft: bool = False):
     if not data.confirm:
         raise HTTPException(422, 'Подтвердите сопоставление.')
     with unit(True) as s:
-        user, _ = session_user(s, request, 'pay_bank')
+        user, _ = session_user(s, request, ('pay_bank', 'write') if draft else 'pay_bank')
         if not _can_read_requests(user) or not can_edit_section(user, 'requests', 'ledger'):
             raise HTTPException(403, 'Для сопоставления нужен доступ к заявкам и операциям.')
-        line = _review_line(s, id)
+        line = _draft_payment_line(s, id, user) if draft else _review_line(s, id)
         req = get(s, PaymentRequest, data.request_id)
         if not can_view_request(s, user, req):
             raise HTTPException(404, 'Заявка не найдена.')
@@ -1058,8 +1089,11 @@ def match(id: int, data: MatchInput, request: Request):
                 or req.account_id != line.account_id or req.amount != line.amount
                 or not line.correspondent_inn or req.counterparty_inn != line.correspondent_inn):
             raise HTTPException(409, 'Заявка изменилась или её счёт, сумма либо ИНН не совпадают.')
+        if draft and req.status != 'paid':
+            raise HTTPException(409, 'В черновике можно связать только уже оплаченную заявку.')
         prior = s.scalar(select(BankStatementLine.id).join(BankStatementBatch,
-            BankStatementBatch.id == BankStatementLine.batch_id).where(BankStatementBatch.status == 'committed',
+            BankStatementBatch.id == BankStatementLine.batch_id).where(or_(BankStatementBatch.status == 'committed',
+            (BankStatementBatch.status == 'preview') & BankStatementLine.classification.like('paid:%')),
             BankStatementLine.id != line.id, BankStatementLine.request_id == req.id,
             BankStatementLine.status.in_(REQUEST_PAID_BANK_STATUSES)))
         if prior:
@@ -1072,22 +1106,29 @@ def match(id: int, data: MatchInput, request: Request):
             entry = post_ledger(s, user, op, bank_statement_fact=True)
             line.status = 'manual_paid'
         else:
-            entries = list(s.scalars(select(Ledger).where(Ledger.request_id == req.id, Ledger.kind == 'out',
-                Ledger.account_id == line.account_id, Ledger.amount == line.amount, Ledger.date == line.date,
-                Ledger.reversal_of.is_(None))))
-            if len(entries) != 1 or s.scalar(select(Ledger.id).where(Ledger.reversal_of == entries[0].id)):
+            query = effective_cashflows(s).where(Ledger.request_id == req.id, Ledger.kind == 'out',
+                Ledger.account_id == line.account_id, Ledger.amount == line.amount)
+            if not draft:
+                query = query.where(Ledger.date == line.date)
+            entries = list(s.scalars(query))
+            if len(entries) != 1 or entries[0].id in deleted_ledger_ids(s) or s.scalar(select(Ledger.id).where(Ledger.reversal_of == entries[0].id)):
                 raise HTTPException(409, 'Не найдена действующая операция оплаты за эту дату.')
             entry = entries[0]
             if s.scalar(select(BankStatementLine.id).join(BankStatementBatch,
-                BankStatementBatch.id == BankStatementLine.batch_id).where(BankStatementBatch.status == 'committed',
+                BankStatementBatch.id == BankStatementLine.batch_id).where(or_(BankStatementBatch.status == 'committed',
+            (BankStatementBatch.status == 'preview') & BankStatementLine.classification.like('paid:%')),
                 BankStatementLine.id != line.id, BankStatementLine.ledger_id == entry.id)):
                 raise HTTPException(409, 'Операция уже связана с другой строкой выписки.')
+            if draft and data.payment_date != entry.date:
+                raise HTTPException(409, 'Дата оплаты изменилась. Повторите поиск.')
+            if draft:
+                line.classification = f'paid:{entry.date}'
             line.status = 'manual_match'
         line.request_id = req.id; line.ledger_id = entry.id; line.reason = ''
         line.review_note = data.note; line.reviewed_by = user.id; line.reviewed_at = now()
         log(s, user, 'Сопоставлена строка выписки', 'bank_statement_line', line.id,
             json.dumps({'request_id': req.id, 'ledger_id': entry.id, 'note': data.note}, ensure_ascii=False))
-        return {'status': line.status, 'request_id': req.id, 'ledger_id': entry.id}
+        return {'status': line.status, 'request_id': req.id, 'ledger_id': entry.id, 'payment_date': str(entry.date)}
 
 
 @router.get('/api/bank-statements/daily')
@@ -1161,6 +1202,7 @@ def statement_history_detail(id: int, request: Request):
         lines = list(s.scalars(select(BankStatementLine).where(BankStatementLine.batch_id == batch.id)
                                .order_by(BankStatementLine.line, BankStatementLine.id)))
         valid_funding = accounted_funding_line_ids(s, lines, get(s, Account, batch.account_id))
+        by_id = {line.id: line for line in lines}
         for row in rows:
             entry = entries.get(row['ledger_id'])
             if row['ledger_id'] is None:
@@ -1177,7 +1219,7 @@ def statement_history_detail(id: int, request: Request):
                 matches_side = ((direction == 'out' and entry.account_id == account_id and entry.kind in ('out', 'transfer')) or
                                 (direction == 'in' and ((entry.kind == 'in' and entry.account_id == account_id) or
                                                        (entry.kind == 'transfer' and entry.to_account_id == account_id))))
-                state = 'active' if matches_side and entry.amount == _minor(row['amount']) and str(entry.date) == row['date'] else 'changed'
+                state = 'active' if matches_side and entry.amount == _minor(row['amount']) and matching_payment_date(by_id[row['id']], entry) else 'changed'
             row['operation_state'] = state
             req = requests.get(row['request_id'])
             if not req or not can_view_request(s, user, req):

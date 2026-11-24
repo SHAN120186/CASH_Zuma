@@ -61,6 +61,38 @@ class BankStatementTests(SiteTests):
         return client.post('/api/bank-statements/preview', params={'account_id': self.acc, 'currency': currency},
                            content=content, headers={**headers, 'X-Filename': filename})
 
+    def test_link_existing_payment_in_draft_with_different_date(self):
+        rid = self.approved()
+        with unit(True) as s:
+            req = s.get(PaymentRequest, rid)
+            req.status = 'paid'
+            entry = Ledger(account_id=self.acc, category_id=req.category_id, kind='out',
+                           amount=req.amount, date=req.due_date + timedelta(days=2),
+                           reference='existing', request_id=rid, creator_id=req.creator_id)
+            s.add(entry)
+            s.flush()
+            eid, day, version = entry.id, str(entry.date), req.version
+        source = self.source()
+        draft = self.preview(source).json()
+        row = draft['rows'][0]
+        client, headers = self.payer
+        path = f"/api/bank-statements/lines/{row['id']}"
+        body = dict(request_id=rid, request_version=version, payment_date=day,
+                    confirm=True, note='Verified contract and bank receipt')
+        with unit(True) as s:
+            payer_id = s.get(BankStatementBatch, draft['id']).created_by
+            s.get(User, payer_id).role = 'finance'
+        found = client.get(path + '/candidates?draft=true', headers=headers)
+        self.assertEqual(found.status_code, 200, found.text)
+        self.assertEqual(found.json()['items'][0]['date'], day)
+        response = client.post(path + '/match?draft=true', headers=headers, json=body)
+        self.assertEqual(response.status_code, 200, response.text)
+        response = client.post(f"/api/bank-statements/{draft['id']}/resume", headers=headers, json={})
+        linked = response.json()['rows'][0]
+        self.assertEqual((linked['status'], linked['request_id'], linked['ledger_id']), ('manual_match', rid, eid))
+        with unit() as s:
+            self.assertEqual(list(s.scalars(select(Ledger.id).where(Ledger.request_id == rid))), [eid])
+
     def test_xlsx_upload_creates_one_resumable_preview_without_posting(self):
         book = workbook()
         book.active['A3'] = 'Счет: 20214000111111111111 OOO UZGERMED TEST ИНН: 111000222'

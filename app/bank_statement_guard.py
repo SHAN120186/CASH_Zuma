@@ -121,6 +121,13 @@ def refresh_reconciliation_after_reversal(s, user, entry):
         set_statement_reconciliation(s, batch, complete, user)
 
 
+def matching_payment_date(line, entry):
+    """An explicit link pins the accounting date the reviewer actually saw."""
+    return (entry.date == line.date or
+            (line.status == 'manual_match' and line.request_id == entry.request_id
+             and line.request_id is not None and line.classification == f'paid:{entry.date}'))
+
+
 def accounted_line_ids(s, lines, account):
     """Bank rows backed by a unique, active ledger movement on the correct side."""
     from collections import Counter
@@ -140,7 +147,7 @@ def accounted_line_ids(s, lines, account):
             continue
         entry = entries.get(line.ledger_id)
         if (not entry or entry.id in deleted or line.account_id != account.id
-                or line.company_id != account.company_id or entry.date != line.date or entry.amount != line.amount
+                or line.company_id != account.company_id or not matching_payment_date(line, entry) or entry.amount != line.amount
                 or ties[(entry.id, line.direction)] != 1):
             continue
         same_side = ((entry.kind == line.direction and entry.account_id == account.id)
