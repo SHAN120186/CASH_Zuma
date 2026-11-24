@@ -1,9 +1,9 @@
 <script setup>
-import {ref, watch, onUnmounted} from 'vue';
+import {ref, watch, onMounted, onUnmounted} from 'vue';
 import {tx} from './i18n/index.js';
 import {toCents, formatCents, formatShortDate} from './overview/format.js';
 
-const props = defineProps({api:{type:Function,required:true},companyId:{type:Number,required:true},
+const props = defineProps({initiallyOpen:Boolean,api:{type:Function,required:true},companyId:{type:Number,required:true},
   canResume:{type:Boolean,default:false},busy:{type:Boolean,default:false},refreshKey:{type:Number,default:0}});
 const emit = defineEmits(['resume']);
 const open = ref(false), page = ref(1), hasMore = ref(false), items = ref([]), loaded = ref(false), loading = ref(false), error = ref('');
@@ -30,6 +30,12 @@ async function toggle() {
   if (open.value) {open.value=false; invalidate(); return;}
   open.value=true; await loadPage(1);
 }
+const heading = ref(null);
+onMounted(async () => {
+  if (!props.initiallyOpen || !props.canResume) return;
+  await toggle();
+  heading.value?.focus();
+});
 function resume(item) {
   if (props.canResume && !props.busy && !loading.value && open.value && items.value.some(row=>row.id===item.id)) emit('resume',item);
 }
@@ -37,7 +43,7 @@ function resume(item) {
 
 <template>
   <section v-if="canResume" class="saved-statements" :aria-label="tx('Сохранённые проверки')">
-    <h3>{{tx('Сохранённые проверки')}}</h3>
+    <h3 ref="heading" tabindex="-1">{{tx('Сохранённые проверки')}}</h3>
     <button type="button" class="secondary tiny" :aria-expanded="open" @click="toggle"><template v-if="open">{{tx('Скрыть сохранённые проверки')}}</template><template v-else>{{tx('Показать сохранённые проверки')}}</template></button>
     <template v-if="open">
       <p class="sub">{{tx('Продолжите проверку сохранённой выписки без повторной загрузки файла. Операции создаются только после отдельного подтверждения.')}}</p>

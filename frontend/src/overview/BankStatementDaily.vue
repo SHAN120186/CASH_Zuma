@@ -4,6 +4,11 @@ import {tx} from '../i18n/index.js';
 import {toCents, formatCents} from './format.js';
 
 const props = defineProps({api:{type:Function,required:true},companyId:{type:Number,required:true},currency:{type:String,required:true},today:{type:String,required:true},refresh:{type:Number,default:0}});
+const emit = defineEmits(['open-drafts']);
+function statementStatus(statement) {
+  if (statement.available !== false) return tx('Подтверждена');
+  return statement.draft_exists ? tx('Черновик сохранён') : tx('Нет выписки');
+}
 const date = ref(props.today), data = ref(null), error = ref(''), loading = ref(false);
 const currencies = ['UZS', 'USD', 'EUR'];
 const currencyTotals = ref({});
@@ -51,9 +56,9 @@ const money = value => formatCents(toCents(value),props.currency);
             <span>{{cur}}</span>
             <b v-if="currencyTotals[cur]?.loading">{{tx('Загружаем данные…')}}</b>
             <b v-else-if="currencyTotals[cur]?.error">{{tx('Ошибка загрузки')}}</b>
-            <b v-else-if="currencyTotals[cur]?.data?.available === false">{{tx('Нет выписки')}}</b>
             <template v-else-if="currencyTotals[cur]?.data">
-              <b>{{formatCents(toCents(currencyTotals[cur].data.credit_total),cur)}} {{cur}}</b>
+              <b>{{statementStatus(currencyTotals[cur].data)}}</b>
+              <b v-if="currencyTotals[cur].data.available !== false">{{formatCents(toCents(currencyTotals[cur].data.credit_total),cur)}} {{cur}}</b>
               <small v-if="currencyTotals[cur].data.uncertain" class="error">{{tx('Требует проверки')}}</small>
             </template>
           </div>
@@ -61,8 +66,14 @@ const money = value => formatCents(toCents(value),props.currency);
       </div>
       <p v-if="loading" role="status">{{tx('Загружаем данные…')}}</p>
       <p v-else-if="error" class="error" role="alert">{{tx('Не удалось загрузить данные выписки.')}}</p>
-      <p v-else-if="data && data.available === false" class="sub">{{tx('За выбранный день выписка не загружена.')}}</p>
       <template v-else-if="data">
+        <p v-if="data.draft_exists">
+          {{tx('Черновик сохранён')}}
+          <button type="button" class="secondary tiny" @click="emit('open-drafts')">{{tx('Открыть сохранённые проверки')}}</button>
+        </p>
+        <p v-else-if="data.available === false" class="sub">{{tx('За выбранный день выписка не загружена.')}}</p>
+      </template>
+      <template v-if="data && data.available !== false">
         <p v-if="data.uncertain" class="error" role="alert">{{tx('Итог выписки требует проверки и может быть неполным: найдены похожие операции.')}}</p>
         <div class="daily-totals"><div><span>{{tx('Поступления по выписке')}}</span><b>{{money(data.credit_total)}} {{currency}}</b></div><div><span>{{tx('Списания по выписке')}}</span><b>{{money(data.debit_total)}} {{currency}}</b></div></div>
         <p class="sub">{{tx('В поступления могут входить переводы между своими счетами.')}}</p>
