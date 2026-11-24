@@ -1,4 +1,8 @@
 export default {
+  'Связь сохранена. Перед проведением откройте черновик заново.': 'Bog‘lanish saqlandi. O‘tkazishdan oldin qoralamani qayta oching.',
+  'Дата оплаты': 'To‘lov sanasi',
+  'Найти учтённую оплату': 'Qayd etilgan to‘lovni topish',
+  'Подтверждаю связь с уже учтённой оплатой.': 'Avval qayd etilgan to‘lov bilan bog‘lanishni tasdiqlayman.',
   'Администратор может связать повтор или перевод с уже проведённой операцией. Новая оплата не создаётся.': 'Administrator takror yoki o‘tkazmani avval qayd etilgan operatsiya bilan bog‘lashi mumkin. Yangi to‘lov yaratilmaydi.',
   'Статьи банковских операций обновлены. Данные выписки и отчётов обновляются.': 'Bank operatsiyalarining moddalari yangilandi. Ko‘chirma va hisobotlar maʼlumotlari yangilanmoqda.',
   'Изменены правила статей банковской выписки': 'Bank ko‘chirmasi modda qoidalari o‘zgartirildi',

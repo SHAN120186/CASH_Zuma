@@ -351,30 +351,39 @@ async function refreshResolution(changed=false,message=N_('Учёт банков
   await Promise.all([loadReviews(),loadUnallocated(),loadUnallocatedOutgoing(),loadOldBatches()]);
   if(props.companyId!==company)return;
 }
-async function findCandidates(row) {
+async function findCandidates(row, draft = false) {
   if (!props.canReview || reviewBusy.value !== null || row.status !== 'review' || row.direction !== 'out') return;
   const current = reviewGeneration, operation = ++reviewOperation;
   reviewBusy.value = row.id; reviewError.value = '';
   try {
-    const result = await props.api(`/api/bank-statements/lines/${encodeURIComponent(row.id)}/candidates`);
+    const result = await props.api(`/api/bank-statements/lines/${encodeURIComponent(row.id)}/candidates${draft ? "?draft=true" : ""}`);
     if (current !== reviewGeneration) return;
     matchActions.value[row.id] = {items: Array.isArray(result.items) ? result.items : [], selected: '', note: '', confirm: false};
   } catch (e) {if (current === reviewGeneration) reviewError.value = reviewErrorMessage(e);}
   finally {if (operation === reviewOperation) reviewBusy.value = null;}
 }
-async function matchRequest(row) {
+async function matchRequest(row, draft = false) {
   const action = matchActions.value[row.id];
   const candidate = action?.items.find(item => String(item.id) === String(action.selected));
   if (!props.canReview || reviewBusy.value !== null || !candidate || !action.confirm || (action.note || '').trim().length < 10) return;
   const current = reviewGeneration, company = props.companyId, operation = ++reviewOperation;
   reviewBusy.value = row.id; reviewError.value = '';
   try {
-    await props.api(`/api/bank-statements/lines/${encodeURIComponent(row.id)}/match`, {
+    const result = await props.api(`/api/bank-statements/lines/${encodeURIComponent(row.id)}/match${draft ? "?draft=true" : ""}`, {
       method: 'POST', headers: {'Content-Type': 'application/json'},
-      body: JSON.stringify({request_id: candidate.id, request_version: candidate.version, confirm: true, note: action.note.trim()}),
+      body: JSON.stringify({request_id: candidate.id, request_version: candidate.version, ...(draft ? {payment_date: candidate.date} : {}), confirm: true, note: action.note.trim()}),
     });
     if (current !== reviewGeneration) return;
     delete matchActions.value[row.id];
+    if (draft) {
+      if (preview.value?.rows.includes(row)) {
+        Object.assign(row, result, {classification: 'paid:' + result.payment_date, reason: ''});
+        preview.value.preview_token = null;
+        confirmAccount.value = confirmCurrency.value = false;
+        notice.value = tx('Связь сохранена. Перед проведением откройте черновик заново.');
+      }
+      return;
+    }
     await loadReviews();
     if (props.companyId === company) emit('changed');
   } catch (e) {if (current === reviewGeneration) reviewError.value = reviewErrorMessage(e);}
@@ -649,7 +658,20 @@ async function commit() {
         <button v-if="canViewCashFlow" type="button" class="secondary tiny" @click="emit('cash-flow',{currency,period_from:preview.statement.period_from,period_to:preview.statement.period_to})">{{tx('Открыть Cash Flow')}}</button>
         <details class="statement-source"><summary>{{tx('Исходные строки и статусы проведения')}}</summary>
         <div class="table-scroll"><table><thead><tr><th>{{tx('Дата')}}</th><th>{{tx('Контрагент / документ')}}</th><th>{{tx('Назначение')}}</th><th>{{tx('Движение')}}</th><th>{{tx('Результат сверки')}}</th></tr></thead><tbody>
-          <tr v-for="row in rows" :key="row.id"><td>{{formatShortDate(row.date)}}</td><td>{{row.correspondent_name}}<small>{{row.correspondent_inn || '—'}} · {{row.document_number}}</small></td><td>{{row.purpose}}</td><td>{{directionLabel(row.direction)}}<small>{{money(row.amount)}} {{currency}}</small></td><td>{{rowLabel(row,preview.full_reconciliation)}}<CashFundingBankCaption :row="row" :currency="currency"/><small v-if="categoryName(row)">{{tx('Статья')}}: {{categoryName(row)}}</small><small v-if="categoryRuleLabel(row)">{{categoryRuleLabel(row)}}</small><small v-if="row.reason">{{tx(row.reason)}}</small><small v-if="row.request_id">{{tx('Заявка №{id}',{id:row.request_id})}}</small></td></tr>
+          <tr v-for="row in rows" :key="row.id"><td>{{formatShortDate(row.date)}}</td><td>{{row.correspondent_name}}<small>{{row.correspondent_inn || '—'}} · {{row.document_number}}</small></td><td>{{row.purpose}}</td><td>{{directionLabel(row.direction)}}<small>{{money(row.amount)}} {{currency}}</small></td><td>{{rowLabel(row,preview.full_reconciliation)}}<CashFundingBankCaption :row="row" :currency="currency"/><small v-if="categoryName(row)">{{tx('Статья')}}: {{categoryName(row)}}</small><small v-if="categoryRuleLabel(row)">{{categoryRuleLabel(row)}}</small><small v-if="row.reason">{{tx(row.reason)}}</small><small v-if="row.request_id">{{tx('Заявка №{id}',{id:row.request_id})}}</small><small v-if="row.status === 'manual_match' && row.classification?.startsWith('paid:')">{{tx('Дата оплаты')}}: {{row.classification.slice(5)}}</small>
+            <div v-if="canReview && row.status === 'review' && row.direction === 'out' && !row.uncertain" class="review-actions">
+              <button type="button" class="secondary" :disabled="reviewBusy !== null" @click="findCandidates(row,true)">{{tx('Найти учтённую оплату')}}</button>
+              <template v-if="matchActions[row.id]">
+                <p>{{tx('Дата по выписке')}}: {{formatShortDate(row.date)}}</p>
+                <p v-if="!matchActions[row.id].items.length">{{tx('Подходящие заявки не найдены.')}}</p>
+                <template v-else>
+                  <label>{{tx('Выберите заявку')}}<select v-model="matchActions[row.id].selected" :disabled="reviewBusy !== null" @change="resetSelectionConfirmation(matchActions,row)"><option value="">{{tx('Выберите заявку')}}</option><option v-for="candidate in matchActions[row.id].items" :key="candidate.id" :value="String(candidate.id)">{{candidate.number}} · {{candidate.counterparty}} · {{candidate.counterparty_inn}} · {{money(candidate.amount,currency)}} {{currency}} · {{tx('Дата оплаты')}}: {{formatShortDate(candidate.date)}} · {{candidateStatus(candidate.status)}}</option></select></label>
+                  <label>{{tx('Причина сопоставления (не менее 10 символов)')}}<input v-model="matchActions[row.id].note" :disabled="reviewBusy !== null"></label>
+                  <label><input v-model="matchActions[row.id].confirm" type="checkbox" :disabled="reviewBusy !== null"> {{tx('Подтверждаю связь с уже учтённой оплатой.')}}</label>
+                  <button type="button" :disabled="reviewBusy !== null || !matchActions[row.id].selected || !matchActions[row.id].confirm || matchActions[row.id].note.trim().length < 10" @click="matchRequest(row,true)">{{tx('Подтвердить сопоставление')}}</button>
+                </template>
+              </template>
+            </div></td></tr>
         </tbody></table></div>
         </details>
         <label class="confirm"><input v-model="confirmAccount" type="checkbox" :disabled="busy"> {{tx('Подтверждаю: номер счёта в выписке относится к выбранному счёту на сайте.')}}</label>
