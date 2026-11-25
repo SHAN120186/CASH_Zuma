@@ -317,6 +317,16 @@ async function loadOldBatches() {
     oldBatchesLoaded.value = true;
   } catch (e) {if (current === batchGeneration) {oldBatchesLoaded.value = false; reprocessError.value = e.message || 'error';}}
 }
+const reprocessPanel = ref(null);
+async function openBlockedStatement(batch) {
+  const company = props.companyId;
+  selectedOldBatch.value = String(batch.id);
+  await nextTick();
+  if (company !== props.companyId || !props.canPost || !reprocessPanel.value) return;
+  reprocessPanel.value.open = true;
+  reprocessPanel.value.scrollIntoView?.({block: 'start'});
+  await previewOldBatch();
+}
 async function previewOldBatch() {
   const batch = oldBatches.value.find(item => String(item.id) === String(selectedOldBatch.value));
   if (!props.canPost || busy.value || reprocessBusy.value || !batch) return;
@@ -759,8 +769,10 @@ async function confirmAndPost(event) {
       </details>
       <p v-if="feeSettingsError" class="error" role="alert">{{feeSettingsError}}</p>
       <div v-if="(canReview || canPost || canImport) && unreconciledAccounts.length" class="error" role="alert">
-        <p>{{tx('Ручная оплата заявок с этих счетов временно недоступна до сверки выписок. Исправления операций и точные оплаты по выписке остаются доступны при наличии прав.')}}</p>
-        <ul><li v-for="a in unreconciledAccounts" :key="a.id">{{a.name}} · {{a.currency}} — {{tx('Несверенных выписок: {n}',{n:a.unreconciled_statements})}}</li></ul>
+        <p>{{tx('Ручная оплата заявок приостановлена. Сверьте выписку, чтобы снова оплачивать заявки с этого счёта.')}}</p>
+        <ul><li v-for="a in unreconciledAccounts" :key="a.id">{{a.name}} · {{a.currency}} — {{tx('Несверенных выписок: {n}',{n:a.unreconciled_statements})}}
+          <button v-for="batch in oldBatches.filter(b => b.requires_reconciliation && b.account_id === a.id)" :key="batch.id" type="button" class="secondary tiny" :disabled="busy || reprocessBusy" @click="openBlockedStatement(batch)">{{tx('Проверить выписку')}} · {{batch.period_from}} — {{batch.period_to}}</button>
+        </li></ul>
       </div>
       <SavedBankStatements :api="api" :company-id="companyId" :can-resume="canImport" :busy="busy || reprocessBusy" :refresh-key="savedRefresh" @resume="resumeSaved"/>
       <p v-if="canImport && !canPost" class="sub">{{tx('Для проведения поступлений и комиссий требуется право записи операций.')}}</p>
@@ -857,7 +869,7 @@ async function confirmAndPost(event) {
 
       </details>
       <BankStatementHistory :api="api" :company-id="companyId" :can-view="canViewHistory || canImport || canReview" :can-view-cash-flow="canViewCashFlow" :can-apply-rules="canPost" :refresh-key="savedRefresh" @cash-flow="emit('cash-flow',$event)" @changed="refreshResolution(true,N_('Статьи банковских операций обновлены. Данные выписки и отчётов обновляются.'))"/>
-      <details v-if="canPost" class="review-list">
+      <details v-if="canPost" class="review-list" ref="reprocessPanel">
         <summary>{{tx('Повторная проверка загруженной выписки')}}</summary>
         <p v-if="oldBatchesLoaded && !oldBatches.length" class="sub">{{tx('Выписок со строками для повторной проверки нет.')}}</p>
         <div class="bank-fields"><label>{{tx('Выберите выписку')}}<select v-model="selectedOldBatch" :disabled="busy || reprocessBusy"><option value="">{{tx('Выберите выписку')}}</option><option v-for="batch in oldBatches" :key="batch.id" :value="String(batch.id)">{{batch.account_name}} · {{batch.currency}} · {{formatShortDate(batch.period_from)}} – {{formatShortDate(batch.period_to)}} · {{batch.filename}}</option></select></label><button type="button" class="secondary" :disabled="!selectedOldBatch || busy || reprocessBusy" @click="previewOldBatch">{{tx('Проверить выписку')}}</button></div>

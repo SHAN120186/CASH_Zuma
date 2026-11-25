@@ -606,7 +606,7 @@ export default {
   'Перевод изменился, отменён или уже связан с этой стороной счёта.': 'O‘tkazma o‘zgargan, bekor qilingan yoki hisobning shu tomoni bilan allaqachon bog‘langan.',
   'Данные изменились. Проверьте перевод заново.': 'Maʼlumotlar o‘zgardi. O‘tkazmani qayta tekshiring.',
   'Есть несверенные выписки: {n}. Ручная оплата заявок с этого счёта временно недоступна до сверки.': 'Solishtirilmagan ko‘chirmalar: {n}. Solishtirish tugaguncha bu hisobdan arizalarni qo‘lda to‘lash vaqtincha mavjud emas.',
-  'Ручная оплата заявок с этих счетов временно недоступна до сверки выписок. Исправления операций и точные оплаты по выписке остаются доступны при наличии прав.': 'Ko‘chirmalar solishtirilguncha ushbu hisoblardan arizalarni qo‘lda to‘lash vaqtincha mavjud emas. Huquq mavjud bo‘lsa, operatsiyalarni tuzatish va ko‘chirma bo‘yicha aniq to‘lovlar amalga oshiriladi.',
+  'Ручная оплата заявок приостановлена. Сверьте выписку, чтобы снова оплачивать заявки с этого счёта.': 'Arizalarni qo‘lda to‘lash to‘xtatildi. Ushbu hisobdan to‘lovni davom ettirish uchun bank ko‘chirmasini solishtiring.',
   'Несверенных выписок: {n}': 'Solishtirilmagan ko‘chirmalar: {n}',
   'Счёт ожидает сверки банковской выписки. Сверьте выписку перед новой оплатой заявки.': 'Hisob bank ko‘chirmasi bilan solishtirilishini kutmoqda. Arizani qayta to‘lashdan oldin ko‘chirmani solishtiring.',
   'Остаток сайта не сверен с банком; ручные оплаты по этому счёту временно заблокированы до сверки выписки.': 'Saytdagi qoldiq bank bilan solishtirilmagan; ko‘chirma solishtirilguncha bu hisobdan qo‘lda to‘lovlar vaqtincha bloklangan.',

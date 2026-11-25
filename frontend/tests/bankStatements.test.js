@@ -560,8 +560,8 @@ test('unreconciled bank accounts warn authorized staff, and zero or cash account
  const scoped=[{id:21,name:'Blocked bank',kind:'bank',currency:'UZS',unreconciled_statements:2},{id:22,name:'Cash',kind:'cash',currency:'UZS',unreconciled_statements:1},{id:23,name:'Clear bank',kind:'bank',currency:'UZS',unreconciled_statements:0}];
  const api=async()=>({items:[]});const view=mount(component,{api,companyId:1,accounts:scoped,canReview:true});t.after(view.unmount);await settle();
  const warning=find(view.container,node=>node.props?.role==='alert'&&text(node).includes('Несверенных выписок'));
- assert.ok(warning);assert.match(text(warning),/Ручная оплата заявок.*временно недоступна/);
- assert.deepEqual(all(warning,node=>node.tag==='li').map(text),['Blocked bank · UZS — Несверенных выписок: 2']);
+ assert.ok(warning);assert.match(text(warning),/Ручная оплата заявок приостановлена/);
+ assert.deepEqual(all(warning,node=>node.tag==='li').map(node=>text(node).trim()),['Blocked bank · UZS — Несверенных выписок: 2']);
  const readOnly=mount(component,{api,companyId:1,accounts:scoped});t.after(readOnly.unmount);await settle();assert.doesNotMatch(text(readOnly.container),/Несверенных выписок/);
 });
 
@@ -631,3 +631,21 @@ test('late deletion preview cannot be applied to another company',async t=>{
  const api=async url=>url==='/api/bank-statements/admin/batches'?{items:[batch]}:url.endsWith('/delete-preview')?new Promise(resolve=>finish=resolve):{items:[]};
  const view=mount(component,{api,companyId:1,accounts,canDeleteStatements:true});t.after(view.unmount);await settle();const pending=view.state.selectDeleteBatch(batch);await settle();view.app._instance.props.companyId=2;await settle();finish({...batch,delete_token:'old-company'});await pending;await settle();assert.equal(view.state.deletePreview,null);assert.equal(view.state.deleteBatchId,null);assert.doesNotMatch(text(view.container),/Подтвердите удаление выписки/);
 });
+test('blocked account shortcut opens only the marked statement for preview',async t=>{
+ const calls=[];
+ const batch={account_id:21,period_from:'2026-01-01',period_to:'2026-01-02'};
+ const api=async url=>{
+  calls.push(url);
+  if(url.endsWith('/reprocess/batches'))return {items:[{...batch,id:51,requires_reconciliation:true},{...batch,id:52,requires_reconciliation:false}]};
+  if(url.endsWith('/51/reprocess/preview'))return {batch_id:51,full_reconciliation:false};
+  return {items:[]};
+ };
+ const view=mount(component,{api,companyId:1,accounts:[{...accounts[0],unreconciled_statements:1}],canPost:true});t.after(view.unmount);await settle();
+ const buttons=all(view.container,n=>n.tag==='button'&&text(n).includes('Проверить выписку ·'));
+ assert.equal(buttons.length,1);
+ await buttons[0].props.onClick();await settle();
+ assert.equal(view.state.selectedOldBatch,'51');
+ assert.ok(calls.includes('/api/bank-statements/51/reprocess/preview'));
+ assert.ok(calls.every(url=>!url.endsWith('/commit')));
+});
+

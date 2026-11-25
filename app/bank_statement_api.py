@@ -873,7 +873,8 @@ def reprocess_batches(request: Request):
             .order_by(BankStatementBatch.id.desc()))
         items = [{'id': batch.id, 'account_id': account.id, 'account_name': account.name,
                   'currency': batch.currency, 'period_from': str(batch.period_from),
-                  'period_to': str(batch.period_to), 'filename': batch.filename} for batch, account in rows]
+                  'period_to': str(batch.period_to), 'filename': batch.filename,
+                  'requires_reconciliation': batch.id in pending_batches} for batch, account in rows]
         return {'items': items}
 
 
