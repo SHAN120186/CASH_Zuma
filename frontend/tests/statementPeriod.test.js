@@ -7,6 +7,8 @@ const uncovered = await compileComponent(new URL('../src/overview/UncoveredBankP
 const account = {id:11, kind:'bank', currency:'UZS', name:'Test Bank'};
 const props = api => ({api, companyId:2, accounts:[account], currency:'UZS'});
 const source = {id:7, filename:'test.xls', period_from:'2026-11-01', period_to:'2026-11-21'};
+const draft = {companyId:2,id:7,account,token:'a'};
+const draftUrl = '/api/bank-statements/period-sources/7?account_id=11&currency=UZS&draft=true';
 const report = () => ({
   account, binding:'confirmed',
   statement:{...source, owner_name:'Test company', account_number:'0011', opening_balance:'300.01', credit_total:'100.02',
@@ -16,6 +18,108 @@ const report = () => ({
     status:'candidate',request_ids:[42],amount:'150.00'}],
   unmatched_payments:[{request_id:17,date:'2026-11-11',amount:'15.00',document_number:'370',counterparty:'Site supplier',status:'app_only'}],
 });
+test('a prepared draft compares automatically with one GET and opening its details reuses the result', async t => {
+  const calls=[];
+  const view=mount(component,{...props(async (url,options)=>{
+    calls.push([url,options]);
+    return report();
+  }),draft});
+  t.after(view.unmount);
+  await settle();
+  assert.equal(view.state.opened,false);
+  assert.deepEqual(calls,[[draftUrl,undefined]]);
+  assert.match(text(view.container),/Возможное совпадение · 1/);
+  assert.doesNotMatch(text(view.container),/CF-00042/);
+  const toggle=find(view.container,n=>n.tag==='button' && text(n)==='Открыть сверку');
+  await toggle.props.onClick();
+  await settle();
+  assert.match(text(view.container),/Test company · 0011 · UZS/);
+  assert.match(text(view.container),/CF-00042/);
+  assert.equal(find(view.container,n=>n.tag==='input' && n.props?.type==='file'),undefined);
+  assert.equal(find(view.container,n=>n.tag==='button' && text(n)==='Сверить с заявками'),undefined);
+  assert.deepEqual(calls,[[draftUrl,undefined]]);
+});
+
+test('an owner-only draft confirms its account with a read-only GET and no file transfer', async t => {
+  const calls=[];
+  const view=mount(component,{...props(async (url,options)=>{
+    calls.push([url,options]);
+    return url.includes('confirm_account=true') ? report() : {...report(),binding:'owner_only',requires_confirmation:true};
+  }),draft});
+  t.after(view.unmount);
+  await settle();
+  view.state.opened=true;
+  await settle();
+  assert.deepEqual(calls,[[draftUrl,undefined]]);
+  assert.doesNotMatch(text(view.container),/CF-00042|На конец в Cash Zuma/);
+  const confirm=find(view.container,n=>n.tag==='button' && text(n).includes('Подтвердить счёт и валюту'));
+  await confirm.props.onClick();
+  await settle();
+  assert.deepEqual(calls,[[draftUrl,undefined],[draftUrl+'&confirm_account=true',undefined]]);
+  assert.match(text(view.container),/CF-00042/);
+});
+
+test('a restricted draft read cannot show payment details or retry via another endpoint', async t => {
+  const calls=[];
+  const view=mount(component,{...props(async (url,options)=>{
+    calls.push([url,options]);
+    throw Object.assign(Error('Доступ к сверке ограничен'),{status:403});
+  }),draft});
+  t.after(view.unmount);
+  await settle();
+  assert.match(text(view.container),/Доступ к сверке ограничен/);
+  view.state.opened=true;
+  await settle();
+  assert.equal(view.state.data,null);
+  assert.doesNotMatch(text(view.container),/CF-00042|На конец в Cash Zuma|Подтверждено по выписке/);
+  assert.deepEqual(calls,[[draftUrl,undefined]]);
+});
+
+test('a draft outside the current company or available bank accounts never starts a comparison', async t => {
+  const calls=[];
+  const view=mount(component,{...props(async url=>{calls.push(url);return report();}),draft:{...draft,companyId:1}});
+  t.after(view.unmount);
+  await settle();
+  view.app._instance.props.draft={...draft,account:{...account,id:22}};
+  await settle();
+  view.app._instance.props.draft={...draft,account:{...account,currency:'USD'}};
+  await settle();
+  view.app._instance.props.accounts=[{...account,archived:true}];
+  view.app._instance.props.draft=draft;
+  await settle();
+  assert.equal(view.state.data,null);
+  assert.deepEqual(calls,[]);
+});
+
+test('old draft comparisons are discarded after file replacement, a company switch or withdrawal of the draft', async t => {
+  const pending=[];
+  const view=mount(component,{...props((url,options)=>new Promise(resolve=>pending.push({url,options,resolve}))),draft});
+  t.after(view.unmount);
+  await settle();
+  view.app._instance.props.draft={...draft,id:8,token:'b'};
+  await settle();
+  assert.deepEqual(pending.map(p=>p.url),[draftUrl,draftUrl.replace('/7?','/8?')]);
+  pending[0].resolve(report());
+  await settle();
+  assert.equal(view.state.data,null);
+  view.app._instance.props.companyId=3;
+  await settle();
+  pending[1].resolve(report());
+  await settle();
+  assert.equal(view.state.data,null);
+  assert.equal(pending.length,2);
+  view.app._instance.props.draft={...draft,companyId:3,id:8,token:'c'};
+  await settle();
+  assert.equal(pending.length,3);
+  view.app._instance.props.draft=null;
+  await settle();
+  pending[2].resolve(report());
+  await settle();
+  assert.equal(view.state.data,null);
+  assert.equal(pending.length,3);
+  assert.ok(pending.every(p=>p.options===undefined));
+});
+
 test('period comparison fetches saved sources only when opened, then reads the selected period on demand', async t => {
   const calls = [];
   const view = mount(component, props(async (url, opts) => {

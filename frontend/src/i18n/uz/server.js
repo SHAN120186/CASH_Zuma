@@ -641,7 +641,6 @@ export default {
   'Не удалось преобразовать Word в PDF. Проверьте шаблон документа.': 'Word faylini PDF ga aylantirib boʻlmadi. Hujjat shablonini tekshiring.',
   'Конвертер не создал корректный PDF допустимого размера.': 'Konvertor ruxsat etilgan hajmdagi toʻgʻri PDF yaratmadi.',
   'Конвертация Word заняла больше минуты. Уменьшите размер шаблона.': 'Word konvertatsiyasi bir daqiqadan koʻp vaqt oldi. Shablon hajmini kamaytiring.',
-  'Бизнес-план UZGERMED PHARM · исходная модель 36 месяцев': 'UZGERMED PHARM biznes-rejasi · 36 oylik manba model',
   // Parameters and indicators of the original model (label, unit, hint)
   'Курс доллара для проекта': 'Loyiha uchun dollar kursi',
   'Новый кредит на оборотный капитал': 'Aylanma kapital uchun yangi kredit',
@@ -868,6 +867,7 @@ const BUDGET_UZ = '$1 uchun modda byudjeti tasdiqlangan miqdordan $2 $3 ga oshib
 const anchored = source => new RegExp('^' + source + '$');
 
 export const patterns = [
+  [/^Бизнес-план (.+) · исходная модель 36 месяцев$/, '$1 biznes-rejasi · 36 oylik manba model'],
   [/^Недостаточно фактических средств на счёте «(.+)» на (\S+): (\S+) (\S+)\. Требуется (\S+) (\S+)\. Оплата не проведена\. Пополните счёт и повторите оплату; повторное согласование не требуется\.$/, '«$1» hisobida $2 holatiga haqiqiy mablagʻ yetarli emas: $3 $4. Talab qilinadi: $5 $6. Toʻlov amalga oshirilmadi. Hisobni toʻldirib, toʻlovni takrorlang; qayta tasdiqlash shart emas.'],
   [/^(.+) — базовая цена$/, '$1 — bazaviy narx'],
   [/^(.+) — базовая себестоимость$/, '$1 — bazaviy tannarx'],

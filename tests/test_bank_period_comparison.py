@@ -269,6 +269,78 @@ class PeriodComparisonTests(BankStatementTests):
         self.assertEqual((detail['request_id'], detail['date'], detail['document_number']), (rid, self.date, '42'))
         self.assertEqual(out['unmatched_payments'], [])
 
+    def test_uploaded_draft_compares_existing_parts_without_reupload_or_posting(self):
+        with unit(True) as s:
+            members = [self.payment_part(s, number, 30000) for number in ('842', '842/1')]
+        source = self.statement([self.bank_row('842')])
+        ident = self.preview(source).json()['id']
+        path = f'/api/bank-statements/period-sources/{ident}'
+        params = {'account_id': self.acc, 'currency': 'UZS', 'draft': 'true'}
+        before = self.counts()
+        owner, headers = self.payer
+        pending = owner.get(path, params=params, headers=headers)
+        self.assertEqual(pending.status_code, 200, pending.text)
+        self.assertTrue(pending.json()['requires_confirmation'])
+        self.assertEqual(pending.json()['rows'], [])
+        params['confirm_account'] = 'true'
+        result = owner.get(path, params=params, headers=headers)
+        self.assertEqual(result.status_code, 200, result.text)
+        self.assertEqual(result.json()['rows'][0]['payment_group']['request_ids'], members)
+        other, auth = self.make_user('accountant', 'other_draft_reader')
+        try:
+            self.assertEqual(other.get(path, params=params, headers=auth).status_code, 404)
+        finally:
+            other.close()
+        self.assertEqual(self.counts(), before)
+        with unit() as s:
+            self.assertEqual(s.get(BankStatementBatch, ident).status, 'preview')
+            self.assertIsNone(s.scalar(select(BankStatementLine).where(BankStatementLine.batch_id == ident)).ledger_id)
+
+    def test_explicit_draft_link_reads_a_distant_paid_fact_only_in_its_own_draft(self):
+        rid = self.approved()
+        with unit(True) as s:
+            req = s.get(PaymentRequest, rid)
+            req.status = 'paid'
+            payment_day = req.due_date + timedelta(days=45)
+            # Exclude a suggestion from the planned-date window as well.
+            req.due_date = payment_day
+            payment = Ledger(account_id=self.acc, category_id=self.cat, kind='out', amount=req.amount,
+                date=payment_day, reference='TREASURY-98', request_id=rid, creator_id=req.creator_id)
+            s.add(payment)
+            s.flush()
+            ledger_id, version = payment.id, req.version
+        source = self.statement([self.bank_row('1085')])
+        draft = self.preview(source).json()
+        sibling = self.preview(source).json()
+        self.assertNotEqual(draft['id'], sibling['id'])
+        client, headers = self.payer
+        params = {'account_id':self.acc, 'currency':'UZS', 'draft':'true', 'confirm_account':'true'}
+
+        def compare_draft(batch):
+            response = client.get(f"/api/bank-statements/period-sources/{batch['id']}", params=params, headers=headers)
+            self.assertEqual(response.status_code, 200, response.text)
+            return response.json()['rows'][0]
+
+        before = self.counts()
+        response = client.post(f"/api/bank-statements/lines/{draft['rows'][0]['id']}/match?draft=true", headers=headers,
+            json={'request_id':rid, 'request_version':version, 'payment_date':str(payment_day),
+                  'confirm':True, 'note':'Verified contract and bank receipt'})
+        self.assertEqual(response.status_code, 200, response.text)
+        matched = compare_draft(draft)
+        self.assertEqual((matched['status'], matched['request_ids']), ('matched', [rid]))
+        self.assertIn('в этом черновике', matched['reason'])
+        self.assertEqual(matched['request_details'][0]['date'], str(payment_day))
+        self.assertEqual(matched['request_details'][0]['document_number'], 'TREASURY-98')
+        self.assertNotEqual(compare_draft(sibling)['status'], 'matched')
+        self.assertNotEqual(self.compare(source).json()['rows'][0]['status'], 'matched')
+        self.assertEqual(self.counts(), before)
+        with unit(True) as s:
+            self.assertEqual(s.get(BankStatementBatch, draft['id']).status, 'preview')
+            paid = s.get(Ledger, ledger_id)
+            s.add(Ledger(account_id=self.acc, category_id=self.cat, kind='in', amount=paid.amount, date=paid.date,
+                reference='REV-EXPLICIT-DRAFT', reversal_of=paid.id, creator_id=paid.creator_id))
+        self.assertEqual(compare_draft(draft)['status'], 'candidate')
+
     def test_saved_statement_source_only_committed_and_active_links(self):
         rid = self.approved()
         self.assertEqual(self.ledger('600', 'out', reference='Internal', request_id=rid).status_code, 200)
