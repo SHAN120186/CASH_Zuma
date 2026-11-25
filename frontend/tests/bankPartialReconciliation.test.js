@@ -54,12 +54,83 @@ test('signed verified subset can be confirmed with unresolved rows while raw tot
  await view.state.resumeSaved({id:7,status:'preview',account});await settle();
  assert.match(text(view.container),/Поступления — всего за период выписки.*70 UZS/);assert.match(text(view.container),/Списано всего по выписке35 UZS/);
  assert.match(text(view.container),/Поступление будет проведено/);assert.match(text(view.container),/Комиссия будет проведена/);assert.match(text(view.container),/Проценты по кредиту будут проведены/);assert.match(text(view.container),/На проверку: 2/);assert.match(text(view.container),/Банковские комиссии \(выписки\)/);assert.match(text(view.container),/Проценты по кредитам \(выписки\)/);
- await view.state.commit();assert.equal(calls.filter(([url])=>url.endsWith('/commit')).length,0);
- view.state.confirmAccount=true;view.state.confirmCurrency=true;await settle();assert.equal(view.state.ready,true);await view.state.commit();await settle();
+ await view.state.confirmAndPost({target:{checked:false}});assert.equal(calls.filter(([url])=>url.endsWith('/commit')).length,0);
+ assert.equal(view.state.ready,true);await view.state.confirmAndPost({target:{checked:true}});await settle();
  assert.equal(changed,1);assert.equal(view.state.preview,null);assert.match(text(stateRow(view,'posted')),/Из них новые операции за это подтверждение430 UZS15 UZS/);assert.match(text(stateRow(view,'pending')),/240 UZS20 UZS/);
  assert.match(text(view.container),/Поступлений проведено: 1/);assert.match(text(view.container),/комиссий проведено: 1/);assert.match(text(view.container),/Процентов по кредитам проведено: 1/);assert.match(text(view.container),/полная сверка счёта не завершена/);
  assert.doesNotMatch(text(view.container),/Поступления, комиссии и прочие списания отложены|Выписка принята/);
- await view.state.commit();assert.equal(calls.filter(([url])=>url.endsWith('/commit')).length,1);assert.deepEqual(JSON.parse(calls.find(([url])=>url.endsWith('/commit'))[1].body),{confirm_account:true,confirm_currency:true,fee_category_id:null,preview_token:'partial-signed-7'});
+ await view.state.confirmAndPost({target:{checked:true}});assert.equal(calls.filter(([url])=>url.endsWith('/commit')).length,1);assert.deepEqual(JSON.parse(calls.find(([url])=>url.endsWith('/commit'))[1].body),{confirm_account:true,confirm_currency:true,fee_category_id:null,preview_token:'partial-signed-7'});
+});
+
+test('one check on a pending commit cannot post a signed preview twice',async t=>{
+ const calls=[];
+ let finishCommit;
+ const api=async(url,options={})=>{
+  calls.push([url,options]);
+  if(url.endsWith('/resume')) return preview;
+  if(url.endsWith('/commit')) return new Promise(resolve=>{finishCommit=resolve});
+  return url.endsWith('/settings')?{fee_category_id:null}:{items:[]};
+ };
+ const view=mount(bank,{api,companyId:1,accounts:[account],canImport:true,canPost:true});
+ t.after(view.unmount);
+ await settle();
+ await view.state.resumeSaved({id:7,status:'preview',account});
+ await settle();
+ const checkbox=find(view.container,node=>node.tag==='input'&&node.props?.type==='checkbox');
+ assert.ok(checkbox);
+ const first=checkbox.props.onChange({target:{checked:true}});
+ const repeat=checkbox.props.onChange({target:{checked:true}});
+ const commits=()=>calls.filter(([url])=>url.endsWith('/commit'));
+ assert.equal(commits().length,1);
+ finishCommit(result);
+ await Promise.all([first,repeat]);
+ await settle();
+ assert.equal(commits().length,1);
+ assert.equal(view.state.preview,null);
+});
+
+test('an unverified confirmation receipt cannot report success or submit the same command again',async t=>{
+ const calls=[];
+ let changes=0;
+ const api=async(url,options={})=>{
+  calls.push([url,options]);
+  if(url.endsWith('/resume')) return preview;
+  if(url.endsWith('/commit')) return {...result,id:8};
+  return url.endsWith('/settings')?{fee_category_id:null}:{items:[]};
+ };
+ const view=mount(bank,{api,companyId:1,accounts:[account],canImport:true,canPost:true,onChanged:()=>changes++});
+ t.after(view.unmount);
+ await settle();
+ await view.state.resumeSaved({id:7,status:'preview',account});
+ await view.state.confirmAndPost({target:{checked:true}});
+ await settle();
+ assert.equal(view.state.uncertain,true);
+ assert.equal(view.state.postingResult,null);
+ assert.equal(changes,0);
+ await view.state.confirmAndPost({target:{checked:true}});
+ assert.equal(calls.filter(([url])=>url.endsWith('/commit')).length,1);
+});
+
+test('absent, blocked or pending-only summaries leave the signed statement in draft',async t=>{
+ const calls=[];
+ let response;
+ const api=async(url,options={})=>{
+  calls.push([url,options]);
+  if(url.endsWith('/resume')) return response;
+  return url.endsWith('/settings')?{fee_category_id:null}:{items:[]};
+ };
+ const view=mount(bank,{api,companyId:1,accounts:[account],canImport:true,canPost:true});
+ t.after(view.unmount);
+ await settle();
+ for(const postingSummary of [undefined,{...summary,partial_allowed:false},{...summary,closing_matches:false},{...summary,ready:group(0,'0.00','0.00'),pending:group(6,'70.00','35.00')}]){
+  response={...preview,posting_summary:postingSummary};
+  await view.state.resumeSaved({id:7,status:'preview',account});
+  await settle();
+  assert.equal(view.state.ready,false);
+  await view.state.confirmAndPost({target:{checked:true}});
+  assert.equal(view.state.preview?.id,7);
+ }
+ assert.equal(calls.filter(([url])=>url.endsWith('/commit')).length,0);
 });
 
 test('server-blocked candidate rows are pending and a closing mismatch is explained instead of promised as posted',async t=>{

@@ -284,8 +284,8 @@ def _previous_fingerprints(s, batch):
     return Counter(fingerprints)
 
 
-def _validate_bank_binding(s, account, filename, source):
-    if filename.lower().endswith('.xlsx'):
+def _validate_bank_binding(s, account, filename, source, *, auto_selected=False):
+    if auto_selected or filename.lower().endswith('.xlsx'):
         check_statement_currency(account, source)
         confirmed_bank_binding(s, account, source['account_number'], source['owner_inn'])
     else:
@@ -661,15 +661,19 @@ def resume_preview(id: int, data: ReprocessInput, request: Request):
 
 
 @router.post('/api/bank-statements/preview')
-async def preview(request: Request, account_id: int, currency: str = Query(pattern=r'^(UZS|USD|EUR)$'),
+async def preview(request: Request, account_id: int | None = None,
+                  currency: str | None = Query(default=None, pattern=r'^(UZS|USD|EUR)$'),
                   fee_category_id: int | None = Query(default=None, ge=1)):
     with unit() as s:
         session_user(s, request, ('pay_bank', 'import'))
-        account = get(s, Account, account_id)
-        if account.kind != 'bank' or account.archived:
-            raise HTTPException(422, 'Выберите действующий банковский счёт.')
-        if account.currency != currency:
-            raise HTTPException(422, 'Выбранная валюта не совпадает с валютой счёта.')
+        if (account_id is None) != (currency is None):
+            raise HTTPException(422, 'Укажите банковский счёт и валюту вместе.')
+        if account_id is not None:
+            account = get(s, Account, account_id)
+            if account.kind != 'bank' or account.archived:
+                raise HTTPException(422, 'Выберите действующий банковский счёт.')
+            if account.currency != currency:
+                raise HTTPException(422, 'Выбранная валюта не совпадает с валютой счёта.')
     filename = unquote(request.headers.get('X-Filename', '')).replace('\\', '/').split('/')[-1].strip()
     if not filename or len(filename) > 220 or not filename.lower().endswith(('.xlsx', '.xls', '.html', '.htm')):
         raise HTTPException(422, 'Выберите банковскую выписку IABS в формате XLSX, XLS или HTML.')
@@ -681,10 +685,24 @@ async def preview(request: Request, account_id: int, currency: str = Query(patte
     digest = sha256(raw).hexdigest()
     with unit(True) as s:
         user, _ = session_user(s, request, ('pay_bank', 'import'))
-        account = get(s, Account, account_id)
-        if account.kind != 'bank' or account.archived or account.currency != currency:
-            raise HTTPException(409, 'Счёт изменился. Обновите страницу и проверьте выбранные данные.')
-        _validate_bank_binding(s, account, filename, source)
+        if account_id is None:
+            company_id = s.info['company_id']
+            bound_ids = select(BankStatementBatch.account_id).where(
+                BankStatementBatch.company_id == company_id,
+                BankStatementBatch.status == 'committed',
+                BankStatementBatch.account_number == source['account_number'])
+            accounts = s.scalars(select(Account).where(
+                Account.company_id == company_id, Account.kind == 'bank',
+                Account.archived.is_(False), Account.id.in_(bound_ids)).limit(2)).all()
+            if len(accounts) != 1:
+                raise HTTPException(409, 'Выберите банковский счёт для этой выписки.')
+            account = accounts[0]
+            currency = account.currency
+        else:
+            account = get(s, Account, account_id)
+            if account.kind != 'bank' or account.archived or account.currency != currency:
+                raise HTTPException(409, 'Счёт изменился. Обновите страницу и проверьте выбранные данные.')
+        _validate_bank_binding(s, account, filename, source, auto_selected=account_id is None)
         existing = s.scalar(select(BankStatementBatch).where(BankStatementBatch.account_id == account.id,
                                                              BankStatementBatch.sha256 == digest,
                                                              BankStatementBatch.status == 'committed'))

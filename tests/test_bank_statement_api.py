@@ -9,7 +9,7 @@ from tests.test_site import SiteTests
 from tests.test_bank_period_parser import raw, workbook
 from tests import test_bank_statement_parser as html_fixture
 from app.bank_statement_models import BankStatementBatch, BankStatementLine
-from app.db import PaymentRequest, Ledger, Account, Company, Setting, User, unit, engine
+from app.db import PaymentRequest, Ledger, Account, Company, CompanyUser, Setting, User, unit, engine
 from app.section_access import key
 
 
@@ -44,11 +44,13 @@ class BankStatementTests(SiteTests):
                 'correspondent_inn':inn,'purpose':'Оплата по договору', 'debit':amount, 'credit':'0.00',
                 'amount':amount,'direction':'out'}
 
-    def preview(self, source):
+    def preview(self, source, params=None):
         self.counter += 1
+        if params is None:
+            params = {'account_id': self.acc, 'currency': 'UZS'}
         with patch('app.bank_statement_api.parse_bank_statement', return_value=source):
             cl, headers = self.payer
-            return cl.post('/api/bank-statements/preview', params={'account_id':self.acc,'currency':'UZS'},
+            return cl.post('/api/bank-statements/preview', params=params,
                            content=f'synthetic-{self.counter}'.encode(), headers={**headers, 'X-Filename':'test.xls'})
 
     def commit(self, id, **kwargs):
@@ -156,6 +158,76 @@ class BankStatementTests(SiteTests):
         self.assertEqual(self.xlsx_upload(raw(book)).status_code, 409)
         with unit() as s:
             self.assertEqual(s.scalar(select(func.count()).select_from(BankStatementBatch)), 1)
+
+    def test_upload_without_account_reuses_only_a_committed_binding(self):
+        book = workbook()
+        book.active['A3'] = 'Счет: 20200000000000000001 Пример ИНН: 300000001'
+        client, headers = self.payer
+        upload = dict(content=raw(book), headers={**headers, 'X-Filename': 'example.xlsx'})
+        path = '/api/bank-statements/preview'
+        source = self.source()
+        draft = self.preview(source).json()
+        before = client.post(path, **upload)
+        self.assertEqual((before.status_code, before.json()['detail']),
+                         (409, 'Выберите банковский счёт для этой выписки.'))
+        self.assertEqual(self.commit(draft['id']).status_code, 200)
+        with unit() as s:
+            ledger_count = s.scalar(select(func.count()).select_from(Ledger))
+        found = client.post(path, **upload)
+        self.assertEqual(found.status_code, 200, found.text)
+        result = found.json()
+        self.assertEqual((result['status'], result['account']['id'], result['account']['currency']),
+                         ('preview', self.acc, 'UZS'))
+        self.assertEqual(client.post(path, **upload).json()['id'], result['id'])
+        with unit() as s:
+            self.assertEqual(s.scalar(select(func.count()).select_from(Ledger)), ledger_count)
+        with unit(True) as s:
+            s.get(Account, self.acc).archived = True
+        archived = client.post(path, **upload)
+        self.assertEqual((archived.status_code, archived.json()['detail']),
+                         (409, 'Выберите банковский счёт для этой выписки.'))
+
+    def test_auto_account_requires_current_company_and_matching_requisites(self):
+        source = self.source()
+        saved = self.preview(source).json()
+        self.assertEqual(self.commit(saved['id']).status_code, 200)
+        for params in ({'account_id': self.acc}, {'currency': 'UZS'}):
+            self.assertEqual(self.preview(source, params=params).status_code, 422)
+        for changed in ({'owner_inn': '300000009'}, {'currency': 'USD'}):
+            self.assertEqual(self.preview({**source, **changed}, params={}).status_code, 409)
+        wrong_number = self.preview({**source, 'account_number': '20200000000000000009'}, params={})
+        self.assertEqual((wrong_number.status_code, wrong_number.json()['detail']),
+                         (409, 'Выберите банковский счёт для этой выписки.'))
+
+        with unit(True) as s:
+            company_id = s.scalar(select(Company.id).where(Company.code == 'ZUMA'))
+            user_id = s.get(BankStatementBatch, saved['id']).created_by
+            s.delete(s.get(CompanyUser, (self.company, user_id)))
+            s.add(CompanyUser(company_id=company_id, user_id=user_id, role='accountant'))
+        client, headers = self.payer
+        with patch('app.bank_statement_api.parse_bank_statement', return_value=source):
+            foreign = client.post('/api/bank-statements/preview', content=b'cross-company',
+                                  headers={**headers, 'X-Company-ID': str(company_id), 'X-Filename': 'example.xls'})
+        self.assertEqual((foreign.status_code, foreign.json()['detail']),
+                         (409, 'Выберите банковский счёт для этой выписки.'))
+        with unit() as s:
+            self.assertEqual(s.scalar(select(func.count()).select_from(BankStatementBatch)), 1)
+
+    def test_ambiguous_legacy_binding_requires_account_choice(self):
+        source = self.source()
+        first = self.preview(source).json()
+        self.assertEqual(self.commit(first['id']).status_code, 200)
+        second_account = self.post('/api/accounts', {'name': 'Second test bank', 'kind': 'bank',
+            'currency': 'UZS', 'opening': '0', 'opening_date': self.date}).json()['id']
+        second = self.preview({**source, 'account_number': '20200000000000000009'}, params={
+            'account_id': second_account, 'currency': 'UZS'}).json()
+        self.assertEqual(self.commit(second['id']).status_code, 200)
+        with unit(True) as s:
+            # Reproduce inconsistent pre-existing history that the current manual import rejects.
+            s.get(BankStatementBatch, second['id']).account_number = source['account_number']
+        result = self.preview(source, params={})
+        self.assertEqual((result.status_code, result.json()['detail']),
+                         (409, 'Выберите банковский счёт для этой выписки.'))
 
     def test_unique_match_without_cf_and_no_preview_posting(self):
         rid = self.approved()

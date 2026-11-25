@@ -4,7 +4,7 @@ import {N_, tx} from '../i18n/index.js';
 import {formatCents, formatLongDate, toCents} from './format.js';
 import UncoveredBankPayments from './UncoveredBankPayments.vue';
 
-const props = defineProps({api:Function, companyId:Number, accounts:Array, currency:String, today:String, refresh:Number});
+const props = defineProps({api:Function, companyId:Number, accounts:Array, currency:String, today:String, refresh:Number, draft:Object});
 const emit = defineEmits(['open-request']);
 const opened = ref(false), accountId = ref(''), source = ref(''), file = ref(null);
 const saved = ref([]), sourcesLoading = ref(false), sourcesError = ref('');
@@ -99,6 +99,7 @@ watch([() => props.companyId, bankAccounts], ([company, accounts], previous) => 
   }
 }, {immediate:true});
 async function listSources() {
+  if (props.draft) return;
   const epoch = ++sourceEpoch;
   clearReport();
   saved.value = [];
@@ -131,20 +132,24 @@ function chooseFile(event) {
   file.value = event.target.files?.[0] || null;
 }
 async function compare(confirmAccount = false) {
-  if (!opened.value || !ready.value || loading.value) return;
+  const draft = props.draft;
+  if (draft ? (!account.value || draft.companyId !== props.companyId || draft.account?.id !== account.value.id)
+            : (!opened.value || !ready.value)) return;
+  if (loading.value) return;
   const params = query();
-  if (confirmAccount === true && source.value === 'file' && data.value?.requires_confirmation === true) {
+  if (draft) params.set('draft', 'true');
+  if (confirmAccount === true && (draft || source.value === 'file') && data.value?.requires_confirmation === true) {
     params.set('confirm_account', 'true');
   }
   clearReport();
   const epoch = reportEpoch;
   loading.value = true;
   try {
-    const result = source.value === 'file'
+    const result = !draft && source.value === 'file'
       ? await props.api('/api/bank-statements/compare-period?' + params, {
         method:'POST', headers:{'Content-Type':'application/octet-stream', 'X-Filename':encodeURIComponent(file.value.name)}, body:file.value,
       })
-      : await props.api('/api/bank-statements/period-sources/' + encodeURIComponent(source.value) + '?' + params);
+      : await props.api('/api/bank-statements/period-sources/' + encodeURIComponent(draft?.id || source.value) + '?' + params);
     if (epoch !== reportEpoch) return;
     if (String(result.account?.id) !== accountId.value || result.account.currency !== props.currency ||
         !result.statement || !Array.isArray(result.rows) || !Array.isArray(result.unmatched_payments)) throw Error(tx('Некорректный ответ сервера'));
@@ -155,14 +160,32 @@ async function compare(confirmAccount = false) {
     if (epoch === reportEpoch) loading.value = false;
   }
 }
+watch([() => props.draft, () => props.companyId, () => props.currency,
+       () => bankAccounts.value.some(a => a.id === props.draft?.account?.id)], ([draft, company, currency, available], previous) => {
+  if (!draft) {
+    if (previous?.[0]) listSources();
+    return;
+  }
+  sourceEpoch++;
+  clearReport();
+  if (!available || draft.companyId !== company || draft.account.currency !== currency) return;
+  accountId.value = String(draft.account.id);
+  compare();
+}, {immediate:true});
 </script>
 <template>
  <section class="card period">
   <div class="card-h"><h2>{{tx('Сверка с банком')}}</h2>
    <button type="button" class="secondary" :aria-expanded="opened" @click="opened=!opened">{{opened ? tx('Скрыть') : tx('Открыть сверку')}}</button>
   </div>
+  <p v-if="draft && !opened" class="card-b" role="status">
+   <span v-if="loading">{{tx('Загружаем данные…')}}</span>
+   <span v-else-if="error" class="error">{{tx(error)}}</span>
+   <span v-else-if="data?.requires_confirmation">{{tx('Проверьте владельца и номер счёта в выписке выше. Подтвердите выбранный счёт и валюту для сравнения с оплатами сайта.')}}</span>
+   <span v-else-if="data">{{tx('Подтверждено по выписке')}} · {{counts.matched || 0}} &nbsp; {{tx('Возможное совпадение')}} · {{counts.candidate || 0}}</span>
+  </p>
   <div v-if="opened" class="card-b">
-   <div class="controls">
+   <div v-if="!draft" class="controls">
     <label>{{tx('Банковский счёт')}}
      <select v-model="accountId"><option value="">{{tx('Выберите счёт')}}</option><option v-for="a in bankAccounts" :value="String(a.id)" :key="a.id">{{a.name}} · {{a.currency}}</option></select>
     </label>
@@ -253,7 +276,7 @@ async function compare(confirmAccount = false) {
     <button v-if="records.length>limit" type="button" class="secondary more" @click="limit+=30">{{tx('Показать ещё')}}</button>
     </template>
    </template>
-   <UncoveredBankPayments v-if="account" :key="`${companyId}-${account.id}-${currency}`" :api="api" :account="account" :today="today" :refresh="refresh" @open-request="emit('open-request',$event)"/>
+   <UncoveredBankPayments v-if="account && !draft" :key="`${companyId}-${account.id}-${currency}`" :api="api" :account="account" :today="today" :refresh="refresh" @open-request="emit('open-request',$event)"/>
   </div>
  </section>
 </template>

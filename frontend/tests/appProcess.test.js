@@ -1,5 +1,6 @@
 import {test} from 'node:test';
 import assert from 'node:assert/strict';
+import {readyPostingSummary} from './helpers/bankPreview.js';
 import {compileComponent,mount,settle,find,text,all} from './helpers/mountVue.js';
 import {lang,setLang} from '../src/i18n/index.js';
 
@@ -749,7 +750,8 @@ test('accepted saved statement clears cached Cash Flow before returning to the s
  const app=await compileComponent(new URL('../src/App.vue',import.meta.url),{'./OperationProgress.vue':progressComponent,'./PeriodFilter.vue':periodComponent,'./BankStatements.vue':bankStatementsComponent,'./CashFlowReport.vue':reportComponent});
  const accountant={...user,role:'accountant',company_role:'accountant',permissions:['view','ledger','pay_bank','export']};
  const account={id:21,name:'Synthetic bank',kind:'bank',currency:'UZS'};
- const preview={id:7,status:'preview',preview_token:'saved-synthetic',full_reconciliation:true,account,
+ const postingSummary=readyPostingSummary({credit:'30.00',debit:'0.00',opening:'100.00',closing:'130.00',count:1});
+ const preview={opening_matches:true,posting_summary:postingSummary,id:7,status:'preview',preview_token:'saved-synthetic',full_reconciliation:true,account,
   statement:{account_number:'SYNTHETIC',ready:true,balance_matches:true,declared_totals_match:true,credit_total:'30.00',debit_total:'0.00',opening_balance:'100.00',closing_balance:'130.00',period_from:'2026-10-10',period_to:'2026-10-10'},rows:[]};
  const report=(label,amount)=>{const zero=()=>Array(12).fill('0.00'),empty=()=>Array(12).fill(null),values=zero();values[9]=amount;return {
   company_id:2,currency:'UZS',year:2026,scenario:'A',as_of:'2026-10-10',notes:{},
@@ -761,7 +763,7 @@ test('accepted saved statement clears cached Cash Flow before returning to the s
    if(url==='/api/bootstrap')return {ok:true,status:200,json:async()=>({...bootstrapBody(accountant),accounts:[account]})};
    if(url==='/api/bank-statements/settings')return {ok:true,status:200,json:async()=>({fee_category_id:null})};
    if(url.endsWith('/resume'))return {ok:true,status:200,json:async()=>preview};
-   if(url.endsWith('/commit'))return {ok:true,status:200,json:async()=>({auto_paid:0,linked_paid:0,review:0,auto_income:1,full_reconciliation:true})};
+   if(url.endsWith('/commit'))return {ok:true,status:200,json:async()=>({id:7,status:'committed',auto_paid:0,linked_paid:0,review:0,auto_income:1,full_reconciliation:true})};
    if(url.startsWith('/api/report?'))return waiting.promise;
    return {ok:true,status:200,json:async()=>({items:[],total:0})};
   },app);
@@ -769,7 +771,7 @@ test('accepted saved statement clears cached Cash Flow before returning to the s
   assert.match(text(view.container),/STALE-SYNTHETIC-FACT/);
   await view.state.go('ledger');await settle();
   const child=mountedComponent(view.app._instance.subTree,bankStatementsComponent);assert.ok(child);
-  await child.setupState.resumeSaved({id:7,status:'preview',account});child.setupState.confirmAccount=true;child.setupState.confirmCurrency=true;await settle();await child.setupState.commit();await settle();
+  await child.setupState.resumeSaved({id:7,status:'preview',account});await settle();await child.setupState.confirmAndPost({target:{checked:true}});await settle();
   const opening=view.state.go('report');await settle();
   assert.equal(mountedComponent(view.app._instance.subTree,reportComponent),null);assert.doesNotMatch(text(view.container),/STALE-SYNTHETIC-FACT/);
   waiting.resolve(fail?{ok:false,status:503,json:async()=>({detail:'Synthetic report unavailable'})}:{ok:true,status:200,json:async()=>report('FRESH-SYNTHETIC-FACT','40.00')});

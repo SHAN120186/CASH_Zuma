@@ -30,10 +30,10 @@ const props = defineProps({
   canViewCashFlow: {type: Boolean, default: false},
   canViewHistory: {type: Boolean, default: false},
 });
-const emit = defineEmits(['changed','cash-flow']);
+const emit = defineEmits(['changed','cash-flow','draft-change']);
 const canLinkExisting = computed(() => props.canReview || props.canLinkExistingBankFacts);
 const accountId = ref(''), currency = ref(''), preview = ref(null), busy = ref(false), error = ref(''), notice = ref('');
-const confirmAccount = ref(false), confirmCurrency = ref(false), reviews = ref([]), reviewError = ref('');
+const reviews = ref([]), reviewError = ref('');
 const reviewActions = ref({}), matchActions = ref({}), duplicateActions = ref({}), transferActions = ref({}), reviewBusy = ref(null);
 const feeCategoryId = ref(''), unallocated = ref([]), allocationActions = ref({}), allocationBusy = ref(null), allocationError = ref(''), allocationLoaded = ref(false);
 const outgoingUnallocated = ref([]), outgoingActions = ref({}), outgoingBusy = ref(null), outgoingError = ref(''), outgoingLoaded = ref(false);
@@ -41,9 +41,13 @@ const oldBatches = ref([]), oldBatchesLoaded = ref(false), selectedOldBatch = re
 const adminBatches = ref([]), adminLoaded = ref(false), adminBusy = ref(false), adminError = ref(''), adminNotice = ref('');
 const deleteBatchId = ref(null), deletePreview = ref(null), deleteReason = ref(''), deleteConfirmed = ref(false), deleteUncertain = ref(false);
 const feeSettingsError = ref('');
-const reviewsLoaded = ref(false), uncertain = ref(false), fileInput = ref(null);
+const reviewsLoaded = ref(false), uncertain = ref(false), fileInput = ref(null), pendingFile = ref(null);
 const savedRefresh = ref(0);
 const postingResult = ref(null), reprocessResult = ref(null);
+watch(() => [preview.value, preview.value?.preview_token], () => {
+  const draft = preview.value;
+  emit('draft-change', draft ? {id:draft.id, account:draft.account, companyId:props.companyId, token:draft.preview_token} : null);
+}, {flush:'sync'});
 const bankAccounts = computed(() => props.accounts.filter(a => a.kind === 'bank' && !a.archived));
 const unreconciledAccounts = computed(() => bankAccounts.value.filter(a => Number(a.unreconciled_statements || 0) > 0));
 const account = computed(() => bankAccounts.value.find(a => String(a.id) === String(accountId.value)));
@@ -70,8 +74,20 @@ const reprocessActionLabel = computed(() => {
 });
 const feeId = () => feeCategoryId.value ? Number(feeCategoryId.value) : null;
 const count = status => rows.value.filter(row => row.status === status).length;
-const ready = computed(() => !!preview.value && preview.value.status === 'preview' && !!preview.value.id && !!preview.value.preview_token && typeof preview.value.full_reconciliation === 'boolean' && !!preview.value.statement?.account_number && validSelection.value && confirmAccount.value && confirmCurrency.value
-  && preview.value.statement?.ready === true && preview.value.statement?.balance_matches === true && preview.value.statement?.declared_totals_match !== false && !uncertain.value);
+const postingSummary = computed(() => preview.value?.posting_summary);
+const hasSummaryCounts = computed(() => ['ready','linked','pending'].every(key => {
+  const count = postingSummary.value?.[key]?.count;
+  return Number.isInteger(count) && count >= 0;
+}));
+const ready = computed(() => {
+  const draft = preview.value, summary = postingSummary.value;
+  if (!props.canImport || !props.canPost || uncertain.value || !validSelection.value || !hasSummaryCounts.value || summary.partial_allowed !== true) return false;
+  if (draft.opening_matches === false || summary.closing_matches === false) return false;
+  return draft.status === 'preview' && !!draft.id && !!draft.preview_token && typeof draft.full_reconciliation === 'boolean'
+    && String(draft.account?.id) === String(accountId.value) && draft.account?.currency === currency.value && !!draft.statement?.account_number
+    && draft.statement.ready === true && draft.statement.balance_matches === true && draft.statement.declared_totals_match !== false
+    && (summary.ready.count > 0 || summary.linked.count > 0 || draft.full_reconciliation);
+});
 const money = (value, cur = currency.value) => formatCents(toCents(value), cur || 'UZS');
 const labels = Object.freeze({
   auto_pay_candidate: N_('Точное совпадение с заявкой'),
@@ -130,7 +146,8 @@ let adminGeneration = 0, resumeGeneration = 0, applyingResumeSelection = false, 
 
 function invalidate() {
   generation += 1;
-  preview.value = null; confirmAccount.value = false; confirmCurrency.value = false;
+  preview.value = null;
+  pendingFile.value = null;
   postingResult.value = null;
   error.value = ''; notice.value = ''; uncertain.value = false; busy.value = false;
 }
@@ -138,15 +155,25 @@ function categoryRulesChanged(){
   invalidate();savedRefresh.value+=1;reprocessGeneration+=1;reprocessBusy.value=false;reprocessPreview.value=null;reprocessResult.value=null;reprocessError.value='';reprocessNotice.value='';
   notice.value=tx('Правила статей обновлены. Откройте проверку выписки заново перед подтверждением.');
 }
-watch(() => [accountId.value, currency.value, feeCategoryId.value], () => { if (!applyingResumeSelection) invalidate(); reprocessGeneration += 1; reprocessBusy.value = false; reprocessPreview.value = null; reprocessResult.value = null; reprocessError.value = ''; reprocessNotice.value = ''; });
+watch(() => [accountId.value, currency.value, feeCategoryId.value], () => {
+  if (!applyingResumeSelection) {
+    const savedAccount = preview.value?.account;
+    const lost = savedAccount && !bankAccounts.value.some(a => String(a.id) === String(savedAccount.id) && a.currency === savedAccount.currency);
+    invalidate();
+    if (lost) {
+      resumeGeneration += 1;
+      error.value = tx('Счёт сохранённой выписки недоступен. Обновите список счетов и проверьте доступ.');
+    }
+  }
+  reprocessGeneration += 1; reprocessBusy.value = false; reprocessPreview.value = null; reprocessResult.value = null; reprocessError.value = ''; reprocessNotice.value = '';
+});
 watch(() => props.companyId, () => { resumeGeneration += 1; invalidate(); reviewGeneration += 1; reviewOperation += 1; allocationGeneration += 1; allocationOperation += 1; outgoingGeneration += 1; outgoingOperation += 1; batchGeneration += 1; settingsGeneration += 1; reprocessGeneration += 1; feeTouched = false; feeSettingsError.value = ''; reviewBusy.value = allocationBusy.value = outgoingBusy.value = null; reprocessBusy.value = false; reviewActions.value = {}; matchActions.value = {}; duplicateActions.value = {}; transferActions.value = {}; allocationActions.value = {}; outgoingActions.value = {}; accountId.value = currency.value = feeCategoryId.value = selectedOldBatch.value = ''; reviews.value = []; unallocated.value = []; outgoingUnallocated.value = []; oldBatches.value = []; reprocessPreview.value = null; reviewsLoaded.value = allocationLoaded.value = outgoingLoaded.value = oldBatchesLoaded.value = false; loadReviews(); loadUnallocated(); loadUnallocatedOutgoing(); loadOldBatches(); feeSettingsPending = loadFeeSettings(); });
 watch(() => props.canImport, () => {resumeGeneration += 1; invalidate();});
+watch([() => props.companyId, bankAccounts], () => {
+  if (!account.value) accountId.value = bankAccounts.value.length === 1 ? String(bankAccounts.value[0].id) : '';
+}, {immediate:true});
+watch(account, selected => { currency.value = selected?.currency || ''; }, {immediate:true, flush:'sync'});
 watch(canLinkExisting, () => {existingLinkGeneration += 1; duplicateActions.value = {}; transferActions.value = {};});
-watch(() => [account.value?.id, account.value?.currency], () => {
-  if (preview.value && (!validSelection.value || String(preview.value.account?.id)!==String(accountId.value) || preview.value.account?.currency!==currency.value)) {
-    resumeGeneration += 1; invalidate(); error.value = tx('Счёт сохранённой выписки недоступен. Обновите список счетов и проверьте доступ.');
-  }
-});
 // Permissions may change without remounting the component. Discard any signed
 // preview as soon as access changes, and reload eligible batches when restored.
 watch(() => props.canPost, allowed => {
@@ -379,7 +406,6 @@ async function matchRequest(row, draft = false) {
       if (preview.value?.rows.includes(row)) {
         Object.assign(row, result, {classification: 'paid:' + result.payment_date, reason: ''});
         preview.value.preview_token = null;
-        confirmAccount.value = confirmCurrency.value = false;
         notice.value = tx('Связь сохранена. Перед проведением откройте черновик заново.');
       }
       return;
@@ -489,11 +515,11 @@ async function resumeSaved(item) {
     });
     if (!inScope() || current !== generation) return;
     if (result?.id !== item.id || result.status !== 'preview' || !result.preview_token || !Array.isArray(result.rows) || !result.statement || typeof result.full_reconciliation !== 'boolean' || String(result.account?.id) !== String(accountId.value) || result.account?.currency !== currency.value || !validSelection.value) throw Object.assign(new Error(tx('Не удалось проверить сохранённую выписку. Обновите список и откройте проверку снова.')), {safeMessage:true});
-    preview.value = result; confirmAccount.value = false; confirmCurrency.value = false; uncertain.value = false;
+    preview.value = result; uncertain.value = false;
     notice.value = tx('Сохранённая проверка открыта. Сверка обновлена; проверьте счёт и валюту перед подтверждением.');
   } catch (e) {
     if (!inScope() || (current !== undefined && current !== generation)) return;
-    preview.value = null; confirmAccount.value = false; confirmCurrency.value = false;
+    preview.value = null;
     savedRefresh.value += 1;
     if ([403,404,409].includes(e.status)) {
       error.value = e.message ? tx(e.message) : tx('Сохранённая проверка недоступна. Обновите список; подтверждённую выписку откройте в истории.');
@@ -509,36 +535,71 @@ async function refreshUncertain() {
   await resumeSaved({id: preview.value.id, status: 'preview', account: preview.value.account});
 }
 
-async function upload(event) {
+function upload(event) {
   const file = event.target.files?.[0];
   event.target.value = '';
-  if (!file || busy.value || reprocessBusy.value || !props.canImport || !validSelection.value) return;
-  feeTouched = true;
+  if (file) return prepareUpload(file, bankAccounts.value.length === 1 ? accountId.value : '');
+}
+
+async function selectUploadAccount(event) {
+  const file = pendingFile.value, company = props.companyId;
+  accountId.value = event.target.value;
+  await nextTick();
+  if (file && company === props.companyId && validSelection.value) await prepareUpload(file, accountId.value);
+}
+
+async function prepareUpload(file, selectedId) {
+  if (busy.value || reprocessBusy.value || !props.canImport || !bankAccounts.value.length || (selectedId && !validSelection.value)) return;
   invalidate();
-  const current = generation;
   if (!/\.(xlsx?|html?)$/i.test(file.name) || !file.size) {
     error.value = tx('Выберите непустую банковскую выписку IABS в формате XLSX, XLS или HTML.');
     return;
   }
+  const company = props.companyId, operation = ++resumeGeneration, selectedCurrency = currency.value;
+  let current;
   busy.value = true;
   try {
-    const params = new URLSearchParams({account_id: String(accountId.value), currency: currency.value});
+    // Include the company's saved commission category even on an immediate upload.
+    await feeSettingsPending;
+    await nextTick();
+    if (operation !== resumeGeneration || props.companyId !== company || !props.canImport || !bankAccounts.value.length) return;
+    if (selectedId && (!validSelection.value || accountId.value !== selectedId || currency.value !== selectedCurrency)) return;
+    feeTouched = true;
+    current = generation;
+    busy.value = true;
+    const params = new URLSearchParams();
+    if (selectedId) {params.set('account_id', selectedId); params.set('currency', currency.value);}
     if (feeId() !== null) params.set('fee_category_id', String(feeId()));
-    const result = await props.api(`/api/bank-statements/preview?${params}`, {
+    const result = await props.api(`/api/bank-statements/preview${params.size ? '?' + params : ''}`, {
       method: 'POST', headers: {'Content-Type': 'application/octet-stream', 'X-Filename': encodeURIComponent(file.name)}, body: file,
     });
-    if (current !== generation) return;
-    if (String(result.account?.id) !== String(accountId.value) || result.account?.currency !== currency.value) {
+    if (operation !== resumeGeneration || current !== generation) return;
+    if (!result?.id || result.status !== 'preview' || !result.statement || !Array.isArray(result.rows)) throw new Error(N_('Некорректный ответ сервера'));
+    const matched = bankAccounts.value.find(a => String(a.id) === String(result.account?.id));
+    if (!matched || matched.currency !== result.account?.currency || (selectedId && selectedId !== String(matched.id))) {
       throw new Error(N_('Выбранный счёт или валюта изменились. Загрузите выписку снова.'));
+    }
+    if (!selectedId) {
+      applyingResumeSelection = true;
+      try {
+        accountId.value = String(matched.id);
+        await nextTick();
+      } finally {applyingResumeSelection = false;}
+      if (operation !== resumeGeneration || current !== generation) return;
     }
     preview.value = result;
     savedRefresh.value += 1;
-  } catch (e) {if (current === generation) error.value = tx(e.message);}
-  finally {if (current === generation) busy.value = false;}
+  } catch (e) {
+    if (operation !== resumeGeneration || (current !== undefined && current !== generation)) return;
+    if (!selectedId && e.status === 409 && e.message === N_('Выберите банковский счёт для этой выписки.')) pendingFile.value = file;
+    else error.value = tx(e.message);
+  }
+  finally {if (operation === resumeGeneration && (current === undefined || current === generation)) busy.value = false;}
 }
 
-async function commit() {
-  if (!ready.value || busy.value || !props.canImport) return;
+async function confirmAndPost(event) {
+  const checkbox = event?.target;
+  if (checkbox?.checked !== true || !ready.value || busy.value || reprocessBusy.value || reviewBusy.value !== null) return;
   const current = generation, id = preview.value.id;
   busy.value = true; error.value = ''; notice.value = '';
   try {
@@ -547,7 +608,8 @@ async function commit() {
       body: JSON.stringify({confirm_account: true, confirm_currency: true, fee_category_id: feeId(), preview_token: preview.value.preview_token}),
     });
     if (current !== generation) return;
-    preview.value = null; confirmAccount.value = false; confirmCurrency.value = false;
+    if (result?.id !== id || result.status !== 'committed' || typeof result.full_reconciliation !== 'boolean') throw new Error();
+    preview.value = null;
     savedRefresh.value += 1;
     postingResult.value = {...result, currency:currency.value};
     notice.value = tx('Подтверждение выписки завершено. Автоматически оплачено: {paid}; связано с оплатой: {linked}; требуется проверка: {review}.',
@@ -568,10 +630,13 @@ async function commit() {
         uncertain.value = true;
         savedRefresh.value += 1;
         error.value = tx('Ответ о загрузке не получен. Обновите данные и проверьте результат перед повторной загрузкой.');
-      } else if (e.status === 409) {preview.value = null; confirmAccount.value = false; confirmCurrency.value = false; savedRefresh.value += 1; error.value = tx('Данные изменились. Откройте сохранённую выписку и проверьте её снова.');}
+      } else if (e.status === 409) {preview.value = null; savedRefresh.value += 1; error.value = tx('Данные изменились. Откройте сохранённую выписку и проверьте её снова.');}
       else error.value = tx(e.message);
     }
-  } finally {if (current === generation) busy.value = false;}
+  } finally {
+    checkbox.checked = false;
+    if (current === generation) busy.value = false;
+  }
 }
 </script>
 
@@ -579,61 +644,28 @@ async function commit() {
   <section class="card bank-statements" aria-labelledby="bank-statements-title">
     <div class="card-h"><h2 id="bank-statements-title">{{tx('Банковские выписки')}}</h2></div>
     <div class="card-b">
-      <p class="sub">{{tx('Выберите счёт и валюту, затем загрузите выписку IABS в формате XLSX, XLS или HTML.')}}</p>
-      <details class="bank-help">
-        <summary>{{tx('Как работает сверка')}}</summary>
-        <p class="sub">{{tx('Загрузите выписку и проверьте счёт. После подтверждения совпадения обрабатываются с учётом прав и проверок; спорные операции попадут бухгалтеру.')}}</p>
-        <p class="sub">{{tx('Автоматически сопоставляется только единственная заявка с теми же счётом, суммой, ИНН и плановой датой оплаты.')}}</p>
-        <p class="sub">{{tx('Внешние поступления и списания без определённой статьи относятся к «Не распределено». Возможные собственные переводы, неясные комиссии, заявки и повторы остаются на проверке.')}}</p>
-        <p class="sub">{{tx('Банковские комиссии и проценты по кредитам показаны отдельно. Неоднозначные удержания остаются на проверке.')}}</p>
-        <p class="sub">{{tx('Классификация помогает проверить выписку и сама по себе не создаёт операцию. Проведённые суммы учитываются в остатке и Cash Flow.')}}</p>
-        <p v-if="canAllocate" class="sub">{{tx('Поступления уже проведены. Выберите статью и укажите основание, чтобы распределить их в Cash Flow без повторной операции.')}}</p>
-        <p v-if="canAllocate" class="sub">{{tx('Списания уже проведены. До назначения статьи они не учитываются в её бюджете. После назначения изменится фактическое использование бюджета. При превышении жёсткого лимита сначала пересмотрите бюджет; для мягкого лимита укажите обоснование. Повторной операции не будет.')}}</p>
-        <p v-if="canPost" class="sub">{{tx('Проверьте ранее загруженную выписку заново. До подтверждения операции и остатки не изменятся.')}}</p>
-      </details>
-      <BankStatementCategoryRules :api="api" :company-id="companyId" :categories="categories" :can-view="canImport||canReview||canPost||canAllocate||canViewHistory" :can-manage="canManageFee" :disabled="busy||reprocessBusy||reviewBusy!==null" @changed="categoryRulesChanged"/>
-      <details v-if="canDeleteStatements" class="review-list">
-        <summary>{{tx('Удаление выписки администратором')}}</summary>
-        <p class="sub">{{tx('Удаление отменяет операции, созданные этой выпиской, и их влияние на остатки и отчёты. Ранее существовавшие связанные операции сохраняются.')}}</p>
-        <p class="sub">{{tx('Оплаченные заявки и подтверждённые поступления вернутся к предыдущему состоянию, если их оплата была создана этой выпиской. История действий сохраняется.')}}</p>
-        <button type="button" class="secondary tiny" :disabled="adminBusy" @click="loadAdminBatches">{{tx('Обновить список выписок')}}</button>
-        <p v-if="adminError" class="error" role="alert">{{tx(adminError)}}</p><p v-if="adminNotice" role="status">{{adminNotice}}</p>
-        <p v-if="adminLoaded && !adminBatches.length" class="sub">{{tx('Загруженных выписок нет.')}}</p>
-        <div v-if="adminBatches.length" class="table-scroll"><table><thead><tr><th>{{tx('Выписка')}}</th><th>{{tx('Счёт')}}</th><th>{{tx('Период')}}</th><th>{{tx('Операции')}}</th><th></th></tr></thead><tbody>
-          <tr v-for="batch in adminBatches" :key="batch.id"><td>{{batch.filename}}<small v-if="batch.status === 'preview'">{{tx('Предпросмотр')}}</small><small v-else-if="batch.status === 'committed'">{{tx('Подтверждена')}}</small></td><td>{{batch.account_name}} · {{batch.currency}}</td><td>{{formatShortDate(batch.period_from)}} – {{formatShortDate(batch.period_to)}}</td><td>{{tx('Создано выпиской: {n}',{n:batch.operation_count})}}<small>{{tx('Ранее существовало: {n}',{n:batch.linked_count})}}</small></td><td><button type="button" class="secondary tiny" :disabled="adminBusy || deleteUncertain" @click="selectDeleteBatch(batch)">{{tx('Удалить выписку')}}</button></td></tr>
-        </tbody></table></div>
-        <div v-if="deleteBatchId !== null" class="review-actions">
-          <p><b>{{tx('Подтвердите удаление выписки')}}</b>: {{deletePreview?.filename}} · {{deletePreview?.account_name}} · {{deletePreview?.currency}} · {{formatShortDate(deletePreview?.period_from)}} – {{formatShortDate(deletePreview?.period_to)}}</p>
-          <p>{{tx('Создано выпиской: {n}',{n:deletePreview?.operation_count})}} · {{tx('Ранее существовало: {n}',{n:deletePreview?.linked_count})}}</p>
-          <p class="sub">{{tx('Операции, созданные этой выпиской, будут отменены. Действие может быть отклонено, если нарушатся остатки или есть зависимые операции.')}}</p>
-          <label>{{tx('Причина удаления (не менее 10 символов)')}}<input v-model="deleteReason" :disabled="adminBusy || deleteUncertain"></label>
-          <label><input v-model="deleteConfirmed" type="checkbox" :disabled="adminBusy || deleteUncertain"> {{tx('Подтверждаю удаление выписки и отмену созданных ею операций.')}}</label>
-          <div class="form-actions"><button type="button" class="secondary" :disabled="adminBusy" @click="deleteBatchId = null">{{tx('Отмена')}}</button><button type="button" class="danger" :disabled="adminBusy || deleteUncertain || !deleteConfirmed || deleteReason.trim().length < 10" @click="deleteStatement">{{tx('Удалить выписку и отменить операции')}}</button></div>
-        </div>
-      </details>
-      <div v-if="(canReview || canPost || canImport) && unreconciledAccounts.length" class="error" role="alert">
-        <p>{{tx('Ручная оплата заявок с этих счетов временно недоступна до сверки выписок. Исправления операций и точные оплаты по выписке остаются доступны при наличии прав.')}}</p>
-        <ul><li v-for="a in unreconciledAccounts" :key="a.id">{{a.name}} · {{a.currency}} — {{tx('Несверенных выписок: {n}',{n:a.unreconciled_statements})}}</li></ul>
-      </div>
       <div v-if="canImport" class="bank-fields">
-        <label>{{tx('Банковский счёт')}}<select v-model="accountId" :disabled="busy || reprocessBusy"><option value="">{{tx('Выберите счёт')}}</option><option v-for="a in bankAccounts" :key="a.id" :value="String(a.id)">{{a.name}} · {{a.currency}}</option></select></label>
-        <label>{{tx('Валюта выписки')}}<select v-model="currency" :disabled="busy || reprocessBusy"><option value="">{{tx('Выберите валюту')}}</option><option v-for="c in ['UZS','USD','EUR']" :key="c" :value="c">{{c}}</option></select></label>
-        <button type="button" class="secondary" :disabled="busy || reprocessBusy || !validSelection" @click="fileInput?.click()">{{tx('Загрузить выписку')}}</button>
-        <input ref="fileInput" hidden type="file" accept=".xlsx,.xls,.html,.htm" :disabled="busy || reprocessBusy || !validSelection" @change="upload">
+        <button type="button" :disabled="busy || reprocessBusy || !bankAccounts.length" @click="fileInput?.click()">{{tx('Загрузить выписку')}}</button>
+        <input ref="fileInput" hidden type="file" accept=".xlsx,.xls,.html,.htm" :disabled="busy || reprocessBusy || !bankAccounts.length" @change="upload">
+        <span v-if="bankAccounts.length === 1" class="sub">{{account?.name}} · {{account?.currency}}</span>
       </div>
-      <label v-if="canImport || canPost" class="bank-category">{{tx('Статья банковских комиссий')}}<select v-model="feeCategoryId" :disabled="busy || reprocessBusy" @change="feeTouched = true; feeSettingsError = ''"><option value="">{{tx('Автоматический выбор статьи комиссии')}}</option><option v-for="c in feeCategories" :key="c.id" :value="String(c.id)">{{c.name}}</option></select></label>
-      <p v-if="canPost && !canManageFee" class="sub">{{tx('Выбор статьи комиссии не меняет общую настройку компании.')}}</p>
-      <p v-if="feeSettingsError" class="error" role="alert">{{feeSettingsError}}</p>
-      <SavedBankStatements :api="api" :company-id="companyId" :can-resume="canImport" :busy="busy || reprocessBusy" :refresh-key="savedRefresh" @resume="resumeSaved"/>
-      <p v-if="canImport && !canPost" class="sub">{{tx('Для проведения поступлений и комиссий требуется право записи операций.')}}</p>
-      <p v-if="account && currency && !validSelection" class="error" role="alert">{{tx('Валюта выписки должна совпадать с валютой выбранного счёта.')}}</p>
+      <p v-if="canImport && !bankAccounts.length" class="sub">{{tx('Для загрузки выписки нужен действующий банковский счёт.')}}</p>
+      <p v-else-if="canImport && !preview && !postingResult && !pendingFile" class="sub">{{tx('Загрузите файл XLSX, XLS или HTML. Сайт рассчитает остатки и сверит платежи с заявками.')}}</p>
+      <div v-if="pendingFile" class="bank-fields">
+        <label>{{tx('Выберите банковский счёт для этой выписки.')}}<select :value="''" :disabled="busy || reprocessBusy" @change="selectUploadAccount"><option value="" disabled>{{tx('Выберите счёт')}}</option><option v-for="a in bankAccounts" :key="a.id" :value="String(a.id)">{{a.name}} · {{a.currency}}</option></select></label>
+        <span>{{pendingFile.name}}</span>
+      </div>
       <p v-if="busy" role="status">{{tx('Обрабатываем выписку…')}}</p>
-      <p v-if="error" class="error" role="alert">{{error}}</p><p v-if="notice" role="status">{{notice}}</p>
+      <p v-if="error" class="error" role="alert">{{error}}</p><p v-if="notice && !postingResult" role="status">{{notice}}</p>
       <button v-if="uncertain && canImport" type="button" class="secondary tiny" :disabled="busy || reprocessBusy" @click="refreshUncertain">{{tx('Обновить состояние выписки')}}</button>
-      <BankStatementPostingSummary v-if="postingResult" :summary="postingResult.posting_summary" :currency="postingResult.currency" :result="true" :full-reconciliation="postingResult.full_reconciliation"/>
-
+      <template v-if="postingResult">
+        <p v-if="postingResult.posting_summary?.posted?.count > 0" role="status">{{tx('Проверенные строки обработаны. Новые операции отражены в остатке и Cash Flow.')}}</p>
+        <p v-else-if="postingResult.posting_summary?.posted?.count === 0" role="status">{{tx('Сверка сохранена. Новых операций за это подтверждение нет.')}}</p>
+        <p v-else role="status">{{tx('Сверка сохранена.')}}</p>
+        <BankStatementPostingSummary :summary="postingResult.posting_summary" :currency="postingResult.currency" :result="true" :full-reconciliation="postingResult.full_reconciliation"/>
+        <details class="bank-help"><summary>{{tx('Подробности проведения')}}</summary><p>{{notice}}</p></details>
+      </template>
       <div v-if="preview" class="bank-preview">
-        <BankStatementIncome :statement="preview.statement" :rows="rows" :currency="currency"/>
         <h3>{{tx('Проверка выписки')}}</h3>
         <p>{{tx('Счёт в файле')}}: <b>{{preview.statement.account_number}}</b> · {{tx('Счёт на сайте')}}: <b>{{preview.account.name}} · {{preview.account.currency}}</b></p>
         <p>{{tx('Владелец счёта')}}: {{preview.statement.owner_name || '—'}} · {{tx('ИНН')}}: {{preview.statement.owner_inn || '—'}}</p>
@@ -644,13 +676,23 @@ async function commit() {
           <div><span>{{tx('Списания по выписке')}}</span><b>{{money(preview.statement.debit_total)}} {{currency}}</b></div>
           <div><span>{{tx('Остаток на конец')}}</span><b>{{money(preview.statement.closing_balance)}} {{currency}}</b></div>
         </div>
+        <p v-if="hasSummaryCounts">{{tx('К проведению: {ready}. Уже учтено: {linked}. На проверку: {pending}.',{ready:postingSummary.ready.count,linked:postingSummary.linked.count,pending:postingSummary.pending.count})}}</p>
+        <label v-if="ready" class="confirm"><input type="checkbox" :disabled="busy || reprocessBusy || reviewBusy !== null" @change="confirmAndPost"> {{tx('Подтверждаю счёт {account} ({currency}) и провожу проверенные строки.',{account:preview.account.name,currency})}}</label>
+        <p v-if="ready" class="sub">{{tx('Галочка сразу проводит проверенные строки. Спорные строки останутся бухгалтеру.')}}</p>
+        <p v-else-if="canPost && !uncertain && hasSummaryCounts && postingSummary.ready.count === 0 && postingSummary.linked.count === 0 && postingSummary.pending.count > 0" class="sub">{{tx('Черновик сохранён. Откройте подробности сверки и проверьте спорные строки.')}}</p>
+        <p v-else-if="canPost && !uncertain" class="sub">{{tx('Черновик сохранён. Для проведения нужна повторная проверка.')}}</p>
+        <p v-if="preview.opening_matches === false" class="error" role="alert">{{tx('Начальный остаток не совпадает: на сайте {amount} {currency}. Готовность каждой строки показана ниже; счёт остаётся несверенным.',{amount:preview.site_opening == null ? '—' : money(preview.site_opening),currency})}}</p>
+        <p v-if="postingSummary?.blocking_reason" class="error" role="alert">{{tx(postingSummary.blocking_reason)}}</p>
+        <p v-if="preview.statement.ready !== true || preview.statement.balance_matches !== true || preview.statement.declared_totals_match === false" class="error" role="alert">{{tx('Остатки или обороты выписки не подтверждены. Исправьте файл до загрузки.')}}</p>
+        <slot name="comparison"/>
+        <details class="bank-help">
+        <summary>{{tx('Подробности сверки')}}</summary>
+        <BankStatementIncome :statement="preview.statement" :rows="rows" :currency="currency"/>
         <p v-if="preview.opening_matches === true" class="good-text">{{tx('Начальный остаток выписки совпадает с остатком на сайте: {amount} {currency}.',{amount:money(preview.site_opening),currency})}}</p>
-        <p v-else-if="preview.opening_matches === false" class="error" role="alert">{{tx('Начальный остаток не совпадает: на сайте {amount} {currency}. Готовность каждой строки показана ниже; счёт остаётся несверенным.',{amount:preview.site_opening == null ? '—' : money(preview.site_opening),currency})}}</p>
         <p v-if="preview.statement.ready === true && preview.statement.balance_matches === true && preview.statement.declared_totals_match !== false" class="good-text">{{tx('Баланс выписки сходится.')}}</p>
-        <p v-else class="error" role="alert">{{tx('Остатки или обороты выписки не подтверждены. Исправьте файл до загрузки.')}}</p>
         <p v-if="preview.full_reconciliation === true" class="good-text">{{tx('Все строки готовы к полной сверке. Результат будет перепроверен при подтверждении.')}}</p>
-        <p v-else-if="preview.full_reconciliation === false" class="error" role="alert">{{tx('После подтверждения сервер проведёт доступные проверенные строки. Спорные строки останутся на проверке; счёт останется несверенным.')}}</p>
-        <p v-else class="error" role="alert">{{tx('Сервер не подтвердил полную сверку. Загрузите выписку заново.')}}</p>
+        <p v-else-if="preview.full_reconciliation === false && ready" class="sub">{{tx('После подтверждения сервер проведёт доступные проверенные строки. Спорные строки останутся на проверке; счёт останется несверенным.')}}</p>
+        <p v-else-if="typeof preview.full_reconciliation !== 'boolean'" class="error" role="alert">{{tx('Сервер не подтвердил полную сверку. Загрузите выписку заново.')}}</p>
         <p>{{tx('Точных совпадений с заявками: {n}',{n:count('auto_pay_candidate')})}} · {{tx('Уже оплачено на сайте: {n}',{n:count('paid_match')})}} · {{tx('На проверку: {n}',{n:reviewCount(rows,preview.full_reconciliation)})}}</p>
         <BankStatementPostingSummary :summary="preview.posting_summary" :currency="currency" :full-reconciliation="preview.full_reconciliation"/>
         <BankStatementExpenses :statement="preview.statement" :rows="rows" :currency="currency"/>
@@ -674,15 +716,59 @@ async function commit() {
             </div></td></tr>
         </tbody></table></div>
         </details>
-        <label class="confirm"><input v-model="confirmAccount" type="checkbox" :disabled="busy"> {{tx('Подтверждаю: номер счёта в выписке относится к выбранному счёту на сайте.')}}</label>
-        <label class="confirm"><input v-model="confirmCurrency" type="checkbox" :disabled="busy"> {{tx('Подтверждаю валюту выписки: {currency}',{currency})}}</label>
         <p class="sub">{{tx('После подтверждения заявка оплачивается автоматически только при наличии права оплаты и успешном прохождении проверок. В остальных случаях строка останется бухгалтеру на проверку.')}}</p>
         <p class="sub">{{tx('Каждая проверенная строка проводится с учётом прав, остатков и отсутствия повторов. Спорные строки не становятся фактом.')}}</p>
-        <div class="form-actions"><button type="button" class="secondary" :disabled="busy" @click="invalidate">{{tx('Отмена')}}</button><button type="button" :disabled="busy || !ready" @click="commit">{{tx('Подтвердить выписку')}}</button></div>
+        </details>
       </div>
 
-      <div class="review-list">
-        <h3>{{tx('Операции для проверки бухгалтера')}}</h3>
+      <details v-if="!preview" class="bank-help">
+        <summary>{{tx('Как работает сверка')}}</summary>
+        <p class="sub">{{tx('Загрузите выписку и проверьте счёт. После подтверждения совпадения обрабатываются с учётом прав и проверок; спорные операции попадут бухгалтеру.')}}</p>
+        <p class="sub">{{tx('Автоматически сопоставляется только единственная заявка с теми же счётом, суммой, ИНН и плановой датой оплаты.')}}</p>
+        <p class="sub">{{tx('Внешние поступления и списания без определённой статьи относятся к «Не распределено». Возможные собственные переводы, неясные комиссии, заявки и повторы остаются на проверке.')}}</p>
+        <p class="sub">{{tx('Банковские комиссии и проценты по кредитам показаны отдельно. Неоднозначные удержания остаются на проверке.')}}</p>
+        <p class="sub">{{tx('Классификация помогает проверить выписку и сама по себе не создаёт операцию. Проведённые суммы учитываются в остатке и Cash Flow.')}}</p>
+        <p v-if="canAllocate" class="sub">{{tx('Поступления уже проведены. Выберите статью и укажите основание, чтобы распределить их в Cash Flow без повторной операции.')}}</p>
+        <p v-if="canAllocate" class="sub">{{tx('Списания уже проведены. До назначения статьи они не учитываются в её бюджете. После назначения изменится фактическое использование бюджета. При превышении жёсткого лимита сначала пересмотрите бюджет; для мягкого лимита укажите обоснование. Повторной операции не будет.')}}</p>
+        <p v-if="canPost" class="sub">{{tx('Проверьте ранее загруженную выписку заново. До подтверждения операции и остатки не изменятся.')}}</p>
+      </details>
+      <details class="bank-help">
+        <summary>{{tx('Настройки и управление выписками')}}</summary>
+      <BankStatementCategoryRules :api="api" :company-id="companyId" :categories="categories" :can-view="canImport||canReview||canPost||canAllocate||canViewHistory" :can-manage="canManageFee" :disabled="busy||reprocessBusy||reviewBusy!==null" @changed="categoryRulesChanged"/>
+      <details v-if="canDeleteStatements" class="review-list">
+        <summary>{{tx('Удаление выписки администратором')}}</summary>
+        <p class="sub">{{tx('Удаление отменяет операции, созданные этой выпиской, и их влияние на остатки и отчёты. Ранее существовавшие связанные операции сохраняются.')}}</p>
+        <p class="sub">{{tx('Оплаченные заявки и подтверждённые поступления вернутся к предыдущему состоянию, если их оплата была создана этой выпиской. История действий сохраняется.')}}</p>
+        <button type="button" class="secondary tiny" :disabled="adminBusy" @click="loadAdminBatches">{{tx('Обновить список выписок')}}</button>
+        <p v-if="adminError" class="error" role="alert">{{tx(adminError)}}</p><p v-if="adminNotice" role="status">{{adminNotice}}</p>
+        <p v-if="adminLoaded && !adminBatches.length" class="sub">{{tx('Загруженных выписок нет.')}}</p>
+        <div v-if="adminBatches.length" class="table-scroll"><table><thead><tr><th>{{tx('Выписка')}}</th><th>{{tx('Счёт')}}</th><th>{{tx('Период')}}</th><th>{{tx('Операции')}}</th><th></th></tr></thead><tbody>
+          <tr v-for="batch in adminBatches" :key="batch.id"><td>{{batch.filename}}<small v-if="batch.status === 'preview'">{{tx('Предпросмотр')}}</small><small v-else-if="batch.status === 'committed'">{{tx('Подтверждена')}}</small></td><td>{{batch.account_name}} · {{batch.currency}}</td><td>{{formatShortDate(batch.period_from)}} – {{formatShortDate(batch.period_to)}}</td><td>{{tx('Создано выпиской: {n}',{n:batch.operation_count})}}<small>{{tx('Ранее существовало: {n}',{n:batch.linked_count})}}</small></td><td><button type="button" class="secondary tiny" :disabled="adminBusy || deleteUncertain" @click="selectDeleteBatch(batch)">{{tx('Удалить выписку')}}</button></td></tr>
+        </tbody></table></div>
+        <div v-if="deleteBatchId !== null" class="review-actions">
+          <p><b>{{tx('Подтвердите удаление выписки')}}</b>: {{deletePreview?.filename}} · {{deletePreview?.account_name}} · {{deletePreview?.currency}} · {{formatShortDate(deletePreview?.period_from)}} – {{formatShortDate(deletePreview?.period_to)}}</p>
+          <p>{{tx('Создано выпиской: {n}',{n:deletePreview?.operation_count})}} · {{tx('Ранее существовало: {n}',{n:deletePreview?.linked_count})}}</p>
+          <p class="sub">{{tx('Операции, созданные этой выпиской, будут отменены. Действие может быть отклонено, если нарушатся остатки или есть зависимые операции.')}}</p>
+          <label>{{tx('Причина удаления (не менее 10 символов)')}}<input v-model="deleteReason" :disabled="adminBusy || deleteUncertain"></label>
+          <label><input v-model="deleteConfirmed" type="checkbox" :disabled="adminBusy || deleteUncertain"> {{tx('Подтверждаю удаление выписки и отмену созданных ею операций.')}}</label>
+          <div class="form-actions"><button type="button" class="secondary" :disabled="adminBusy" @click="deleteBatchId = null">{{tx('Отмена')}}</button><button type="button" class="danger" :disabled="adminBusy || deleteUncertain || !deleteConfirmed || deleteReason.trim().length < 10" @click="deleteStatement">{{tx('Удалить выписку и отменить операции')}}</button></div>
+        </div>
+      </details>
+      <label v-if="canImport || canPost" class="bank-category">{{tx('Статья банковских комиссий')}}<select v-model="feeCategoryId" :disabled="busy || reprocessBusy" @change="feeTouched = true; feeSettingsError = ''"><option value="">{{tx('Автоматический выбор статьи комиссии')}}</option><option v-for="c in feeCategories" :key="c.id" :value="String(c.id)">{{c.name}}</option></select></label>
+      <p v-if="canPost && !canManageFee" class="sub">{{tx('Выбор статьи комиссии не меняет общую настройку компании.')}}</p>
+      </details>
+      <p v-if="feeSettingsError" class="error" role="alert">{{feeSettingsError}}</p>
+      <div v-if="(canReview || canPost || canImport) && unreconciledAccounts.length" class="error" role="alert">
+        <p>{{tx('Ручная оплата заявок с этих счетов временно недоступна до сверки выписок. Исправления операций и точные оплаты по выписке остаются доступны при наличии прав.')}}</p>
+        <ul><li v-for="a in unreconciledAccounts" :key="a.id">{{a.name}} · {{a.currency}} — {{tx('Несверенных выписок: {n}',{n:a.unreconciled_statements})}}</li></ul>
+      </div>
+      <SavedBankStatements :api="api" :company-id="companyId" :can-resume="canImport" :busy="busy || reprocessBusy" :refresh-key="savedRefresh" @resume="resumeSaved"/>
+      <p v-if="canImport && !canPost" class="sub">{{tx('Для проведения поступлений и комиссий требуется право записи операций.')}}</p>
+      <p v-if="account && currency && !validSelection" class="error" role="alert">{{tx('Валюта выписки должна совпадать с валютой выбранного счёта.')}}</p>
+
+      <details class="review-list">
+        <summary>{{tx('Операции для проверки бухгалтера')}}<span v-if="reviewsLoaded"> ({{reviews.length}})</span></summary>
+        <div>
         <p v-if="canLinkExistingBankFacts && !canReview" class="sub">{{tx('Администратор может связать повтор или перевод с уже проведённой операцией. Новая оплата не создаётся.')}}</p>
         <button v-if="canLinkExisting" type="button" class="secondary tiny" :disabled="reviewBusy !== null" @click="loadReviews">{{tx('Обновить список')}}</button>
         <p v-if="reviewError" class="error" role="alert">{{tx(reviewError)}}</p>
@@ -769,9 +855,10 @@ async function commit() {
         </tbody></table></div>
       </div>
 
+      </details>
       <BankStatementHistory :api="api" :company-id="companyId" :can-view="canViewHistory || canImport || canReview" :can-view-cash-flow="canViewCashFlow" :can-apply-rules="canPost" :refresh-key="savedRefresh" @cash-flow="emit('cash-flow',$event)" @changed="refreshResolution(true,N_('Статьи банковских операций обновлены. Данные выписки и отчётов обновляются.'))"/>
-      <div v-if="canPost" class="review-list">
-        <h3>{{tx('Повторная проверка загруженной выписки')}}</h3>
+      <details v-if="canPost" class="review-list">
+        <summary>{{tx('Повторная проверка загруженной выписки')}}</summary>
         <p v-if="oldBatchesLoaded && !oldBatches.length" class="sub">{{tx('Выписок со строками для повторной проверки нет.')}}</p>
         <div class="bank-fields"><label>{{tx('Выберите выписку')}}<select v-model="selectedOldBatch" :disabled="busy || reprocessBusy"><option value="">{{tx('Выберите выписку')}}</option><option v-for="batch in oldBatches" :key="batch.id" :value="String(batch.id)">{{batch.account_name}} · {{batch.currency}} · {{formatShortDate(batch.period_from)}} – {{formatShortDate(batch.period_to)}} · {{batch.filename}}</option></select></label><button type="button" class="secondary" :disabled="!selectedOldBatch || busy || reprocessBusy" @click="previewOldBatch">{{tx('Проверить выписку')}}</button></div>
         <p v-if="reprocessError" class="error" role="alert">{{tx(reprocessError)}}</p><p v-if="reprocessNotice" role="status">{{reprocessNotice}}</p>
@@ -788,12 +875,15 @@ async function commit() {
           <button type="button" :disabled="busy || reprocessBusy || !reprocessPreview.preview_token || !reprocessHasWork" @click="commitOldBatch">{{tx('Подтвердить повторную обработку')}}</button>
         </div>
         <BankStatementPostingSummary v-if="reprocessResult" :summary="reprocessResult.posting_summary" :currency="reprocessResult.currency" :result="true" :full-reconciliation="reprocessResult.full_reconciliation"/>
-      </div>
+      </details>
     </div>
   </section>
 </template>
 
 <style scoped>
 .bank-help{margin:8px 0 12px}.bank-help summary{cursor:pointer;font-weight:600;font-size:13px}.bank-help p{max-width:85ch}
+.review-list>summary{cursor:pointer;font-weight:600}
+.bank-preview label.confirm{display:flex;align-items:center;gap:12px;padding:14px;border:1px solid var(--line,#dce0e8);border-radius:8px;font-weight:600;cursor:pointer}
+.confirm input[type=checkbox]{flex:0 0 auto;width:20px;height:20px}
 .bank-statements{margin:16px 0}.bank-fields{display:flex;gap:12px;flex-wrap:wrap;align-items:end}.bank-fields label,.bank-category{display:grid;gap:4px;min-width:170px}.bank-category{max-width:420px;margin-top:12px}.bank-preview,.review-list{margin-top:20px}.bank-summary{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:10px}.bank-summary div{display:grid;gap:4px;padding:10px;background:#f5f6fb;border-radius:8px}.bank-summary b{font-variant-numeric:tabular-nums}.good-text{color:#167145}.confirm{display:block;margin:10px 0}.table-scroll td{max-width:340px;white-space:normal;overflow-wrap:anywhere}.table-scroll small{display:block}.form-actions{margin-top:12px}.review-actions{display:grid;gap:7px;margin-top:8px;min-width:200px}.review-actions label{display:grid;gap:3px}
 </style>

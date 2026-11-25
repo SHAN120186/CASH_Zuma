@@ -90,6 +90,9 @@ def _active_requests(s, user, account, source, start, end):
     outgoing = [row for row in source['rows'] if row['direction'] == 'out']
     amounts = {_minor(row['amount']) for row in outgoing}
     references = {rid for row in outgoing for rid in _request_references(row)}
+    # Saved sources can explicitly link a payment outside the date window even
+    # when the bank and treasury use entirely different document numbers.
+    references.update(row['request_id'] for row in outgoing if row.get('request_id'))
     documents = {row['document_number'] for row in outgoing}
     criteria = [Ledger.date.between(first, last), Ledger.request_id.in_(references), Ledger.reference.in_(documents)]
     base_numbers = {doc for doc in documents if re.fullmatch(r'[0-9]+', doc) and doc.strip('0')}
@@ -116,13 +119,17 @@ def _active_requests(s, user, account, source, start, end):
     return requests, facts
 
 
-def _stored_evidence(s, account, source, start, end, part_ledgers):
+def _stored_evidence(s, account, source, start, end, relevant_ledgers, draft_id):
     relevant = BankStatementLine.date.between(start, end)
-    if part_ledgers:
-        relevant = or_(relevant, BankStatementLine.ledger_id.in_(part_ledgers))
+    if relevant_ledgers:
+        relevant = or_(relevant, BankStatementLine.ledger_id.in_(relevant_ledgers))
+    scope = BankStatementBatch.status == 'committed'
+    if draft_id is not None:
+        scope = or_(scope, (BankStatementBatch.status == 'preview') & (BankStatementBatch.id == draft_id)
+                    & (BankStatementLine.status == 'manual_match') & BankStatementLine.classification.like('paid:%'))
     lines = list(s.scalars(select(BankStatementLine).join(BankStatementBatch,
         BankStatementBatch.id == BankStatementLine.batch_id).where(
-        BankStatementBatch.status == 'committed',
+        scope,
         BankStatementBatch.account_number == source['account_number'], BankStatementBatch.owner_inn == source['owner_inn'],
         BankStatementLine.account_id == account.id, relevant)))
     active = accounted_line_ids(s, lines, account) if lines else set()
@@ -197,7 +204,7 @@ def _eligible_parts(row, members, requests, facts, order_counts, claimed, cf_ids
     return parts
 
 
-def _comparison_rows(source, requests, facts, evidence, parts_by_order):
+def _comparison_rows(source, requests, facts, evidence, parts_by_order, draft_id):
     by_payee, by_name, by_document = _indexes(requests, facts)
     request_contracts = {rid: _contract_number(req.purpose) for rid, req in requests.items()}
     stored, active_lines, claimed_ledgers = evidence
@@ -242,9 +249,12 @@ def _comparison_rows(source, requests, facts, evidence, parts_by_order):
             proven = old[0] if (len(old) == 1 and source['ready'] and not duplicate
                 and old[0].id in active_lines and not old[0].uncertain and old[0].include_in_daily) else None
             if (proven and proven.status in REQUEST_PAID_BANK_STATUSES and proven.request_id in facts
-                    and facts[proven.request_id].id == proven.ledger_id):
-                status, reason, related = 'matched', 'Связь с действующей оплатой сохранена в подтверждённой выписке.', {proven.request_id}
-            elif proven and proven.request_id is None:
+                    and facts[proven.request_id].id == proven.ledger_id and requests[proven.request_id].amount == amount
+                    and (proven.batch_id != draft_id or proven.classification == f'paid:{facts[proven.request_id].date}')):
+                status, related = 'matched', {proven.request_id}
+                reason = ('Связь с действующей оплатой сохранена в этом черновике.' if proven.batch_id == draft_id else
+                          'Связь с действующей оплатой сохранена в подтверждённой выписке.')
+            elif proven and proven.batch_id != draft_id and proven.request_id is None:
                 if proven.classification == 'bank_fee' or proven.status in ('auto_fee_posted', 'fee_matched'):
                     status, reason = 'fee', 'Комиссия учтена отдельной банковской операцией.'
                 else:
@@ -323,14 +333,15 @@ def _comparison_rows(source, requests, facts, evidence, parts_by_order):
     return rows, matched, possible
 
 
-def _report(s, user, account, source, binding):
+def _report(s, user, account, source, binding, draft_id=None):
     stamp = revision(s)
     start, end = (date.fromisoformat(source[key]) for key in ('period_from', 'period_to'))
     requests, facts = _active_requests(s, user, account, source, start, end)
     parts = _numbered_parts(source, facts)
-    part_ledgers = {facts[rid].id for members in parts.values() for rid in members}
-    evidence = _stored_evidence(s, account, source, start, end, part_ledgers)
-    rows, matched, possible = _comparison_rows(source, requests, facts, evidence, parts)
+    relevant_ledgers = {facts[rid].id for members in parts.values() for rid in members}
+    relevant_ledgers.update(row['ledger_id'] for row in source['rows'] if row.get('ledger_id'))
+    evidence = _stored_evidence(s, account, source, start, end, relevant_ledgers, draft_id)
+    rows, matched, possible = _comparison_rows(source, requests, facts, evidence, parts, draft_id)
     unmatched = [{'request_id': rid, 'document_number': fact.reference, 'amount': money(fact.amount),
                   'date': str(fact.date), 'counterparty': requests[rid].counterparty,
                   'status': 'candidate' if rid in possible else 'app_only'}
@@ -362,18 +373,36 @@ def saved_sources(request: Request, account_id: int, currency: str = currency_pa
         return {'items': [dict(row._mapping) for row in items]}
 
 
+def _confirm_owner_only(account, source, binding, confirm_account):
+    if binding == 'owner_only' and not confirm_account:
+        return {'requires_confirmation': True, 'binding': binding,
+                'account': {'id': account.id, 'name': account.name, 'currency': account.currency},
+                'statement': {k: v for k, v in source.items() if k != 'rows'},
+                'rows': [], 'unmatched_payments': []}
+
+
 @router.get('/period-sources/{id}')
-def compare_saved(id: int, request: Request, account_id: int, currency: str = currency_param):
+def compare_saved(id: int, request: Request, account_id: int, currency: str = currency_param,
+                  draft: bool = False, confirm_account: bool = False):
     with unit() as s:
         user, account = _context(s, request, account_id, currency)
         batch = get(s, BankStatementBatch, id)
-        if batch.account_id != account.id or batch.status != 'committed' or batch.currency != account.currency:
+        if batch.account_id != account.id or batch.currency != account.currency:
+            raise HTTPException(404, 'Запись не найдена.')
+        if draft:
+            if batch.status != 'preview' or (batch.created_by != user.id and user.role != 'admin'):
+                raise HTTPException(404, 'Запись не найдена.')
+        elif batch.status != 'committed':
             raise HTTPException(404, 'Подтверждённая выписка для этого счёта не найдена.')
         source = _statement(batch)
         check_statement_currency(account, source)
+        binding = _binding(s, account, source) if draft else 'confirmed'
+        confirmation = _confirm_owner_only(account, source, binding, confirm_account)
+        if confirmation:
+            return confirmation
         source['rows'] = [_line_data(line) for line in s.scalars(select(BankStatementLine).where(
             BankStatementLine.batch_id == batch.id).order_by(BankStatementLine.line))]
-        return _report(s, user, account, source, 'confirmed')
+        return _report(s, user, account, source, binding, draft_id=batch.id if draft else None)
 
 
 @router.post('/compare-period')
@@ -392,9 +421,7 @@ async def compare_file(request: Request, account_id: int, currency: str = curren
         user, account = _context(s, request, account_id, currency)
         check_statement_currency(account, source)
         binding = _binding(s, account, source)
-        if binding == 'owner_only' and not confirm_account:
-            return {'requires_confirmation': True, 'binding': binding,
-                    'account': {'id': account.id, 'name': account.name, 'currency': account.currency},
-                    'statement': {k: v for k, v in source.items() if k != 'rows'},
-                    'rows': [], 'unmatched_payments': []}
+        confirmation = _confirm_owner_only(account, source, binding, confirm_account)
+        if confirmation:
+            return confirmation
         return _report(s, user, account, source, binding)
