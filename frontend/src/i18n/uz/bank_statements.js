@@ -605,7 +605,6 @@ export default {
   'Подтвердите связь строки с переводом.': 'Satrni o‘tkazma bilan bog‘lashni tasdiqlang.',
   'Перевод изменился, отменён или уже связан с этой стороной счёта.': 'O‘tkazma o‘zgargan, bekor qilingan yoki hisobning shu tomoni bilan allaqachon bog‘langan.',
   'Данные изменились. Проверьте перевод заново.': 'Maʼlumotlar o‘zgardi. O‘tkazmani qayta tekshiring.',
-  'Есть несверенные выписки: {n}. Ручная оплата заявок с этого счёта временно недоступна до сверки.': 'Solishtirilmagan ko‘chirmalar: {n}. Solishtirish tugaguncha bu hisobdan arizalarni qo‘lda to‘lash vaqtincha mavjud emas.',
   'Ручная оплата заявок приостановлена. Сверьте выписку, чтобы снова оплачивать заявки с этого счёта.': 'Arizalarni qo‘lda to‘lash to‘xtatildi. Ushbu hisobdan to‘lovni davom ettirish uchun bank ko‘chirmasini solishtiring.',
   'Несверенных выписок: {n}': 'Solishtirilmagan ko‘chirmalar: {n}',
   'Счёт ожидает сверки банковской выписки. Сверьте выписку перед новой оплатой заявки.': 'Hisob bank ko‘chirmasi bilan solishtirilishini kutmoqda. Arizani qayta to‘lashdan oldin ko‘chirmani solishtiring.',

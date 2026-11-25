@@ -673,7 +673,10 @@ onMounted(async()=>{const epoch=companyEpoch;try{const r=await api('/api/me');if
      <div class="acc-grid"><section v-for="a in visibleRows" :key="a.id" class="card ac-card" :class="{arch:a.archived}">
       <div class="ac-top"><span class="ic"><AppIcon :name="a.kind==='bank'?'accounts':'cash'"/></span><div><b>{{a.name}}</b><small>{{accountKindLabel(a.kind)}}{{a.allow_overdraft?' · '+tx('овердрафт разрешён'):''}}</small></div><span class="pill" :class="a.archived?'warn':'fact'">{{a.archived?tx('Архив')+' · ':''}}{{a.currency}}</span></div>
       <div class="ac-l">{{tx('Текущий остаток')}}</div><div class="ac-v num" :title="moneyTitle(a.balance,a.currency)">{{moneyShort(a.balance,a.currency)}}<small>{{a.currency}}</small></div><div class="ac-x num">{{money(a.balance)}} {{a.currency}}</div>
-      <div v-if="!isSales && has('ledger') && (has('pay_bank') || has('write') || has('import')) && unreconciledAccountCount(a)>0" class="error" role="alert">{{tx('Есть несверенные выписки: {n}. Ручная оплата заявок с этого счёта временно недоступна до сверки.',{n:unreconciledAccountCount(a)})}}</div>
+      <div v-if="!isSales && has('ledger') && (has('pay_bank') || has('write') || has('import')) && unreconciledAccountCount(a)>0" class="error" role="alert"><p>{{tx('Ручная оплата заявок приостановлена. Сверьте выписку, чтобы снова оплачивать заявки с этого счёта.')}}</p>
+        <p>{{tx('Несверенных выписок: {n}',{n:unreconciledAccountCount(a)})}}</p>
+        <button type="button" class="secondary tiny" @click="go('ledger')">{{tx('Перейти к операциям')}}</button>
+      </div>
       <div class="ac-o"><span>{{tx('Начальный остаток на {date}',{date:a.opening_date})}}</span><b class="num">{{money(a.opening)}} {{a.currency}}</b></div>
       <div class="ac-b"><button v-if="has('write')&&!a.archived&&a.kind!=='transit'" class="secondary tiny" @click="account(a)"><AppIcon name="edit"/> {{tx('Изменить')}}</button><button v-if="has('users')&&has('write')&&a.kind!=='transit'" class="secondary tiny" @click="archiveAccount(a)"><AppIcon :name="a.archived?'restore':'archive'"/> {{a.archived?tx('Восстановить'):tx('В архив')}}</button></div>
      </section></div>
