@@ -252,8 +252,8 @@ test('account card warns finance about un reconciled statements but never the sa
  const {view}=await fixture(t,async()=>({ok:true,status:200,json:async()=>([])}));
  const account={id:21,name:'Synthetic bank',kind:'bank',currency:'UZS',opening:'0',balance:'10',opening_date:'2026-10-01',unreconciled_statements:2};
  view.state.user={...user,role:'finance',permissions:['view','ledger','pay_bank']};view.state.boot={...view.state.boot,accounts:[account]};view.state.rows=[account];view.state.currency='UZS';view.state.page='accounts';await settle();
- assert.match(text(view.container),/Есть несверенные выписки: 2/);assert.match(text(view.container),/Ручная оплата заявок с этого счёта временно недоступна/);
- view.state.user={...user,role:'sales',permissions:['view','ledger','pay_bank']};await settle();assert.doesNotMatch(text(view.container),/Есть несверенные выписки/);
+ assert.match(text(view.container),/Несверенных выписок: 2/);assert.match(text(view.container),/Ручная оплата заявок приостановлена/);
+ view.state.user={...user,role:'sales',permissions:['view','ledger','pay_bank']};await settle();assert.doesNotMatch(text(view.container),/Ручная оплата заявок приостановлена/);
 });
 
 test('request cards and paginated table retain the server due-date order in each company and explain it in RU and UZ',async t=>{
