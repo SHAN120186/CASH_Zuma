@@ -143,7 +143,7 @@ test('repeat processing uses signed readiness and reports only its new result wi
  const calls=[];const api=apiFor(calls,async url=>url==='/api/bank-statements/reprocess/batches'?{items:[{id:7,account_name:account.name,currency:'UZS',filename:'synthetic.xls',period_from:source.period_from,period_to:source.period_to}]}:url.endsWith('/reprocess/preview')?{...preview,batch_id:7,preview_token:'reprocess-partial'}:url.endsWith('/reprocess/commit')?{...result,posted:4,linked:0,review:2}:{items:[]});
  const view=mount(bank,{api,companyId:1,accounts:[account],canPost:true,canReview:true});t.after(view.unmount);await settle();view.state.selectedOldBatch='7';await settle();await view.state.previewOldBatch();await settle();
  assert.match(text(stateRow(view,'ready')),/430 UZS15 UZS/);assert.match(text(view.container),/Проценты по кредиту будут проведены/);await view.state.commitOldBatch();await settle();
- assert.match(text(stateRow(view,'posted')),/Из них новые операции за это подтверждение/);assert.match(text(view.container),/Ручная оплата заявок.*временно недоступна/);assert.match(text(view.container),/Спорные строки остаются на проверке/);assert.doesNotMatch(text(view.container),/поступления, комиссии и прочие списания не проводились/);
+ assert.match(text(stateRow(view,'posted')),/Из них новые операции за это подтверждение/);assert.match(text(view.container),/Ручная оплата заявок приостановлена/);assert.match(text(view.container),/Спорные строки остаются на проверке/);assert.doesNotMatch(text(view.container),/поступления, комиссии и прочие списания не проводились/);
  assert.deepEqual(JSON.parse(calls.find(([url])=>url.endsWith('/reprocess/commit'))[1].body),{fee_category_id:null,preview_token:'reprocess-partial',confirm:true});
 });
 
