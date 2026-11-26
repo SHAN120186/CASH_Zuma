@@ -16,13 +16,13 @@ from types import SimpleNamespace
 from urllib.parse import unquote
 
 from fastapi import APIRouter, HTTPException, Query, Request
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, StrictInt
 from sqlalchemy import or_, select
 
 from .bank_statement_models import BankStatementBatch, BankStatementLine
 from .bank_period_parser import parse_xlsx_statement
 from .bank_statement_identity import check_statement_currency, confirmed_bank_binding
-from .bank_statement_parser import MAX_BYTES, StatementParseError, parse_bank_statement
+from .bank_statement_parser import MAX_BYTES, MAX_ROWS, StatementParseError, parse_bank_statement
 from .db import Account, Audit, Category, Ledger, PaymentRequest, Setting, now, unit
 from .erp import read_upload
 from .security import session_user, perms_of, company_role, HOLDING_ROLES, jwt_key
@@ -87,6 +87,12 @@ class ReviewInput(BaseModel):
     note: str = Field(default='', max_length=1000)
 
 
+class DraftSelectionInput(BaseModel):
+    model_config = ConfigDict(extra='forbid')
+    version: int = Field(ge=0, strict=True)
+    line_ids: list[StrictInt] = Field(max_length=MAX_ROWS)
+
+
 class MatchInput(BaseModel):
     model_config = ConfigDict(extra='forbid', str_strip_whitespace=True)
     request_id: int = Field(ge=1)
@@ -146,8 +152,44 @@ def _payload(s, batch, user=None):
         annotate_expense_rows(s, batch, lines, rows, user)
         sanitize_request_fields(s, rows, user)
     return {'id': batch.id, 'status': batch.status, 'filename': batch.filename,
+            **({'draft_selection': _selection(batch)} if batch.status == 'preview' else {}),
             'account': {'id': account.id, 'name': account.name, 'currency': account.currency},
             'statement': _statement(batch), 'rows': rows}
+
+
+def _selection(batch):
+    return batch.draft_selection or {'version': 0, 'line_ids': []}
+
+
+@router.put('/api/bank-statements/{id}/draft-selection')
+def save_draft_selection(id: int, data: DraftSelectionInput, request: Request):
+    with unit(True) as s:
+        user, _ = session_user(s, request, ('pay_bank', 'import'))
+        batch = get(s, BankStatementBatch, id)
+        if batch.status != 'preview':
+            raise HTTPException(409, 'Выбор доступен только в черновике.')
+        if batch.created_by != user.id and user.role != 'admin':
+            raise HTTPException(403, 'Черновик доступен автору или администратору.')
+        chosen = set(data.line_ids)
+        if len(chosen) != len(data.line_ids):
+            raise HTTPException(422, 'В подборке повторяются строки.')
+        if chosen:
+            available = s.scalars(select(BankStatementLine.id).where(
+                BankStatementLine.batch_id == batch.id, BankStatementLine.account_id == batch.account_id,
+                BankStatementLine.company_id == batch.company_id))
+            if not chosen.issubset(available):
+                raise HTTPException(422, 'Некоторые строки отсутствуют в этой выписке.')
+        ids = sorted(chosen)
+        current = _selection(batch)
+        if ids == current['line_ids']:
+            return current
+        if current['version'] != data.version:
+            raise HTTPException(409, 'Подборка изменилась. Обновите её перед сохранением.')
+        saved = {'version': data.version + 1, 'line_ids': ids}
+        batch.draft_selection = saved
+        log(s, user, 'Сохранена подборка строк черновика', 'bank_statement', batch.id,
+            json.dumps({'version': saved['version'], 'count': len(ids)}))
+        return saved
 
 
 def _requests(s, account_id):

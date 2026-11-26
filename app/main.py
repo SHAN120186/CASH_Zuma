@@ -53,6 +53,7 @@ async def safety(request,call_next):
         if request.url.path=='/api/cashflow-osv/preview':limit=24*1024*1024
         if request.url.path=='/api/budgets/import/preview':limit=15*1024*1024
         if request.url.path in ('/api/bank-statements/preview','/api/bank-statements/compare-period') and request.method=='POST':limit=5*1024*1024
+        if request.method=='PUT' and re.fullmatch(r'/api/bank-statements/[0-9]+/draft-selection', request.url.path):limit=256*1024
         if request.url.path=='/api/counterparties/replace' and request.method=='POST':limit=5*1024*1024
         if request.method=='POST' and re.fullmatch(r'/api/requests/[0-9]+/documents',request.url.path):limit=MAX_DOCUMENT
         if length<0 or length>limit:return JSONResponse({'detail':'Неверный размер запроса.'},status_code=413)
