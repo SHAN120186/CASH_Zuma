@@ -28,6 +28,25 @@ class PeriodComparisonTests(BankStatementTests):
             return [s.scalar(select(func.count()).select_from(model))
                     for model in (BankStatementBatch, BankStatementLine, Ledger, PaymentRequest)]
 
+    def test_day_balances_use_file_history_and_separate_site_dates(self):
+        first = date.fromisoformat(self.date)
+        next_day = str(first + timedelta(days=1))
+        rows = [dict(self.bank_row('31', amount='10.01'), direction='in'),
+                self.bank_row('32', date=next_day, amount='3.24', line=7)]
+        source = dict(self.statement(rows), period_to=next_day, credit_total='10.01',
+                      debit_total='3.24', opening_balance='0.00', closing_balance='6.77')
+        with unit(True) as s:
+            self.payment_part(s, 'bank-day-test', 150)
+        before = self.counts()
+        data = self.compare(source).json()
+        day = data['days'][next_day]
+        self.assertEqual([day[k] for k in ('opening_balance','credit_total','debit_total','closing_balance')],
+                         ['10.01','0.00','3.24','6.77'])
+        self.assertEqual(day['site']['opening_balance'], data['days'][self.date]['site']['closing_balance'])
+        self.assertEqual(day['site']['closing_balance'], data['site']['closing_balance'])
+        self.assertEqual(self.compare(dict(source, credit_total='0.00')).json()['days'], {})
+        self.assertEqual(self.counts(), before)
+
     def payment_part(self, session, document, minor, *, account=None, inn='300000002'):
         """An existing paid request and its outgoing fact; amounts are in minor units."""
         bank = session.get(Account, account or self.acc)
@@ -351,6 +370,11 @@ class PeriodComparisonTests(BankStatementTests):
         base = '/api/bank-statements/period-sources/'
         self.assertEqual(self.client.get(base+'list', params=params).json()['items'], [])
         ident = preview.json()['id']
+        draft_params = {**params, 'include_drafts': 'true'}
+        listed, = self.client.get(base+'list', params=draft_params).json()['items']
+        self.assertEqual((listed['id'], listed['status']), (ident, 'preview'))
+        other, _ = self.make_user('accountant', 'other_period_viewer')
+        self.assertEqual(other.get(base+'list', params=draft_params).json()['items'], [])
         self.assertEqual(self.client.get(base+str(ident), params=params).status_code, 404)
         commit = self.commit(ident)
         self.assertEqual(commit.status_code, 200, commit.text)

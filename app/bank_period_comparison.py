@@ -7,7 +7,7 @@ import unicodedata
 from urllib.parse import unquote
 
 from fastapi import APIRouter, HTTPException, Query, Request
-from sqlalchemy import func, or_, select
+from sqlalchemy import case, func, or_, select
 
 from .bank_period_parser import parse_period_statement
 from .bank_statement_api import _fingerprint, _line_data, _minor, _statement
@@ -333,6 +333,49 @@ def _comparison_rows(source, requests, facts, evidence, parts_by_order, draft_id
     return rows, matched, possible
 
 
+def _operating_days(s, account, source, start, end, first):
+    """Calculate each bank day's balances from this file, and its site balances from journal legs."""
+    if not source['ready'] or not source['balance_matches'] or source['declared_totals_match'] is False:
+        return {}
+    credits, debits = Counter(), Counter()
+    for row in source['rows']:
+        day = date.fromisoformat(row['date'])
+        if not start <= day <= end or row['direction'] not in ('in', 'out'):
+            return {}
+        amounts = credits if row['direction'] == 'in' else debits
+        amounts[day] += _minor(row['amount'])
+    bank = _minor(source['opening_balance'])
+    if (sum(credits.values()) != _minor(source['credit_total'])
+            or sum(debits.values()) != _minor(source['debit_total'])
+            or bank + sum(credits.values()) - sum(debits.values()) != _minor(source['closing_balance'])):
+        return {}
+    booked_from = max(start, account.opening_date)
+    site = first['opening'] if first else None
+    if site is None and booked_from <= end:
+        site = balances(s, [account], booked_from)[account.id]['opening']
+    outgoing_leg = case((Ledger.kind == 'in', Ledger.amount), else_=-Ledger.amount)
+    net = case((Ledger.account_id == account.id, outgoing_leg), else_=0) + case(
+        (Ledger.to_account_id == account.id, Ledger.amount), else_=0)
+    journal = dict(s.execute(select(Ledger.date, func.sum(net)).where(
+        Ledger.date.between(booked_from, end),
+        or_(Ledger.account_id == account.id, Ledger.to_account_id == account.id)
+    ).group_by(Ledger.date)).all())
+    days = {}
+    for day in sorted({start, end} | credits.keys() | debits.keys() | journal.keys()):
+        site_open = site if day >= booked_from else None
+        if site_open is not None:
+            site += journal.get(day, 0)
+        closing = bank + credits[day] - debits[day]
+        days[day.isoformat()] = {
+            'opening_balance': money(bank), 'credit_total': money(credits[day]),
+            'debit_total': money(debits[day]), 'closing_balance': money(closing),
+            'site': {'opening_balance': money(site_open), 'closing_balance': money(site)}
+                    if site_open is not None else None,
+        }
+        bank = closing
+    return days
+
+
 def _report(s, user, account, source, binding, draft_id=None):
     stamp = revision(s)
     start, end = (date.fromisoformat(source[key]) for key in ('period_from', 'period_to'))
@@ -351,6 +394,7 @@ def _report(s, user, account, source, binding, draft_id=None):
     last = first
     if start != end:
         last = balances(s, [account], end)[account.id] if end >= account.opening_date else None
+    days = _operating_days(s, account, source, start, end, first)
     if revision(s) != stamp:
         raise HTTPException(409, 'Данные изменились во время сверки. Откройте выписку повторно.')
     return {'account': {'id': account.id, 'name': account.name, 'currency': account.currency},
@@ -359,16 +403,22 @@ def _report(s, user, account, source, binding, draft_id=None):
                      'closing_balance': money(last['closing']) if last else None,
                      'opening_difference': money(_minor(source['opening_balance']) - first['opening']) if first else None,
                      'closing_difference': money(_minor(source['closing_balance']) - last['closing']) if last else None},
-            'rows': rows, 'unmatched_payments': unmatched}
+            'rows': rows, 'unmatched_payments': unmatched, 'days': days}
 
 
 @router.get('/period-sources/list')
-def saved_sources(request: Request, account_id: int, currency: str = currency_param):
+def saved_sources(request: Request, account_id: int, currency: str = currency_param, include_drafts: bool = False):
     with unit() as s:
-        _, account = _context(s, request, account_id, currency)
+        user, account = _context(s, request, account_id, currency)
+        visible = BankStatementBatch.status == 'committed'
+        if include_drafts:
+            draft = BankStatementBatch.status == 'preview'
+            if user.role != 'admin':
+                draft = draft & (BankStatementBatch.created_by == user.id)
+            visible = visible | draft
         items = s.execute(select(BankStatementBatch.id, BankStatementBatch.filename,
-            BankStatementBatch.period_from, BankStatementBatch.period_to).where(
-            BankStatementBatch.account_id == account.id, BankStatementBatch.status == 'committed'
+            BankStatementBatch.period_from, BankStatementBatch.period_to, BankStatementBatch.status).where(
+            BankStatementBatch.account_id == account.id, visible
             ).order_by(BankStatementBatch.period_to.desc(), BankStatementBatch.id.desc()))
         return {'items': [dict(row._mapping) for row in items]}
 

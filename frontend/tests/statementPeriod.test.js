@@ -128,7 +128,7 @@ test('period comparison fetches saved sources only when opened, then reads the s
   t.after(view.unmount); await settle();
   assert.equal(calls.length,0);
   view.state.opened = true; await settle();
-  assert.match(calls[0].url,/period-sources\/list\?account_id=11&currency=UZS$/);
+  assert.match(calls[0].url,/period-sources\/list\?account_id=11&currency=UZS&include_drafts=true$/);
   assert.equal(calls.length,1);
   await view.state.compare(); await settle();
   assert.match(calls[1].url,/period-sources\/7\?account_id=11&currency=UZS$/);
@@ -141,6 +141,23 @@ test('period comparison fetches saved sources only when opened, then reads the s
   assert.match(text(view.container),/CF-00017/);
   assert.doesNotMatch(text(view.container),/Bank supplier/);
   assert.equal(calls.length,2);
+});
+test('selecting a saved draft day shows bank and site balances, and filters both lists without writing', async t => {
+  const result = report(), calls = [];
+  result.days = {'2026-11-10': {opening_balance:'18.35',credit_total:'0',debit_total:'15',closing_balance:'3.35',
+    site:{opening_balance:'20.15',closing_balance:'5.15'}}};
+  const view = mount(component,props(async (url,opts) => {
+    calls.push([url,opts]); return url.includes('/list?') ? {items:[{...source,status:'preview'}]} : result;
+  }));
+  t.after(view.unmount); view.state.opened=true; await settle(); await view.state.compare(); await settle();
+  assert.equal(calls[1][0], draftUrl);
+  view.state.day='2026-11-10'; await settle();
+  assert.match(text(view.container), /18,35/);
+  assert.match(text(view.container), /5,15/);
+  assert.equal(view.state.bankRows.length, 1);
+  assert.equal(view.state.siteRows.length, 0);
+  view.state.day=''; await settle(); assert.equal(view.state.siteRows.length, 1);
+  assert.equal(calls.length,2); assert.ok(calls.every(([,opts])=>opts===undefined));
 });
 test('uploaded file only goes to read-only comparison and a new file clears evidence', async t => {
   const calls=[];

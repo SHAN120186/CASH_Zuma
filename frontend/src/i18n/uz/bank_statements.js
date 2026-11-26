@@ -1,4 +1,8 @@
 export default {
+  'День выписки': 'Ko‘chirma kuni',
+  'Весь период выписки': 'Ko‘chirmaning butun davri',
+  'Остаток на начало {date}': '{date} boshidagi qoldiq',
+  'Остаток на конец {date}': '{date} oxiridagi qoldiq',
   'Строка': 'Qator',
   'Подборка строк · № {n}': 'Tanlangan qatorlar · № {n}',
   'Подборка сохраняет отметки для проверки. Проведение проверенных строк всей выписки подтверждается отдельно.': 'Belgilangan qatorlar tekshirish uchun saqlanadi. Butun ko‘chirmadagi tekshirilgan qatorlarni hisobga olish alohida tasdiqlanadi.',

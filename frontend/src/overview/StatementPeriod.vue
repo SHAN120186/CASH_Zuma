@@ -10,6 +10,12 @@ const opened = ref(false), accountId = ref(''), source = ref(''), file = ref(nul
 const saved = ref([]), sourcesLoading = ref(false), sourcesError = ref('');
 const data = ref(null), loading = ref(false), error = ref('');
 const tab = ref('bank'), filter = ref('all'), limit = ref(30);
+const day = ref('');
+const dayTotals = computed(() => data.value?.days?.[day.value]);
+const bankTotals = computed(() => dayTotals.value || data.value?.statement);
+const siteTotals = computed(() => dayTotals.value ? dayTotals.value.site : data.value?.site);
+const bankRows = computed(() => (data.value?.rows || []).filter(row => !day.value || day.value === row.date));
+const siteRows = computed(() => (data.value?.unmatched_payments || []).filter(row => !day.value || day.value === row.date));
 const bankAccounts = computed(() => (props.accounts || []).filter(a => a.kind === 'bank' && !a.archived && a.currency === props.currency));
 const account = computed(() => bankAccounts.value.find(a => String(a.id) === accountId.value));
 const labels = {
@@ -18,13 +24,13 @@ const labels = {
 };
 const counts = computed(() => {
   const grouped = {};
-  for (const row of data.value?.rows || []) grouped[row.status] = (grouped[row.status] || 0) + 1;
+  for (const row of bankRows.value) grouped[row.status] = (grouped[row.status] || 0) + 1;
   return grouped;
 });
 const records = computed(() => {
   if (!data.value) return [];
-  if (tab.value === 'site') return data.value.unmatched_payments;
-  return filter.value === 'all' ? data.value.rows : data.value.rows.filter(row => row.status === filter.value);
+  if (tab.value === 'site') return siteRows.value;
+  return filter.value === 'all' ? bankRows.value : bankRows.value.filter(row => row.status === filter.value);
 });
 const ready = computed(() => !!account.value && (source.value === 'file' ? !!file.value : saved.value.some(s => String(s.id) === source.value)));
 const money = val => formatCents(toCents(val), props.currency);
@@ -90,6 +96,7 @@ function clearReport() {
   loading.value = false;
   error.value = '';
   tab.value = 'bank';
+  day.value = '';
   filter.value = 'all';
   limit.value = 30;
 }
@@ -110,7 +117,9 @@ async function listSources() {
   if (!opened.value || !props.companyId || !account.value) return;
   sourcesLoading.value = true;
   try {
-    const result = await props.api('/api/bank-statements/period-sources/list?' + query());
+    const params = query();
+    params.set('include_drafts', 'true');
+    const result = await props.api('/api/bank-statements/period-sources/list?' + params);
     if (epoch !== sourceEpoch) return;
     saved.value = result.items;
     source.value = saved.value.length ? String(saved.value[0].id) : 'file';
@@ -123,9 +132,10 @@ async function listSources() {
   }
 }
 watch([opened, accountId, () => props.companyId, () => props.currency], listSources);
+watch(opened, value => {if (!value) day.value = '';});
 watch(source, () => {file.value = null; clearReport();}, {flush:'sync'});
 watch(() => props.refresh, () => {if (opened.value) listSources();});
-watch([tab, filter], () => {limit.value = 30;});
+watch([tab, filter, day], () => {limit.value = 30;});
 onUnmounted(() => {sourceEpoch++; reportEpoch++;});
 function chooseFile(event) {
   clearReport();
@@ -137,8 +147,9 @@ async function compare(confirmAccount = false) {
             : (!opened.value || !ready.value)) return;
   if (loading.value) return;
   const params = query();
-  if (draft) params.set('draft', 'true');
-  if (confirmAccount === true && (draft || source.value === 'file') && data.value?.requires_confirmation === true) {
+  const savedDraft = saved.value.some(item => String(item.id) === source.value && item.status === 'preview');
+  if (draft || savedDraft) params.set('draft', 'true');
+  if (confirmAccount === true && (draft || savedDraft || source.value === 'file') && data.value?.requires_confirmation === true) {
     params.set('confirm_account', 'true');
   }
   clearReport();
@@ -191,7 +202,7 @@ watch([() => props.draft, () => props.companyId, () => props.currency,
     </label>
     <template v-if="account && !sourcesLoading">
      <label v-if="saved.length">{{tx('Выписка для сверки')}}
-      <select v-model="source"><option v-for="s in saved" :key="s.id" :value="String(s.id)">{{s.period_from}} — {{s.period_to}} · {{s.filename}}</option><option value="file">{{tx('Выбрать файл выписки')}}</option></select>
+      <select v-model="source"><option v-for="s in saved" :key="s.id" :value="String(s.id)">{{s.period_from}} — {{s.period_to}} · {{s.filename}} · № {{s.id}}{{s.status==='preview'?' · '+tx('Черновик'):''}}</option><option value="file">{{tx('Выбрать файл выписки')}}</option></select>
      </label>
      <label v-if="source==='file'">{{tx('Файл выписки')}}<input type="file" accept=".xlsx,.xls,.html,.htm" @change="chooseFile"></label>
      <button v-if="!data?.requires_confirmation" type="button" :disabled="!ready || loading" @click="compare()">{{tx('Сверить с заявками')}}</button>
@@ -205,11 +216,14 @@ watch([() => props.draft, () => props.companyId, () => props.currency,
     <h3 class="period-title">{{formatLongDate(data.statement.period_from)}} — {{formatLongDate(data.statement.period_to)}}</h3>
     <p class="sub source">{{data.statement.owner_name}} · {{data.statement.account_number}} · {{data.account.currency}}</p>
     <p v-if="!data.statement.balance_matches || data.statement.declared_totals_match===false || !data.statement.ready" role="alert" class="error">{{tx('Проверьте итоги выписки и полноту её строк.')}}</p>
+    <label v-if="data.days && Object.keys(data.days).length" class="filter">{{tx('День выписки')}}
+     <select v-model="day"><option value="">{{tx('Весь период выписки')}}</option><option v-for="(_,date) in data.days" :key="date" :value="date">{{formatLongDate(date)}}</option></select>
+    </label>
     <dl class="totals">
-     <div><dt>{{tx('Остаток на начало')}}</dt><dd>{{money(data.statement.opening_balance)}}</dd></div>
-     <div><dt>{{tx('Поступления')}}</dt><dd>{{money(data.statement.credit_total)}}</dd></div>
-     <div><dt>{{tx('Списания')}}</dt><dd>{{money(data.statement.debit_total)}}</dd></div>
-     <div><dt>{{tx('Остаток на конец')}}</dt><dd>{{money(data.statement.closing_balance)}}</dd></div>
+     <div><dt>{{tx('Остаток на начало {date}', {date:formatLongDate(day || data.statement.period_from)})}}</dt><dd>{{money(bankTotals.opening_balance)}}</dd></div>
+     <div><dt>{{tx('Поступления')}}</dt><dd>{{money(bankTotals.credit_total)}}</dd></div>
+     <div><dt>{{tx('Списания')}}</dt><dd>{{money(bankTotals.debit_total)}}</dd></div>
+     <div><dt>{{tx('Остаток на конец {date}', {date:formatLongDate(day || data.statement.period_to)})}}</dt><dd>{{money(bankTotals.closing_balance)}}</dd></div>
     </dl>
     <div v-if="data.requires_confirmation" class="check-account">
      <p>{{tx('Проверьте владельца и номер счёта в выписке выше. Подтвердите выбранный счёт и валюту для сравнения с оплатами сайта.')}}</p>
@@ -217,12 +231,12 @@ watch([() => props.draft, () => props.companyId, () => props.currency,
      <button type="button" @click="compare(true)">{{tx('Подтвердить счёт и валюту для сверки')}}</button>
     </div>
     <template v-else>
-    <div v-if="data.site" class="site-totals"><span>{{tx('На начало в Cash Zuma')}} <b>{{money(data.site.opening_balance)}}</b></span>
-     <span>{{tx('На конец в Cash Zuma')}} <b>{{money(data.site.closing_balance)}}</b></span>
-     <span>{{tx('Разница на конец (банк − сайт)')}} <b>{{difference(data.statement.closing_balance,data.site.closing_balance)}}</b></span></div>
+    <div v-if="siteTotals" class="site-totals"><span>{{tx('На начало в Cash Zuma')}} <b>{{money(siteTotals.opening_balance)}}</b></span>
+     <span>{{tx('На конец в Cash Zuma')}} <b>{{money(siteTotals.closing_balance)}}</b></span>
+     <span>{{tx('Разница на конец (банк − сайт)')}} <b>{{difference(bankTotals.closing_balance,siteTotals.closing_balance)}}</b></span></div>
     <div class="views" role="group" :aria-label="tx('Показать операции')">
-     <button type="button" :aria-pressed="tab==='bank'" :class="{secondary:tab!=='bank'}" @click="tab='bank'">{{tx('По выписке')}} · {{data.rows.length}}</button>
-     <button type="button" :aria-pressed="tab==='site'" :class="{secondary:tab!=='site'}" @click="tab='site'">{{tx('Оплаты сайта без подтверждённой связи')}} · {{data.unmatched_payments.length}}</button>
+     <button type="button" :aria-pressed="tab==='bank'" :class="{secondary:tab!=='bank'}" @click="tab='bank'">{{tx('По выписке')}} · {{bankRows.length}}</button>
+     <button type="button" :aria-pressed="tab==='site'" :class="{secondary:tab!=='site'}" @click="tab='site'">{{tx('Оплаты сайта без подтверждённой связи')}} · {{siteRows.length}}</button>
     </div>
     <label v-if="tab==='bank'" class="filter">{{tx('Результат сверки')}}
      <select v-model="filter"><option value="all">{{tx('Все строки')}}</option><option v-for="(label,status) in labels" :value="status" :key="status">{{tx(label)}} · {{counts[status]||0}}</option></select>
