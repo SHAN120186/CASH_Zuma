@@ -683,10 +683,10 @@ async function confirmAndPost(event) {
         <p>{{tx('Владелец счёта')}}: {{preview.statement.owner_name || '—'}} · {{tx('ИНН')}}: {{preview.statement.owner_inn || '—'}}</p>
         <p>{{tx('Период')}}: {{formatShortDate(preview.statement.period_from)}} – {{formatShortDate(preview.statement.period_to)}}</p>
         <div class="bank-summary">
-          <div><span>{{tx('Остаток на начало')}}</span><b>{{money(preview.statement.opening_balance)}} {{currency}}</b></div>
+          <div><span>{{tx('Остаток на начало {date}', {date:formatShortDate(preview.statement.period_from)})}}</span><b>{{money(preview.statement.opening_balance)}} {{currency}}</b></div>
           <div><span>{{tx('Поступления по выписке')}}</span><b>{{money(preview.statement.credit_total)}} {{currency}}</b></div>
           <div><span>{{tx('Списания по выписке')}}</span><b>{{money(preview.statement.debit_total)}} {{currency}}</b></div>
-          <div><span>{{tx('Остаток на конец')}}</span><b>{{money(preview.statement.closing_balance)}} {{currency}}</b></div>
+          <div><span>{{tx('Остаток на конец {date}', {date:formatShortDate(preview.statement.period_to)})}}</span><b>{{money(preview.statement.closing_balance)}} {{currency}}</b></div>
         </div>
         <p v-if="hasSummaryCounts">{{tx('К проведению: {ready}. Уже учтено: {linked}. На проверку: {pending}.',{ready:postingSummary.ready.count,linked:postingSummary.linked.count,pending:postingSummary.pending.count})}}</p>
         <label v-if="ready" class="confirm"><input type="checkbox" :disabled="busy || reprocessBusy || reviewBusy !== null" @change="confirmAndPost"> {{tx('Подтверждаю счёт {account} ({currency}) и провожу проверенные строки.',{account:preview.account.name,currency})}}</label>
