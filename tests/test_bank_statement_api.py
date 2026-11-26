@@ -6,7 +6,7 @@ from unittest.mock import patch
 from sqlalchemy import func, select
 
 from tests.test_site import SiteTests
-from tests.test_bank_period_parser import raw, workbook
+from tests.test_bank_period_parser import raw, workbook, daily_workbook
 from tests import test_bank_statement_parser as html_fixture
 from app.bank_statement_models import BankStatementBatch, BankStatementLine
 from app.db import PaymentRequest, Ledger, Account, Company, CompanyUser, Setting, User, unit, engine
@@ -266,6 +266,32 @@ class BankStatementTests(SiteTests):
         second = self.preview(self.source([self.bank_row('other')])); self.assertEqual(second.status_code,200,second.text)
         self.assertEqual(second.json()['rows'][0]['status'],'review')
         self.assertEqual(self.commit(second.json()['id']).json()['auto_paid'],0)
+
+    def test_overlap_with_different_bank_description_is_review_only(self):
+        first = self.preview(self.source()).json()
+        self.assertEqual(self.commit(first['id']).status_code, 200)
+        revised = self.bank_row()
+        revised.update(correspondent_name='Supplier LLC', purpose='Another bank rendering')
+        repeat = self.preview(self.source([revised]))
+        self.assertEqual(repeat.status_code, 200, repeat.text)
+        with unit() as s:
+            line = s.scalar(select(BankStatementLine).where(BankStatementLine.batch_id == repeat.json()['id']))
+            self.assertTrue(line.uncertain)
+            self.assertEqual(line.status, 'ambiguous_duplicate')
+            self.assertIsNone(line.ledger_id)
+
+    def test_operating_days_upload_reuses_draft_without_posting(self):
+        data = raw(daily_workbook())
+        first = self.xlsx_upload(data)
+        self.assertEqual(first.status_code, 200, first.text)
+        result = first.json()
+        again = self.xlsx_upload(data)
+        self.assertEqual(again.status_code, 200, again.text)
+        self.assertEqual(again.json()['id'], result['id'])
+        self.assertEqual((result['status'], len(result['rows'])), ('preview', 2))
+        self.assertEqual(result['statement']['closing_balance'], '50.00')
+        with unit() as s:
+            self.assertEqual(s.scalar(select(func.count()).select_from(Ledger)), 0)
 
     def test_mismatch_and_duplicate_rows_do_not_pay(self):
         self.approved()

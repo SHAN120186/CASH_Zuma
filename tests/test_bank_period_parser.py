@@ -1,7 +1,7 @@
 import io
 import unittest
 import zipfile
-from datetime import date
+from datetime import date, datetime
 from unittest.mock import patch
 
 from openpyxl import Workbook
@@ -34,7 +34,53 @@ def raw(book):
     return content.getvalue()
 
 
+def daily_workbook():
+    book = Workbook()
+    sheet = book.active
+    for day, opening, closing in [(2, 0, 25), (3, 25, 50)]:
+        label = f'{day:02}.04.2025'
+        for row in (
+            ['Демо Банк'], ['Лицевой счет: 20214000900000000001'],
+            ['Клиент 000123 Инн 111000222'], ['Период выписки с 01.04.2025 по 03.04.2025'],
+            ['Дата последней проводки : 03.04.2025'],
+            ['Входящий остаток на ' + label, None, None, None, None, opening],
+            ['Дата', 'Дата', 'Номер', 'Корреспондент: Банк/Счет/ИНН Наименование Назначение', 'Дебет', 'Кредит'],
+            ['проводки', 'Опер. дня', 'документа', 'платежа'],
+            [datetime(2025, 3, 31, 10, 15), date(2025, 4, day), '0008',
+             'МФО:00123 Счет: 00100000000000000001 ИНН:123456789', None, 25],
+            [None, None, None, 'Получатель'], [None, None, None, 'Назначение платежа'],
+            ['Всего оборотов', None, None, None, 0, 25],
+            ['Остаток на конец дня ' + label, None, None, None, None, closing],
+        ):
+            sheet.append(row)
+    return book
+
+
 class PeriodParserTests(unittest.TestCase):
+    def test_operational_date_and_multiline_payment(self):
+        for epoch in (None, CALENDAR_MAC_1904):
+            book = daily_workbook()
+            if epoch:
+                book.epoch = epoch
+            result = parse_period_statement(raw(book))
+            self.assertTrue(result['ready'])
+            self.assertEqual(result['closing_balance'], '50.00')
+            self.assertEqual([row['date'] for row in result['rows']], ['2025-04-02', '2025-04-03'])
+            self.assertEqual([row['line'] for row in result['rows']], [9, 22])
+            entry = result['rows'][0]
+            self.assertEqual((entry['document_number'], entry['correspondent_mfo'], entry['correspondent_name'],
+                              entry['purpose']), ('0008', '00123', 'Получатель', 'Назначение платежа'))
+
+    def test_operational_blocks_reject_partial_or_inconsistent_data(self):
+        for cell, value in [('F12', 26), ('F13', 24), ('F19', 24), ('D10', None),
+                            ('B9', datetime(2025, 4, 2, 13)), ('B22', date(2025, 4, 2)),
+                            ('A15', 'Лицевой счет: 20214000900000000002'), ('F22', '=1+24')]:
+            with self.subTest(cell=cell):
+                book = daily_workbook()
+                book.active[cell] = value
+                with self.assertRaises(StatementParseError):
+                    parse_period_statement(raw(book))
+
     def test_actual_dates_zero_in_unused_column_and_leading_zero_identifiers(self):
         for mac_epoch in (False, True):
             with self.subTest(mac_epoch=mac_epoch):

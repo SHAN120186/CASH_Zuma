@@ -168,6 +168,23 @@ def _classify(s, lines, account, previous, user):
     paid again. A request number in the purpose must agree when present.
     """
     counts = Counter(line.fingerprint for line in lines)
+    # Overlapping IABS reports can spell names differently or omit an INN.
+    # A matching bank document with changed text needs review before posting.
+    def bank_document(line):
+        return (line.date, line.direction, line.amount, line.document_number,
+                line.correspondent_mfo, line.correspondent_account)
+
+    earlier_documents = set()
+    if lines:
+        dates = [line.date for line in lines]
+        earlier_documents.update(s.execute(select(
+            BankStatementLine.date, BankStatementLine.direction, BankStatementLine.amount,
+            BankStatementLine.document_number, BankStatementLine.correspondent_mfo,
+            BankStatementLine.correspondent_account).join(BankStatementBatch).where(
+                BankStatementBatch.status == 'committed', BankStatementLine.account_id == account.id,
+                BankStatementLine.include_in_daily.is_(True),
+                BankStatementLine.date.between(min(dates), max(dates)),
+                BankStatementBatch.id != lines[0].batch_id)))
     # Include even hidden requests in uniqueness checks, then apply visibility
     # before exposing or linking a candidate. Otherwise hidden rows can cause a
     # false "unique" match for another user.
@@ -216,6 +233,14 @@ def _classify(s, lines, account, previous, user):
             if matches_request(past, req):
                 reverse[req.id] += 1
     for line in lines:
+        if bank_document(line) in earlier_documents and not previous.get(line.fingerprint):
+            line.classification = ''
+            line.request_id = line.ledger_id = None
+            line.uncertain = True
+            line.include_in_daily = True
+            line.status = 'ambiguous_duplicate'
+            line.reason = 'Та же дата, сумма и платёжка уже есть в выписке. Проверьте различия в реквизитах.'
+            continue
         if line.status == 'manual_match' and line.classification.startswith('paid:'):
             req = requests.get(line.request_id)
             entry = s.scalar(effective_cashflows(s).where(Ledger.id == line.ledger_id))
