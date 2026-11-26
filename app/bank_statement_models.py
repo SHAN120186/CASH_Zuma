@@ -1,5 +1,5 @@
 """Private, company-scoped imported bank statements and their review rows."""
-from sqlalchemy import BigInteger, Boolean, Column, Date, DateTime, ForeignKey, Integer, String, Text
+from sqlalchemy import JSON, BigInteger, Boolean, Column, Date, DateTime, ForeignKey, Integer, String, Text
 from .db import Base, now
 
 
@@ -27,6 +27,7 @@ class BankStatementBatch(Base):
     status = Column(String(16), nullable=False, default='preview')
     created_at = Column(DateTime, nullable=False, default=now)
     committed_at = Column(DateTime, nullable=True)
+    draft_selection = Column(JSON, nullable=True)
 
 
 class BankStatementLine(Base):

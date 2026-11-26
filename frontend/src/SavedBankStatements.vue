@@ -1,6 +1,7 @@
 <script setup>
 import {ref, watch, onUnmounted} from 'vue';
 import {tx} from './i18n/index.js';
+import BankDraftSelection from './BankDraftSelection.vue';
 import {toCents, formatCents, formatShortDate} from './overview/format.js';
 
 const props = defineProps({api:{type:Function,required:true},companyId:{type:Number,required:true},
@@ -45,7 +46,10 @@ function resume(item) {
       <p v-if="loading" role="status">{{tx('Загружаем данные…')}}</p><p v-if="error" class="error" role="alert">{{error}}</p>
       <p v-if="loaded && !items.length" class="sub">{{tx('Сохранённых проверок нет. Подтверждённые выписки доступны в истории.')}}</p>
       <div v-if="items.length" class="table-scroll"><table><thead><tr><th>{{tx('Выписка')}}</th><th>{{tx('Счёт')}}</th><th>{{tx('Период')}}</th><th>{{tx('Поступления по выписке')}}</th><th>{{tx('Списания по выписке')}}</th><th></th></tr></thead><tbody>
-        <tr v-for="item in items" :key="item.id"><td>{{item.filename}}</td><td>{{item.account.name}} · {{item.account.currency}}</td><td>{{formatShortDate(item.period_from)}} – {{formatShortDate(item.period_to)}}</td><td>{{money(item.credit_total,item.account.currency)}} {{item.account.currency}}</td><td>{{money(item.debit_total,item.account.currency)}} {{item.account.currency}}</td><td><button type="button" class="secondary tiny" :disabled="loading || busy" @click="resume(item)">{{tx('Открыть проверку')}}</button></td></tr>
+        <template v-for="item in items" :key="companyId + ':' + item.id">
+          <tr><td>{{item.filename}}</td><td>{{item.account.name}} · {{item.account.currency}}</td><td>{{formatShortDate(item.period_from)}} – {{formatShortDate(item.period_to)}}</td><td>{{money(item.credit_total,item.account.currency)}} {{item.account.currency}}</td><td>{{money(item.debit_total,item.account.currency)}} {{item.account.currency}}</td><td><button type="button" class="secondary tiny" :disabled="loading || busy" @click="resume(item)">{{tx('Открыть проверку')}}</button></td></tr>
+          <tr><td colspan="6"><BankDraftSelection :api="api" :batch-id="item.id" :disabled="loading || busy"/></td></tr>
+        </template>
       </tbody></table></div>
       <div v-if="loaded && (page>1 || hasMore)" class="form-actions"><button type="button" class="secondary tiny" :disabled="loading || busy || page<=1" @click="loadPage(page-1)">{{tx('Назад')}}</button><span>{{tx('Страница {n}',{n:page})}}</span><button type="button" class="secondary tiny" :disabled="loading || busy || !hasMore" @click="loadPage(page+1)">{{tx('Далее')}}</button></div>
     </template>

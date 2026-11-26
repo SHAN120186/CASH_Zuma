@@ -8,6 +8,7 @@ import BankStatementHistory from './BankStatementHistory.vue';
 import BankStatementIncome from './BankStatementIncome.vue';
 import BankStatementExpenses from './BankStatementExpenses.vue';
 import SavedBankStatements from './SavedBankStatements.vue';
+import BankDraftSelection from './BankDraftSelection.vue';
 import BankStatementPostingSummary from './BankStatementPostingSummary.vue';
 import BankStatementResolution from './BankStatementResolution.vue';
 import BankStatementCategoryRules from './BankStatementCategoryRules.vue';
@@ -677,6 +678,7 @@ async function confirmAndPost(event) {
       </template>
       <div v-if="preview" class="bank-preview">
         <h3>{{tx('Проверка выписки')}}</h3>
+        <BankDraftSelection v-if="canImport && preview.status==='preview' && preview.id" :key="companyId + ':' + preview.id" :api="api" :batch-id="preview.id" :disabled="busy || reprocessBusy || reviewBusy !== null"/>
         <p>{{tx('Счёт в файле')}}: <b>{{preview.statement.account_number}}</b> · {{tx('Счёт на сайте')}}: <b>{{preview.account.name}} · {{preview.account.currency}}</b></p>
         <p>{{tx('Владелец счёта')}}: {{preview.statement.owner_name || '—'}} · {{tx('ИНН')}}: {{preview.statement.owner_inn || '—'}}</p>
         <p>{{tx('Период')}}: {{formatShortDate(preview.statement.period_from)}} – {{formatShortDate(preview.statement.period_to)}}</p>

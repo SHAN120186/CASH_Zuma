@@ -692,6 +692,11 @@ def initialize():
         for ddl in PERFORMANCE_INDEXES:conn.execute(text(ddl))
     with engine.begin() as conn:
         if not SQLITE:conn.execute(text('SELECT pg_advisory_xact_lock(7312801)'))
+        schema = inspect(conn)
+        if schema.has_table('bank_statement_batches') and 'draft_selection' not in {
+            column['name'] for column in schema.get_columns('bank_statement_batches')
+        }:
+            conn.execute(text('ALTER TABLE bank_statement_batches ADD COLUMN draft_selection JSON'))
         columns={c['name'] for c in inspect(conn).get_columns('users')}
         if 'role_id' not in columns:conn.execute(text('ALTER TABLE users ADD COLUMN role_id INTEGER REFERENCES roles(id)'))
         if 'must_change_password' not in columns:conn.execute(text('ALTER TABLE users ADD COLUMN must_change_password BOOLEAN NOT NULL DEFAULT FALSE'))

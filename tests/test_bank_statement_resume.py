@@ -15,6 +15,50 @@ from app.services import account_balance
 
 
 class SavedStatementTests(AutoBankIntegrationTests):
+    def test_save_selection_is_persistent_isolated_and_never_posts(self):
+        self.approved()
+        cl, headers = self.accountant
+        draft = self.preview(self.statement(), self.cat, cl, headers).json()
+        other = self.preview(self.statement(external=True), self.cat, cl, headers).json()
+        ids = [row['id'] for row in draft['rows'][:2]]
+        path = f"/api/bank-statements/{draft['id']}"
+        url = path + '/draft-selection'
+        payload = {'version': 0, 'line_ids': ids[::-1]}
+        empty = {'version': 0, 'line_ids': []}
+        self.assertEqual(draft['draft_selection'], empty)
+        before = self.finance_snapshot()
+        rows_before = cl.get(path, headers=headers).json()['rows']
+        self.assertEqual(cl.put(url, json=payload).status_code, 403)
+        with unit() as s:
+            foreign = s.scalar(select(Company.id).where(Company.code == 'ZUMA'))
+        self.assertEqual(cl.put(url, json=payload, headers={**headers,'X-Company-ID':str(foreign)}).status_code, 403)
+        rejected = [ids + ids, [other['rows'][0]['id']], [True]]
+        for selection in rejected:
+            self.assertEqual(cl.put(url, json={'version':0,'line_ids':selection}, headers=headers).status_code, 422)
+        admin_draft = self.preview(self.statement(include_payment=False), self.cat).json()
+        self.assertEqual(cl.put(f"/api/bank-statements/{admin_draft['id']}/draft-selection",
+                                json=empty, headers=headers).status_code, 403)
+        self.assertEqual(cl.get(path, headers=headers).json()['draft_selection'], empty)
+        saved = {'version':1, 'line_ids': sorted(ids)}
+        response = cl.put(url, json=payload, headers=headers)
+        self.assertEqual(response.status_code, 200, response.text)
+        self.assertEqual(response.json(), saved)
+        self.assertEqual(cl.put(url, json=payload, headers=headers).json(), saved)
+        self.assertEqual(cl.put(url, json=empty, headers=headers).status_code, 409)
+        with TestClient(app) as reopened:
+            reopened.cookies.update(cl.cookies)
+            actual = reopened.get(path, headers=headers).json()
+            self.assertEqual(actual['status'], 'preview')
+            self.assertEqual(actual['draft_selection'], saved)
+            self.assertEqual(actual['rows'], rows_before)
+            self.assertEqual(self.resume(draft['id'], self.cat, reopened, headers).json()['draft_selection'], saved)
+        self.assertEqual(self.finance_snapshot(), before)
+        self.assertEqual(cl.put(url, json={'version':1,'line_ids':[]}, headers=headers).json(),
+                         {'version':2,'line_ids':[]})
+        with unit(True) as s:
+            s.get(BankStatementBatch, draft['id']).status = 'committed'
+        self.assertEqual(cl.put(url, json=payload, headers=headers).status_code, 409)
+
     def resume(self, bid, category=None, client=None, headers=None):
         return (client or self.client).post(f'/api/bank-statements/{bid}/resume',
             json={'fee_category_id': category}, headers=headers or self.h)
