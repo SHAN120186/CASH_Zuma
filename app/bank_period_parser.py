@@ -13,6 +13,8 @@ from defusedxml import ElementTree as ET
 from defusedxml.common import DefusedXmlException
 from openpyxl.utils.datetime import CALENDAR_MAC_1904, CALENDAR_WINDOWS_1900, from_excel
 
+from .bank_operating_day_parser import account_heading, parse_operating_days
+
 from .bank_statement_parser import (
     MAX_BYTES, MAX_CELL_CHARS, MAX_CELLS, MAX_DATABASE_AMOUNT, MAX_ROWS,
     StatementParseError, _clean, parse_bank_statement, parse_statement_tables,
@@ -69,7 +71,7 @@ def _number_as_money(text):
     return format(cents, '.2f')
 
 
-def _cell_text(cell, column, strings, epoch):
+def _cell_text(cell, column, strings, epoch, daily=False):
     if cell.find(f'{NS}f') is not None:
         raise StatementParseError('Для сверки нужен банковский XLSX с исходными значениями без формул.')
     kind = cell.get('t', 'n')
@@ -86,19 +88,24 @@ def _cell_text(cell, column, strings, epoch):
         if len(value) > MAX_CELL_CHARS:
             raise StatementParseError('Слишком длинная ячейка банковской выписки.')
         return _clean(value)
-    if kind == 'd' and column == 'A':
+    date_column = column == 'A' or (daily and column == 'B')
+    booking_time = daily and column == 'A'
+    if kind == 'd' and date_column:
         day = datetime.fromisoformat(value)
-        if day.time() != datetime.min.time():
+        if not booking_time and day.time() != datetime.min.time():
             raise StatementParseError('Неверная дата в банковской выписке.')
         return day.strftime('%d.%m.%Y')
     if kind != 'n' or len(value) > 48:
         raise StatementParseError('Недопустимый тип ячейки банковского XLSX.')
-    if column in {'H', 'I'}:
+    if column in ({'E', 'F'} if daily else {'H', 'I'}):
         return _number_as_money(value)
-    if column == 'A':
-        if not value.isdigit() or len(value) > 7:
+    if date_column:
+        if not re.fullmatch(r'[0-9]{1,7}(?:\.[0-9]+)?' if daily else r'[0-9]{1,7}', value):
             raise StatementParseError('Неверная дата в банковской выписке.')
-        day = from_excel(int(value), epoch)
+        serial = Decimal(value)
+        if not booking_time and int(serial) != serial:
+            raise StatementParseError('Неверная дата операционного дня в банковской выписке.')
+        day = from_excel(int(serial), epoch)
         if not isinstance(day, date):
             raise StatementParseError('Неверная дата в банковской выписке.')
         return day.strftime('%d.%m.%Y')
@@ -122,12 +129,14 @@ def _xlsx_table(raw):
                         strings.append(_string(node))
                         node.clear()
         table = []
+        daily = False
         with archive.open(sheet_path) as source:
             for _, node in ET.iterparse(source, events=('end',), forbid_dtd=True):
                 if node.tag != f'{NS}row':
                     continue
                 row_number = int(node.attrib['r'])
-                if not len(table) < row_number <= MAX_ROWS + 30:
+                row_limit = 4 * MAX_ROWS + 30 if daily else MAX_ROWS + 30
+                if not len(table) < row_number <= row_limit:
                     raise StatementParseError('Неверный порядок или слишком много строк в банковской выписке.')
                 while len(table) + 1 < row_number:
                     table.append([])
@@ -135,13 +144,15 @@ def _xlsx_table(raw):
                 seen = set()
                 for cell in node.findall(f'{NS}c'):
                     ref = cell.attrib['r']
-                    if not re.fullmatch(r'[A-I]' + str(row_number), ref) or ref in seen:
+                    if not re.fullmatch(('[A-F]' if daily else '[A-I]') + str(row_number), ref) or ref in seen:
                         raise StatementParseError('Неверные столбцы или повтор ячейки в банковской выписке.')
                     seen.add(ref)
-                    cells[ord(ref[0]) - ord('A')] = _cell_text(cell, ref[0], strings, epoch)
+                    cells[ord(ref[0]) - ord('A')] = _cell_text(cell, ref[0], strings, epoch, daily)
+                if row_number == 2 and account_heading(cells[0]) and not any(cells[1:]):
+                    daily = True
                 table.append(cells)
                 node.clear()
-    return table
+    return table, daily
 
 
 def parse_xlsx_statement(raw: bytes, *, allow_empty=False) -> dict:
@@ -149,7 +160,9 @@ def parse_xlsx_statement(raw: bytes, *, allow_empty=False) -> dict:
     if not isinstance(raw, bytes) or not raw or len(raw) > MAX_BYTES:
         raise StatementParseError('Размер банковской выписки недопустим.')
     try:
-        table = _xlsx_table(raw)
+        table, daily = _xlsx_table(raw)
+        if daily:
+            return parse_operating_days(table, allow_empty=allow_empty)
     except StatementParseError:
         raise
     except (ValueError, OverflowError, KeyError, InvalidOperation, ParseError, DefusedXmlException,

@@ -209,11 +209,18 @@ def parse_statement_tables(tables, *, allow_empty=False):
     table, header = candidates[0]
     table_number = next(i for i, candidate in enumerate(tables) if candidate is table)
     previous_rows = sum(len(previous) for previous in tables[:table_number])
+    numbered = enumerate(table[header + 1:], start=previous_rows + header + 2)
+    return parse_statement_body(numbered, (account, owner_name, owner_inn), start, end,
+                                opening, closing, allow_empty=allow_empty)
+
+
+def parse_statement_body(numbered, identity, start, end, opening, closing, *, allow_empty):
+    account, owner_name, owner_inn = identity
     rows = []
     debit_total = credit_total = Decimal('0.00')
     declared = None
     declared_any_amount = False
-    for index, cells in enumerate(table[header + 1:], start=header + 2):
+    for index, cells in numbered:
         if not any(cells):
             continue
         if cells[0].lower().startswith('итоговый оборот'):
@@ -238,7 +245,7 @@ def parse_statement_tables(tables, *, allow_empty=False):
             raise StatementParseError('В строке должен быть один положительный дебет или кредит.')
         debit_total += debit
         credit_total += credit
-        rows.append({'line': previous_rows + index, 'date': day, 'document_number': cells[1],
+        rows.append({'line': index, 'date': day, 'document_number': cells[1],
                      'correspondent_mfo': cells[2], 'correspondent_account': cells[3],
                      'correspondent_name': cells[4], 'correspondent_inn': cells[5], 'purpose': cells[6],
                      'debit': _money(debit), 'credit': _money(credit),
