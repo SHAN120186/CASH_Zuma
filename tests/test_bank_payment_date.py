@@ -102,5 +102,59 @@ class BankDateTests(unittest.TestCase):
             self.assertIsNone(s.get(BankStatementLine,self.line).ledger_id)
 
 
+class EarlierBankFactTests(unittest.TestCase):
+    def test_treasury_debit_keeps_approval_and_posts_only_once(self):
+        f = fixtures.BankStatementTests()
+        f.setUp()
+        self.addCleanup(f.tearDown)
+        rid = f.approved()
+        day = date.fromisoformat(f.date) - timedelta(days=1)
+        personal = '4' * 27
+        row = f.bank_row('SYN-19', date=str(day), inn='300000003')
+        row.update(correspondent_account='23402' + '0'*15,
+                   purpose='09510~' + personal + '~300000002~Synthetic services')
+        source = dict(f.source([row]), period_from=str(day), period_to=str(day))
+        with unit(True) as s:
+            s.get(Account, f.acc).opening = 100000
+            approval = s.get(PaymentRequest, rid).approved_at
+        draft = f.preview(source).json()
+        cl, headers = f.payer
+        path = f"/api/bank-statements/lines/{draft['rows'][0]['id']}"
+        with unit() as s:
+            version = s.get(PaymentRequest, rid).version
+        body = dict(request_id=rid, request_version=version, confirm=True, note='Verified synthetic debit')
+        def match(**extra):
+            return cl.post(path + '/match', headers=headers, json={**body, **extra})
+        self.assertEqual(match(payment_date=str(day)).status_code, 409)
+        committed = f.commit(draft['id'])
+        self.assertEqual(committed.status_code, 200, committed.text)
+        items = cl.get(path + '/candidates', headers=headers).json()['items']
+        self.assertEqual([(i['id'], i['approved_after_bank']) for i in items], [(rid, f.date)])
+        self.assertEqual(match().status_code, 409)
+        self.assertEqual(match(payment_date=str(day)).status_code, 409)
+        doc = io.BytesIO()
+        pdf = canvas.Canvas(doc)
+        pdf.drawString(40,700,'Synthetic payee 300000002 / ' + personal)
+        pdf.save()
+        with unit(True) as s:
+            s.add(RequestDocument(request_id=rid, kind='contract', mime='application/pdf',
+                filename='test.pdf', storage_key='synthetic-early-proof', sha256='1'*64,
+                content=doc.getvalue(), version=1, active=True, created_by=1))
+            s.get(Account, f.acc).opening += 100
+        self.assertEqual(match(payment_date=str(day)).status_code, 409)
+        with unit(True) as s:
+            self.assertEqual(s.get(PaymentRequest,rid).status,'approved')
+            self.assertIsNone(s.scalar(select(Ledger.id).where(Ledger.request_id == rid)))
+            s.get(Account, f.acc).opening -= 100
+        result = match(payment_date=str(day))
+        self.assertEqual(result.status_code, 200, result.text)
+        self.assertEqual(match(payment_date=str(day)).status_code,409)
+        with unit() as s:
+            entry, = s.scalars(select(Ledger).where(Ledger.request_id == rid))
+            req = s.get(PaymentRequest, rid)
+            self.assertEqual((entry.amount,entry.date,req.approved_at,req.status), (60000,day,approval,'paid'))
+            self.assertEqual(account_balance(s,s.get(Account,f.acc)),40000)
+
+
 def tearDownModule():
     engine.dispose()
