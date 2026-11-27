@@ -477,7 +477,7 @@ def payment_document_rows(s, user, account, req, reference, fact_date):
         line.date.between(b.period_from, b.period_to), line.date <= fact_date,
         line.date >= date.fromordinal(max(date.min.toordinal(), fact_date.toordinal()-31)),
         line.document_number == reference.strip(), line.amount == req.amount
-    ).order_by(b.period_to.desc(), b.id.desc(), line.line))
+    ).order_by((b.status == 'committed').desc(), b.period_to.desc(), b.id.desc(), line.line))
     items = {}
     for batch, row in rows:
         key = (row.fingerprint, row.occurrence)
@@ -491,7 +491,8 @@ def payment_document_rows(s, user, account, req, reference, fact_date):
             if exc.status_code != 409:
                 raise
             continue
-        items[key] = dict(batch_id=batch.id, status=batch.status, line=row.line, date=str(row.date),
+        items[key] = dict(batch_id=batch.id, status=batch.status, line=row.line, line_id=row.id,
+            line_status=row.status, date=str(row.date),
             reference=row.document_number, amount=money(row.amount), currency=account.currency,
             counterparty=row.correspondent_name, inn=row.correspondent_inn, purpose=row.purpose)
     return list(items.values())
@@ -507,7 +508,8 @@ def payment_evidence(request_id: int, request: Request, account_id: int, currenc
             raise HTTPException(404, 'Заявка не найдена.')
         rows = payment_document_rows(s, user, account, req, reference, fact_date)
         book = account_balance(s, account, fact_date) if rows else None
-        return dict(request_id=req.id, approved_on=str(local_date(req.approved_at)) if req.approved_at else None,
+        return dict(request_id=req.id, request_status=req.status,
+                    approved_on=str(local_date(req.approved_at)) if req.approved_at else None,
                     rows=rows, book=money(book) if book is not None else None,
                     shortfall=money(max(0, req.amount-book)) if book is not None else None)
 

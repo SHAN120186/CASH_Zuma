@@ -29,6 +29,15 @@ class PeriodComparisonTests(BankStatementTests):
         entry, = found.json()['rows']
         self.assertEqual((entry['batch_id'], entry['reference'], entry['amount'], entry['date']),
                          (last, 'ORDER-12', '600.00', self.date))
+        self.assertEqual(found.json()['request_status'], 'approved')
+        with unit(True) as s:
+            s.get(BankStatementBatch, first).status = 'committed'
+            first_line = s.scalar(select(BankStatementLine.id).where(BankStatementLine.batch_id == first))
+        committed, = lookup(payer, headers).json()['rows']
+        self.assertEqual((committed['status'], committed['batch_id'], committed['line_id']),
+                         ('committed', first, first_line))
+        with unit(True) as s:
+            s.get(BankStatementBatch, first).status = 'preview'
         other, auth = self.make_user('finance','evidence_other')
         self.addCleanup(other.close)
         self.assertEqual(lookup(other, auth).json()['rows'], [])

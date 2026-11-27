@@ -511,6 +511,34 @@ async function paymentDateCorrected(result) {
   emit('changed', 'payment-date');
 }
 
+const draftRowsPanel = ref(null), reviewRowsPanel = ref(null);
+async function openPaymentSource(source, bankAccount) {
+  if (!Number.isInteger(source?.line_id) || !Number.isInteger(source.batch_id)) return;
+  const draft = source.status === 'preview', company = props.companyId;
+  if (draft) {
+    if (!props.canImport) return;
+    await resumeSaved({id:source.batch_id, status:'preview', account:bankAccount});
+    if (company !== props.companyId || preview.value?.id !== source.batch_id) return;
+  } else {
+    if (source.status !== 'committed' || !props.canReview) return;
+    await loadReviews();
+    if (company !== props.companyId || !reviewsLoaded.value) return;
+  }
+  await nextTick();
+  const panel = draft ? draftRowsPanel.value : reviewRowsPanel.value;
+  if (!panel || company !== props.companyId) return;
+  panel.open = true;
+  const target = panel.querySelector(`[data-bank-line="${source.line_id}"]`);
+  if (target) {
+    target.focus({preventScroll:true});
+    target.scrollIntoView({block:'center'});
+  } else {
+    notice.value = tx('Статус строки изменился. Проверьте историю выписки.');
+    panel.scrollIntoView({block:'start'});
+  }
+}
+defineExpose({openPaymentSource});
+
 async function resumeSaved(item) {
   if (!props.canImport || !props.companyId || busy.value || reprocessBusy.value || !item?.id || item.status !== 'preview') return;
   const company = props.companyId, operation = ++resumeGeneration;
@@ -721,9 +749,9 @@ async function confirmAndPost(event) {
         <BankStatementExpenses :statement="preview.statement" :rows="rows" :currency="currency"/>
         <p v-if="canViewCashFlow" class="sub">{{tx('Cash Flow показывает месяцы с первого числа начального месяца до даты окончания выписки. Если выписка охватывает разные годы, предыдущий год откройте отдельно.')}}</p>
         <button v-if="canViewCashFlow" type="button" class="secondary tiny" @click="emit('cash-flow',{currency,period_from:preview.statement.period_from,period_to:preview.statement.period_to})">{{tx('Открыть Cash Flow')}}</button>
-        <details class="statement-source"><summary>{{tx('Исходные строки и статусы проведения')}}</summary>
+        <details ref="draftRowsPanel" class="statement-source"><summary>{{tx('Исходные строки и статусы проведения')}}</summary>
         <div class="table-scroll"><table><thead><tr><th>{{tx('Дата')}}</th><th>{{tx('Контрагент / документ')}}</th><th>{{tx('Назначение')}}</th><th>{{tx('Движение')}}</th><th>{{tx('Результат сверки')}}</th></tr></thead><tbody>
-          <tr v-for="row in rows" :key="row.id"><td>{{formatShortDate(row.date)}}</td><td>{{row.correspondent_name}}<small>{{row.correspondent_inn || '—'}} · {{row.document_number}}</small></td><td>{{row.purpose}}</td><td>{{directionLabel(row.direction)}}<small>{{money(row.amount)}} {{currency}}</small></td><td>{{rowLabel(row,preview.full_reconciliation)}}<CashFundingBankCaption :row="row" :currency="currency"/><small v-if="categoryName(row)">{{tx('Статья')}}: {{categoryName(row)}}</small><small v-if="categoryRuleLabel(row)">{{categoryRuleLabel(row)}}</small><small v-if="row.reason">{{tx(row.reason)}}</small><small v-if="row.request_id">{{tx('Заявка №{id}',{id:row.request_id})}}</small><small v-if="row.status === 'manual_match' && row.classification?.startsWith('paid:')">{{tx('Дата оплаты')}}: {{row.classification.slice(5)}}</small>
+          <tr v-for="row in rows" :key="row.id" :data-bank-line="row.id" tabindex="-1"><td>{{formatShortDate(row.date)}}</td><td>{{row.correspondent_name}}<small>{{row.correspondent_inn || '—'}} · {{row.document_number}}</small></td><td>{{row.purpose}}</td><td>{{directionLabel(row.direction)}}<small>{{money(row.amount)}} {{currency}}</small></td><td>{{rowLabel(row,preview.full_reconciliation)}}<CashFundingBankCaption :row="row" :currency="currency"/><small v-if="categoryName(row)">{{tx('Статья')}}: {{categoryName(row)}}</small><small v-if="categoryRuleLabel(row)">{{categoryRuleLabel(row)}}</small><small v-if="row.reason">{{tx(row.reason)}}</small><small v-if="row.request_id">{{tx('Заявка №{id}',{id:row.request_id})}}</small><small v-if="row.status === 'manual_match' && row.classification?.startsWith('paid:')">{{tx('Дата оплаты')}}: {{row.classification.slice(5)}}</small>
             <div v-if="canPost && row.status === 'review' && row.direction === 'out' && !row.uncertain" class="review-actions">
               <button type="button" class="secondary" :disabled="reviewBusy !== null" @click="findCandidates(row,true)">{{tx('Найти учтённую оплату')}}</button>
               <template v-if="matchActions[row.id]">
@@ -791,7 +819,7 @@ async function confirmAndPost(event) {
       <p v-if="canImport && !canPost" class="sub">{{tx('Для проведения поступлений и комиссий требуется право записи операций.')}}</p>
       <p v-if="account && currency && !validSelection" class="error" role="alert">{{tx('Валюта выписки должна совпадать с валютой выбранного счёта.')}}</p>
 
-      <details class="review-list">
+      <details ref="reviewRowsPanel" class="review-list">
         <summary>{{tx('Операции для проверки бухгалтера')}}<span v-if="reviewsLoaded"> ({{reviews.length}})</span></summary>
         <div>
         <p v-if="canLinkExistingBankFacts && !canReview" class="sub">{{tx('Администратор может связать повтор или перевод с уже проведённой операцией. Новая оплата не создаётся.')}}</p>
@@ -799,7 +827,7 @@ async function confirmAndPost(event) {
         <p v-if="reviewError" class="error" role="alert">{{tx(reviewError)}}</p>
         <p v-else-if="reviewsLoaded && !reviews.length" class="sub">{{tx('Нет операций, ожидающих проверки.')}}</p>
         <div v-else-if="reviews.length" class="table-scroll"><table><thead><tr><th>{{tx('Дата')}}</th><th>{{tx('Контрагент / документ')}}</th><th>{{tx('Назначение')}}</th><th>{{tx('Движение')}}</th><th>{{tx('Результат сверки')}}</th></tr></thead><tbody>
-          <tr v-for="row in reviews" :key="row.id"><td>{{formatShortDate(row.date)}}</td><td>{{row.correspondent_name}}<small>{{row.correspondent_inn || '—'}} · {{row.document_number}}</small></td><td>{{row.purpose}}</td><td>{{directionLabel(row.direction)}}<small>{{money(row.amount,row.currency)}} {{row.currency}}</small></td><td>{{label(row.status)}}<small v-if="row.reason">{{tx(row.reason)}}</small><small v-if="row.status === 'ambiguous_duplicate'">{{tx('Классификация сама не устраняет возможный повтор. Сопоставьте строку с ранее проведённой операцией.')}}</small>
+          <tr v-for="row in reviews" :key="row.id" :data-bank-line="row.id" tabindex="-1"><td>{{formatShortDate(row.date)}}</td><td>{{row.correspondent_name}}<small>{{row.correspondent_inn || '—'}} · {{row.document_number}}</small></td><td>{{row.purpose}}</td><td>{{directionLabel(row.direction)}}<small>{{money(row.amount,row.currency)}} {{row.currency}}</small></td><td>{{label(row.status)}}<small v-if="row.reason">{{tx(row.reason)}}</small><small v-if="row.status === 'ambiguous_duplicate'">{{tx('Классификация сама не устраняет возможный повтор. Сопоставьте строку с ранее проведённой операцией.')}}</small>
             <div v-if="canLinkExisting && row.status === 'ambiguous_duplicate'" class="review-actions">
               <button type="button" class="secondary" :disabled="reviewBusy !== null" @click="findDuplicateCandidates(row)">{{tx('Найти ранее проведённую операцию')}}</button>
               <template v-if="duplicateActions[row.id]">
@@ -907,6 +935,7 @@ async function confirmAndPost(event) {
 </template>
 
 <style scoped>
+tr[data-bank-line]:focus{outline:2px solid var(--accent,#6539d5);outline-offset:-2px}
 .bank-help{margin:8px 0 12px}.bank-help summary{cursor:pointer;font-weight:600;font-size:13px}.bank-help p{max-width:85ch}
 .review-list>summary{cursor:pointer;font-weight:600}
 .bank-preview label.confirm{display:flex;align-items:center;gap:12px;padding:14px;border:1px solid var(--line,#dce0e8);border-radius:8px;font-weight:600;cursor:pointer}

@@ -160,7 +160,22 @@ const money=v=>{if(v==null)return '—';let s=String(v);if(currency.value==='UZS
 const moneyShort=(v,cur=currency.value)=>formatAmount(toCents(v),cur), moneyTitle=(v,cur=currency.value)=>amountTitle(toCents(v),cur);
 const costGroups={fixed:N_('Постоянные затраты'),variable:N_('Переменные затраты'),other:N_('Прочие затраты')};
 const auditRefresh=ref(0),homeRefresh=ref(0);
-const bankDraft=ref(null);
+const bankDraft=ref(null), bankStatementsPanel=ref(null);
+function alreadyPaid(id){
+ if(saving.value || modal.value?.paymentRequestId!==id)return;
+ modal.value=null;
+ requestPaid(id);
+ flash(N_('Заявка уже оплачена. Она доступна в архиве.'));
+}
+async function openPaymentSource(row){
+ const account=paymentBankAccount.value, company=companyId.value, epoch=companyEpoch;
+ if(saving.value || !account || !canNavigate('ledger') || !canCompareBank.value) return;
+ modal.value=null;
+ await go('ledger');
+ if(epoch!==companyEpoch || company!==companyId.value || page.value!=='ledger')return;
+ await nextTick();
+ await bankStatementsPanel.value?.openPaymentSource(row,account);
+}
 const paymentBankAccount=computed(()=>modal.value?.paymentRequestId ? boot.value.accounts.find(a=>a.kind==='bank'&&a.id===Number(form.value.account_id)) : null);
 const canCompareBank=computed(() => companyId.value && canNavigate('ledger') && canNavigate('requests') && has('requests-view')
   && (has('view') || has('pay_bank')) && (user.value?.holding_role || ['finance','director','accountant'].includes(user.value?.company_role)));
@@ -243,8 +258,19 @@ const moreRequestsBusy=ref(false),moreRequestsError=ref(''),requestListKey=ref('
 const requestsKey=()=>JSON.stringify([companyId.value,page.value,currency.value,search.value,dateFrom.value,dateTo.value,requestArchive.value,requestStatus.value]);
 const moreRequestsAvailable=computed(()=>page.value==='requests'&&listPage.value<listPages.value);
 const requestScrollDisabled=computed(()=>busy.value||moreRequestsBusy.value||!!cardId.value||!!editor.value||!!modal.value||requestListKey.value!==requestsKey());
+function selectRequestArchive(tab){
+ requestArchive.value=tab;
+ if(tab==='active' && requestStatus.value==='paid')requestStatus.value='';
+ listPage.value=1;
+ return load();
+}
+function applyRequestStatus(){
+ if(requestStatus.value==='paid')requestArchive.value='archived';
+ listPage.value=1;
+ return load();
+}
 function requestListParams(number){
- const p=new URLSearchParams({paginated:'true',page:String(number),page_size:'15',currency:currency.value,q:search.value,archive:dateFrom.value||dateTo.value?'all':requestArchive.value});
+ const p=new URLSearchParams({paginated:'true',page:String(number),page_size:'15',currency:currency.value,q:search.value,archive:requestArchive.value});
  if(dateFrom.value)p.set('date_from',dateFrom.value);if(dateTo.value)p.set('date_to',dateTo.value);if(requestStatus.value)p.set('state',requestStatus.value);return p;
 }
 async function loadMoreRequests(){
@@ -369,7 +395,7 @@ async function signIn(event){
  }catch(e){error.value=e.message}finally{busy.value=false}
 }
 async function logout(){cancelPending();clearWorkspace();user.value=null;busy.value=true;try{await post('/api/logout')}finally{endSession()}}
-async function goWith(name,opts={}){if(!canNavigate(name))return;menuOpen.value=false;helpOpen.value=false;reportEditing.value=false;page.value=name;location.hash=name;search.value='';dateFrom.value=opts.from||'';dateTo.value=opts.to||'';requestStatus.value=opts.status||'';requestArchive.value='active';listPage.value=1;expandedRequest.value=null;rows.value=[];await load()}
+async function goWith(name,opts={}){if(!canNavigate(name))return;menuOpen.value=false;helpOpen.value=false;reportEditing.value=false;page.value=name;location.hash=name;search.value='';dateFrom.value=opts.from||'';dateTo.value=opts.to||'';requestStatus.value=opts.status||'';requestArchive.value=opts.status==='paid'?'archived':'active';listPage.value=1;expandedRequest.value=null;rows.value=[];await load()}
 const canDecide=r=>canDecideRequest(r);
 async function go(name){if(!canNavigate(name))return;menuOpen.value=false;helpOpen.value=false;reportEditing.value=false;page.value=name;location.hash=name;search.value='';dateFrom.value='';dateTo.value='';requestStatus.value='';requestArchive.value='active';listPage.value=1;expandedRequest.value=null;rows.value=[];await load()}
 async function openStatementCashFlow(data){
@@ -390,7 +416,7 @@ async function load(options={}){clearTimeout(searchTimer);searchTimer=null;if(!c
  if(page.value==='home')homeRefresh.value++;
  if(requestedPage==='calendar'){const horizon=days.value,data=await api(`/api/dashboard?currency=${requestedCurrency}&days=${horizon}`);if(current()&&days.value===horizon)dash.value=data;}
  if(requestedPage==='accounts'){const archived=showArchive.value,data=await api('/api/accounts?archived='+archived+'&include_statement_balance=true');if(current()&&showArchive.value===archived)rows.value=data;}
- if(['ledger','requests'].includes(requestedPage)){const requestId=++listRequestId;const params=new URLSearchParams({paginated:'true',page:String(listPage.value),page_size:String(listPageSize.value),currency:requestedCurrency,q:search.value});if(dateFrom.value)params.set('date_from',dateFrom.value);if(dateTo.value)params.set('date_to',dateTo.value);if(requestedPage==='ledger'&&showDeletedOperations.value)params.set('include_deleted','true');if(requestedPage==='requests')params.set('archive',dateFrom.value||dateTo.value?'all':requestArchive.value);if(requestedPage==='requests'&&requestStatus.value)params.set('state',requestStatus.value);const data=await api(`/api/${requestedPage}?${params}`);if(current()&&requestId===listRequestId){rows.value=data.items;listTotal.value=data.total;if(requestedPage==='requests')requestListKey.value=key;}}
+ if(['ledger','requests'].includes(requestedPage)){const requestId=++listRequestId;const params=new URLSearchParams({paginated:'true',page:String(listPage.value),page_size:String(listPageSize.value),currency:requestedCurrency,q:search.value});if(dateFrom.value)params.set('date_from',dateFrom.value);if(dateTo.value)params.set('date_to',dateTo.value);if(requestedPage==='ledger'&&showDeletedOperations.value)params.set('include_deleted','true');if(requestedPage==='requests')params.set('archive',requestArchive.value);if(requestedPage==='requests'&&requestStatus.value)params.set('state',requestStatus.value);const data=await api(`/api/${requestedPage}?${params}`);if(current()&&requestId===listRequestId){rows.value=data.items;listTotal.value=data.total;if(requestedPage==='requests')requestListKey.value=key;}}
  if(!current())return;
  if(requestedPage==='budgets'){const selectedMonth=month.value,data=await api(`/api/budgets?currency=${requestedCurrency}&month=${selectedMonth}`);if(current()&&month.value===selectedMonth)rows.value=data;}
  if(!current())return;
@@ -431,7 +457,7 @@ function requestPaid(id){
  loadRequestId++;listRequestId++;reportRequestId++;
  if(page.value==='requests'){
   const matched=rows.value.filter(r=>r.id===id).length;
-  if((!dateFrom.value&&!dateTo.value&&requestArchive.value==='active')||(requestStatus.value&&requestStatus.value!=='paid')){
+  if(requestArchive.value==='active'||(requestStatus.value&&requestStatus.value!=='paid')){
    rows.value=rows.value.filter(r=>r.id!==id);listTotal.value=Math.max(0,listTotal.value-matched);listPage.value=Math.min(listPage.value,listPages.value);
   }
   else rows.value=rows.value.map(r=>r.id===id?{...r,status:'paid',actions:[],overdue:false}:r);
@@ -700,7 +726,7 @@ onMounted(async()=>{const epoch=companyEpoch;try{const r=await api('/api/me');if
 
     <!-- Операции -->
     <template v-if="page==='ledger'">
-     <BankStatements v-if="has('ledger')&&companyId" :key="`bank-statements-${companyId}`" :api="api" :company-id="companyId" :accounts="boot.accounts" :categories="boot.categories" :can-import="has('pay_bank')||has('import')" :can-review="has('pay_bank')" :can-link-existing-bank-facts="user.holding_role==='admin'&&has('write')" :can-allocate="has('pay_bank')||has('write')" :can-post="has('write')||has('pay_bank')" :can-manage-fee="has('write')" :can-delete-statements="user.holding_role==='admin'" :can-resolve-exceptions="user.holding_role==='admin'&&has('pay_bank')&&has('write')" :can-view-cash-flow="canNavigate('report')" :can-view-history="!!user.permissions?.some(p => p === 'pay_bank' || p === 'import')" @cash-flow="openStatementCashFlow" @changed="bankStatementsChanged" @draft-change="bankDraft=$event">
+     <BankStatements ref="bankStatementsPanel" v-if="has('ledger')&&companyId" :key="`bank-statements-${companyId}`" :api="api" :company-id="companyId" :accounts="boot.accounts" :categories="boot.categories" :can-import="has('pay_bank')||has('import')" :can-review="has('pay_bank')" :can-link-existing-bank-facts="user.holding_role==='admin'&&has('write')" :can-allocate="has('pay_bank')||has('write')" :can-post="has('write')||has('pay_bank')" :can-manage-fee="has('write')" :can-delete-statements="user.holding_role==='admin'" :can-resolve-exceptions="user.holding_role==='admin'&&has('pay_bank')&&has('write')" :can-view-cash-flow="canNavigate('report')" :can-view-history="!!user.permissions?.some(p => p === 'pay_bank' || p === 'import')" @cash-flow="openStatementCashFlow" @changed="bankStatementsChanged" @draft-change="bankDraft=$event">
       <template #comparison>
        <StatementPeriod v-if="canCompareBank && bankDraft" :key="`statement-period-${companyId}-${bankDraft?.id || 0}`" :draft="bankDraft" :api="api" :company-id="companyId" :accounts="boot.accounts" :currency="bankDraft.account.currency" :today="boot.today" :refresh="homeRefresh" @open-request="openRequest"/>
       </template>
@@ -717,10 +743,10 @@ onMounted(async()=>{const epoch=companyEpoch;try{const r=await api('/api/me');if
 
     <!-- Заявки -->
     <template v-if="page==='requests'">
-     <div v-if="!dateFrom&&!dateTo" class="seg" role="group" :aria-label="tx('Список заявок')"><button :class="{on:requestArchive==='active'}" @click="requestArchive='active';listPage=1;load()">{{tx('Основной список')}}</button><button :class="{on:requestArchive==='archived'}" @click="requestArchive='archived';listPage=1;load()">{{tx('Архив заявок')}}</button></div>
-     <p class="sub">{{dateFrom||dateTo?tx('За выбранный период показаны все заявки, включая архивные.'):tx('На согласовании, на доработке и утверждённые неоплаченные заявки остаются в основном списке. Оплаченные сразу переходят в архив.')}}</p>
+     <div class="seg" role="group" :aria-label="tx('Список заявок')"><button :class="{on:requestArchive==='active'}" @click="selectRequestArchive('active')">{{tx('Основной список')}}</button><button :class="{on:requestArchive==='archived'}" @click="selectRequestArchive('archived')">{{tx('Архив заявок')}}</button></div>
+     <p class="sub">{{tx('На согласовании, на доработке и утверждённые неоплаченные заявки остаются в основном списке. Оплаченные сразу переходят в архив.')}}</p>
      <p class="sub">{{tx('Сначала ранние сроки оплаты: просроченные, затем сегодняшние и ближайшие.')}}</p>
-     <PeriodFilter :key="page" :date-from="dateFrom" :date-to="dateTo" @apply="applyPeriod"><select :aria-label="tx('Статус заявки')" v-model="requestStatus" @change="listPage=1;load()"><option value="">{{tx('Статус: все')}}</option><option v-for="(label,key) in requestStatuses" :key="key" :value="key">{{tx(label)}}</option></select><label class="search"><AppIcon name="search"/><input v-model="search" @input="queueSearch" :placeholder="tx('Номер заявки, контрагент или назначение')" :aria-label="tx('Поиск заявки')"></label><div class="grow actions"><button v-if="has('request')" @click="requestForm()"><AppIcon name="plus"/> {{tx('Создать заявку')}}</button></div></PeriodFilter>
+     <PeriodFilter :key="page" :date-from="dateFrom" :date-to="dateTo" @apply="applyPeriod"><select :aria-label="tx('Статус заявки')" v-model="requestStatus" @change="applyRequestStatus"><option value="">{{tx('Статус: все')}}</option><option v-for="(label,key) in requestStatuses" :key="key" :value="key">{{tx(label)}}</option></select><label class="search"><AppIcon name="search"/><input v-model="search" @input="queueSearch" :placeholder="tx('Номер заявки, контрагент или назначение')" :aria-label="tx('Поиск заявки')"></label><div class="grow actions"><button v-if="has('request')" @click="requestForm()"><AppIcon name="plus"/> {{tx('Создать заявку')}}</button></div></PeriodFilter>
      <p class="sumline"><span>{{tx('Найдено')}} <b>{{listTotal}}</b></span><span>{{listTotal<=4?tx('До 4 заявок — карточки'):tx('Следующие заявки загружаются при прокрутке')}}</span></p>
      <div v-if="listTotal<=4&&visibleRows.length" class="rq-grid"><section v-for="r in visibleRows" :key="r.id" class="card rq-card" :class="{backdated: isBackdated(r)}" :title="isBackdated(r)?tx(BACKDATED_HINT):null">
       <div class="rq-top"><span>{{r.number}}</span><span class="pill" :class="statusClass(r)">{{stageLabel(r)}}</span></div>
@@ -847,7 +873,7 @@ onMounted(async()=>{const epoch=companyEpoch;try{const r=await api('/api/me');if
  <RequestCard v-if="cardId" :key="cardId" :id="cardId" :api="api" :company-url="companyUrl" :money="money" :dues="boot.due_minimums" @close="cardId=null" @changed="load" @edit="cardEdit" @record-payment="cardPay" @payments-recorded="batchPaymentsRecorded"/>
 
  <!-- Формы -->
- <div v-if="modal&&!modal.inlineDay" class="modal-backdrop"><form v-modal-focus class="modal" role="dialog" aria-modal="true" aria-labelledby="modal-title" @submit.prevent="save" @keydown.esc="!saving&&(modal=null)"><div class="section-head"><h2 id="modal-title">{{tx(modal.title,modal.titleParams)}}</h2><button type="button" class="ghost icon-btn" :aria-label="tx('Закрыть')" @click="modal=null" :disabled="saving"><AppIcon name="x"/></button></div><p v-if="modal.note" class="form-note">{{tx(modal.note,modal.noteParams)}}</p><div class="form-grid"><label v-for="f in modalFields" :key="f.key" :class="{wide:f.type==='textarea'}">{{tx(f.label)}}<select v-if="f.type==='select'" v-model="form[f.key]" :required="f.required" :disabled="f.disabled"><option v-for="o in f.options" :key="o[0]" :value="o[0]">{{o[1]}}</option></select><textarea v-else-if="f.type==='textarea'" v-model="form[f.key]" :required="f.required" :minlength="f.minlength"  :maxlength="f.maxlength||3000"></textarea><MoneyInput v-else-if="modal.receipt&&f.key==='amount'" v-model="form[f.key]" :required="f.required" :disabled="f.disabled"/><input v-else v-model="form[f.key]" :type="amountFields.includes(f.key)?'text':f.type" :inputmode="f.inputmode||(amountFields.includes(f.key)?'decimal':undefined)" :pattern="f.pattern||(amountFields.includes(f.key)?'[0-9]+([.][0-9]{1,2})?':undefined)" :maxlength="f.maxlength" :required="f.required" :disabled="f.disabled" :min="f.min" :max="f.max" :minlength="f.minlength" :list="f.key==='counterparty'&&modal.receipt?'receipt-counterparties':undefined" @input="f.key==='counterparty'&&receiptPartyChanged()" :step="f.step||'0.01'"></label></div><div v-if="modal?.receipt && receiptPartyStatus === 'ambiguous'" class="form-note" role="status">{{tx('Найдено несколько контрагентов с таким названием. Выберите ИНН или введите его вручную.')}} <button v-for="item in receiptPartyMatches" :key="item.id" type="button" class="secondary tiny" @click="chooseReceiptParty(item)">{{item.name}} · {{item.inn || '—'}}</button></div><p v-if="modal?.receipt && receiptPartyStatus === 'error'" class="warning" role="status">{{tx('Не удалось найти ИНН. Введите его вручную.')}}</p><p v-if="categoryHint" class="warning category-hint" role="status">{{categoryHint}}</p><PaymentBankEvidence v-if="canCompareBank&&paymentBankAccount" :api="api" :company-id="companyId" :account="paymentBankAccount" :request-id="modal.paymentRequestId" :reference="form.reference" :day="form.date"/><p v-if="formError" class="error">{{tx(formError)}}</p><datalist v-if="modal.receipt" id="receipt-counterparties"><option v-for="c in boot.counterparties" :key="c.name" :value="c.name">{{c.inn}}</option></datalist><div class="form-actions"><button type="button" class="secondary" @click="modal=null" :disabled="saving">{{tx('Отмена')}}</button><button :disabled="saving">{{saving?tx('Сохраняем…'):modal.saveLabel?tx(modal.saveLabel):tx('Сохранить')}}</button></div></form></div>
+ <div v-if="modal&&!modal.inlineDay" class="modal-backdrop"><form v-modal-focus class="modal" role="dialog" aria-modal="true" aria-labelledby="modal-title" @submit.prevent="save" @keydown.esc="!saving&&(modal=null)"><div class="section-head"><h2 id="modal-title">{{tx(modal.title,modal.titleParams)}}</h2><button type="button" class="ghost icon-btn" :aria-label="tx('Закрыть')" @click="modal=null" :disabled="saving"><AppIcon name="x"/></button></div><p v-if="modal.note" class="form-note">{{tx(modal.note,modal.noteParams)}}</p><div class="form-grid"><label v-for="f in modalFields" :key="f.key" :class="{wide:f.type==='textarea'}">{{tx(f.label)}}<select v-if="f.type==='select'" v-model="form[f.key]" :required="f.required" :disabled="f.disabled"><option v-for="o in f.options" :key="o[0]" :value="o[0]">{{o[1]}}</option></select><textarea v-else-if="f.type==='textarea'" v-model="form[f.key]" :required="f.required" :minlength="f.minlength"  :maxlength="f.maxlength||3000"></textarea><MoneyInput v-else-if="modal.receipt&&f.key==='amount'" v-model="form[f.key]" :required="f.required" :disabled="f.disabled"/><input v-else v-model="form[f.key]" :type="amountFields.includes(f.key)?'text':f.type" :inputmode="f.inputmode||(amountFields.includes(f.key)?'decimal':undefined)" :pattern="f.pattern||(amountFields.includes(f.key)?'[0-9]+([.][0-9]{1,2})?':undefined)" :maxlength="f.maxlength" :required="f.required" :disabled="f.disabled" :min="f.min" :max="f.max" :minlength="f.minlength" :list="f.key==='counterparty'&&modal.receipt?'receipt-counterparties':undefined" @input="f.key==='counterparty'&&receiptPartyChanged()" :step="f.step||'0.01'"></label></div><div v-if="modal?.receipt && receiptPartyStatus === 'ambiguous'" class="form-note" role="status">{{tx('Найдено несколько контрагентов с таким названием. Выберите ИНН или введите его вручную.')}} <button v-for="item in receiptPartyMatches" :key="item.id" type="button" class="secondary tiny" @click="chooseReceiptParty(item)">{{item.name}} · {{item.inn || '—'}}</button></div><p v-if="modal?.receipt && receiptPartyStatus === 'error'" class="warning" role="status">{{tx('Не удалось найти ИНН. Введите его вручную.')}}</p><p v-if="categoryHint" class="warning category-hint" role="status">{{categoryHint}}</p><PaymentBankEvidence v-if="canCompareBank&&paymentBankAccount" :api="api" :company-id="companyId" :account="paymentBankAccount" :request-id="modal.paymentRequestId" :reference="form.reference" :day="form.date" :can-open="!saving && canNavigate('ledger') && has('pay_bank')" @open-source="openPaymentSource" @already-paid="alreadyPaid"/><p v-if="formError" class="error">{{tx(formError)}}</p><datalist v-if="modal.receipt" id="receipt-counterparties"><option v-for="c in boot.counterparties" :key="c.name" :value="c.name">{{c.inn}}</option></datalist><div class="form-actions"><button type="button" class="secondary" @click="modal=null" :disabled="saving">{{tx('Отмена')}}</button><button :disabled="saving">{{saving?tx('Сохраняем…'):modal.saveLabel?tx(modal.saveLabel):tx('Сохранить')}}</button></div></form></div>
  <div v-if="documents" class="modal-backdrop"><section class="modal"><div class="section-head"><h2>{{tx('Документы · {reference}',{reference:documents.ledger.reference})}}</h2><button class="ghost icon-btn" :aria-label="tx('Закрыть')" @click="documents=null"><AppIcon name="x"/></button></div><p v-for="d in documents.rows" :key="d.url"><a v-if="has('download')" :href="companyUrl(d.url)">{{d.filename}} ↓</a><span v-else>{{d.filename}}</span></p><p v-if="!documents.rows.length" class="sub">{{tx('Документов пока нет.')}}</p><label v-if="documents.ledger.can_attach_document" class="button" style="margin-top:12px">{{tx('Прикрепить PDF / изображение')}}<input type="file" accept=".pdf,.png,.jpg,.jpeg" @change="attach" :disabled="saving" hidden></label><p class="sub" style="margin-top:12px">{{tx('До 5 МБ. Документы доступны только авторизованным пользователям с правом просмотра реестра.')}}</p></section></div>
 </template>
 <style>

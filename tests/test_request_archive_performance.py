@@ -37,8 +37,9 @@ class RequestArchivePerformanceTests(base.SiteTests):
             self.assertEqual(self.listing(archive='active'),({ids[1],ids[3],ids[4],ids[6]},4))
             self.assertEqual(self.listing(archive='archived'),({ids[0],ids[2],ids[5]},3))
             self.assertEqual(self.listing(archive='all'),(set(ids),7))
-            self.assertEqual(self.listing(archive='active',date_from=self.date),(set(ids),7))
-            self.assertEqual(self.listing(archive='archived',date_to=self.date),(set(ids),7))
+            self.assertEqual(self.listing(archive='all',date_from=self.date),(set(ids),7))
+            self.assertEqual(self.listing(archive='active',date_from=self.date),({ids[1],ids[3],ids[4],ids[6]},4))
+            self.assertEqual(self.listing(archive='archived',date_to=self.date),({ids[0],ids[2],ids[5]},3))
         with patch('app.main.now',return_value=stamp+timedelta(hours=1)):
             self.assertEqual(self.listing(archive='archived'),({ids[0],ids[1],ids[2],ids[5]},4))
 
