@@ -508,7 +508,7 @@ async function paymentDateCorrected(result) {
   await resumeSaved(draft);
   if (company !== props.companyId) return;
   if (preview.value?.id === draft.id) notice.value = tx('Дата списания исправлена. Оплата учтена один раз.');
-  emit('changed');
+  emit('changed', 'payment-date');
 }
 
 async function resumeSaved(item) {

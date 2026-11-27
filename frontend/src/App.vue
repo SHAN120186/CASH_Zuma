@@ -402,16 +402,18 @@ async function load(options={}){clearTimeout(searchTimer);searchTimer=null;if(!c
 
 
  }catch(e){if(current()&&e.name!=='AbortError')error.value=e.message}finally{if(current())busy.value=false}}
-async function bankStatementsChanged(){
+async function bankStatementsChanged(change){
  const epoch=companyEpoch,company=companyId.value;
  const current=()=>epoch===companyEpoch&&companyId.value===company&&companyReady.value&&!!user.value;
  if(!current())return;
- // Accepted server writes are distinct from subsequent reads. Invalidate old
- // accounts and list responses immediately so stale balances are never shown.
- loadRequestId++;listRequestId++;reportRequestId++;boot.value={...boot.value,accounts:[]};rows.value=[];listTotal.value=0;dash.value=null;report.value=null;
+ // A date correction reuses the same account and debit. Keep the draft's
+ // account selected until bootstrap supplies its refreshed permissions.
+ if(change!=='payment-date')boot.value={...boot.value,accounts:[]};
+ loadRequestId++;listRequestId++;reportRequestId++;rows.value=[];listTotal.value=0;dash.value=null;report.value=null;
  let failed=false;
- try{await bootstrap();}catch(e){if(!current())return;failed=true;}
+ try{await bootstrap();}catch(e){if(!current())return;failed=true;boot.value={...boot.value,accounts:[]};}
  if(!current())return;
+ if(change==='payment-date')homeRefresh.value++;
  await load({skipBootstrap:true});
  if(current()&&(failed||error.value))error.value=N_('Изменения выписки сохранены. Не удалось обновить данные. Обновите страницу; повторно подтверждать выписку не нужно.');
 }
