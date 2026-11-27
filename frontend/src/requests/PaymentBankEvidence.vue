@@ -13,7 +13,8 @@ async function recordDebit(row) {
   error.value = '';
   try {
     await props.api('/api/bank-statements/lines/' + row.line_id + '/recognize-debit', {
-      method:'POST', body:JSON.stringify({request_id:id, request_version:result.value.request_version,
+      method:'POST', headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({request_id:id, request_version:result.value.request_version,
         confirm:true, payment_date:row.date, note:tx('Учёт исполненной платёжки № {number}', {number:row.reference})})
     });
     if (props.requestId === id) emit('already-paid', id);
