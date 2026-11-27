@@ -1,7 +1,8 @@
 {
-  "version": "2.36.31",
+  "version": "2.36.32",
   "date": "2026-11-27",
   "changes": [
+    "В черновике выписки финансовый директор может исправить дату существующей оплаты по её банковскому документу. Согласование сохраняется, а фактический расход отражается один раз на дату банка.",
     "В сверке можно выбрать день выписки и посмотреть остатки, обороты, платёжки и оплаты сайта за этот день. Сохранённые черновики доступны для просмотра без проведения.",
     "В сохранённой проверке выписки можно отметить строки и сохранить подборку без проведения операций.",
     "Выписка по лицевому счёту IABS загружается по операционным дням. Сайт собирает многострочные платёжки и проверяет обороты и остатки каждого дня.",
@@ -163,6 +164,7 @@
     "Длинные названия файлов и кнопки выбора шаблона переносятся на узком экране. В ТЭО дата архива отдельно обозначена и не подменяет начало финансового прогноза."
   ],
   "changes_uz": [
+    "Ko‘chirma qoralamasida moliya direktori mavjud to‘lov sanasini bank hujjati asosida tuzata oladi. Tasdiqlash tarixi saqlanadi, xarajat bank sanasida bir marta hisobga olinadi.",
     "«Operatsiyalar» bo‘limidagi «Ko‘chirmani yuklash» tugmasi bankning XLSX faylini qabul qiladi va dastlabki ko‘rishni ochadi. Operatsiyalarni o‘tkazish uchun alohida tasdiq kerak.",
     "Bank bilan solishtirishda bitta to‘lov topshiriqnomasi va uning qism raqamlari bo‘yicha arizalar topiladi. Har bir arizaning summasi, jami va ko‘chirmadagi summadan farqi ko‘rsatiladi.",
     "Bank bilan solishtirishda arizaning farq qiluvchi to‘ldirilgan rekvizitlari qizil rangda ko‘rsatiladi. Shartnoma raqami to‘lov va ariza maqsadi bo‘yicha solishtiriladi.",

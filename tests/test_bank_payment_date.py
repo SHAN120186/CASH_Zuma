@@ -1,0 +1,106 @@
+import io
+import unittest
+from datetime import date, timedelta
+
+from reportlab.pdfgen import canvas
+from sqlalchemy import func, select
+
+from tests import test_bank_statement_api as fixtures
+from app.db import Account, Ledger, PaymentRequest, RequestDocument, engine, unit
+from app.bank_statement_models import BankStatementBatch, BankStatementLine
+from app.services import account_balance
+
+
+class BankDateTests(unittest.TestCase):
+    def setUp(self):
+        f = self.f = fixtures.BankStatementTests()
+        f.setUp()
+        self.addCleanup(f.tearDown)
+        self.rid = f.approved()
+        self.fin, self.headers = f.make_user('finance', 'statement_date_finance')
+        self.addCleanup(self.fin.close)
+        self.bank_day = date.fromisoformat(f.date).replace(day=1) - timedelta(days=1)
+        self.source = f.source([f.bank_row('TEST-71', date=str(self.bank_day))])
+        self.source.update(period_from=str(self.bank_day), period_to=str(self.bank_day))
+        with unit(True) as s:
+            req = s.get(PaymentRequest, self.rid)
+            req.status = 'paid'
+            self.approval = req.approved_at
+            account = s.get(Account, f.acc)
+            account.opening_date = self.bank_day
+            account.opening = 100000
+            entry = Ledger(account_id=f.acc, request_id=req.id, category_id=req.category_id, kind='out',
+                date=date.fromisoformat(f.date), amount=req.amount, reference='TEST-71', creator_id=req.creator_id)
+            s.add(entry)
+            s.flush()
+            self.entry_id = entry.id
+        draft = f.preview(self.source).json()
+        self.bid = draft['id']
+        self.line = draft['rows'][0]['id']
+        with unit(True) as s:
+            from app.db import User
+            finance = s.scalar(select(User).where(User.username=='statement_date_finance'))
+            s.get(BankStatementBatch, self.bid).created_by = finance.id
+        self.base = f'/api/bank-statements/{self.bid}/payment-date/'
+        self.data = {'request_id':self.rid, 'document_number':'TEST-71'}
+
+    def call(self, stage='preview', **extra):
+        return self.fin.post(self.base + stage, headers=self.headers, json={**self.data, **extra})
+
+    def test_cross_month_keeps_approval_one_debit_and_draft_link(self):
+        doc = io.BytesIO()
+        pdf = canvas.Canvas(doc)
+        pdf.drawString(40, 700, 'Contract INV-T071 / Supplier 300000002')
+        pdf.save()
+        with unit(True) as s:
+            req = s.get(PaymentRequest, self.rid)
+            req.counterparty_inn = ''
+            s.get(BankStatementLine, self.line).purpose = 'Supplier contract INV-T071'
+            self.assertEqual(account_balance(s, s.get(Account,self.f.acc), self.bank_day), 100000)
+        self.assertEqual(self.call().status_code, 409)
+        with unit(True) as s:
+            s.add(RequestDocument(request_id=self.rid, kind='contract', mime='application/pdf',
+                filename='INV-T071.pdf', storage_key='test-date-proof', sha256='1'*64,
+                content=doc.getvalue(), version=1, active=True, created_by=1))
+        preview = self.call()
+        self.assertEqual(preview.status_code, 200, preview.text)
+        with unit() as s:
+            version = s.get(PaymentRequest, self.rid).version
+        expected = preview.json()['expected']
+        self.assertEqual(self.call('confirm', expected='0'*64).status_code, 409)
+        result = self.call('confirm', expected=expected)
+        self.assertEqual(result.status_code, 200, result.text)
+        self.assertEqual(self.call('confirm', expected=expected).status_code, 409)
+        refreshed = self.fin.post(f'/api/bank-statements/{self.bid}/resume',
+            headers=self.headers, json={'fee_category_id':None})
+        self.assertEqual(refreshed.status_code, 200, refreshed.text)
+        with unit() as s:
+            req = s.get(PaymentRequest,self.rid)
+            account = s.get(Account,self.f.acc)
+            self.assertEqual((req.status, req.version, req.approved_at), ('paid',version,self.approval))
+            self.assertEqual(s.get(Ledger,self.entry_id).date, self.bank_day)
+            self.assertEqual(s.scalar(select(func.count()).select_from(Ledger).where(Ledger.request_id==self.rid)),1)
+            self.assertEqual(account_balance(s,account,self.bank_day),40000)
+            self.assertEqual(account_balance(s,account,date.fromisoformat(self.f.date)),40000)
+            self.assertEqual(s.get(BankStatementLine,self.line).ledger_id,self.entry_id)
+            self.assertEqual(s.get(BankStatementBatch,self.bid).status,'preview')
+
+    def test_permissions_wrong_payee_and_negative_history(self):
+        client, h = self.f.payer
+        self.assertEqual(client.post(self.base+'preview',headers=h,json=self.data).status_code,403)
+        with unit(True) as s:
+            s.get(PaymentRequest,self.rid).counterparty_inn='300000003'
+        self.assertEqual(self.call().status_code,409)
+        with unit(True) as s:
+            s.get(PaymentRequest,self.rid).counterparty_inn='300000002'
+            s.get(Account,self.f.acc).opening=0
+        preview=self.call()
+        self.assertEqual(preview.status_code,200,preview.text)
+        self.assertEqual(self.call('confirm',expected=preview.json()['expected']).status_code,409)
+        with unit() as s:
+            self.assertEqual(s.get(Ledger,self.entry_id).date,date.fromisoformat(self.f.date))
+            self.assertIsNone(s.get(BankStatementLine,self.line).ledger_id)
+
+
+def tearDownModule():
+    engine.dispose()

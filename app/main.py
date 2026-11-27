@@ -1371,6 +1371,8 @@ app.include_router(bank_statement_transfers_router)
 from .bank_statement_historical_transfers import router as historical_bank_transfers_router
 app.include_router(historical_bank_transfers_router)
 from .bank_statement_historical_requests import router as historical_bank_requests_router
+from .bank_payment_date import router as bank_payment_date_router
+app.include_router(bank_payment_date_router)
 app.include_router(historical_bank_requests_router)
 from .bank_statement_distinct_income import router as distinct_bank_income_router
 app.include_router(distinct_bank_income_router)
