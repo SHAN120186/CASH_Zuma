@@ -3,6 +3,13 @@
 // Terms follow common.js: заявка — ariza, согласование — kelishish, статья — modda, справочник — maʼlumotnoma,
 // сторно — storno, ВрИО — v.b., привязать / отвязать Telegram — ulash / uzish, сводка — xulosa.
 export default {
+  'По выписке на {date}': '{date} holatiga ko‘chirma bo‘yicha',
+  'Выписка № {n} · Черновик': '{n}-sonli ko‘chirma · Qoralama',
+  'Выписка № {n} · Проведена': '{n}-sonli ko‘chirma · Hisobga olingan',
+  'По учёту на ту же дату': 'Shu sanaga hisob bo‘yicha',
+  'Разница (банк минус учёт)': 'Farq (bank minus hisob)',
+  'По учёту сегодня': 'Bugungi hisob bo‘yicha',
+  'Остаток по учёту': 'Hisob bo‘yicha qoldiq',
   'В сохранённом отчёте нет данных за эти месяцы.': 'Saqlangan hisobotda ushbu oylar bo‘yicha ma’lumot yo‘q.',
   'Показан сохранённый отчёт. Импорт финансовых моделей Excel отключён.': 'Saqlangan hisobot ko‘rsatilgan. Excel moliyaviy modellarini import qilish o‘chirilgan.',
   'Импорт финансовых моделей Excel отключён.': 'Excel moliyaviy modellarini import qilish o‘chirilgan.',

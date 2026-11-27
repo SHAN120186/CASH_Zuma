@@ -13,6 +13,43 @@ from app.db import Account, Company, Ledger, PaymentRequest, User, engine, unit
 
 
 class PeriodComparisonTests(BankStatementTests):
+    def test_card_uses_latest_visible_bank_day_and_keeps_ledger_independent(self):
+        current = date.fromisoformat(self.date)
+        day = str(current - timedelta(days=1))
+        older = str(current - timedelta(days=2))
+        def draft(stamp, debit):
+            row = self.bank_row(str(self.counter + 11), date=stamp, amount=debit)
+            src = dict(self.statement([row]), period_from=stamp, period_to=stamp,
+                       debit_total=debit, closing_balance='0.00' if debit=='1000.00' else '400.00')
+            response = self.preview(src)
+            self.assertEqual(response.status_code, 200, response.text)
+            return response.json()['id']
+
+        draft(day, '600.00')
+        latest = draft(day, '1000.00')
+        draft(older, '600.00')
+        broken = draft(self.date, '600.00')
+        with unit(True) as s:
+            s.get(BankStatementBatch, broken).balance_matches = False
+        self.assertEqual(self.ledger('17.00','in',date=self.date).status_code,200)
+        before = self.counts()
+        def card(client, headers):
+            response = client.get('/api/accounts?include_statement_balance=true', headers=headers)
+            self.assertEqual(response.status_code,200,response.text)
+            return next(row for row in response.json() if row['id']==self.acc)
+
+        result = card(self.client, self.h)
+        self.assertEqual(result['balance'],'1000017.00')
+        self.assertEqual(result['statement_balance'],dict(id=latest,date=day,status='preview',
+            closing='0.00',book_closing='1000000.00',difference='-1000000.00'))
+        other, auth = self.make_user('finance','other_card_reader')
+        self.addCleanup(other.close)
+        self.assertIsNone(card(other, auth)['statement_balance'])
+        self.assertEqual(self.counts(),before)
+        with unit(True) as s:
+            s.get(BankStatementBatch,latest).status='deleted'
+        self.assertEqual(card(self.client,self.h)['statement_balance']['closing'],'400.00')
+
     def compare(self, source, confirm=True, account_id=None, currency='UZS', login=None, **headers):
         client, auth = login or (self.client, self.h)
         with patch('app.bank_period_comparison.parse_period_statement', return_value=source):

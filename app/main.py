@@ -307,7 +307,7 @@ def get_dashboard(request:Request,currency:Literal['UZS','USD','EUR']='UZS',days
         session_user(s,request,('view','overview','calendar'));return dashboard(s,currency,days)
 
 @app.get('/api/accounts')
-def accounts(request:Request,archived:bool=False):
+def accounts(request:Request,archived:bool=False,include_statement_balance:bool=False):
     with unit() as s:
         user,_=session_user(s,request,'view')
         from .bank_statement_guard import unreconciled_account_counts, read_pending_bank_debit_holds
@@ -317,10 +317,12 @@ def accounts(request:Request,archived:bool=False):
         accounts=list(s.scalars(select(Account).where(Account.archived==archived).order_by(Account.id)))
         balances=batch_account_balances(s,accounts)
         holds=read_pending_bank_debit_holds(s,accounts,marker_counts=marker_counts)
+        sources=account_statement_balances(s,user,accounts,today()) if include_statement_balance else {}
         for a in accounts:
             balance=balances[a.id];hold=holds[a.id]
             result.append({'id':a.id,'name':a.name,'kind':a.kind,'currency':a.currency,'company_id':a.company_id,'opening':money(a.opening),
                  'balance':money(balance),'opening_date':str(a.opening_date),'allow_overdraft':a.allow_overdraft,'archived':a.archived,
+                 **({'statement_balance':sources.get(a.id)} if include_statement_balance else {}),
                  'unreconciled_statements':pending.get(a.id,0),'bank_pending_debits':money(hold),'spendable_balance':money(balance-hold)})
         return result
 
@@ -1355,7 +1357,7 @@ app.include_router(counterparty_replace_router)
 from .bank_statement_category_rules import router as bank_statement_category_rules_router
 app.include_router(bank_statement_category_rules_router)
 from .bank_statement_api import router as bank_statement_router
-from .bank_period_comparison import router as bank_period_router
+from .bank_period_comparison import account_statement_balances, router as bank_period_router
 from .bank_period_coverage import router as bank_period_coverage_router
 from .daily_reconciliation import router as daily_reconciliation_router
 app.include_router(daily_reconciliation_router)
