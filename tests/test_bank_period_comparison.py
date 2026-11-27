@@ -13,6 +13,40 @@ from app.db import Account, Company, Ledger, PaymentRequest, User, engine, unit
 
 
 class PeriodComparisonTests(BankStatementTests):
+    def test_manual_payment_evidence_uses_visible_debits_and_never_posts(self):
+        rid = self.approved()
+        row = self.bank_row('ORDER-12')
+        source = self.statement([row])
+        first = self.preview(source).json()['id']
+        last = self.preview(source).json()['id']
+        payer, headers = self.payer
+        def lookup(client, auth):
+            return client.get(f'/api/bank-statements/payment-evidence/{rid}', headers=auth, params={
+                'account_id':self.acc, 'currency':'UZS', 'reference':'ORDER-12', 'fact_date':self.date})
+        before = self.counts()
+        found = lookup(payer, headers)
+        self.assertEqual(found.status_code, 200, found.text)
+        entry, = found.json()['rows']
+        self.assertEqual((entry['batch_id'], entry['reference'], entry['amount'], entry['date']),
+                         (last, 'ORDER-12', '600.00', self.date))
+        other, auth = self.make_user('finance','evidence_other')
+        self.addCleanup(other.close)
+        self.assertEqual(lookup(other, auth).json()['rows'], [])
+        with unit(True) as s:
+            s.get(Account, self.acc).opening = 0
+        with unit() as s:
+            version = s.get(PaymentRequest, rid).version
+        payment = dict(kind='out', account_id=self.acc, category_id=self.cat, amount='600.00',
+                       date=self.date, reference='ORDER-12', request_id=rid, request_version=version)
+        denied = payer.post('/api/ledger', headers=headers, json=payment)
+        self.assertEqual(denied.status_code, 409, denied.text)
+        self.assertIn('В выписке есть списание', denied.text)
+        with unit(True) as s:
+            s.get(BankStatementBatch, last).status = 'deleted'
+            s.get(BankStatementBatch, first).source_ready = False
+        self.assertEqual(lookup(payer, headers).json()['rows'], [])
+        self.assertEqual(self.counts(), before)
+
     def test_card_uses_latest_visible_bank_day_and_keeps_ledger_independent(self):
         current = date.fromisoformat(self.date)
         day = str(current - timedelta(days=1))

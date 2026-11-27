@@ -1,4 +1,10 @@
 export default {
+  'Выписка № {id}': 'Ko‘chirma № {id}',
+  'В выписке есть списание с этим номером и суммой. Проверьте банковскую дату и получателя. Для учёта оплаты требуется сверить движения счёта.': 'Ko‘chirmada shu raqam va summadagi chiqim bor. Bank sanasi va oluvchini tekshiring. To‘lovni hisobga olish uchun hisob harakatlarini solishtiring.',
+  'Банк списал деньги до согласования заявки ({date}). Сверьте платёжку и документы перед учётом оплаты.': 'Bank mablag‘ni ariza tasdiqlanishidan oldin yechgan ({date}). To‘lovni hisobga olishdan oldin hujjatlarni solishtiring.',
+  'Посмотреть платёжку': 'To‘lov hujjatini ko‘rish',
+  'Списание в выписке': 'Ko‘chirmadagi chiqim',
+  'Ищем платёжку в выписках…': 'Ko‘chirmalardan to‘lov hujjatini izlayapmiz…',
   'День выписки': 'Ko‘chirma kuni',
   'Весь период выписки': 'Ko‘chirmaning butun davri',
   'Остаток на начало {date}': '{date} boshidagi qoldiq',

@@ -892,6 +892,7 @@ const anchored = source => new RegExp('^' + source + '$');
 
 export const patterns = [
   [/^Бизнес-план (.+) · исходная модель 36 месяцев$/, '$1 biznes-rejasi · 36 oylik manba model'],
+  [/^Недостаточно фактических средств по учёту на счёте «(.+)» на (\S+): (\S+) (\S+)\. Требуется (\S+) (\S+)\. Проверьте поступления и списания в сверке с банком; повторное согласование не требуется\.$/, '«$1» hisobining $2 sanadagi hisob qoldig‘i yetarli emas: $3 $4. Kerak: $5 $6. Bank solishtiruvida kirim va chiqimlarni tekshiring; qayta tasdiqlash talab qilinmaydi.'],
   [/^Недостаточно фактических средств на счёте «(.+)» на (\S+): (\S+) (\S+)\. Требуется (\S+) (\S+)\. Оплата не проведена\. Пополните счёт и повторите оплату; повторное согласование не требуется\.$/, '«$1» hisobida $2 holatiga haqiqiy mablagʻ yetarli emas: $3 $4. Talab qilinadi: $5 $6. Toʻlov amalga oshirilmadi. Hisobni toʻldirib, toʻlovni takrorlang; qayta tasdiqlash shart emas.'],
   [/^(.+) — базовая цена$/, '$1 — bazaviy narx'],
   [/^(.+) — базовая себестоимость$/, '$1 — bazaviy tannarx'],

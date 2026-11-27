@@ -713,7 +713,7 @@ def request_json(s,r,accounts=None,categories=None,users=None,batch=None):
             'overdue':r.due_date<today() and r.status in ('pending','approved') and not (funding and funding.mode=='batch' and funding.state=='received'),
             'budget':budget_json(b),'budget_card':budget_card(s,c.id,str(r.due_date)[:7],a.currency,0 if r.status=='paid' else external_amount,r.id,base_state=card_base)}
 
-def post_ledger(s,u,data,*,bank_statement_fact=False,bank_statement_import=False):
+def post_ledger(s,u,data,*,bank_statement_fact=False,bank_statement_import=False,manual_payment=False):
     a=get(s,Account,data.account_id)
     from .cash_funding import require_regular_account,funding_for
     require_regular_account(a)
@@ -778,6 +778,15 @@ def post_ledger(s,u,data,*,bank_statement_fact=False,bank_statement_import=False
         for day in sorted({data.date,today()}):
             actual=account_balance(s,a,day)
             if actual<n:
+                if manual_payment and a.kind=='bank':
+                    from .bank_period_comparison import payment_document_rows
+                    bank_rows=payment_document_rows(s,u,a,req,data.reference,data.date)
+                    if bank_rows:
+                        raise HTTPException(409,'В выписке есть списание с этим номером и суммой. Проверьте банковскую дату и получателя. Для учёта оплаты требуется сверить движения счёта.')
+                    raise HTTPException(409,
+                        f'Недостаточно фактических средств по учёту на счёте «{a.name}» на {day}: '
+                        f'{money(actual)} {a.currency}. Требуется {money(n)} {a.currency}. '
+                        'Проверьте поступления и списания в сверке с банком; повторное согласование не требуется.')
                 raise HTTPException(409,
                     f'Недостаточно фактических средств на счёте «{a.name}» на {day}: '
                     f'{money(actual)} {a.currency}. Требуется {money(n)} {a.currency}. '
