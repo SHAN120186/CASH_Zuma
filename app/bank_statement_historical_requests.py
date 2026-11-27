@@ -50,11 +50,11 @@ def _admin(s, request, *, requests=False):
     return user
 
 
-def _target(s, line_id, direction):
+def _target(s, line_id, direction, *, batch_status='committed'):
     line = get(s, BankStatementLine, line_id)
     batch = get(s, BankStatementBatch, line.batch_id)
     account = get(s, Account, line.account_id)
-    if (batch.status != 'committed' or not batch.source_ready or account.archived or account.kind != 'bank'
+    if (batch.status != batch_status or not batch.source_ready or account.archived or account.kind != 'bank'
             or line.company_id != batch.company_id or account.company_id != batch.company_id
             or line.account_id != batch.account_id or account.currency != batch.currency
             or line.direction != direction or line.status not in ('review', 'reviewed')

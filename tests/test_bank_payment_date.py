@@ -103,6 +103,46 @@ class BankDateTests(unittest.TestCase):
 
 
 class EarlierBankFactTests(unittest.TestCase):
+    def test_single_draft_fact_with_incomplete_book_retries_and_archives(self):
+        f = fixtures.BankStatementTests()
+        f.setUp()
+        self.addCleanup(f.tearDown)
+        rid = f.approved()
+        day = date.fromisoformat(f.date) - timedelta(days=1)
+        row = f.bank_row('SYN-D1', date=str(day))
+        source = dict(f.source([row]), period_from=str(day), period_to=str(day), owner_name='UZGERMED TEST')
+        draft = f.preview(source).json()
+        line_id = draft['rows'][0]['id']
+        with unit(True) as s:
+            req = s.get(PaymentRequest, rid)
+            version, approval = req.version, req.approved_at
+            s.get(Account, f.acc).opening = 100
+        cl, headers = f.payer
+        path = f'/api/bank-statements/lines/{line_id}/recognize-debit'
+        body = dict(request_id=rid, request_version=version, confirm=True,
+                    payment_date=str(day), note='Synthetic bank fact')
+        def record(**changes):
+            return cl.post(path, headers=headers, json={**body, **changes})
+        self.assertEqual(record(confirm=False).status_code, 422)
+        self.assertEqual(record(payment_date=f.date).status_code, 409)
+        result = record()
+        self.assertEqual(result.status_code, 200, result.text)
+        self.assertEqual(record().json(), result.json())
+        resumed = cl.post(f"/api/bank-statements/{draft['id']}/resume", headers=headers, json={})
+        self.assertEqual(resumed.json()['rows'][0]['ledger_id'], result.json()['ledger_id'])
+        other = f.preview(source).json()['rows'][0]['id']
+        retry = cl.post(f'/api/bank-statements/lines/{other}/recognize-debit', headers=headers, json=body)
+        self.assertEqual(retry.status_code, 409)
+        with unit() as s:
+            entry, = s.scalars(select(Ledger).where(Ledger.request_id == rid))
+            req = s.get(PaymentRequest, rid)
+            self.assertEqual((req.status, req.approved_at, entry.date, entry.amount), ('paid', approval, day, 60000))
+            self.assertEqual(s.get(BankStatementBatch, draft['id']).status, 'preview')
+        for archive, expected in [('archived', True), ('active', False)]:
+            response = cl.get('/api/requests', headers=headers, params={'archive':archive, 'q':f'CF-{rid:05d}'})
+            self.assertEqual(response.status_code, 200, response.text)
+            self.assertEqual(any(item['id'] == rid for item in response.json()), expected)
+
     def test_treasury_debit_keeps_approval_and_posts_only_once(self):
         f = fixtures.BankStatementTests()
         f.setUp()

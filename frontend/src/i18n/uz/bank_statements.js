@@ -1,4 +1,6 @@
 export default {
+  'Учёт исполненной платёжки № {number}': 'Bajarilgan {number}-sonli to‘lovni hisobga olish',
+  'Учесть списание датой банка': 'Chiqimni bank sanasi bilan qayd etish',
   'Банк исполнил платёж до согласования. Проверьте документ и получателя. Расход будет учтён датой банка, согласование сохранится.': 'Bank to‘lovni tasdiqlashdan oldin bajargan. Hujjat va oluvchini tekshiring. Chiqim bank sanasi bilan qayd etiladi, tasdiqlash sanasi saqlanadi.',
   'Введите номер платёжки, чтобы сверить списание с выпиской. При сохранении сайт проверит остаток по учёту на дату оплаты и на сегодня.': 'Chiqimni ko‘chirma bilan solishtirish uchun to‘lov hujjati raqamini kiriting. Saqlashda sayt to‘lov sanasidagi va bugungi hisob qoldig‘ini tekshiradi.',
   'До суммы заявки не хватает {amount} {currency}.': 'Ariza summasiga {amount} {currency} yetishmaydi.',

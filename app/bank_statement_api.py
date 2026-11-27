@@ -20,7 +20,7 @@ from pydantic import BaseModel, ConfigDict, Field, StrictInt
 from sqlalchemy import or_, select
 
 from .bank_statement_models import BankStatementBatch, BankStatementLine
-from .bank_statement_approved_debit import check_early_debit, debit_predates_approval, payee_candidate
+from .bank_statement_approved_debit import check_early_debit, debit_predates_approval, payee_candidate, treasury_account
 from .bank_payment_date import documented_payee, may_correct
 from .bank_period_parser import parse_xlsx_statement
 from .bank_statement_identity import check_statement_currency, confirmed_bank_binding
@@ -289,7 +289,9 @@ def _classify(s, lines, account, previous, user):
             req = requests.get(line.request_id)
             entry = s.scalar(effective_cashflows(s).where(Ledger.id == line.ledger_id))
             if (req and req.status == 'paid' and entry and entry.request_id == req.id
-                    and (req.counterparty_inn == line.correspondent_inn or documented_payee(s, line, req, entry))
+                    and (req.counterparty_inn == line.correspondent_inn or documented_payee(s, line, req, entry)
+                         or (entry.reference == 'BANK-' + line.fingerprint and entry.date == line.date
+                             and treasury_account(line, req)))
                     and req.amount == line.amount
                     and entry.account_id == account.id and entry.kind == 'out' and entry.amount == line.amount
                     and matching_payment_date(line, entry) and entry.id not in deleted_ledger_ids(s)
@@ -1162,6 +1164,56 @@ def candidates(id: int, request: Request, draft: bool = False):
                               'date': str(entries[0].date if draft else req.due_date), 'status': req.status, 'version': req.version,
                               'approved_after_bank': str(local_date(req.approved_at)) if debit_predates_approval(line, req) else None})
         return {'items': items}
+
+
+@router.post('/api/bank-statements/lines/{id}/recognize-debit')
+def recognize_draft_debit(id: int, data: MatchInput, request: Request):
+    if not data.confirm:
+        raise HTTPException(422, 'Подтвердите учёт списания по выписке.')
+    with unit(True) as s:
+        user, _ = session_user(s, request, 'pay_bank')
+        return record_executed_debit(s, user, id, data)
+
+
+def record_executed_debit(s, user, line_id, data):
+    """Explicitly account for one executed debit. Never submit a bank payment."""
+    from .services import check_payer
+    line = get(s, BankStatementLine, line_id)
+    batch = get(s, BankStatementBatch, line.batch_id)
+    req = get(s, PaymentRequest, data.request_id)
+    if (batch.company_id != s.info.get('company_id') or batch.created_by != user.id
+            or not can_edit_section(user, 'requests', 'ledger') or not can_view_request(s, user, req)):
+        raise HTTPException(403, 'Учёт доступен плательщику компании, загрузившему выписку.')
+    check_payer(s, user, req)
+    if line.ledger_id and line.request_id == req.id and req.status == 'paid' and data.payment_date == line.date:
+        entry = s.scalar(effective_cashflows(s).where(Ledger.id == line.ledger_id, Ledger.kind == 'out',
+            Ledger.request_id == req.id, Ledger.account_id == req.account_id, Ledger.amount == line.amount,
+            Ledger.date == line.date, Ledger.reference == 'BANK-' + line.fingerprint))
+        if entry and entry.id not in deleted_ledger_ids(s):
+            return {'request_id': req.id, 'ledger_id': entry.id, 'payment_date': str(entry.date)}
+    if not data.confirm or req.version != data.request_version or not debit_predates_approval(line, req):
+        raise HTTPException(409, 'Заявка изменилась или дата списания не предшествует согласованию.')
+    document = check_early_debit(s, line, req, data.payment_date, draft=True)
+    account = get(s, Account, line.account_id)
+    op = SimpleNamespace(account_id=account.id, to_account_id=None, category_id=req.category_id,
+        kind='out', amount=money(line.amount), date=line.date, counterparty=req.counterparty,
+        reference='BANK-' + line.fingerprint, note='Банковская выписка: ' + data.note,
+        request_id=req.id, request_version=req.version, receipt_id=None)
+    entry = post_ledger(s, user, op, bank_statement_fact=True, recognized_debit=line, executed_draft=True)
+    line.request_id = req.id
+    line.ledger_id = entry.id
+    line.status = 'manual_match'
+    line.classification = f'paid:{entry.date}'
+    line.reason = ''
+    line.review_note = data.note
+    line.reviewed_by = user.id
+    line.reviewed_at = now()
+    log(s, user, 'Учтена отдельная платёжка из черновика', 'request', req.id,
+        json.dumps(dict(batch_id=batch.id, line_id=line.id, ledger_id=entry.id, source_hash=line.fingerprint,
+            reference=line.document_number, bank_date=str(line.date), approval=req.approved_at.isoformat(),
+            document_id=document, reason=data.note, bank_closing=money(batch.closing),
+            book_closing=money(account_balance(s, account, batch.period_to))), ensure_ascii=False))
+    return {'request_id': req.id, 'ledger_id': entry.id, 'payment_date': str(entry.date)}
 
 
 @router.post('/api/bank-statements/lines/{id}/match')
