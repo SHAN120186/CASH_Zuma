@@ -9,6 +9,7 @@ import BankStatementIncome from './BankStatementIncome.vue';
 import BankStatementExpenses from './BankStatementExpenses.vue';
 import SavedBankStatements from './SavedBankStatements.vue';
 import BankDraftSelection from './BankDraftSelection.vue';
+import BankPaymentDate from './BankPaymentDate.vue';
 import BankStatementPostingSummary from './BankStatementPostingSummary.vue';
 import BankStatementResolution from './BankStatementResolution.vue';
 import BankStatementCategoryRules from './BankStatementCategoryRules.vue';
@@ -501,6 +502,15 @@ onMounted(() => {loadReviews(); loadUnallocated(); loadUnallocatedOutgoing(); lo
 onUnmounted(() => {generation += 1; resumeGeneration += 1; reviewGeneration += 1; reviewOperation += 1; allocationGeneration += 1; allocationOperation += 1; outgoingGeneration += 1; outgoingOperation += 1; batchGeneration += 1; settingsGeneration += 1; reprocessGeneration += 1; adminGeneration += 1;});
 watch(selectedOldBatch, () => {reprocessGeneration += 1; reprocessBusy.value = false; reprocessPreview.value = null; reprocessResult.value = null; reprocessError.value = ''; reprocessNotice.value = '';});
 
+async function paymentDateCorrected(result) {
+  const draft = preview.value, company = props.companyId;
+  if (draft?.id !== result.batch_id) return;
+  await resumeSaved(draft);
+  if (company !== props.companyId) return;
+  if (preview.value?.id === draft.id) notice.value = tx('Дата списания исправлена. Оплата учтена один раз.');
+  emit('changed');
+}
+
 async function resumeSaved(item) {
   if (!props.canImport || !props.companyId || busy.value || reprocessBusy.value || !item?.id || item.status !== 'preview') return;
   const company = props.companyId, operation = ++resumeGeneration;
@@ -679,6 +689,7 @@ async function confirmAndPost(event) {
       <div v-if="preview" class="bank-preview">
         <h3>{{tx('Проверка выписки')}}</h3>
         <BankDraftSelection v-if="canImport && preview.status==='preview' && preview.id" :key="companyId + ':' + preview.id" :api="api" :batch-id="preview.id" :disabled="busy || reprocessBusy || reviewBusy !== null"/>
+        <BankPaymentDate v-if="preview.can_correct_payment_date && !busy" :key="companyId + ':' + preview.id" :api="api" :batch-id="preview.id" @corrected="paymentDateCorrected"/>
         <p>{{tx('Счёт в файле')}}: <b>{{preview.statement.account_number}}</b> · {{tx('Счёт на сайте')}}: <b>{{preview.account.name}} · {{preview.account.currency}}</b></p>
         <p>{{tx('Владелец счёта')}}: {{preview.statement.owner_name || '—'}} · {{tx('ИНН')}}: {{preview.statement.owner_inn || '—'}}</p>
         <p>{{tx('Период')}}: {{formatShortDate(preview.statement.period_from)}} – {{formatShortDate(preview.statement.period_to)}}</p>

@@ -20,6 +20,7 @@ from pydantic import BaseModel, ConfigDict, Field, StrictInt
 from sqlalchemy import or_, select
 
 from .bank_statement_models import BankStatementBatch, BankStatementLine
+from .bank_payment_date import documented_payee, may_correct
 from .bank_period_parser import parse_xlsx_statement
 from .bank_statement_identity import check_statement_currency, confirmed_bank_binding
 from .bank_statement_parser import MAX_BYTES, MAX_ROWS, StatementParseError, parse_bank_statement
@@ -287,7 +288,8 @@ def _classify(s, lines, account, previous, user):
             req = requests.get(line.request_id)
             entry = s.scalar(effective_cashflows(s).where(Ledger.id == line.ledger_id))
             if (req and req.status == 'paid' and entry and entry.request_id == req.id
-                    and req.counterparty_inn == line.correspondent_inn and req.amount == line.amount
+                    and (req.counterparty_inn == line.correspondent_inn or documented_payee(s, line, req, entry))
+                    and req.amount == line.amount
                     and entry.account_id == account.id and entry.kind == 'out' and entry.amount == line.amount
                     and matching_payment_date(line, entry) and entry.id not in deleted_ledger_ids(s)
                     and entry.id not in old_ledger_ids and not previous.get(line.fingerprint)
@@ -508,6 +510,7 @@ def _evaluated(s, batch, lines, account, user, fee_category_id, *, reprocess=Fal
     annotate_expense_rows(s, batch, lines, rows, user)
     sanitize_request_fields(s, rows, user)
     return {'batch_id': batch.id, 'fee_category_id': fee_category_id, 'opening_matches': opening_ok,
+            'can_correct_payment_date': batch.status == 'preview' and may_correct(user) and batch.created_by == user.id,
             'full_reconciliation': full, 'posting_summary': summary,
             'category_snapshot': category_snapshot, 'category_rules_revision': rules['revision'],
             'category_rules_warning': rules['warning'],
