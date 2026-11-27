@@ -21,7 +21,7 @@ from .db import Account, Company, Ledger, PaymentRequest, unit
 from .erp import read_upload
 from .requests_api import can_view_request
 from .security import HOLDING_ROLES, company_role, session_user
-from .services import deleted_ledger_ids, effective_cashflows, get, money
+from .services import batch_account_balances, deleted_ledger_ids, effective_cashflows, get, money
 
 router = APIRouter(prefix='/api/bank-statements')
 currency_param = Query(pattern=r'^(UZS|USD|EUR)$')
@@ -51,9 +51,13 @@ def _contracts_differ(bank, site):
     return bool(bank and site and bank.translate(CONTRACT_LOOKALIKES) != site.translate(CONTRACT_LOOKALIKES))
 
 
+def _financial_reader(user):
+    return user.role in HOLDING_ROLES or company_role(user) in ('finance', 'director', 'accountant')
+
+
 def _context(s, request, account_id, currency):
     user, _ = session_user(s, request, ('view', 'pay_bank'))
-    if user.role not in HOLDING_ROLES and company_role(user) not in ('finance', 'director', 'accountant'):
+    if not _financial_reader(user):
         raise HTTPException(403, 'Сверка доступна финансовой службе и руководству.')
     if getattr(user, '_sections', None) and user._sections.get('requests') == 'hidden':
         raise HTTPException(403, 'Для сверки необходим доступ к заявкам.')
@@ -406,16 +410,64 @@ def _report(s, user, account, source, binding, draft_id=None):
             'rows': rows, 'unmatched_payments': unmatched, 'days': days}
 
 
+def _visible_sources(user, include_drafts):
+    batch = BankStatementBatch
+    visible = batch.status == 'committed'
+    if include_drafts:
+        draft = batch.status == 'preview'
+        if user.role != 'admin':
+            draft = draft & (batch.created_by == user.id)
+        visible = visible | draft
+    return visible
+
+
+def account_statement_balances(s, user, accounts, as_of):
+    """Report the file's closing balance alongside the ledger on that same day."""
+    sections = getattr(user, '_sections', None) or {}
+    banks = {a.id: a for a in accounts if a.kind == 'bank' and not a.archived}
+    if not banks or not _financial_reader(user) or 'hidden' in (sections.get('ledger'), sections.get('requests')):
+        return {}
+    b = BankStatementBatch
+    candidates = s.execute(select(b.account_id, b.id, b.period_to, b.status, b.closing,
+        b.account_number, b.owner_inn, b.owner_name, b.currency).where(
+        b.company_id == s.info['company_id'], b.account_id.in_(banks), _visible_sources(user, True),
+        b.period_from <= b.period_to, b.period_to <= as_of,
+        b.source_ready.is_(True), b.balance_matches.is_(True), b.declared_totals_match.is_(True),
+        b.opening + b.credit_total - b.debit_total == b.closing,
+    ).order_by(b.account_id, b.period_to.desc(), b.id.desc()))
+    selected = {}
+    by_day = defaultdict(list)
+    for row in candidates:
+        account = banks[row.account_id]
+        if account.id in selected or row.currency != account.currency:
+            continue
+        try:
+            check_statement_currency(account, row._mapping)
+            _binding(s, account, row._mapping)
+        except HTTPException as exc:
+            if exc.status_code != 409:
+                raise
+            continue
+        selected[account.id] = row
+        by_day[row.period_to].append(account)
+
+    result = {}
+    for day, items in by_day.items():
+        book = batch_account_balances(s, items, day)
+        for account in items:
+            row = selected[account.id]
+            started = account.opening_date <= day
+            result[account.id] = dict(id=row.id, date=str(day), status=row.status, closing=money(row.closing),
+                book_closing=money(book[account.id]) if started else None,
+                difference=money(row.closing-book[account.id]) if started else None)
+    return result
+
+
 @router.get('/period-sources/list')
 def saved_sources(request: Request, account_id: int, currency: str = currency_param, include_drafts: bool = False):
     with unit() as s:
         user, account = _context(s, request, account_id, currency)
-        visible = BankStatementBatch.status == 'committed'
-        if include_drafts:
-            draft = BankStatementBatch.status == 'preview'
-            if user.role != 'admin':
-                draft = draft & (BankStatementBatch.created_by == user.id)
-            visible = visible | draft
+        visible = _visible_sources(user, include_drafts)
         items = s.execute(select(BankStatementBatch.id, BankStatementBatch.filename,
             BankStatementBatch.period_from, BankStatementBatch.period_to, BankStatementBatch.status).where(
             BankStatementBatch.account_id == account.id, visible

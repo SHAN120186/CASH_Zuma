@@ -642,6 +642,20 @@ test('sales overview does not fetch or show bank statement totals',async t=>{
  assert.equal(calls.filter(url=>url.startsWith('/api/bank-statements')).length,0);assert.doesNotMatch(text(view.container),/Банковская выписка за день|Остаток сайта не сверен/);
 });
 
+test('the bank card headlines the statement and compares accounting at the statement date',async t=>{
+ const {view}=await fixture(t,async()=>({ok:true,status:200,json:async()=>[]}),bankApp);
+ const bank={id:21,name:'Test bank',kind:'bank',currency:'UZS',opening:'10.00',opening_date:'2026-10-01',balance:'75.12',
+   statement_balance:{id:3,date:'2026-10-20',status:'preview',closing:'0.00',book_closing:'25.25',difference:'-25.25'}};
+ Object.assign(view.state,{page:'accounts',rows:[bank]});await settle();
+ const content=text(view.container);
+ assert.match(content,/По выписке на/);assert.match(content,/Выписка № 3 · Черновик/);
+ assert.match(content,/По учёту на ту же дату.*25,25/s);assert.match(content,/банк минус учёт.*-25,25/s);
+ assert.match(content,/По учёту сегодня.*75,12/s);
+ assert.equal(text(find(view.container,n=>String(n.props?.class||'').includes('ac-v num'))),'0UZS');
+ view.state.rows=[{...bank,statement_balance:null}];await settle();
+ assert.match(text(view.container),/Остаток по учёту/);assert.doesNotMatch(text(view.container),/По выписке на/);
+});
+
 test('accepted bank statement refreshes ledger independently after bootstrap fails and removes stale balances',async t=>{
  const calls=[],accountant={...user,role:'accountant',permissions:['view','ledger','pay_bank']};
  const {view}=await fixture(t,async url=>{calls.push(url);if(url==='/api/bootstrap')return {ok:false,status:503,json:async()=>({detail:'offline'})};if(url.startsWith('/api/ledger?'))return {ok:true,status:200,json:async()=>({items:[{id:999,kind:'in',date:'2026-10-10',currency:'UZS',amount:'42',reference:'NEW'}],total:1})};return {ok:true,status:200,json:async()=>({items:[]})}},bankApp);

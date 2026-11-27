@@ -32,7 +32,7 @@ import {groupCompanyInfo} from './admin/groupRegistration.js';
 import {loadRecentLogins,rememberLogin,matchingLogins,offerPasswordSave} from './loginPreferences.js';
 import {reportDateForYear,validReportDate} from './cashflow/planView.js';
 import {statementCashFlowContext} from './cashflow/statementContext.js';
-import {toCents,formatAmount,amountTitle} from './overview/format.js';
+import {toCents,formatAmount,amountTitle,formatLongDate} from './overview/format.js';
 import RequestEditor from './requests/RequestEditor.vue';
 import RequestCard from './requests/RequestCard.vue';
 import RequestLoadMore from './requests/RequestLoadMore.vue';
@@ -387,7 +387,7 @@ async function load(options={}){clearTimeout(searchTimer);searchTimer=null;if(!c
  if(!options.skipBootstrap&&bootstrapLocalDay.value&&bootstrapLocalDay.value!==localBusinessDay()){await bootstrap();if(!current()||!companyReady.value)return;}
  if(page.value==='home')homeRefresh.value++;
  if(requestedPage==='calendar'){const horizon=days.value,data=await api(`/api/dashboard?currency=${requestedCurrency}&days=${horizon}`);if(current()&&days.value===horizon)dash.value=data;}
- if(requestedPage==='accounts'){const archived=showArchive.value,data=await api('/api/accounts?archived='+archived);if(current()&&showArchive.value===archived)rows.value=data;}
+ if(requestedPage==='accounts'){const archived=showArchive.value,data=await api('/api/accounts?archived='+archived+'&include_statement_balance=true');if(current()&&showArchive.value===archived)rows.value=data;}
  if(['ledger','requests'].includes(requestedPage)){const requestId=++listRequestId;const params=new URLSearchParams({paginated:'true',page:String(listPage.value),page_size:String(listPageSize.value),currency:requestedCurrency,q:search.value});if(dateFrom.value)params.set('date_from',dateFrom.value);if(dateTo.value)params.set('date_to',dateTo.value);if(requestedPage==='ledger'&&showDeletedOperations.value)params.set('include_deleted','true');if(requestedPage==='requests')params.set('archive',dateFrom.value||dateTo.value?'all':requestArchive.value);if(requestedPage==='requests'&&requestStatus.value)params.set('state',requestStatus.value);const data=await api(`/api/${requestedPage}?${params}`);if(current()&&requestId===listRequestId){rows.value=data.items;listTotal.value=data.total;if(requestedPage==='requests')requestListKey.value=key;}}
  if(!current())return;
  if(requestedPage==='budgets'){const selectedMonth=month.value,data=await api(`/api/budgets?currency=${requestedCurrency}&month=${selectedMonth}`);if(current()&&month.value===selectedMonth)rows.value=data;}
@@ -674,7 +674,17 @@ onMounted(async()=>{const epoch=companyEpoch;try{const r=await api('/api/me');if
      <div class="tb"><div class="seg" role="group" :aria-label="tx('Показать счета')"><button :class="{on:!showArchive}" @click="showArchive=false;load()">{{tx('Активные')}}</button><button :class="{on:showArchive}" @click="showArchive=true;load()">{{tx('Архив')}}</button></div><span class="sub"><b>{{visibleRows.length}}</b> · {{currency}}</span><div class="grow"><button v-if="has('write')" @click="account()"><AppIcon name="plus"/> {{tx('Добавить счёт')}}</button></div></div>
      <div class="acc-grid"><section v-for="a in visibleRows" :key="a.id" class="card ac-card" :class="{arch:a.archived}">
       <div class="ac-top"><span class="ic"><AppIcon :name="a.kind==='bank'?'accounts':'cash'"/></span><div><b>{{a.name}}</b><small>{{accountKindLabel(a.kind)}}{{a.allow_overdraft?' · '+tx('овердрафт разрешён'):''}}</small></div><span class="pill" :class="a.archived?'warn':'fact'">{{a.archived?tx('Архив')+' · ':''}}{{a.currency}}</span></div>
-      <div class="ac-l">{{tx('Текущий остаток')}}</div><div class="ac-v num" :title="moneyTitle(a.balance,a.currency)">{{moneyShort(a.balance,a.currency)}}<small>{{a.currency}}</small></div><div class="ac-x num">{{money(a.balance)}} {{a.currency}}</div>
+      <template v-if="a.statement_balance">
+        <div class="ac-l">{{tx('По выписке на {date}',{date:formatLongDate(a.statement_balance.date)})}}</div>
+        <div class="ac-v num">{{money(a.statement_balance.closing).replace('.',',')}}<small>{{a.currency}}</small></div>
+        <div class="ac-x">{{a.statement_balance.status==='preview'?tx('Выписка № {n} · Черновик',{n:a.statement_balance.id}):tx('Выписка № {n} · Проведена',{n:a.statement_balance.id})}}</div>
+        <div v-if="a.statement_balance.book_closing!=null" class="ac-o"><span>{{tx('По учёту на ту же дату')}}</span><b class="num">{{money(a.statement_balance.book_closing).replace('.',',')}} {{a.currency}}</b></div>
+        <div v-if="a.statement_balance.difference!=null" class="ac-o"><span>{{tx('Разница (банк минус учёт)')}}</span><b class="num">{{money(a.statement_balance.difference).replace('.',',')}} {{a.currency}}</b></div>
+        <div v-if="a.balance!==a.statement_balance.book_closing" class="ac-o"><span>{{tx('По учёту сегодня')}}</span><b class="num">{{money(a.balance).replace('.',',')}} {{a.currency}}</b></div>
+      </template>
+      <template v-else>
+        <div class="ac-l">{{a.kind==='bank'?tx('Остаток по учёту'):tx('Текущий остаток')}}</div><div class="ac-v num" :title="moneyTitle(a.balance,a.currency)">{{moneyShort(a.balance,a.currency)}}<small>{{a.currency}}</small></div><div class="ac-x num">{{money(a.balance)}} {{a.currency}}</div>
+      </template>
       <div v-if="!isSales && has('ledger') && (has('pay_bank') || has('write') || has('import')) && unreconciledAccountCount(a)>0" class="error" role="alert"><p>{{tx('Ручная оплата заявок приостановлена. Сверьте выписку, чтобы снова оплачивать заявки с этого счёта.')}}</p>
         <p>{{tx('Несверенных выписок: {n}',{n:unreconciledAccountCount(a)})}}</p>
         <button type="button" class="secondary tiny" @click="go('ledger')">{{tx('Перейти к операциям')}}</button>
