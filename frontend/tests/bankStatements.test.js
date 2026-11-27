@@ -13,6 +13,32 @@ const accounts=[{id:21,name:'Synthetic bank',kind:'bank',currency:'UZS'}, {id:22
 const postingSummary=readyPostingSummary({credit:'10.00',debit:'20.00',opening:'100.00',closing:'90.00',count:1});
 const statement={opening_matches:true,posting_summary:postingSummary,id:7,status:'preview',preview_token:'snapshot-7',full_reconciliation:true,account:{id:21,name:'Synthetic bank',currency:'UZS'},statement:{account_number:'TEST-BANK-21',ready:true,period_from:'2026-10-30',period_to:'2026-10-30',opening_balance:'100.00',closing_balance:'90.00',credit_total:'10.00',debit_total:'20.00',balance_matches:true,declared_totals_match:true},rows:[{id:1,date:'2026-10-30',document_number:'D1',correspondent_name:'Synthetic',correspondent_inn:'123456789',purpose:'Synthetic payment',direction:'out',amount:'20.00',status:'auto_pay_candidate',request_id:9}]};
 const file={name:'statement.xls',size:100};
+
+test('opening a payment from a request focuses the exact saved debit without posting', async t => {
+  const writes=[];
+  const api=async (url, options={})=>{
+    if (options.method==='POST') {
+      writes.push(url);
+      assert.equal(url,'/api/bank-statements/7/resume');
+      return statement;
+    }
+    return url.endsWith('/settings')?{fee_category_id:null}:{items:[]};
+  };
+  const previous=Object.getOwnPropertyDescriptor(globalThis,'document');
+  globalThis.document={activeElement:null};
+  t.after(()=>{if(previous) Object.defineProperty(globalThis,'document',previous);else delete globalThis.document;});
+  const view=mount(component,{api,companyId:1,accounts,categories:[],canImport:true,canReview:true,canPost:true});
+  t.after(()=>view.unmount());
+  await settle();
+  await view.state.openPaymentSource({batch_id:7,line_id:1,status:'preview'},accounts[0]);
+  await settle();
+  assert.deepEqual(writes,['/api/bank-statements/7/resume']);
+  assert.equal(view.state.draftDetails.open,true);
+  assert.equal(view.state.draftRowsPanel.open,true);
+  assert.equal(globalThis.document.activeElement?.props['data-bank-line'],1);
+  assert.equal(globalThis.document.activeElement.scrolled,true);
+});
+
 function event(f=file){return {target:{files:[f],value:'file'}}}
 
 test('the upload button opens the file picker and previews an XLSX without committing', async t => {

@@ -456,8 +456,7 @@ def requests_list(request:Request,date_from:Optional[date]=None,date_to:Optional
             query=query.where(or_(*visible))
         if currency:query=query.where(Account.currency==currency)
         # Presentation archive only: payment rights, reserves and bot queues are unchanged.
-        # A selected period always includes both active and archived requests.
-        if not date_from and not date_to and archive!='all':
+        if archive!='all':
             cutoff=now()-timedelta(days=1)
             # Read closure times once for this company. A correlated aggregate
             # rescanned the entire journal for each closed request before paging.

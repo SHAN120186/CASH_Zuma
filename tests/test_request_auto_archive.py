@@ -26,8 +26,8 @@ class RequestAutoArchiveTests(base.SiteTests):
             self.assertEqual(self.listing(archive='active'),({ids[0],ids[1],ids[3],ids[4]},4))
             self.assertEqual(self.listing(archive='archived'),({ids[2],ids[5]},2))
             self.assertEqual(self.listing(),(set(ids),6))  # Existing API clients retain all rows.
-            self.assertEqual(self.listing(archive='active',date_from=self.date,date_to=self.date),(set(ids),6))
-            self.assertEqual(self.listing(archive='archived',date_from=self.date),(set(ids),6))
+            self.assertEqual(self.listing(archive='active',date_from=self.date,date_to=self.date),({ids[0],ids[1],ids[3],ids[4]},4))
+            self.assertEqual(self.listing(archive='archived',date_from=self.date),({ids[2],ids[5]},2))
             self.assertEqual(self.listing(archive='archived',state='approved'),(set(),0))
             self.assertEqual(self.listing(archive='archived',state='paid'),({ids[2],ids[5]},2))
         with patch('app.main.now',return_value=stamp+timedelta(days=1)):
@@ -48,7 +48,7 @@ class RequestAutoArchiveTests(base.SiteTests):
         with patch('app.main.now',return_value=stamp):
             self.assertEqual(self.listing(archive='active'),({ids[1],ids[2]},2))
             self.assertEqual(self.listing(archive='archived'),({ids[0]},1))
-            self.assertEqual(self.listing(archive='active',date_from=self.date),(set(ids),3))
+            self.assertEqual(self.listing(archive='active',date_from=self.date),({ids[1],ids[2]},2))
             self.assertEqual(self.listing(archive='archived',state='cancelled'),({ids[0]},1))
         with patch('app.main.now',return_value=stamp+timedelta(hours=1)):
             self.assertEqual(self.listing(archive='archived'),({ids[0],ids[1]},2))
@@ -65,7 +65,7 @@ class RequestAutoArchiveTests(base.SiteTests):
         with patch('app.main.now',return_value=stamp):
             self.assertEqual(self.listing(archive='active'),({ids[1],ids[2]},2))
             self.assertEqual(self.listing(archive='archived'),({ids[0]},1))
-            self.assertEqual(self.listing(archive='active',date_from=self.date),(set(ids),3))
+            self.assertEqual(self.listing(archive='active',date_from=self.date),({ids[1],ids[2]},2))
             self.assertEqual(self.listing(archive='archived',state='rejected'),({ids[0]},1))
         with patch('app.main.now',return_value=stamp+timedelta(hours=1)):
             self.assertEqual(self.listing(archive='archived'),({ids[0],ids[1]},2))

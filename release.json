@@ -1,7 +1,8 @@
 {
-  "version": "2.36.36",
+  "version": "2.36.37",
   "date": "2026-11-27",
   "changes": [
+    "Оплаченные заявки сразу переходят в архив и при выборе периода. Из формы оплаты можно открыть точную строку банковской выписки и увидеть, что ещё требует учёта.",
     "В подтверждённой выписке бухгалтер может учесть документированное списание до согласования заявки. Журнал сохраняет дату банка и исходное согласование, проверяет остатки и повторную оплату.",
     "В форме оплаты банковской заявки можно увидеть списание из выписки по номеру платёжки и сумме, проверить получателя и сравнить дату банка с датой согласования.",
     "В карточке банка показаны конечный остаток последней доступной выписки, дата и статус. Рядом видны остаток по учёту и разница на тот же день.",
@@ -168,6 +169,7 @@
     "Длинные названия файлов и кнопки выбора шаблона переносятся на узком экране. В ТЭО дата архива отдельно обозначена и не подменяет начало финансового прогноза."
   ],
   "changes_uz": [
+    "To‘langan arizalar davr tanlanganda ham arxivga o‘tadi. To‘lov shaklidan ko‘chirmaning tegishli qatorini ochish mumkin.",
     "Ko‘chirma qoralamasida moliya direktori mavjud to‘lov sanasini bank hujjati asosida tuzata oladi. Tasdiqlash tarixi saqlanadi, xarajat bank sanasida bir marta hisobga olinadi.",
     "«Operatsiyalar» bo‘limidagi «Ko‘chirmani yuklash» tugmasi bankning XLSX faylini qabul qiladi va dastlabki ko‘rishni ochadi. Operatsiyalarni o‘tkazish uchun alohida tasdiq kerak.",
     "Bank bilan solishtirishda bitta to‘lov topshiriqnomasi va uning qism raqamlari bo‘yicha arizalar topiladi. Har bir arizaning summasi, jami va ko‘chirmadagi summadan farqi ko‘rsatiladi.",

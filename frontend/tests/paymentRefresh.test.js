@@ -194,16 +194,27 @@ test('local payment removal preserves search and total and moves off an emptied 
  assert.equal(view.state.listTotal,15,'unseen or already removed rows do not decrement a filtered server total');assert.equal(view.state.search,'CF-00041');
 });
 
-test('period payment stays visible with archive all, and a non-paid state filter still removes it',async t=>{
+test('paid request leaves the active period immediately and the server reload retains the archive filter',async t=>{
  const{view,calls}=await fixture(t,async()=>reply({items:[],total:0}));
  Object.assign(view.state,{modal:null,dateFrom:'2026-10-01',dateTo:'2026-10-31'});
  view.state.requestPaid(41);await settle();
- assert.equal(view.state.rows[0].status,'paid');assert.deepEqual(view.state.rows[0].actions,[]);assert.equal(view.state.listTotal,1);
+ assert.deepEqual(view.state.rows,[]);assert.equal(view.state.listTotal,0);
  await view.state.load();await settle();
  const params=new URL(calls.at(-1).url,'https://isolated.test').searchParams;
- assert.equal(params.get('archive'),'all');assert.equal(params.get('date_from'),'2026-10-01');assert.equal(params.get('date_to'),'2026-10-31');
+ assert.equal(params.get('archive'),'active');assert.equal(params.get('date_from'),'2026-10-01');assert.equal(params.get('date_to'),'2026-10-31');
  Object.assign(view.state,{rows:[{...request}],listTotal:1,requestStatus:'approved'});
  view.state.requestPaid(41);await settle();assert.deepEqual(view.state.rows,[]);assert.equal(view.state.listTotal,0);
+});
+
+test('paid status opens the archive and returning to the active queue clears that status',async t=>{
+ const {view,calls}=await fixture(t,async()=>reply({items:[],total:0}));
+ Object.assign(view.state,{modal:null,dateFrom:'2026-10-01',requestStatus:'paid'});
+ await view.state.applyRequestStatus();await settle();
+ const params=()=>new URL(calls.at(-1).url,'https://isolated.test').searchParams;
+ assert.equal(params().get('archive'),'archived');assert.equal(params().get('state'),'paid');
+ await view.state.selectRequestArchive('active');await settle();
+ assert.equal(params().get('archive'),'active');assert.equal(params().get('state'),null);
+ assert.equal(params().get('date_from'),'2026-10-01');
 });
 
 test('archive payment update clears stale actions without adding unseen rows or changing the filtered total',async t=>{

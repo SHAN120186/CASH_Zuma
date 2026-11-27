@@ -88,10 +88,10 @@ class RequestDueOrderTests(SiteTests):
             # paid requests are archived immediately under the retention policy.
             self.assertEqual(ids(archive='active'), [old, draft, current, usd])
             self.assertEqual(ids(archive='archived'), [cancelled, paid])
-            # Selecting a period retains both archived and active rows, as before.
+            # Due dates narrow the selected archive view and preserve order.
             self.assertEqual(ids(archive='active', date_from=str(self.day - timedelta(days=7)), date_to=str(self.day)),
-                             [old, cancelled, draft, current])
-            self.assertEqual(ids(archive='archived', date_from=str(self.day)), [current, usd, paid])
+                             [old, draft, current])
+            self.assertEqual(ids(archive='archived', date_from=str(self.day)), [paid])
             self.assertEqual(ids(state='approved'), [old, current])
             self.assertEqual(ids(currency='UZS'), [old, cancelled, draft, current, paid])
             self.assertEqual(ids(q='USD search target'), [usd])

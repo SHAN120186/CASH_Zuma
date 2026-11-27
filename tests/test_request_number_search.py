@@ -79,8 +79,9 @@ class RequestNumberSearchTests(base.SiteTests):
         self.assert_matches('93',[],date_to=str(day-timedelta(days=1)))
         self.assert_matches('93',[],currency='USD')
         self.assert_matches('93',[93],currency='UZS')
-        # Selecting a period retains the existing rule: include both archive views.
-        self.assert_matches('93',[93],archive='active',date_from=self.date,date_to=self.date)
+        self.assert_matches('93',[],archive='active',date_from=self.date,date_to=self.date)
+        self.assert_matches('93',[93],archive='archived',date_from=self.date,date_to=self.date)
+        self.assert_matches('93',[93],archive='all',date_from=self.date,date_to=self.date)
 
     def test_number_search_never_returns_deleted_requests(self):
         self.insert_request(93,status='deleted',approved_at=now()-timedelta(days=2))
