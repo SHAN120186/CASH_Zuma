@@ -713,7 +713,7 @@ def request_json(s,r,accounts=None,categories=None,users=None,batch=None):
             'overdue':r.due_date<today() and r.status in ('pending','approved') and not (funding and funding.mode=='batch' and funding.state=='received'),
             'budget':budget_json(b),'budget_card':budget_card(s,c.id,str(r.due_date)[:7],a.currency,0 if r.status=='paid' else external_amount,r.id,base_state=card_base)}
 
-def post_ledger(s,u,data,*,bank_statement_fact=False,bank_statement_import=False,manual_payment=False):
+def post_ledger(s,u,data,*,bank_statement_fact=False,bank_statement_import=False,manual_payment=False,recognized_debit=None):
     a=get(s,Account,data.account_id)
     from .cash_funding import require_regular_account,funding_for
     require_regular_account(a)
@@ -766,7 +766,10 @@ def post_ledger(s,u,data,*,bank_statement_fact=False,bank_statement_import=False
         if requires_director(req) and (req.approved_by is None or req.approved_by==req.finance_approved_by):
             raise HTTPException(409,f'Заявка утверждена без отдельного подтверждения директора. {RETURN_HINT} После проверки её утвердит директор.')
         earliest=local_date(req.approved_at or req.created_at)
-        if data.date<earliest:raise HTTPException(422,f'Дата оплаты не может быть раньше утверждения заявки ({earliest}).')
+        if data.date<earliest and not (bank_statement_fact and recognized_debit is not None
+                and recognized_debit.date == data.date and recognized_debit.account_id == a.id
+                and recognized_debit.amount == n and data.reference == 'BANK-' + recognized_debit.fingerprint):
+            raise HTTPException(422,f'Дата оплаты не может быть раньше утверждения заявки ({earliest}).')
     if data.receipt_id:
         rec=get(s,Receipt,data.receipt_id)
         if kind!='in' or rec.status!='expected' or rec.account_id!=a.id or rec.amount!=n or rec.category_id!=data.category_id:

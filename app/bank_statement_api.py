@@ -20,6 +20,7 @@ from pydantic import BaseModel, ConfigDict, Field, StrictInt
 from sqlalchemy import or_, select
 
 from .bank_statement_models import BankStatementBatch, BankStatementLine
+from .bank_statement_approved_debit import check_early_debit, debit_predates_approval, payee_candidate
 from .bank_payment_date import documented_payee, may_correct
 from .bank_period_parser import parse_xlsx_statement
 from .bank_statement_identity import check_statement_currency, confirmed_bank_binding
@@ -29,7 +30,7 @@ from .erp import read_upload
 from .security import session_user, perms_of, company_role, HOLDING_ROLES, jwt_key
 from .requests_api import can_view_request
 from .section_access import can_edit_section
-from .services import amount, account_balance, budget_json, budget_state, day_start_balance, deleted_ledger_ids, effective_cashflows, enforce_budget, get, log, money, post_ledger
+from .services import amount, local_date, account_balance, budget_json, budget_state, day_start_balance, deleted_ledger_ids, effective_cashflows, enforce_budget, get, log, money, post_ledger
 from .bank_statement_incoming import opening_matches, classify_incoming, process_incoming
 from .bank_statement_fees import classify_fee, post_fee, prepare_fee_context
 from .bank_statement_existing import classify_existing, process_existing
@@ -1149,7 +1150,7 @@ def candidates(id: int, request: Request, draft: bool = False):
         line = _draft_payment_line(s, id, user) if draft else _review_line(s, id)
         items = []
         for req in _requests(s, line.account_id).values():
-            if (req.status in ('approved', 'paid') and line.correspondent_inn and req.counterparty_inn == line.correspondent_inn
+            if (req.status in ('approved', 'paid') and payee_candidate(line, req, draft)
                     and req.amount == line.amount and can_view_request(s, user, req)):
                 if draft:
                     entries = list(s.scalars(effective_cashflows(s).where(Ledger.request_id == req.id,
@@ -1158,7 +1159,8 @@ def candidates(id: int, request: Request, draft: bool = False):
                         continue
                 items.append({'id': req.id, 'number': f'CF-{req.id:05d}', 'counterparty': req.counterparty,
                               'counterparty_inn': req.counterparty_inn, 'amount': money(req.amount),
-                              'date': str(entries[0].date if draft else req.due_date), 'status': req.status, 'version': req.version})
+                              'date': str(entries[0].date if draft else req.due_date), 'status': req.status, 'version': req.version,
+                              'approved_after_bank': str(local_date(req.approved_at)) if debit_predates_approval(line, req) else None})
         return {'items': items}
 
 
@@ -1176,7 +1178,7 @@ def match(id: int, data: MatchInput, request: Request, draft: bool = False):
             raise HTTPException(404, 'Заявка не найдена.')
         if (req.version != data.request_version or req.status not in ('approved', 'paid')
                 or req.account_id != line.account_id or req.amount != line.amount
-                or not line.correspondent_inn or req.counterparty_inn != line.correspondent_inn):
+                or not payee_candidate(line, req, draft)):
             raise HTTPException(409, 'Заявка изменилась или её счёт, сумма либо ИНН не совпадают.')
         if draft and req.status != 'paid':
             raise HTTPException(409, 'В черновике можно связать только уже оплаченную заявку.')
@@ -1187,12 +1189,16 @@ def match(id: int, data: MatchInput, request: Request, draft: bool = False):
             BankStatementLine.status.in_(REQUEST_PAID_BANK_STATUSES)))
         if prior:
             raise HTTPException(409, 'Заявка уже связана с другой строкой выписки.')
+        early = debit_predates_approval(line, req)
+        document_id = None
+        if early:
+            document_id = check_early_debit(s, line, req, data.payment_date)
         if req.status == 'approved':
             op = SimpleNamespace(account_id=line.account_id, to_account_id=None, category_id=req.category_id,
                 kind='out', amount=money(line.amount), date=line.date, counterparty=req.counterparty,
                 reference='BANK-' + line.fingerprint, note='Банковская выписка: ' + data.note,
                 request_id=req.id, request_version=req.version, receipt_id=None)
-            entry = post_ledger(s, user, op, bank_statement_fact=True)
+            entry = post_ledger(s, user, op, bank_statement_fact=True, recognized_debit=line if early else None)
             line.status = 'manual_paid'
         else:
             query = effective_cashflows(s).where(Ledger.request_id == req.id, Ledger.kind == 'out',
@@ -1215,6 +1221,16 @@ def match(id: int, data: MatchInput, request: Request, draft: bool = False):
             line.status = 'manual_match'
         line.request_id = req.id; line.ledger_id = entry.id; line.reason = ''
         line.review_note = data.note; line.reviewed_by = user.id; line.reviewed_at = now()
+        if early:
+            from .bank_statement_historical_requests import _conservation
+            batch = get(s, BankStatementBatch, line.batch_id)
+            s.flush()
+            complete = _conservation(s, batch, get(s, Account, line.account_id))
+            set_statement_reconciliation(s, batch, complete, user)
+            log(s, user, 'Учтено списание банка до согласования', 'request', req.id,
+                json.dumps(dict(line_id=line.id, ledger_id=entry.id, source_hash=line.fingerprint,
+                    reference=line.document_number, bank_date=str(line.date), approval=req.approved_at.isoformat(),
+                    document_id=document_id, reason=data.note), ensure_ascii=False))
         log(s, user, 'Сопоставлена строка выписки', 'bank_statement_line', line.id,
             json.dumps({'request_id': req.id, 'ledger_id': entry.id, 'note': data.note}, ensure_ascii=False))
         return {'status': line.status, 'request_id': req.id, 'ledger_id': entry.id, 'payment_date': str(entry.date)}

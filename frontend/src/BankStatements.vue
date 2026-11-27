@@ -410,7 +410,7 @@ async function matchRequest(row, draft = false) {
   try {
     const result = await props.api(`/api/bank-statements/lines/${encodeURIComponent(row.id)}/match${draft ? "?draft=true" : ""}`, {
       method: 'POST', headers: {'Content-Type': 'application/json'},
-      body: JSON.stringify({request_id: candidate.id, request_version: candidate.version, ...(draft ? {payment_date: candidate.date} : {}), confirm: true, note: action.note.trim()}),
+      body: JSON.stringify({request_id: candidate.id, request_version: candidate.version, ...(draft ? {payment_date: candidate.date} : candidate.approved_after_bank ? {payment_date: row.date} : {}), confirm: true, note: action.note.trim()}),
     });
     if (current !== reviewGeneration) return;
     delete matchActions.value[row.id];
@@ -838,6 +838,7 @@ async function confirmAndPost(event) {
                 <template v-else>
                   <label>{{tx('Выберите заявку')}}<select v-model="matchActions[row.id].selected" :disabled="reviewBusy !== null" @change="resetSelectionConfirmation(matchActions,row)"><option value="">{{tx('Выберите заявку')}}</option><option v-for="candidate in matchActions[row.id].items" :key="candidate.id" :value="String(candidate.id)">{{candidate.number}} · {{candidate.counterparty}} · {{candidate.counterparty_inn}} · {{money(candidate.amount,row.currency)}} {{row.currency}} · {{tx('Плановая дата')}}: {{formatShortDate(candidate.date)}} · {{candidateStatus(candidate.status)}}</option></select></label>
                   <label>{{tx('Причина сопоставления (не менее 10 символов)')}}<input v-model="matchActions[row.id].note" :disabled="reviewBusy !== null"></label>
+                  <p v-if="matchActions[row.id].items.some(c => String(c.id) === matchActions[row.id].selected && c.approved_after_bank)" class="warning">{{tx('Банк исполнил платёж до согласования. Проверьте документ и получателя. Расход будет учтён датой банка, согласование сохранится.')}}</p>
                   <label><input v-model="matchActions[row.id].confirm" type="checkbox" :disabled="reviewBusy !== null"> {{tx('Подтверждаю сопоставление и оплату выбранной заявки.')}}</label>
                   <button type="button" :disabled="reviewBusy !== null || !matchActions[row.id].selected || !matchActions[row.id].confirm || matchActions[row.id].note.trim().length < 10" @click="matchRequest(row)">{{tx('Подтвердить сопоставление')}}</button>
                 </template>
