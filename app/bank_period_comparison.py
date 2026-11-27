@@ -21,7 +21,7 @@ from .db import Account, Company, Ledger, PaymentRequest, unit
 from .erp import read_upload
 from .requests_api import can_view_request
 from .security import HOLDING_ROLES, company_role, session_user
-from .services import batch_account_balances, deleted_ledger_ids, effective_cashflows, get, local_date, money
+from .services import account_balance, batch_account_balances, deleted_ledger_ids, effective_cashflows, get, local_date, money
 
 router = APIRouter(prefix='/api/bank-statements')
 currency_param = Query(pattern=r'^(UZS|USD|EUR)$')
@@ -505,8 +505,11 @@ def payment_evidence(request_id: int, request: Request, account_id: int, currenc
         req = get(s, PaymentRequest, request_id)
         if req.account_id != account.id or not can_view_request(s, user, req):
             raise HTTPException(404, 'Заявка не найдена.')
+        rows = payment_document_rows(s, user, account, req, reference, fact_date)
+        book = account_balance(s, account, fact_date) if rows else None
         return dict(request_id=req.id, approved_on=str(local_date(req.approved_at)) if req.approved_at else None,
-                    rows=payment_document_rows(s, user, account, req, reference, fact_date))
+                    rows=rows, book=money(book) if book is not None else None,
+                    shortfall=money(max(0, req.amount-book)) if book is not None else None)
 
 
 @router.get('/period-sources/list')

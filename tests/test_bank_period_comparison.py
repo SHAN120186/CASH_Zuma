@@ -38,6 +38,8 @@ class PeriodComparisonTests(BankStatementTests):
             version = s.get(PaymentRequest, rid).version
         payment = dict(kind='out', account_id=self.acc, category_id=self.cat, amount='600.00',
                        date=self.date, reference='ORDER-12', request_id=rid, request_version=version)
+        amounts = lookup(payer, headers).json()
+        self.assertEqual((amounts['book'], amounts['shortfall']), ('0.00', '600.00'))
         denied = payer.post('/api/ledger', headers=headers, json=payment)
         self.assertEqual(denied.status_code, 409, denied.text)
         self.assertIn('В выписке есть списание', denied.text)

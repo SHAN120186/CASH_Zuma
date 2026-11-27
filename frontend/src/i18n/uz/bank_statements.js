@@ -1,4 +1,7 @@
 export default {
+  'Введите номер платёжки, чтобы сверить списание с выпиской. При сохранении сайт проверит остаток по учёту на дату оплаты и на сегодня.': 'Chiqimni ko‘chirma bilan solishtirish uchun to‘lov hujjati raqamini kiriting. Saqlashda sayt to‘lov sanasidagi va bugungi hisob qoldig‘ini tekshiradi.',
+  'До суммы заявки не хватает {amount} {currency}.': 'Ariza summasiga {amount} {currency} yetishmaydi.',
+  'По учёту на {date} есть {amount} {currency}.': 'Hisobda {date} sanasida {amount} {currency} mavjud.',
   'Выписка № {id}': 'Ko‘chirma № {id}',
   'В выписке есть списание с этим номером и суммой. Проверьте банковскую дату и получателя. Для учёта оплаты требуется сверить движения счёта.': 'Ko‘chirmada shu raqam va summadagi chiqim bor. Bank sanasi va oluvchini tekshiring. To‘lovni hisobga olish uchun hisob harakatlarini solishtiring.',
   'Банк списал деньги до согласования заявки ({date}). Сверьте платёжку и документы перед учётом оплаты.': 'Bank mablag‘ni ariza tasdiqlanishidan oldin yechgan ({date}). To‘lovni hisobga olishdan oldin hujjatlarni solishtiring.',

@@ -31,6 +31,11 @@ watch(() => [props.companyId, props.account?.id, props.account?.currency, props.
   <div aria-live="polite">
     <p v-if="loading" class="sub">{{tx('Ищем платёжку в выписках…')}}</p>
     <p v-else-if="error" class="warning">{{tx(error)}}</p>
+    <p v-if="result?.rows.length" class="sub">{{tx('По учёту на {date} есть {amount} {currency}.',{
+      date:formatLongDate(day),amount:formatCents(toCents(result.book),account.currency),currency:account.currency})}}
+      <span v-if="toCents(result.shortfall)>0">{{tx('До суммы заявки не хватает {amount} {currency}.',{
+        amount:formatCents(toCents(result.shortfall),account.currency),currency:account.currency})}}</span>
+    </p>
     <section v-for="row in result?.rows" :key="row.batch_id + '-' + row.line" class="form-note">
       <strong>{{tx('Списание в выписке')}} · № {{row.reference}} · {{formatLongDate(row.date)}}</strong>
       <p>{{formatCents(toCents(row.amount),row.currency)}} {{row.currency}} · {{tx('Выписка № {id}',{id:row.batch_id})}} · {{row.status==='preview'?tx('Черновик'):tx('Подтверждена')}}</p>
