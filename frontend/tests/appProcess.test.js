@@ -649,6 +649,22 @@ test('accepted bank statement refreshes ledger independently after bootstrap fai
  assert.ok(calls.includes('/api/bootstrap'));assert.ok(calls.some(url=>url.startsWith('/api/ledger?')));assert.equal(view.state.boot.accounts.length,0);assert.equal(view.state.rows[0].reference,'NEW');assert.match(text(view.container),/Изменения выписки сохранены/);assert.match(text(view.container),/повторно подтверждать выписку не нужно/);
 });
 
+test('a confirmed payment date retains the draft account during refresh and reloads the daily balance',async t=>{
+ const waiting=deferred(),finance={...user,role:'finance',permissions:['view','ledger','write']};
+ const account={id:21,name:'Bank',kind:'bank',currency:'UZS'};
+ const {view}=await fixture(t,async url=>url==='/api/bootstrap'?waiting.promise:{ok:true,status:200,json:async()=>({items:[],total:0})},bankApp);
+ Object.assign(view.state,{user:finance,page:'ledger',boot:{...bootstrapBody(finance),accounts:[account]}});
+ await settle();
+ const revision=view.state.homeRefresh;
+ const pending=view.state.bankStatementsChanged('payment-date');
+ await settle();
+ assert.equal(view.state.boot.accounts[0]?.id,account.id);
+ waiting.resolve({ok:true,status:200,json:async()=>({...bootstrapBody(finance),accounts:[account]})});
+ await pending;await settle();
+ assert.equal(view.state.boot.accounts[0]?.id,account.id);
+ assert.equal(view.state.homeRefresh,revision+1);
+});
+
 test('a failed statement ledger refresh clears stale operations while retaining refreshed accounts',async t=>{
  const accountant={...user,role:'accountant',permissions:['view','ledger','pay_bank']};
  const {view}=await fixture(t,async url=>url==='/api/bootstrap'?{ok:true,status:200,json:async()=>({...bootstrapBody(accountant),accounts:[{id:21,name:'Fresh bank',kind:'bank',currency:'UZS'}]})}:url.startsWith('/api/ledger?')?{ok:false,status:503,json:async()=>({detail:'offline'})}:{ok:true,status:200,json:async()=>({items:[]})},bankApp);
