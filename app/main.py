@@ -825,7 +825,7 @@ def add_ledger(data:LedgerIn,request:Request):
         if not ('write' in perms_of(u) or payment_channels(perms_of(u))):raise HTTPException(403,'У вашей роли нет прав на это действие.')
         # Оплату заявки отмечает проверка плательщика; прочие операции идут по праву записи (в том числе ВрИО).
         if not data.request_id and 'write' in perms_of(u):act_with_right(u,'write')
-        t=post_ledger(s,u,data)
+        t=post_ledger(s,u,data,manual_payment=True)
         if not data.request_id and not data.receipt_id:remember_counterparty(s,data.counterparty)
         return {'id':t.id}
 def ledger_edit_token(entry):

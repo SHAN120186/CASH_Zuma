@@ -21,7 +21,7 @@ from .db import Account, Company, Ledger, PaymentRequest, unit
 from .erp import read_upload
 from .requests_api import can_view_request
 from .security import HOLDING_ROLES, company_role, session_user
-from .services import batch_account_balances, deleted_ledger_ids, effective_cashflows, get, money
+from .services import account_balance, batch_account_balances, deleted_ledger_ids, effective_cashflows, get, local_date, money
 
 router = APIRouter(prefix='/api/bank-statements')
 currency_param = Query(pattern=r'^(UZS|USD|EUR)$')
@@ -461,6 +461,55 @@ def account_statement_balances(s, user, accounts, as_of):
                 book_closing=money(book[account.id]) if started else None,
                 difference=money(row.closing-book[account.id]) if started else None)
     return result
+
+
+def payment_document_rows(s, user, account, req, reference, fact_date):
+    """Show visible debits with the submitted order number and approved amount."""
+    if not reference.strip() or not _financial_reader(user) or 'hidden' in (
+            (getattr(user, '_sections', None) or {}).get(key) for key in ('requests', 'ledger')):
+        return []
+    b, line = BankStatementBatch, BankStatementLine
+    rows = s.execute(select(b, line).join(line, line.batch_id == b.id).where(
+        b.company_id == account.company_id, b.account_id == account.id, b.currency == account.currency,
+        _visible_sources(user, True), b.source_ready.is_(True), b.balance_matches.is_(True),
+        b.declared_totals_match.is_(True), b.opening + b.credit_total - b.debit_total == b.closing,
+        line.company_id == b.company_id, line.account_id == account.id, line.direction == 'out',
+        line.date.between(b.period_from, b.period_to), line.date <= fact_date,
+        line.date >= date.fromordinal(max(date.min.toordinal(), fact_date.toordinal()-31)),
+        line.document_number == reference.strip(), line.amount == req.amount
+    ).order_by(b.period_to.desc(), b.id.desc(), line.line))
+    items = {}
+    for batch, row in rows:
+        key = (row.fingerprint, row.occurrence)
+        if key in items:
+            continue
+        metadata = {k: getattr(batch, k) for k in ('account_number', 'owner_inn', 'owner_name', 'currency')}
+        try:
+            check_statement_currency(account, metadata)
+            _binding(s, account, metadata)
+        except HTTPException as exc:
+            if exc.status_code != 409:
+                raise
+            continue
+        items[key] = dict(batch_id=batch.id, status=batch.status, line=row.line, date=str(row.date),
+            reference=row.document_number, amount=money(row.amount), currency=account.currency,
+            counterparty=row.correspondent_name, inn=row.correspondent_inn, purpose=row.purpose)
+    return list(items.values())
+
+
+@router.get('/payment-evidence/{request_id}')
+def payment_evidence(request_id: int, request: Request, account_id: int, currency: str = currency_param,
+                     reference: str = Query(min_length=2, max_length=160), fact_date: date = Query()):
+    with unit() as s:
+        user, account = _context(s, request, account_id, currency)
+        req = get(s, PaymentRequest, request_id)
+        if req.account_id != account.id or not can_view_request(s, user, req):
+            raise HTTPException(404, 'Заявка не найдена.')
+        rows = payment_document_rows(s, user, account, req, reference, fact_date)
+        book = account_balance(s, account, fact_date) if rows else None
+        return dict(request_id=req.id, approved_on=str(local_date(req.approved_at)) if req.approved_at else None,
+                    rows=rows, book=money(book) if book is not None else None,
+                    shortfall=money(max(0, req.amount-book)) if book is not None else None)
 
 
 @router.get('/period-sources/list')
