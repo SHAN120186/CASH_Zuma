@@ -33,6 +33,8 @@ test('opening a payment from a request focuses the exact saved debit without pos
   await view.state.openPaymentSource({batch_id:7,line_id:1,status:'preview'},accounts[0]);
   await settle();
   assert.deepEqual(writes,['/api/bank-statements/7/resume']);
+  assert.equal(view.state.draftDetails.open,true);
+  assert.equal(view.state.draftRowsPanel.open,true);
   assert.equal(globalThis.document.activeElement?.props['data-bank-line'],1);
   assert.equal(globalThis.document.activeElement.scrolled,true);
 });

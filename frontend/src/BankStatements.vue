@@ -511,7 +511,7 @@ async function paymentDateCorrected(result) {
   emit('changed', 'payment-date');
 }
 
-const draftRowsPanel = ref(null), reviewRowsPanel = ref(null);
+const draftDetails = ref(null), draftRowsPanel = ref(null), reviewRowsPanel = ref(null);
 async function openPaymentSource(source, bankAccount) {
   if (!Number.isInteger(source?.line_id) || !Number.isInteger(source.batch_id)) return;
   const draft = source.status === 'preview', company = props.companyId;
@@ -527,6 +527,7 @@ async function openPaymentSource(source, bankAccount) {
   await nextTick();
   const panel = draft ? draftRowsPanel.value : reviewRowsPanel.value;
   if (!panel || company !== props.companyId) return;
+  if (draft && draftDetails.value) draftDetails.value.open = true;
   panel.open = true;
   const target = panel.querySelector(`[data-bank-line="${source.line_id}"]`);
   if (target) {
@@ -736,7 +737,7 @@ async function confirmAndPost(event) {
         <p v-if="postingSummary?.blocking_reason" class="error" role="alert">{{tx(postingSummary.blocking_reason)}}</p>
         <p v-if="preview.statement.ready !== true || preview.statement.balance_matches !== true || preview.statement.declared_totals_match === false" class="error" role="alert">{{tx('Остатки или обороты выписки не подтверждены. Исправьте файл до загрузки.')}}</p>
         <slot name="comparison"/>
-        <details class="bank-help">
+        <details ref="draftDetails" class="bank-help">
         <summary>{{tx('Подробности сверки')}}</summary>
         <BankStatementIncome :statement="preview.statement" :rows="rows" :currency="currency"/>
         <p v-if="preview.opening_matches === true" class="good-text">{{tx('Начальный остаток выписки совпадает с остатком на сайте: {amount} {currency}.',{amount:money(preview.site_opening),currency})}}</p>
