@@ -5,7 +5,24 @@ import {formatCents, formatLongDate, toCents} from '../overview/format.js';
 
 const props = defineProps({api:Function, companyId:Number, account:Object, requestId:Number, reference:String, day:String, canOpen:Boolean});
 const emit = defineEmits(['open-source', 'already-paid']);
-const result = ref(null), error = ref(''), loading = ref(false);
+const result = ref(null), error = ref(''), loading = ref(false), recording = ref(false);
+async function recordDebit(row) {
+  if (recording.value || !result.value) return;
+  const id = props.requestId;
+  recording.value = true;
+  error.value = '';
+  try {
+    await props.api('/api/bank-statements/lines/' + row.line_id + '/recognize-debit', {
+      method:'POST', body:JSON.stringify({request_id:id, request_version:result.value.request_version,
+        confirm:true, payment_date:row.date, note:tx('Учёт исполненной платёжки № {number}', {number:row.reference})})
+    });
+    if (props.requestId === id) emit('already-paid', id);
+  } catch (e) {
+    error.value = e.message;
+  } finally {
+    recording.value = false;
+  }
+}
 watch(() => [props.companyId, props.account?.id, props.account?.currency, props.requestId, props.reference?.trim(), props.day],
   ([company, account, currency, requestId, reference, day], _, cleanup) => {
     result.value = null;
@@ -48,6 +65,7 @@ watch(() => [props.companyId, props.account?.id, props.account?.currency, props.
       <details><summary>{{tx('Посмотреть платёжку')}}</summary>
         <p>{{row.counterparty}} · {{tx('ИНН')}} {{row.inn || '—'}}</p><p>{{row.purpose}}</p>
       </details>
+      <button v-if="canOpen && row.status==='preview' && row.line_status==='review' && result.request_status==='approved' && row.date < result.approved_on" type="button" :disabled="recording" @click="recordDebit(row)">{{tx('Учесть списание датой банка')}}</button>
       <button v-if="canOpen && (row.status==='preview' || row.line_status==='review')" type="button" class="secondary" @click="emit('open-source',row)">{{tx('Открыть строку выписки')}}</button>
     </section>
   </div>

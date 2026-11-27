@@ -508,7 +508,7 @@ def payment_evidence(request_id: int, request: Request, account_id: int, currenc
             raise HTTPException(404, 'Заявка не найдена.')
         rows = payment_document_rows(s, user, account, req, reference, fact_date)
         book = account_balance(s, account, fact_date) if rows else None
-        return dict(request_id=req.id, request_status=req.status,
+        return dict(request_id=req.id, request_version=req.version, request_status=req.status,
                     approved_on=str(local_date(req.approved_at)) if req.approved_at else None,
                     rows=rows, book=money(book) if book is not None else None,
                     shortfall=money(max(0, req.amount-book)) if book is not None else None)

@@ -713,7 +713,8 @@ def request_json(s,r,accounts=None,categories=None,users=None,batch=None):
             'overdue':r.due_date<today() and r.status in ('pending','approved') and not (funding and funding.mode=='batch' and funding.state=='received'),
             'budget':budget_json(b),'budget_card':budget_card(s,c.id,str(r.due_date)[:7],a.currency,0 if r.status=='paid' else external_amount,r.id,base_state=card_base)}
 
-def post_ledger(s,u,data,*,bank_statement_fact=False,bank_statement_import=False,manual_payment=False,recognized_debit=None):
+def post_ledger(s,u,data,*,bank_statement_fact=False,bank_statement_import=False,manual_payment=False,
+                recognized_debit=None, executed_draft=False):
     a=get(s,Account,data.account_id)
     from .cash_funding import require_regular_account,funding_for
     require_regular_account(a)
@@ -774,11 +775,18 @@ def post_ledger(s,u,data,*,bank_statement_fact=False,bank_statement_import=False
         rec=get(s,Receipt,data.receipt_id)
         if kind!='in' or rec.status!='expected' or rec.account_id!=a.id or rec.amount!=n or rec.category_id!=data.category_id:
             raise HTTPException(409,'Поступление уже закрыто или сумма/счёт не совпадают.')
+    # An individually verified historical bank debit records an external fact.
+    # A partial book balance cannot veto it or authorize another payment.
+    if executed_draft and not (bank_statement_fact and req and recognized_debit is not None
+            and kind == 'out' and recognized_debit.date == data.date < earliest
+            and recognized_debit.account_id == a.id and recognized_debit.amount == n
+            and data.reference == 'BANK-' + recognized_debit.fingerprint):
+        raise HTTPException(409, 'Требуется подтверждённая выпиской платёжка.')
     if kind=='out' and req:
         enforce_payment_budget(s,req,a,data.date)
         # Неоплаченные заявки — прогноз, а не запрет оплачивать выбранную заявку.
         # Проверяем реальные деньги на её счёте, без ожидаемых поступлений.
-        for day in sorted({data.date,today()}):
+        for day in ([] if executed_draft else sorted({data.date,today()})):
             actual=account_balance(s,a,day)
             if actual<n:
                 if manual_payment and a.kind=='bank':
@@ -809,7 +817,8 @@ def post_ledger(s,u,data,*,bank_statement_fact=False,bank_statement_import=False
              kind=kind,amount=n,date=data.date,counterparty=req.counterparty if req else data.counterparty,reference=data.reference.strip(),
              note=data.note,request_id=req.id if req else None,receipt_id=rec.id if rec else None,creator_id=u.id)
     s.add(t);s.flush()
-    validate_running_balance(s,a)
+    if not executed_draft:
+        validate_running_balance(s,a)
     if target:validate_running_balance(s,target)
     if req:req.status='paid'
     if rec:rec.status='received'
