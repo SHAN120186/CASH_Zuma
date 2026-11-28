@@ -7,6 +7,8 @@ import {RETRY_REASON} from './saveFlow.js';
 import {tx, N_, formatDate, lang} from '../i18n/index.js';
 import CashFundingPanel from './CashFundingPanel.vue';
 import CashFundingBatchPanel from './CashFundingBatchPanel.vue';
+import TreasuryPanel from './TreasuryPanel.vue';
+import {treasuryKind} from './treasury.js';
 
 const props = defineProps({
   api: {type: Function, required: true},
@@ -15,7 +17,7 @@ const props = defineProps({
   money: {type: Function, required: true},
   dues: {type: Object, default: () => ({})},
 });
-const emit = defineEmits(['close', 'changed', 'edit', 'record-payment', 'payments-recorded']);
+const emit = defineEmits(['close', 'changed', 'edit', 'record-payment', 'payments-recorded', 'open-request']);
 
 const r = ref(null), error = ref(''), busy = ref(false), notice = ref(''), dialog = ref(null), rules = ref(props.dues);
 const decision = ref({action: '', note: '', date: ''}), showHistory = ref({}), removing = ref(null), removeReason = ref('');
@@ -38,7 +40,13 @@ const required = computed(() => r.value?.required_documents || requiredDocs(r.va
 // До отправки файл убирается сразу; после отправки — только прочий документ и с причиной
 // (обязательный заменяется новой версией).
 const draftLike = computed(() => ['draft', 'returned'].includes(r.value?.status));
-const canRemove = kind => can('documents') && (draftLike.value || !required.value.includes(kind));
+// Оплаченная картой заявка до сверки принимает только прочие (закрывающие) документы.
+const closingOnly = computed(() => r.value?.status === 'paid');
+// Часть частичной оплаты валютной заявки оплачивается обычным фактом оплаты (например, после сторно).
+const treasuryPart = ref(false);
+// После оплаты картой закрывающие документы только добавляются, ничего не убирается.
+const canRemove = kind => can('documents') && !closingOnly.value && (draftLike.value || !required.value.includes(kind));
+const canUpload = kind => can('documents') && (!closingOnly.value || kind === 'other');
 
 async function load(afterAction = false) {
   try {
@@ -92,6 +100,12 @@ async function fundingChanged(row, result) {
   // A commit returns the authoritative workflow view, while GET includes
   // document versions, people and history. Never treat the short reply as an
   // empty set of attachments after a successful money fact.
+  await load(true);
+  emit('changed');
+}
+
+// Казначейство (карта, валютная цепочка) возвращает свой ответ; карточку и список читаем заново.
+async function treasuryChanged() {
   await load(true);
   emit('changed');
 }
@@ -214,6 +228,7 @@ onUnmounted(() => document.removeEventListener('keydown', onKey));
 
         <CashFundingPanel v-if="r.cash_funding" :api="api" :request="r" :money="money" @busy="busy = $event" @changed="fundingChanged" />
         <CashFundingBatchPanel v-if="r.cash_funding?.mode === 'batch' && r.cash_funding.state === 'received'" :api="api" :request="r" :money="money" @busy="busy = $event" @paid="batchPaymentsRecorded" />
+        <TreasuryPanel v-if="treasuryKind(r)" :api="api" :request="r" :money="money" @busy="busy = $event" @changed="treasuryChanged" @open-request="emit('open-request', $event)" @loaded="treasuryPart = !!$event?.fx?.parent" />
 
         <section v-if="r.budget_card && r.cash_funding?.mode !== 'batch'" class="budget-check" :class="r.budget_card.status" :aria-label="tx('Бюджет статьи')">
           <strong>{{ tx('Бюджет статьи «{category}» · {period}', {category: r.category, period: periodLabel(r.budget_card.period)}) }}</strong>
@@ -239,7 +254,7 @@ onUnmounted(() => document.removeEventListener('keydown', onKey));
               </li>
             </ul>
             <p v-else class="sub">{{ tx('Файл не приложен.') }}</p>
-            <label v-if="can('documents')" class="button secondary tiny file-btn">{{ SINGLE_DOCS.includes(kind) && byKind[kind].current.length ? tx('Заменить файл') : tx('Приложить файл') }}<input type="file" :accept="DOC_ACCEPT" :disabled="busy" @change="upload(kind, $event)"></label>
+            <label v-if="canUpload(kind)" class="button secondary tiny file-btn">{{ SINGLE_DOCS.includes(kind) && byKind[kind].current.length ? tx('Заменить файл') : tx('Приложить файл') }}<input type="file" :accept="DOC_ACCEPT" :disabled="busy" @change="upload(kind, $event)"></label>
             <button v-if="byKind[kind].history.length" type="button" class="ghost tiny" :aria-expanded="!!showHistory[kind]" @click="showHistory[kind] = !showHistory[kind]">{{ showHistory[kind] ? tx('Скрыть прежние версии') : tx('Прежние версии: {n}', {n: byKind[kind].history.length}) }}</button>
             <ul v-if="showHistory[kind]" class="rq-files old">
               <li v-for="d in byKind[kind].history" :key="d.id"><a :href="companyUrl(d.url)">{{ d.filename }}</a><small>{{ tx('версия {n}', {n: d.version}) }} · {{ SINGLE_DOCS.includes(kind) ? tx('заменена или убрана') : tx('убран') }} · {{ d.created_by }} · {{ when(d.created_at) }}</small></li>
@@ -252,7 +267,7 @@ onUnmounted(() => document.removeEventListener('keydown', onKey));
           <button v-if="can('delete')" type="button" class="secondary" :disabled="busy" @click="deleteRequest">{{ tx('Удалить заявку') }}</button>
           <button v-if="can('edit')" type="button" class="secondary" :disabled="busy" @click="emit('edit', r)">{{ tx('Изменить') }}</button>
           <button v-if="can('submit')" type="button" :disabled="busy || missing.length > 0" @click="submit">{{ tx('Отправить на согласование') }}</button>
-          <button v-if="can('pay')" type="button" :disabled="busy" @click="emit('record-payment', r)">{{ tx('Факт оплаты') }}</button>
+          <button v-if="can('pay') && (treasuryKind(r) !== 'fx' || treasuryPart)" type="button" :disabled="busy" @click="emit('record-payment', r)">{{ tx('Факт оплаты') }}</button>
         </div>
 
         <form v-if="options.length" class="rq-decision card" @submit.prevent="decide">

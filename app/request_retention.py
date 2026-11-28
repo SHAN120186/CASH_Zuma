@@ -61,6 +61,8 @@ def removal_blockers(s,r):
     if groups:blockers.append('Заявка связана с неизменяемой группой наличной оплаты.')
     if s.scalar(select(BankStatementLine.id).where(BankStatementLine.request_id==r.id).limit(1).execution_options(company_unscoped=True)) is not None:
         blockers.append('Заявка связана со строкой банковской выписки. Сначала разберите эту связь в выписке; денежные факты не удаляются.')
+    from .treasury import removal_blockers as treasury_blockers
+    blockers.extend(treasury_blockers(s,r))
     return blockers
 
 
@@ -80,6 +82,8 @@ def permanently_delete_unpaid_request(s,user,r):
         s.delete(doc)
     funding=s.scalar(select(CashFunding).where(CashFunding.request_id==rid))
     if funding is not None:s.delete(funding)
+    from .treasury import delete_plans
+    delete_plans(s,rid)
     s.flush()
     prior=s.info.get('audit_maintenance')
     try:

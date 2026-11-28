@@ -40,6 +40,8 @@ def save_plan(data:PlanInput,request:Request):
             category=get(s,Category,item.category_id);key=f'{item.category_id}:{item.kind}'
             if category.activity=='unclassified' and item.amount is not None:
                 raise HTTPException(422,'Нераспределённые банковские поступления не являются плановой статьёй.')
+            if category.activity=='conversion' and item.amount is not None:
+                raise HTTPException(422,'Конвертация валют — перевод между счетами, а не плановая статья.')
             if key in keys:raise HTTPException(422,'Статья и направление повторяются.')
             keys.add(key)
             if item.amount is not None:payload[key]=amount(item.amount,True)*(1 if item.kind=='in' else -1)

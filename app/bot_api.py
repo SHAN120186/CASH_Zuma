@@ -198,8 +198,10 @@ def request_number(r):
 
 
 def bot_account_kind(kind):
-    """The deployed bot accepts only bank/cash; preserve transit additively."""
-    return {'kind':'cash','source_kind':'transit'} if kind=='transit' else {'kind':kind}
+    """The deployed bot accepts only bank/cash; preserve transit, card and block additively."""
+    if kind=='transit':return {'kind':'cash','source_kind':'transit'}
+    if kind in ('card','block'):return {'kind':'bank','source_kind':kind}
+    return {'kind':kind}
 
 
 def funding_stage_label(funding,fallback):
@@ -261,10 +263,13 @@ def morning_summary(request: Request, chat_id: int, report_date: date, today: da
                         for a in ordered]
 
         totals = {'in': {}, 'out': {}}
+        # Конвертация валют, как и перевод, — обмен между своими счетами, а не приход и расход.
+        conversion_ids = set(s.scalars(select(Category.id).where(Category.company_id.in_(list(companies)),
+                                                                 Category.activity == 'conversion')))
         for t in s.scalars(effective_cashflows(s).where(Ledger.date == report_date)):
             a = all_accounts.get(t.account_id)
-            if a is None or t.kind not in totals:
-                continue  # other companies; transfers move money inside the company
+            if a is None or t.kind not in totals or t.category_id in conversion_ids:
+                continue  # other companies; transfers and conversions move money inside the company
             key = (name[a.company_id], a.kind, a.currency)
             totals[t.kind][key] = totals[t.kind].get(key, 0) + t.amount
 
@@ -294,7 +299,7 @@ def morning_summary(request: Request, chat_id: int, report_date: date, today: da
         for a in sorted(open_accounts, key=lambda a: (name[a.company_id], currency_key(a.currency), a.name)):
             state = funds_state(s, a, today)
             key = (a.company_id, a.currency)
-            available[key] = available.get(key, 0) + (0 if a.kind=='transit' else state['available'])
+            available[key] = available.get(key, 0) + (0 if a.kind in ('transit','block') else state['available'])
             if state['available'] < 0:
                 label = mask_digits(a.name, 80)
                 if state.get('bank_pending_debits'):
@@ -390,6 +395,7 @@ def daily_summary_payload(s, chat_id, report_date, companies, codes, scope_id, c
     names = {cid: mask_digits(c.name, 80) for cid, c in companies.items()}
     accounts = {a.id: a for a in s.scalars(select(Account).where(Account.company_id.in_(list(companies))))}
     categories = {c.id: c.name for c in s.scalars(select(Category).where(Category.company_id.in_(list(companies))))}
+    conversion_ids = set(s.scalars(select(Category.id).where(Category.company_id.in_(list(companies)), Category.activity == 'conversion')))
     postings = list(s.scalars(effective_cashflows(s).where(
         Ledger.date == report_date, Ledger.account_id.in_(list(accounts))).order_by(Ledger.id)))
     active_ids = {t.account_id for t in postings} | {t.to_account_id for t in postings if t.to_account_id}
@@ -413,7 +419,7 @@ def daily_summary_payload(s, chat_id, report_date, companies, codes, scope_id, c
         target = accounts.get(t.to_account_id)
         if t.kind == 'transfer' and (target is None or target.company_id != a.company_id or target.currency != a.currency):
             raise HTTPException(409, 'Для перевода не подтверждены счета одной компании и валюты.')
-        if t.kind in totals:
+        if t.kind in totals and t.category_id not in conversion_ids:
             key = (a.company_id, a.kind, a.currency)
             totals[t.kind][key] = totals[t.kind].get(key, 0) + t.amount
         operations.append({'company': names[a.company_id], 'company_code': companies[a.company_id].code,
@@ -750,8 +756,8 @@ def responsible(r, account, company, users, members, acting=None, past=None, fun
     Pending requests: accountant check, finance, then the director only when the route snapshot
     requires one; nobody acts twice in one request and nobody who edited it or its files in this round
     (``past`` = services.round_participants). Payment: only when every required stage is done, never by
-    its author, editors or financial approvers in any round. A bank checker may pay
-    (``past`` = services.all_participants with include_check=False for bank payments)."""
+    its author, editors or financial approvers in any round. A bank or corporate-card checker may pay
+    (``past`` = services.all_participants with include_check=False for bank and card payments)."""
     acting = acting or {}
     if r.status == 'pending':
         stage = approval_stage(r)
@@ -772,7 +778,7 @@ def responsible(r, account, company, users, members, acting=None, past=None, fun
         elif funding is None or funding.state=='received':
             right = pay_right(account)
             stage = 'cash_payment' if account.kind == 'cash' else 'bank_payment'
-            excluded = participants(r, include_check=account.kind!='bank') | (past or set())
+            excluded = participants(r, include_check=account.kind not in ('bank', 'card')) | (past or set())
         else:return None,[]
         fits = lambda roles: any(right in PERMS.get(x, ()) for x in roles)
     else:
@@ -852,7 +858,7 @@ def pending_items(s, user_id=None, company_id=None):
         if company is None:
             continue
         funding=fundings.get(r.id)
-        include_check=not(funding and funding.state=='unfunded') and account.kind!='bank'
+        include_check=not(funding and funding.state=='unfunded') and account.kind not in ('bank','card')
         past = all_participants(s, r, include_check=include_check) if r.status == 'approved' else round_participants(s, r)
         stage, people = responsible(r, account, company, users, members, acting, past,funding)
         if funding and r.status=='approved':

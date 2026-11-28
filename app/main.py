@@ -28,6 +28,7 @@ from .workdays import enforce_lead_time, due_minimums
 from .requests_api import request_view, can_view_request, MAX_DOCUMENT
 from .bank_statement_guard import CREATED_BANK_STATUSES
 from .cash_funding import CashFundingIn, expense_amount
+from .treasury import CardPlanIn
 
 SECURE=os.getenv('COOKIE_SECURE','0')=='1'
 ALLOWED=[x.strip() for x in os.getenv('ALLOWED_HOSTS','127.0.0.1,localhost,testserver').split(',') if x.strip()]
@@ -123,7 +124,7 @@ class PasswordIn(Input):
     new_password:str=Field(min_length=12,max_length=128)
 class AccountIn(Input):
     name:str=Field(min_length=2,max_length=160)
-    kind:Literal['bank','cash']
+    kind:Literal['bank','cash','card']
     currency:Literal['UZS','USD','EUR']
     opening:str
     opening_date:date
@@ -148,7 +149,7 @@ class RequestIn(Input):
     # Обязательные поля формы: компания, канал и валюта сверяются со счётом списания.
     company_id:int
     account_id:int
-    channel:Literal['bank','cash']
+    channel:Literal['bank','cash','card']
     currency:Literal['UZS','USD','EUR']
     category_id:int
     counterparty:str=Field(min_length=2,max_length=160)
@@ -161,6 +162,8 @@ class RequestIn(Input):
     priority:Literal['normal','high','urgent']
     status:Literal['draft','pending']='draft'
     cash_funding:Optional[CashFundingIn]=None
+    # Канал «Корпоративная карта»: процент и статья комиссии; остаток карты фиксирует сервер.
+    card:Optional[CardPlanIn]=None
 class RequestEdit(RequestIn):
     version:int=Field(ge=1)
     reason:str=Field(min_length=10,max_length=1000)
@@ -351,6 +354,7 @@ def add_account(data:AccountIn,request:Request):
         u,_=session_user(s,request,'write')
         if data.opening_date>today():raise HTTPException(422,'Начальный остаток не может быть задан будущей датой.')
         if data.kind=='cash' and data.allow_overdraft:raise HTTPException(422,'Для кассы отрицательный остаток запрещён.')
+        if data.kind=='card' and data.allow_overdraft:raise HTTPException(422,'Для корпоративной карты отрицательный остаток запрещён.')
         company_id=data.company_id or s.info['company_id']
         get(s,Company,company_id)
         a=Account(name=data.name,kind=data.kind,currency=data.currency,company_id=company_id,opening=amount(data.opening,True),opening_date=data.opening_date,allow_overdraft=data.allow_overdraft,created_by=u.id)
@@ -365,6 +369,7 @@ def edit_account(id:int,data:AccountEdit,request:Request):
         if a.archived:raise HTTPException(409,'Сначала восстановите счёт из архива.')
         if data.opening_date>today():raise HTTPException(422,'Начальный остаток не может быть задан будущей датой.')
         if data.kind=='cash' and data.allow_overdraft:raise HTTPException(422,'Для кассы отрицательный остаток запрещён.')
+        if data.kind=='card' and data.allow_overdraft:raise HTTPException(422,'Для корпоративной карты отрицательный остаток запрещён.')
         entries=list(s.scalars(select(Ledger).where((Ledger.account_id==id)|(Ledger.to_account_id==id))))
         requests=list(s.scalars(select(PaymentRequest).where(PaymentRequest.account_id==id)))
         receipts=list(s.scalars(select(Receipt).where(Receipt.account_id==id)))
@@ -401,6 +406,7 @@ def edit_category(id:int,data:CategoryIn,request:Request):
         u,_=session_user(s,request,'catalog');c=get(s,Category,id)
         from .bank_statement_unallocated import category_id as unallocated_category_id
         if id in (unallocated_category_id(s),unallocated_category_id(s,'out')):raise HTTPException(409,'Назначьте статью отдельной операции; системную статью менять нельзя.')
+        if c.activity=='conversion':raise HTTPException(409,'Служебную статью конвертации валют не меняют: её ведут этапы конвертации.')
         old={'name':c.name,'activity':c.activity,'type':c.type}
         c.name=data.name;c.activity=data.activity;c.type=data.type
         log(s,u,'Изменена статья','category',id,json.dumps({'before':old,'after':data.model_dump()},ensure_ascii=False))
@@ -411,14 +417,14 @@ def budgets(request:Request,month:str='',currency:Literal['UZS','USD','EUR']='UZ
     month=month or str(today())[:7]
     with unit() as s:
         session_user(s,request,'view')
-        categories=[c for c,_ in category_catalog(s) if c.type=='outcome' and c.activity!='unclassified']
+        categories=[c for c,_ in category_catalog(s) if c.type=='outcome' and c.activity not in ('unclassified','conversion')]
         states=budget_states(s,(c.id for c in categories),month,currency)
         return [dict(category_id=c.id,category=article_name(c),code=article_code(c),cost_group=c.cost_group,month=month,currency=currency,**budget_json(states[c.id])) for c in categories]
 @app.post('/api/budgets')
 def save_budget(data:BudgetIn,request:Request):
     with unit(True) as s:
         u,_=session_user(s,request,'budget');c=get(s,Category,data.category_id)
-        if c.activity=='unclassified':raise HTTPException(422,'Нераспределённые операции не являются бюджетной статьёй.')
+        if c.activity in ('unclassified','conversion'):raise HTTPException(422,'Нераспределённые операции и конвертация валют не являются бюджетной статьёй.')
         if data.cost_group is not None and data.cost_group!=c.cost_group:
             log(s,u,'Изменена группа затрат','category',c.id,json.dumps({'before':c.cost_group,'after':data.cost_group,'reason':data.reason},ensure_ascii=False))
             c.cost_group=data.cost_group
@@ -519,6 +525,7 @@ def request_target(s,data):
     if a.kind!=data.channel:raise HTTPException(422,'Канал оплаты не совпадает со счётом: банковская заявка оплачивается с банковского счёта, кассовая — из кассы.')
     if a.currency!=data.currency:raise HTTPException(422,'Валюта заявки не совпадает с валютой счёта списания.')
     if c.type!='outcome':raise HTTPException(422,'Для заявки на оплату выберите расходную статью.')
+    if c.activity=='conversion':raise HTTPException(422,'Служебная статья конвертации валют не выбирается в заявке.')
     if data.date<a.opening_date:raise HTTPException(422,'Дата раньше начала учёта выбранного счёта.')
     enforce_lead_time(s,data.priority,data.date,today())
     return a,c
@@ -534,7 +541,7 @@ def add_request(data:RequestIn,request:Request):
         from .department_catalog import validate as validate_department
         validate_department(s,data.department)
         if data.status=='pending':
-            message='Сначала сохраните черновик и приложите «Внутренняя заявка / Индент», затем отправьте заявку.' if a.kind=='cash' else 'Сначала сохраните черновик и приложите «Внутренняя заявка / Индент» и «Договор / Счёт на оплату», затем отправьте заявку.'
+            message='Сначала сохраните черновик и приложите «Внутренняя заявка / Индент», затем отправьте заявку.' if a.kind in ('cash','card') else 'Сначала сохраните черновик и приложите «Внутренняя заявка / Индент» и «Договор / Счёт на оплату», затем отправьте заявку.'
             raise HTTPException(422,message)
         from .finance_author import new_finance_author
         from .request_retention import next_request_id
@@ -546,6 +553,8 @@ def add_request(data:RequestIn,request:Request):
         save_plan(s,u,r,data.cash_funding)
         log(s,u,'Создана заявка','request',r.id,json.dumps({'status':r.status,'version':r.version,'amount':money(n),'currency':a.currency,
             'category':c.name,'channel':a.kind,'date':str(r.due_date),'priority':r.priority,'department':r.department},ensure_ascii=False))
+        from .treasury import after_request_saved
+        after_request_saved(s,u,r,data.card,provided='card' in data.model_fields_set)
         return request_view(s,u,r)
 class RequestDeleteIn(Input):
     version:int=Field(ge=1)
@@ -560,6 +569,8 @@ def delete_request(id:int,data:RequestDeleteIn,request:Request):
         check_request_version(r,data.version)
         from .cash_funding import require_settled_cash_receipt
         require_settled_cash_receipt(s,r)
+        from .treasury import require_settled_conversions
+        require_settled_conversions(s,r)
         before=request_json(s,r)
         entries=list(s.scalars(select(Ledger).where(Ledger.request_id==r.id)))
         documents=list(s.scalars(select(RequestDocument).where(RequestDocument.request_id==r.id)))
@@ -598,6 +609,8 @@ def edit_request(id:int,data:RequestEdit,request:Request):
             r.department=data.department
         r.amount=n;r.due_date=data.date;clear_approval(r);r.last_editor_id=u.id;r.decision_note=data.reason;r.status=data.status
         save_plan(s,u,r,data.cash_funding,provided='cash_funding' in data.model_fields_set)
+        from .treasury import after_request_saved
+        after_request_saved(s,u,r,data.card,provided='card' in data.model_fields_set)
         s.flush()
         if data.status=='pending':
             enforce_documents(s,r)
@@ -639,7 +652,10 @@ def decide(id:int,data:DecisionIn,request:Request):
         check_request_version(r,data.version)
         stage=approval_stage(r);before=request_state(r);note=data.note.strip()
         from .cash_funding import require_unfunded,require_settled_cash_receipt
-        if data.action=='close':require_settled_cash_receipt(s,r)
+        if data.action=='close':
+            require_settled_cash_receipt(s,r)
+            from .treasury import require_settled_conversions
+            require_settled_conversions(s,r)
         elif data.action in ('return','return_finance','reschedule','submit'):require_unfunded(s,r)
         if data.action=='submit':
             if r.status not in ('draft','returned') or (r.creator_id!=u.id and 'request_edit' not in perms):raise HTTPException(403,'Отправить можно свой черновик или возвращённую заявку.')
@@ -729,7 +745,7 @@ def add_receipt(data:ReceiptIn,request:Request):
         u,_=session_user(s,request,('schedule','receipts'));a=get(s,Account,data.account_id);category=get(s,Category,data.category_id)
         from .cash_funding import require_regular_account
         require_regular_account(a)
-        if category.activity=='unclassified':raise HTTPException(422,'Для плана выберите обычную статью поступлений.')
+        if category.activity in ('unclassified','conversion'):raise HTTPException(422,'Для плана выберите обычную статью поступлений.')
         if 'schedule' not in perms_of(u) and category.type!='income':
             raise HTTPException(422,'Для плана поступления выберите доходную статью.')
         if a.archived:raise HTTPException(409,'Счёт в архиве.')
@@ -747,7 +763,7 @@ def edit_receipt(id:int,data:ReceiptIn,request:Request):
         a=get(s,Account,data.account_id);c=get(s,Category,data.category_id)
         from .cash_funding import require_regular_account
         require_regular_account(a)
-        if c.activity=='unclassified':raise HTTPException(422,'Для плана выберите обычную статью поступлений.')
+        if c.activity in ('unclassified','conversion'):raise HTTPException(422,'Для плана выберите обычную статью поступлений.')
         if c.type!='income':raise HTTPException(422,'Для плана поступления выберите доходную статью.')
         if a.archived:raise HTTPException(409,'Счёт в архиве.')
         if data.date<a.opening_date:raise HTTPException(422,'Дата раньше начала учёта счёта.')
@@ -824,6 +840,12 @@ def add_ledger(data:LedgerIn,request:Request):
         if not ('write' in perms_of(u) or payment_channels(perms_of(u))):raise HTTPException(403,'У вашей роли нет прав на это действие.')
         # Оплату заявки отмечает проверка плательщика; прочие операции идут по праву записи (в том числе ВрИО).
         if not data.request_id and 'write' in perms_of(u):act_with_right(u,'write')
+        if data.request_id:
+            linked=get(s,PaymentRequest,data.request_id)
+            if get(s,Account,linked.account_id).kind=='card':
+                raise HTTPException(409,'Оплата корпоративной картой проводится в карточке заявки: там учитываются комиссия и остаток карты.')
+        if data.category_id and get(s,Category,data.category_id).activity=='conversion':
+            raise HTTPException(422,'Служебная статья конвертации валют ставится только этапами конвертации в валютной заявке.')
         t=post_ledger(s,u,data,manual_payment=True)
         if not data.request_id and not data.receipt_id:remember_counterparty(s,data.counterparty)
         return {'id':t.id}
@@ -848,6 +870,8 @@ def edit_ledger(id:int,data:LedgerEditIn,request:Request):
         if old.reversal_of or s.scalar(select(Ledger.id).where(Ledger.reversal_of==id)):raise HTTPException(409,'Операция уже сторнирована.')
         before={k:str(getattr(old,k)) for k in ('account_id','to_account_id','category_id','kind','amount','date','counterparty','reference','note')}
         fields=('account_id','to_account_id','category_id','kind','date','counterparty')
+        if data.category_id and get(s,Category,data.category_id).activity=='conversion':
+            raise HTTPException(422,'Служебная статья конвертации валют ставится только этапами конвертации в валютной заявке.')
         same=amount(data.amount)==old.amount and all(getattr(data,k)==getattr(old,k) for k in fields)
         if data.request_id!=old.request_id or data.receipt_id!=old.receipt_id:raise HTTPException(422,'Связь операции с документом менять нельзя.')
         if same:
@@ -1120,6 +1144,10 @@ def group_report(request:Request,company_id:int,currency:Literal['UZS','USD','EU
         accounts=list(s.scalars(select(Account).where(Account.company_id==company_id,Account.currency==currency)))
         aids={a.id for a in accounts}
         entries=[t for t in s.scalars(effective_cashflows(s).where(Ledger.date>=start,Ledger.date<=day)) if t.account_id in aids and t.kind!='transfer']
+        # Конвертация валют — обмен между своими счетами: не приход и не расход, но меняет остаток дня.
+        conversion_ids=set(s.scalars(select(Category.id).where(Category.company_id==company_id,Category.activity=='conversion')))
+        conversion_day=sum((t.amount if t.kind=='in' else -t.amount) for t in entries if t.category_id in conversion_ids and t.date==day)
+        entries=[t for t in entries if t.category_id not in conversion_ids]
         from .cash_report import expense_plan_summary
         plan=expense_plan_summary(s,month,currency,company_id,scenario,day)
         bank_ids={a.id for a in accounts if a.kind=='bank'}
@@ -1131,7 +1159,7 @@ def group_report(request:Request,company_id:int,currency:Literal['UZS','USD','EU
         opening=sum(day_start_balance(s,a,day) for a in opened)
         income_day=sum(t.amount for t in entries if t.kind=='in' and t.date==day)
         expense_day=sum(t.amount for t in entries if t.kind=='out' and t.date==day)
-        closing=opening+income_day-expense_day
+        closing=opening+income_day-expense_day+conversion_day
         states=[funds_state(s,a,day) for a in opened]
         reserved=sum(state['reserved'] for state in states)
         bank_hold=sum(state['bank_pending_debits'] for state in states)
@@ -1149,7 +1177,7 @@ def group_report(request:Request,company_id:int,currency:Literal['UZS','USD','EU
         # cover a cash issue before its physical receipt. Use this report's
         # historical cut-off, not today's balance, and never release funds
         # merely because a damaged technical account has a negative balance.
-        in_transit=sum(max(state['actual'],0) for a,state in zip(opened,states) if a.kind=='transit')
+        in_transit=sum(max(state['actual'],0) for a,state in zip(opened,states) if a.kind in ('transit','block'))
         available=closing-reserved-funding_fee_reserved-bank_hold-in_transit
         if not plan['complete']:
             if plan['defined_rows']:
@@ -1169,14 +1197,15 @@ def group_report(request:Request,company_id:int,currency:Literal['UZS','USD','EU
         day_label=day.strftime('%d.%m.%Y')
         transit_note=f'; деньги в пути {money(in_transit)} (недоступны к выдаче)' if in_transit else ''
         funding_fee_note=f'; резерв комиссии {money(funding_fee_reserved)}' if funding_fee_reserved else ''
+        conversion_note=f'; конвертация {money(conversion_day)}' if conversion_day else ''
         text='\n'.join([f'{company.name} · {month} · сценарий {scenario}',plan_line,f'Последнее банковское поступление: {last_line}',
-            f'{day_label}: начало дня {money(opening)}; приход {money(income_day)}; расход {money(expense_day)}; конец дня {money(closing)}; резерв {money(reserved)}{funding_fee_note}{transit_note}; доступно {money(available)} {currency}'])
+            f'{day_label}: начало дня {money(opening)}; приход {money(income_day)}; расход {money(expense_day)}{conversion_note}; конец дня {money(closing)}; резерв {money(reserved)}{funding_fee_note}{transit_note}; доступно {money(available)} {currency}'])
         return {'text':text,'company':company.name,'month':month,'day':str(day),'currency':currency,'scenario':scenario,
             'expense_plan':money(expense_plan),'bank_income_mtd':money(income_mtd),'last_bank_income':str(last_income) if last_income else None,
             'expense_plan_complete':plan['complete'],'expense_plan_defined_rows':plan['defined_rows'],'expense_plan_missing_rows':plan['missing_rows'],
             'expense_plan_total':money(plan['total']) if plan['total'] is not None else None,
             'expense_plan_remaining':money(remaining) if remaining is not None else None,'expense_plan_coverage_percent':coverage,
-            'opening':money(opening),'income_day':money(income_day),'expense_day':money(expense_day),'closing':money(closing),'reserved':money(reserved),
+            'opening':money(opening),'income_day':money(income_day),'expense_day':money(expense_day),'conversion_day':money(conversion_day),'closing':money(closing),'reserved':money(reserved),
             'bank_pending_debits':money(bank_hold),'in_transit_balance':money(in_transit),
             'funding_fee_reserved':money(funding_fee_reserved),'available':money(available)}
 
@@ -1383,3 +1412,6 @@ app.include_router(department_router)
 
 from .budget_import import router as budget_import_router, article_code, article_name
 app.include_router(budget_import_router)
+
+from .treasury import router as treasury_router
+app.include_router(treasury_router)

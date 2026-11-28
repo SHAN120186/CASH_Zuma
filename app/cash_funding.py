@@ -179,11 +179,15 @@ def accepted_fee_overrun(s,funding,month,currency):
 
 def protected_ledger_ids(s):
     from .db import CashFundingPaymentItem
+    from .treasury import treasury_ledger_ids
     return set(s.scalars(select(CashFundingPaymentItem.ledger_id)))|{id for funding in s.scalars(select(CashFunding)) for id in
-            (funding.transfer_ledger_id,funding.fee_ledger_id,funding.receipt_ledger_id) if id is not None}
+            (funding.transfer_ledger_id,funding.fee_ledger_id,funding.receipt_ledger_id) if id is not None}|treasury_ledger_ids(s)
 
 
 def require_independent_ledger(s,entry):
+    from .treasury import treasury_ledger_ids
+    if entry.id in treasury_ledger_ids(s):
+        raise HTTPException(409,'Операция связана с оплатой корпоративной картой или конвертацией. Исправление выполняется в карточке заявки.')
     if entry.id in protected_ledger_ids(s):
         raise HTTPException(409,'Операция связана с получением наличных через банк. Изменение или отдельное сторно нарушит связанную сверку.')
 
@@ -191,6 +195,8 @@ def require_independent_ledger(s,entry):
 def require_regular_account(account):
     if account.kind=='transit':
         raise HTTPException(409,'Служебный счёт «Деньги в пути» используется только связанным получением наличных через банк.')
+    if account.kind=='block':
+        raise HTTPException(409,'Блочный счёт под конвертацию используется только документом конвертации в карточке валютной заявки.')
 
 
 def _authorized(s,user,request,funding,action,*,batch=None):

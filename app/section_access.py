@@ -65,6 +65,8 @@ def modules(path):
     path=path.replace('/api/bot/v1/','/api/',1)
     if path.startswith('/api/admin/') or path in ('/api/me','/api/bootstrap','/api/companies','/api/logout','/api/password'):return ()
     routes=[(r'/api/(?:request-documents|request-counterparties|requests|budget-check|request-rules)(?:/|$)',('requests',)),
+      (r'/api/treasury/(?:requests|conversions|card-balance)(?:/|$)',('requests',)),
+      (r'/api/treasury(?:/|$)',('requests','ledger')),
       (r'/api/bank-statements/daily(?:/|$)',('home','ledger')),
       (r'/api/bank-statements(?:/|$)',('ledger',)),
       (r'/api/(?:ledger|documents|export/ledger)(?:[/.]|$)',('ledger',)),

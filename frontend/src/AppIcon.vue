@@ -39,7 +39,8 @@ const paths={
  up:['M12 19V5m-6 6 6-6 6 6'],
  down:['M12 5v14m-6-6 6 6 6-6'],
  file:['M14 3H7a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8z','M14 3v5h5'],
- lock:['M5 11h14v9H5z','M8 11V8a4 4 0 0 1 8 0v3']
+ lock:['M5 11h14v9H5z','M8 11V8a4 4 0 0 1 8 0v3'],
+ treasury:['M3 6h18v12H3z','M3 10h18M7 15h3']
 };
 </script>
 <template><svg class="app-icon" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path v-for="(d,i) in paths[name]||paths.accounts" :key="i" :d="d"/></svg></template>

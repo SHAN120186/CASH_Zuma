@@ -17,13 +17,14 @@ from .db import (Company, CompanyUser, User, Account, Category, Counterparty,
                  BusinessProject, BusinessSourceFile, BusinessGeneration, FinancialStatementSource, IfrsRatingSource,
                  CashFlowOsvSource, CashFlowOsvPreview, CashFunding, CashFundingPaymentGroup, CashFundingPaymentItem)
 from .bank_statement_models import BankStatementBatch, BankStatementLine
+from .treasury_models import CardPayment, CurrencyConversion, PaymentSplit
 
 # Вложения заявок принадлежат компании через свою заявку (criteria ниже), а не собственным полем.
 DIRECT = (Account, Category, Counterparty, CashPlan, PlanNote, PlanImportBatch, BudgetImportBatch,
           ImportBatch, Audit, ModelVersion, ReportSchedule, Delegation, ReportArchive, ReportArchiveFile,
           BusinessProject, BusinessSourceFile, BusinessGeneration, FinancialStatementSource, IfrsRatingSource,
           CashFlowOsvSource, CashFlowOsvPreview, BankStatementBatch, BankStatementLine, CashFunding,
-          CashFundingPaymentGroup, CashFundingPaymentItem)
+          CashFundingPaymentGroup, CashFundingPaymentItem, CardPayment, CurrencyConversion, PaymentSplit)
 
 
 def active_delegations(s, user_id, company_id=None):
@@ -177,6 +178,15 @@ def check_object(s, obj):
     if isinstance(obj, CashFundingPaymentGroup):refs.append((CashFunding,obj.funding_id))
     if isinstance(obj, CashFundingPaymentItem):
         refs.extend([(CashFundingPaymentGroup,obj.group_id),(PaymentRequest,obj.request_id),(Ledger,obj.ledger_id)])
+    if isinstance(obj, CardPayment):
+        refs.extend([(PaymentRequest,obj.request_id),(Account,obj.card_account_id)])
+        if obj.fee_category_id is not None:refs.append((Category,obj.fee_category_id))
+    if isinstance(obj, CurrencyConversion):
+        refs.extend([(PaymentRequest,obj.request_id),(Account,obj.source_account_id),(Account,obj.target_account_id),
+                     (Category,obj.fee_category_id)])
+        if obj.block_account_id is not None:refs.append((Account,obj.block_account_id))
+    if isinstance(obj, PaymentSplit):
+        refs.extend([(PaymentRequest,obj.parent_request_id),(PaymentRequest,obj.child_request_id)])
     if isinstance(obj, ReportArchiveFile):
         refs.append((ReportArchive, obj.archive_id))
     if isinstance(obj, (BusinessSourceFile, BusinessGeneration)):

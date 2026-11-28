@@ -267,7 +267,7 @@ def check_request_version(r,version):
 THRESHOLD_FIELDS={'UZS':'director_threshold_uzs','USD':'director_threshold_usd','EUR':'director_threshold_eur'}
 # Existing bank clients retain the original required_documents list. Cash needs the indent only.
 REQUIRED_DOCUMENTS=('internal','contract')
-REQUIRED_DOCUMENTS_BY_CHANNEL={'bank':REQUIRED_DOCUMENTS,'cash':('internal',)}
+REQUIRED_DOCUMENTS_BY_CHANNEL={'bank':REQUIRED_DOCUMENTS,'cash':('internal',),'card':('internal',)}
 REQUEST_DEPARTMENTS={'qc':'QC','ml':'ML','engineering':'Инженерный отдел (ИТО)',
                      'warehouse':'Склад','production':'Производство','office':'Общие закупки (офис)',
                      'facilities':'Хозяйственная часть'}
@@ -831,7 +831,8 @@ def dashboard(s,currency,horizon=30):
     ids={a.id for a in accounts};start=today()
     account_balances=batch_account_balances(s,accounts,start)
     current=sum(account_balances.values())
-    in_transit=sum(max(account_balances[a.id],0) for a in accounts if a.kind=='transit')
+    # Деньги в пути и сумы на блочном счёте под конвертацию — активы компании, но не к выдаче.
+    in_transit=sum(max(account_balances[a.id],0) for a in accounts if a.kind in ('transit','block'))
     from .bank_statement_guard import read_pending_bank_debit_holds
     bank_holds=read_pending_bank_debit_holds(s,accounts,start)
     bank_hold=sum(bank_holds.values())
@@ -864,7 +865,7 @@ def dashboard(s,currency,horizon=30):
     reserve=get_setting(s,'reserve_'+currency);reserve=int(reserve.value) if reserve else 0
     # Money withdrawn but not physically received is an asset, not spendable
     # cash. Do not invent an expected cash receipt or spend it in the forecast.
-    account_balances={a.id:(0 if a.kind=='transit' else account_balances[a.id]) for a in accounts}
+    account_balances={a.id:(0 if a.kind in ('transit','block') else account_balances[a.id]) for a in accounts}
     days=[];bal=current-bank_hold-in_transit;requested_bal=bal;requested_accounts=account_balances.copy()
     for i in range(horizon):
         day=start+timedelta(days=i)
@@ -894,7 +895,10 @@ def dashboard(s,currency,horizon=30):
                                 'date':str(r.due_date),'account_id':r.account_id,'category_id':r.category_id,'version':r.version} for r in ins]+
                      [expense_event(r,'out') for r in outs],
                      'pending_events':[expense_event(r,'pending') for r in waiting]})
-    period=[t for t in s.scalars(effective_cashflows(s)) if t.account_id in ids and t.date.year==start.year and t.date.month==start.month and t.date<=start]
+    # Конвертация валют — обмен между своими счетами, а не доход и расход месяца.
+    conversion_ids=set(s.scalars(select(Category.id).where(Category.activity=='conversion')))
+    period=[t for t in s.scalars(effective_cashflows(s)) if t.account_id in ids and t.date.year==start.year and t.date.month==start.month
+            and t.date<=start and t.category_id not in conversion_ids]
     pending=[r for r in req if r.status=='pending' and r.id not in batch_ids]
     return {'currency':currency,'as_of':str(start),'account_count':len(accounts),'balance':money(current) if accounts else None,
             'bank_pending_debits':money(bank_hold),'in_transit_balance':money(in_transit),

@@ -108,7 +108,7 @@ class RequestFormRuleTests(base.SiteTests):
         response=self.client.get('/api/request-rules',headers=self.h)
         self.assertEqual(response.status_code,200,response.text)
         rules=response.json();self.assertEqual(rules['required_documents'],['internal','contract'])
-        self.assertEqual(rules['required_documents_by_channel'],{'bank':['internal','contract'],'cash':['internal']})
+        self.assertEqual(rules['required_documents_by_channel'],{'bank':['internal','contract'],'cash':['internal'],'card':['internal']})
         self.assertEqual(set(rules['departments']),{'qc','ml','engineering','warehouse','production','office','facilities'})
 
     def test_department_migration_is_idempotent_and_preserves_existing_request(self):

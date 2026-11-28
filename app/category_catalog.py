@@ -13,4 +13,7 @@ def catalog(s, company_id=None, include_retired=False):
     if cid is not None:q=q.where(Category.company_id==cid)
     rows=list(s.scalars(q))
     rows.sort(key=lambda c:(0 if c.type=='income' else 1,order.get(c.id,len(order)+c.id),c.id) if config else (0,c.id,c.id))
-    return [(c,c.id in retired) for c in rows if include_retired or c.id not in retired]
+    # Служебные статьи конвертации валют ведёт только казначейство: в формах они не выбираются,
+    # а в отчётах видны как исторические строки с фактом.
+    return [(c,c.id in retired or c.activity=='conversion') for c in rows
+            if include_retired or (c.id not in retired and c.activity!='conversion')]
