@@ -192,6 +192,11 @@ export default {
   'Выделена часть оплаты поставщику': 'Yetkazib beruvchiga toʻlov qismi ajratildi',
   'Создана часть оплаты заявки': 'Ariza toʻlovi qismi yaratildi',
   'Создан блочный счёт под конвертацию': 'Konvertatsiya uchun blok hisob yaratildi',
+  'Добавлен закрывающий документ': 'Yopuvchi hujjat qoʻshildi',
+  'Убран закрывающий документ': 'Yopuvchi hujjat olib tashlandi',
+  'Чеки и закрывающие документы приложите ниже, в блок «Прочие подтверждающие документы», до отметки «Сверено».': 'Cheklar va yopuvchi hujjatlarni quyida, «Boshqa tasdiqlovchi hujjatlar» blokiga, «Solishtirilgan» belgisigacha ilova qiling.',
+  'После оплаты картой прикладываются только прочие (закрывающие) документы.': 'Karta bilan toʻlovdan keyin faqat boshqa (yopuvchi) hujjatlar ilova qilinadi.',
+  'После оплаты картой убираются только прочие (закрывающие) документы.': 'Karta bilan toʻlovdan keyin faqat boshqa (yopuvchi) hujjatlar olib tashlanadi.',
   'Сумы, ожидающие конвертации или возврата': 'Konvertatsiya yoki qaytarishni kutayotgan soʻmlar',
   'Загружаем отчёт…': 'Hisobot yuklanmoqda…',
   // Сообщения сервера (app/treasury.py, app/main.py).

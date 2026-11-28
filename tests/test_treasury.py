@@ -178,6 +178,47 @@ class TreasuryTests(base.SiteTests):
             s.flush()
             return category.id
 
+    def test_closing_documents_after_card_payment_keep_approvals(self):
+        rid = self.card_request()
+        self.assertEqual(self.card_pay(rid).status_code, 200)
+        before = self.row(rid)
+        author = self.upload(rid, 'other', name='receipt.pdf')
+        self.assertEqual(author.status_code, 200, author.text)
+        self.assertEqual((author.json()['approval_reset'], author.json()['status']), (False, 'paid'))
+        after = self.row(rid)
+        self.assertEqual((after['status'], after['last_editor_id'], after['checked_by'], after['approved_by']),
+                         ('paid', before['last_editor_id'], before['checked_by'], before['approved_by']))
+        self.assertGreater(after['version'], before['version'])
+        required = self.upload(rid, 'internal', name='indent.pdf')
+        self.assertEqual(required.status_code, 409, required.text)
+        payer = self.payer_client()
+        self.assertIn('documents', payer[0].get(f'/api/requests/{rid}', headers=payer[1]).json()['actions'])
+        accountant = self.upload(rid, 'other', client=payer[0], headers=payer[1], name='act.pdf')
+        self.assertEqual(accountant.status_code, 200, accountant.text)
+        history = [h['action'] for h in self.client.get(f'/api/requests/{rid}', headers=self.h).json()['history']]
+        self.assertIn('Добавлен закрывающий документ', history)
+        row = payer[0].get('/api/treasury/card-control', headers=payer[1]).json()['items'][0]
+        self.assertEqual(row['documents'], 3)
+        done = self.post(f"/api/treasury/card-control/{row['id']}", {'version': row['version'], 'status': 'verified',
+                         'statement_checked': True, 'documents_checked': True}, *payer)
+        self.assertEqual(done.status_code, 200, done.text)
+        frozen = self.upload(rid, 'other', name='late.pdf')
+        self.assertEqual(frozen.status_code, 409, frozen.text)
+
+    def test_one_bank_document_credits_only_one_conversion(self):
+        self.fx_setup()
+        first_rid = self.fx_request('1000')
+        second_rid = self.fx_request('2000')
+        first = self.step(self.plan(first_rid, amount='1000', rate='12800', fee='0'), 'block', reference='PP-A').json()['fx']['conversions'][0]
+        second = self.step(self.plan(second_rid, amount='2000', rate='12800', fee='0'), 'block', reference='PP-B').json()['fx']['conversions'][0]
+        credited = self.step(first, 'credit', reference='KV-SAME', amount='1000', rate='12800', fee='0')
+        self.assertEqual(credited.status_code, 200, credited.text)
+        repeated = self.step(second, 'credit', reference='KV-SAME', amount='2000', rate='12800', fee='0')
+        self.assertEqual(repeated.status_code, 409, repeated.text)
+        self.assertEqual(self.balance(self.usd), 100000)
+        reused_block = self.step(self.plan(second_rid, amount='10', rate='12800', fee='0'), 'block', reference='PP-A')
+        self.assertEqual(reused_block.status_code, 409, reused_block.text)
+
     def test_card_payment_cancel_restores_balance_and_request(self):
         rid = self.card_request()
         self.assertEqual(self.card_pay(rid).status_code, 200)

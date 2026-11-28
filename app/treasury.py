@@ -216,6 +216,38 @@ def delete_plans(s, request_id):
         s.delete(row)
 
 
+def closing_documents_allowed(s, user, payment):
+    """Право приложить чек или закрывающий документ к оплаченной картой заявке, без побочных эффектов.
+
+    До отметки «Сверено» прикладывают автор заявки, финансовый руководитель и расчётный бухгалтер
+    (контроль). Возвращает право, которое даёт доступ, или None."""
+    if payment.status != 'paid':
+        return None
+    account = s.get(Account, payment.account_id)
+    if not is_card(account):
+        return None
+    plan = card_for(s, payment.id)
+    if plan is None or plan.state != 'paid' or plan.control_status == 'verified':
+        return None
+    permissions = perms_of(user)
+    if payment.creator_id == user.id and 'request' in permissions:
+        return 'request'
+    if 'request_edit' in permissions:
+        return 'request_edit'
+    if can_control(user):
+        return 'request_check' if 'request_check' in permissions else 'pay_bank'
+    return None
+
+
+def closing_documents_access(s, user, payment):
+    """Вызывается из erp.request_document_access перед обычными правилами изменения документов."""
+    right = closing_documents_allowed(s, user, payment)
+    if right is None:
+        return False
+    act_with_right(user, right)
+    return True
+
+
 def require_settled_conversions(s, r):
     """Нельзя убрать заявку, пока сумы лежат на блочном счёте по её конвертации (до или после зачисления валюты)."""
     for conversion in s.scalars(select(CurrencyConversion).where(CurrencyConversion.request_id == r.id,
@@ -830,9 +862,21 @@ def _fact_date(data, *floors):
     return data.date
 
 
-def _document_unused(s, account_id, reference, field, conversion_id, day):
-    other = s.scalar(select(CurrencyConversion.id).where(CurrencyConversion.id != conversion_id, field == reference,
-                                                         CurrencyConversion.source_account_id == account_id).limit(1))
+STEP_DOCUMENTS = {
+    'block': (CurrencyConversion.source_account_id, CurrencyConversion.block_reference, CurrencyConversion.block_date),
+    'credit': (CurrencyConversion.target_account_id, CurrencyConversion.credit_reference, CurrencyConversion.credit_date),
+    'return': (CurrencyConversion.source_account_id, CurrencyConversion.return_reference, CurrencyConversion.return_date),
+}
+
+
+def _document_unused(s, step, account_id, reference, conversion_id, day):
+    """Один банковский документ учитывается один раз: ни другой конвертацией, ни операцией журнала.
+
+    Проводки конвертации хранят служебные номера FX-…, поэтому номер банка сверяется с документами
+    всех конвертаций по тому же счёту и дате, а не только с журналом."""
+    account_field, reference_field, date_field = STEP_DOCUMENTS[step]
+    other = s.scalar(select(CurrencyConversion.id).where(CurrencyConversion.id != conversion_id, account_field == account_id,
+                                                         reference_field == reference, date_field == day).limit(1))
     if other is not None or s.scalar(select(Ledger.id).where(Ledger.account_id == account_id, Ledger.reference == reference,
                                                              Ledger.date == day).limit(1)) is not None:
         raise HTTPException(409, 'Этот банковский документ уже учтён. Повторный денежный факт заблокирован.')
@@ -914,7 +958,7 @@ def conversion_step(conversion_id: int, action: str, data: ConversionStepIn, req
                 raise HTTPException(409, 'Сумовой счёт в архиве. Сначала восстановите его.')
             day = _fact_date(data, source.opening_date, local_date(req.approved_at or req.created_at))
             reference = data.reference.strip()
-            _document_unused(s, source.id, reference, CurrencyConversion.block_reference, conversion.id, day)
+            _document_unused(s, 'block', source.id, reference, conversion.id, day)
             value = amount(data.amount) if data.amount else conversion.block_amount
             if value < conversion.planned_uzs + conversion.planned_fee and len(data.note.strip()) < 10:
                 raise HTTPException(422, 'Сумма перевода меньше плановой покупки с комиссией: укажите пояснение не короче 10 символов.')
@@ -958,8 +1002,7 @@ def conversion_step(conversion_id: int, action: str, data: ConversionStepIn, req
                 state = budget_state(s, conversion.fee_category_id, str(day)[:7], block.currency, fee)
                 if state['over'] and state['mode'] == 'hard':
                     raise HTTPException(409, 'Жёсткий лимит статьи комиссии за конвертацию превышен. Сначала пересмотрите бюджет.')
-            if s.scalar(select(Ledger.id).where(Ledger.account_id == target.id, Ledger.reference == reference, Ledger.date == day).limit(1)):
-                raise HTTPException(409, 'Этот банковский документ уже учтён. Повторный денежный факт заблокирован.')
+            _document_unused(s, 'credit', target.id, reference, conversion.id, day)
             out_category = conversion_category(s, 'out')
             in_category = conversion_category(s, 'in')
             label_text = f'Конвертация UZS → {target.currency} по {number(req.id)}, курс {rate_text(rate)}; документ банка {reference}'
@@ -1000,7 +1043,7 @@ def conversion_step(conversion_id: int, action: str, data: ConversionStepIn, req
                 raise HTTPException(409, 'Остаток уже возвращён.')
             day = _fact_date(data, conversion.credit_date or conversion.block_date, source.opening_date)
             reference = data.reference.strip()
-            _document_unused(s, source.id, reference, CurrencyConversion.return_reference, conversion.id, day)
+            _document_unused(s, 'return', source.id, reference, conversion.id, day)
             entry = Ledger(account_id=block.id, to_account_id=source.id, kind='transfer', amount=leftover, date=day,
                            reference=prefix + '-RETURN', counterparty='Возврат с блочного счёта',
                            note=f'Возврат неиспользованных сумов по {number(req.id)}; документ банка {reference}. {data.note}'.strip(),

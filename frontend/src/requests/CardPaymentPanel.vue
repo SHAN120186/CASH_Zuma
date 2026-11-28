@@ -68,6 +68,7 @@ onUnmounted(() => { alive = false; emit('busy', false); });
       <div class="tile"><div class="k">{{ tx('Итого списать с карты') }}</div><div class="v num">{{ money(card.total) }} <small>{{ cur }}</small></div>
         <small v-if="card.fee_category" class="sub">{{ tx('Статья комиссии: {name}', {name: card.fee_category}) }}</small></div>
     </div>
+    <p v-if="paid && card.control_status !== 'verified'" class="notice">{{ tx('Чеки и закрывающие документы приложите ниже, в блок «Прочие подтверждающие документы», до отметки «Сверено».') }}</p>
     <p v-if="!paid && !card.enough" class="warning" role="status">{{ tx('Сумма оплаты с комиссией больше остатка карты. Оплата будет заблокирована, пока карту не пополнят.') }}</p>
     <dl class="kv treasury-kv">
       <dt>{{ tx('Карта') }}</dt><dd>{{ card.account }}</dd>

@@ -97,6 +97,10 @@ def request_actions(s, u, r, batch=None, director_limit=None):
     if account is not None and account.kind=='card' and 'pay' in actions:
         # Оплата картой проводится в карточке: сумма, комиссия и остаток карты одним действием.
         actions=[a for a in actions if a!='pay']+['card_pay']
+    if account is not None and account.kind=='card' and r.status=='paid':
+        # Чеки и закрывающие документы — после оплаты, до отметки бухгалтерии «Сверено».
+        from .treasury import closing_documents_allowed
+        if closing_documents_allowed(s,u,r):actions.append('documents')
     if funding:
         allowed=capabilities(s,u,r,funding,batch=batch)
         if allowed['can_withdraw']:actions.append('cash_withdraw')

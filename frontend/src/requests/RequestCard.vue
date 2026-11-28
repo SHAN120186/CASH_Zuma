@@ -40,7 +40,10 @@ const required = computed(() => r.value?.required_documents || requiredDocs(r.va
 // До отправки файл убирается сразу; после отправки — только прочий документ и с причиной
 // (обязательный заменяется новой версией).
 const draftLike = computed(() => ['draft', 'returned'].includes(r.value?.status));
-const canRemove = kind => can('documents') && (draftLike.value || !required.value.includes(kind));
+// Оплаченная картой заявка до сверки принимает только прочие (закрывающие) документы.
+const closingOnly = computed(() => r.value?.status === 'paid');
+const canRemove = kind => can('documents') && (closingOnly.value ? kind === 'other' : (draftLike.value || !required.value.includes(kind)));
+const canUpload = kind => can('documents') && (!closingOnly.value || kind === 'other');
 
 async function load(afterAction = false) {
   try {
@@ -248,7 +251,7 @@ onUnmounted(() => document.removeEventListener('keydown', onKey));
               </li>
             </ul>
             <p v-else class="sub">{{ tx('Файл не приложен.') }}</p>
-            <label v-if="can('documents')" class="button secondary tiny file-btn">{{ SINGLE_DOCS.includes(kind) && byKind[kind].current.length ? tx('Заменить файл') : tx('Приложить файл') }}<input type="file" :accept="DOC_ACCEPT" :disabled="busy" @change="upload(kind, $event)"></label>
+            <label v-if="canUpload(kind)" class="button secondary tiny file-btn">{{ SINGLE_DOCS.includes(kind) && byKind[kind].current.length ? tx('Заменить файл') : tx('Приложить файл') }}<input type="file" :accept="DOC_ACCEPT" :disabled="busy" @change="upload(kind, $event)"></label>
             <button v-if="byKind[kind].history.length" type="button" class="ghost tiny" :aria-expanded="!!showHistory[kind]" @click="showHistory[kind] = !showHistory[kind]">{{ showHistory[kind] ? tx('Скрыть прежние версии') : tx('Прежние версии: {n}', {n: byKind[kind].history.length}) }}</button>
             <ul v-if="showHistory[kind]" class="rq-files old">
               <li v-for="d in byKind[kind].history" :key="d.id"><a :href="companyUrl(d.url)">{{ d.filename }}</a><small>{{ tx('версия {n}', {n: d.version}) }} · {{ SINGLE_DOCS.includes(kind) ? tx('заменена или убрана') : tx('убран') }} · {{ d.created_by }} · {{ when(d.created_at) }}</small></li>

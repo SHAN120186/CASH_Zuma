@@ -234,6 +234,10 @@ def request_document_access(s,user,payment,write=False):
     утверждённой заявки. Меняет автор или финансовый руководитель, пока заявка не оплачена и не закрыта."""
     from .requests_api import can_view_request
     if write:
+        # Чеки и закрывающие документы оплаты корпоративной картой прикладываются после оплаты,
+        # до отметки бухгалтерии «Сверено». Согласования при этом не снимаются.
+        from .treasury import closing_documents_access
+        if closing_documents_access(s,user,payment):return 'closing'
         from .cash_funding import require_unfunded
         require_unfunded(s,payment)
         permissions=perms_of(user)
@@ -285,13 +289,15 @@ def request_documents(id:int,request:Request,history:bool=False):
 @router.post('/api/requests/{id}/documents')
 async def add_request_document(id:int,kind:Literal['internal','contract','other'],request:Request):
     with unit() as s:
-        user,_=session_user(s,request);payment=get(s,PaymentRequest,id);request_document_access(s,user,payment,True)
+        user,_=session_user(s,request);payment=get(s,PaymentRequest,id);mode=request_document_access(s,user,payment,True)
+        if mode=='closing' and kind!='other':raise HTTPException(409,'После оплаты картой прикладываются только прочие (закрывающие) документы.')
         check_document_version(payment,request_version_of(request));uid=user.id
     raw=await read_upload(request,MAX_DOCUMENT,'Файл больше 10 МБ.')
     name=Path(unquote(request.headers.get('X-Filename','document'))).name
     suffix=Path(name).suffix.lower();name=safe_filename(name,suffix);mime=request_file_type(raw,suffix)
     with unit(True) as s:
-        user,_=session_user(s,request);payment=get(s,PaymentRequest,id);request_document_access(s,user,payment,True)
+        user,_=session_user(s,request);payment=get(s,PaymentRequest,id);mode=request_document_access(s,user,payment,True)
+        if mode=='closing' and kind!='other':raise HTTPException(409,'После оплаты картой прикладываются только прочие (закрывающие) документы.')
         check_document_version(payment,request_version_of(request))
         previous=list(s.scalars(select(RequestDocument).where(RequestDocument.request_id==id,RequestDocument.kind==kind).order_by(RequestDocument.version.desc())))
         sha=hashlib.sha256(raw).hexdigest()
@@ -307,16 +313,22 @@ async def add_request_document(id:int,kind:Literal['internal','contract','other'
         for old in replaced:old.active=False
         doc=RequestDocument(request_id=id,kind=kind,filename=name[:220],mime=mime,storage_key=secrets.token_hex(24),
                             sha256=sha,content=raw,version=version,active=True,created_by=uid)
-        s.add(doc);s.flush();reset=after_document_change(s,user,payment)
-        log(s,user,'Новая версия документа заявки' if replaced else 'Добавлен документ заявки','request',payment.id,
+        s.add(doc);s.flush();reset=closing_document_change(s,payment) if mode=='closing' else after_document_change(s,user,payment)
+        log(s,user,'Добавлен закрывающий документ' if mode=='closing' else 'Новая версия документа заявки' if replaced else 'Добавлен документ заявки','request',payment.id,
             json.dumps({'document_id':doc.id,'kind':kind,'version':version,'filename':doc.filename,'size':len(raw),'sha256':doc.sha256,
                         'replaced':[old.id for old in replaced],'approval_reset':reset,'request_version':payment.version},ensure_ascii=False))
         return {**request_document_json(doc),'request_version':payment.version,'status':payment.status,'approval_reset':reset}
 
-def remove_document(s,user,doc,reason):
+def closing_document_change(s,payment):
+    """Закрывающий документ оплаченной заявки меняет её версию, но не согласования и не последнего редактора."""
+    flag_modified(payment,'decision_note')
+    s.flush()
+    return False
+
+def remove_document(s,user,doc,reason,mode=None):
     payment=get(s,PaymentRequest,doc.request_id)
-    doc.active=False;reset=after_document_change(s,user,payment)
-    log(s,user,'Убран документ заявки','request',payment.id,json.dumps({'document_id':doc.id,'kind':doc.kind,'filename':doc.filename,
+    doc.active=False;reset=closing_document_change(s,payment) if mode=='closing' else after_document_change(s,user,payment)
+    log(s,user,'Убран закрывающий документ' if mode=='closing' else 'Убран документ заявки','request',payment.id,json.dumps({'document_id':doc.id,'kind':doc.kind,'filename':doc.filename,
         'approval_reset':reset,'reason':reason,'request_version':payment.version},ensure_ascii=False))
     return {'ok':True,'request_version':payment.version,'status':payment.status,'approval_reset':reset}
 
@@ -343,12 +355,13 @@ def remove_request_document(id:int,data:RemoveDocumentIn,request:Request):
     with unit(True) as s:
         user,_=session_user(s,request);doc=s.get(RequestDocument,id)
         if not doc:raise HTTPException(404,'Документ не найден.')
-        payment=get(s,PaymentRequest,doc.request_id);request_document_access(s,user,payment,True)
+        payment=get(s,PaymentRequest,doc.request_id);mode=request_document_access(s,user,payment,True)
         check_request_version(payment,data.version)
         if not doc.active:raise HTTPException(409,'Документ уже заменён или убран.')
+        if mode=='closing' and doc.kind!='other':raise HTTPException(409,'После оплаты картой убираются только прочие (закрывающие) документы.')
         if doc.kind in required_documents(s,payment) and payment.status in ('pending','approved'):
             raise HTTPException(409,'Обязательный документ не убирается: загрузите новую версию.')
-        return remove_document(s,user,doc,data.reason)
+        return remove_document(s,user,doc,data.reason,mode)
 
 @router.get('/api/request-documents/{id}')
 def download_request_document(id:int,request:Request):
