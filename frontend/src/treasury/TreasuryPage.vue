@@ -7,7 +7,7 @@ import {tx, N_} from '../i18n/index.js';
 import {CONTROL_PILLS, PAYMENT_STATES, PAYMENT_PILLS, controlLabel, positive, negative, dateRu} from '../requests/treasury.js';
 
 const props = defineProps({api: {type: Function, required: true}, money: {type: Function, required: true}, companyId: {type: Number, default: null},
-  today: {type: String, default: ''}});
+  today: {type: String, default: ''}, refresh: {type: Number, default: 0}});
 const emit = defineEmits(['open-request']);
 const tab = ref('control'), status = ref('to_check'), register = ref(null), report = ref(null), busy = ref(false), error = ref(''), notice = ref('');
 const monthStart = d => d ? d.slice(0, 8) + '01' : '';
@@ -37,6 +37,8 @@ async function loadReport() {
 }
 const load = () => tab.value === 'control' ? loadRegister() : loadReport();
 watch([tab, status, () => props.companyId], () => { editing.value = null; notice.value = ''; load(); });
+// Действия в карточке заявки, открытой из реестра, обновляют реестр и отчёт.
+watch(() => props.refresh, () => load());
 onMounted(load);
 
 function edit(row) {
@@ -51,7 +53,12 @@ async function mark(row, next) {
     editing.value = null;
     notice.value = next === 'verified' ? N_('Оплата сверена с выпиской и закрывающими документами.') : N_('Расхождение отмечено.');
     await loadRegister();
-  } catch (e) { error.value = e.message; busy.value = false; }
+  } catch (e) {
+    busy.value = false;
+    // Отметку уже изменили (другой сотрудник или карточка заявки): реестр перечитывается.
+    if ([409, 428].includes(e.status)) { editing.value = null; await loadRegister(); }
+    error.value = e.message;
+  }
 }
 const cards = computed(() => report.value?.cards || []);
 const fxRows = computed(() => report.value?.fx?.requests || []);
@@ -67,7 +74,7 @@ const fxTotals = computed(() => Object.entries(report.value?.fx?.totals || {}));
       </div>
       <template v-if="tab === 'control'">
         <div class="seg" role="group" :aria-label="tx('Статус проверки')">
-          <button v-for="[key, label] in FILTERS" :key="key" :class="{on: status === key}" @click="status = key">{{ tx(label) }}<template v-if="register?.counts?.[key] != null"> · {{ register.counts[key] }}</template></button>
+          <button v-for="[key, label] in FILTERS" :key="key" :class="{on: status === key}" @click="status === key ? loadRegister() : (status = key)">{{ tx(label) }}<template v-if="register?.counts?.[key] != null"> · {{ register.counts[key] }}</template></button>
         </div>
       </template>
       <form v-else class="treasury-period" @submit.prevent="loadReport">
@@ -100,7 +107,8 @@ const fxTotals = computed(() => Object.entries(report.value?.fx?.totals || {}));
                 <td :data-l="tx('Статус проверки')"><span class="pill" :class="CONTROL_PILLS[row.control_status]">{{ controlLabel(row.control_status) }}</span>
                   <small>{{ tx('Выписка: {a} · документы: {b}', {a: row.statement_checked ? tx('да') : tx('нет'), b: row.documents_checked ? tx('да') : tx('нет')}) }}</small>
                   <small v-if="row.controlled_by">{{ row.controlled_by }}</small></td>
-                <td><button v-if="row.can_control && editing !== row.id" type="button" class="secondary tiny" :disabled="busy" @click="edit(row)">{{ tx('Сверить') }}</button></td>
+                <td><button v-if="row.can_control && editing !== row.id" type="button" class="secondary tiny" :disabled="busy" @click="edit(row)">{{ tx('Сверить') }}</button>
+                  <small v-else-if="row.paid_by_you" class="sub">{{ tx('Оплату провели вы — сверяет другой сотрудник') }}</small></td>
               </tr>
               <tr v-if="editing === row.id" class="detail-row"><td colspan="10">
                 <form class="treasury-control" @submit.prevent="mark(row, 'verified')">
@@ -169,14 +177,16 @@ const fxTotals = computed(() => Object.entries(report.value?.fx?.totals || {}));
       <div class="treasury-accounts">
         <section v-for="a in report.fx.accounts" :key="a.account_id" class="card tile">
           <div class="k">{{ a.account }}</div>
-          <template v-if="negative(a.free)"><div class="v num treasury-short">−{{ money(a.free.replace('-', '')) }} <small>{{ a.currency }}</small></div>
+          <template v-if="a.free == null"><div class="v num">{{ money(a.balance) }} <small>{{ a.currency }}</small></div>
+            <small class="sub">{{ tx('Остаток на {date}', {date: dateRu(report.balances_as_of)}) }}</small></template>
+          <template v-else-if="negative(a.free)"><div class="v num treasury-short">−{{ money(a.free.replace('-', '')) }} <small>{{ a.currency }}</small></div>
             <small class="sub">{{ tx('Не хватает для утверждённых заявок · на счёте {balance}, утверждено к оплате {reserved}', {balance: money(a.balance), reserved: money(a.reserved)}) }}</small></template>
           <template v-else><div class="v num">{{ money(a.free) }} <small>{{ a.currency }}</small></div>
             <small class="sub">{{ tx('Свободный остаток · на счёте {balance}, утверждено к оплате {reserved}', {balance: money(a.balance), reserved: money(a.reserved)}) }}</small></template>
         </section>
         <section v-for="a in report.fx.block_accounts" :key="'block-' + a.account_id" class="card tile">
           <div class="k">{{ a.account }}</div><div class="v num">{{ money(a.balance) }} <small>{{ a.currency }}</small></div>
-          <small class="sub">{{ tx('Сумы, ожидающие конвертации или возврата') }}</small>
+          <small class="sub">{{ tx('Сумы, ожидающие конвертации или возврата · на {date}', {date: dateRu(report.balances_as_of)}) }}</small>
         </section>
       </div>
     </template>

@@ -36,6 +36,7 @@ const form = ref(r ? {
   priority: 'normal', date: minDue(props.boot.due_minimums, 'normal'), project: '', department: '', cash_funding: null,
 });
 const error = ref(''), notice = ref(''), saving = ref(false), step = ref(''), blocked = ref(''), card = ref(null), dialog = ref(null);
+let lastCardPlan = null;
 // Номер появляется, когда форма создала черновик (например, до ошибки загрузки файла).
 const number = ref(r?.number || null), status = ref(r?.status || null);
 // Сохранённые (действующие) файлы заявки и выбранные, ещё не загруженные.
@@ -58,7 +59,9 @@ const paymentMethod = computed({get: () => form.value.cash_funding ? 'cash_bank'
   form.value.amount = gross;
   form.value.cash_funding = value === 'cash_bank' ? {mode: 'single', bank_account_id: fundingAccounts.value[0]?.id ?? null, gross_amount: gross || '', fee_percent: '1', fee_category_id: null} : null;
   // План оплаты картой есть только у канала «Корпоративная карта»; при смене канала сервер его удаляет.
-  form.value.card = value === 'card' ? (form.value.card || {fee_percent: '0', fee_category_id: defaultCardFeeCategory()}) : null;
+  // Введённый план сохраняется в форме и возвращается, если канал карты выбран снова.
+  if (form.value.card) lastCardPlan = form.value.card;
+  form.value.card = value === 'card' ? (form.value.card || lastCardPlan || {fee_percent: '0', fee_category_id: defaultCardFeeCategory()}) : null;
 }});
 const fundingAmounts = computed(() => form.value.cash_funding ? cashFundingAmounts(form.value.cash_funding.gross_amount, form.value.cash_funding.fee_percent) : null);
 const fundingProblem = computed(() => {

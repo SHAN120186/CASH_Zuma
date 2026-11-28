@@ -895,7 +895,10 @@ def dashboard(s,currency,horizon=30):
                                 'date':str(r.due_date),'account_id':r.account_id,'category_id':r.category_id,'version':r.version} for r in ins]+
                      [expense_event(r,'out') for r in outs],
                      'pending_events':[expense_event(r,'pending') for r in waiting]})
-    period=[t for t in s.scalars(effective_cashflows(s)) if t.account_id in ids and t.date.year==start.year and t.date.month==start.month and t.date<=start]
+    # Конвертация валют — обмен между своими счетами, а не доход и расход месяца.
+    conversion_ids=set(s.scalars(select(Category.id).where(Category.activity=='conversion')))
+    period=[t for t in s.scalars(effective_cashflows(s)) if t.account_id in ids and t.date.year==start.year and t.date.month==start.month
+            and t.date<=start and t.category_id not in conversion_ids]
     pending=[r for r in req if r.status=='pending' and r.id not in batch_ids]
     return {'currency':currency,'as_of':str(start),'account_count':len(accounts),'balance':money(current) if accounts else None,
             'bank_pending_debits':money(bank_hold),'in_transit_balance':money(in_transit),

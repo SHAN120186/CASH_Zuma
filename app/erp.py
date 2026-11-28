@@ -358,7 +358,8 @@ def remove_request_document(id:int,data:RemoveDocumentIn,request:Request):
         payment=get(s,PaymentRequest,doc.request_id);mode=request_document_access(s,user,payment,True)
         check_request_version(payment,data.version)
         if not doc.active:raise HTTPException(409,'Документ уже заменён или убран.')
-        if mode=='closing' and doc.kind!='other':raise HTTPException(409,'После оплаты картой убираются только прочие (закрывающие) документы.')
+        # После оплаты картой документы только добавляются: основания согласования и чеки остаются в заявке.
+        if mode=='closing':raise HTTPException(409,'После оплаты картой документы не убираются: приложите верный файл, прежний останется в заявке.')
         if doc.kind in required_documents(s,payment) and payment.status in ('pending','approved'):
             raise HTTPException(409,'Обязательный документ не убирается: загрузите новую версию.')
         return remove_document(s,user,doc,data.reason,mode)

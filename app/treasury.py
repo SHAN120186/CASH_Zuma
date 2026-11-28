@@ -26,11 +26,12 @@ from typing import Literal, Optional
 from fastapi import APIRouter, HTTPException, Query, Request
 from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy import func, select, union_all
+from sqlalchemy.orm.attributes import flag_modified
 
 from .db import Account, Category, Ledger, PaymentRequest, RequestDocument, Setting, User, now, unit
 from .security import act_with_right, has_role, perms_of, session_user
 from .section_access import can_edit_section
-from .services import (account_balance, amount, budget_state, check_payer, day_start_balance, effective_cashflows,
+from .services import (account_balance, all_participants, amount, budget_state, check_payer, day_start_balance, effective_cashflows,
                        enforce_reserved_funds, funds_state, get, local_date, log, money, reversal_reference,
                        route_complete, today, validate_running_balance)
 from .treasury_models import CardPayment, CurrencyConversion, PaymentSplit
@@ -198,9 +199,11 @@ def removal_blockers(s, r):
     if card is not None and (card.state != 'planned' or card.payment_ledger_id or card.fee_ledger_id):
         blockers.append('По заявке проведена оплата корпоративной картой. Операции и комиссия должны сохраняться.')
     moving = s.scalar(select(CurrencyConversion.id).where(CurrencyConversion.request_id == r.id,
-                      CurrencyConversion.state.not_in(('planned', 'cancelled'))).limit(1).execution_options(company_unscoped=True))
+                      (CurrencyConversion.state.not_in(('planned', 'cancelled'))) | CurrencyConversion.block_ledger_id.is_not(None))
+                      .limit(1).execution_options(company_unscoped=True))
     if moving is not None:
-        blockers.append('По заявке учтена конвертация: перевод на блочный счёт и зачисление валюты должны сохраняться.')
+        blockers.append('По заявке учтена конвертация: перевод на блочный счёт и зачисление валюты должны сохраняться. '
+                        'Снять такую заявку может финансовый директор или директор действием «Удалить»: история и операции сохранятся.')
     split = s.scalar(select(PaymentSplit.id).where((PaymentSplit.parent_request_id == r.id) | (PaymentSplit.child_request_id == r.id))
                      .limit(1).execution_options(company_unscoped=True))
     if split is not None:
@@ -212,7 +215,8 @@ def delete_plans(s, request_id):
     """Удаляет несостоявшиеся планы казначейства вместе с неоплаченной заявкой."""
     for row in s.scalars(select(CardPayment).where(CardPayment.request_id == request_id)):
         s.delete(row)
-    for row in s.scalars(select(CurrencyConversion).where(CurrencyConversion.request_id == request_id)):
+    for row in s.scalars(select(CurrencyConversion).where(CurrencyConversion.request_id == request_id,
+                                                          CurrencyConversion.block_ledger_id.is_(None))):
         s.delete(row)
 
 
@@ -249,11 +253,19 @@ def closing_documents_access(s, user, payment):
 
 
 def require_settled_conversions(s, r):
-    """Нельзя убрать заявку, пока сумы лежат на блочном счёте по её конвертации (до или после зачисления валюты)."""
+    """Проверки казначейства перед удалением или закрытием заявки (вызывается из main.py).
+
+    Нельзя убрать заявку, пока сумы лежат на блочном счёте по её конвертации, пока по ней действует
+    оплата корпоративной картой (её сначала отменяют в карточке) и если это часть частичной оплаты."""
     for conversion in s.scalars(select(CurrencyConversion).where(CurrencyConversion.request_id == r.id,
                                                                  CurrencyConversion.state.in_(('blocked', 'credited')))):
         if conversion_leftover(conversion) > 0:
             raise HTTPException(409, 'Сумы по заявке находятся на блочном счёте. Сначала учтите зачисление валюты или верните сумы на расчётный счёт.')
+    plan = card_for(s, r.id)
+    if plan is not None and plan.state == 'paid':
+        raise HTTPException(409, 'Оплату корпоративной картой сначала отменяют в карточке заявки, затем заявку можно удалить.')
+    if s.scalar(select(PaymentSplit.id).where(PaymentSplit.child_request_id == r.id).limit(1)) is not None:
+        raise HTTPException(409, 'Это часть оплаты валютной заявки: её не удаляют и не меняют отдельно.')
 
 
 # ---------------------------------------------------------------- план оплаты картой
@@ -316,6 +328,13 @@ def save_card_plan(s, user, request, data, *, provided=True):
 def after_request_saved(s, user, request, data, *, provided=True):
     """Общий вызов из POST/PUT заявки: план карты и согласованность запланированной конвертации."""
     save_card_plan(s, user, request, data, provided=provided)
+    link = s.scalar(select(PaymentSplit).where(PaymentSplit.child_request_id == request.id))
+    if link is not None:
+        raise HTTPException(409, 'Это часть оплаты валютной заявки: её не удаляют и не меняют отдельно.')
+    child = s.scalar(select(PaymentRequest).join(PaymentSplit, PaymentSplit.child_request_id == PaymentRequest.id)
+                     .where(PaymentSplit.parent_request_id == request.id).limit(1))
+    if child is not None and child.account_id != request.account_id:
+        raise HTTPException(409, 'По заявке уже есть частичная оплата: счёт и валюту заявки менять нельзя.')
     for conversion in conversions_for(s, request.id):
         if conversion.state == 'cancelled':
             continue
@@ -328,11 +347,17 @@ def card_balance(request: Request, account_id: int, value: str = Query('', alias
                  request_id: Optional[int] = None):
     """Остаток корпоративной карты для формы заявки: только чтение, без раскрытия других счетов."""
     with unit() as s:
-        session_user(s, request, ('request', 'request_edit', 'pay_bank', 'view'))
+        user, _ = session_user(s, request, ('request', 'request_edit', 'pay_bank', 'view'))
         account = get(s, Account, account_id)
         if not is_card(account) or account.archived:
             raise HTTPException(404, 'Корпоративная карта не найдена.')
-        state = card_state(s, account, request_id)
+        own = None
+        if request_id is not None:
+            from .requests_api import can_view_request
+            candidate = s.get(PaymentRequest, request_id)
+            if candidate is not None and candidate.account_id == account.id and can_view_request(s, user, candidate):
+                own = candidate.id
+        state = card_state(s, account, own)
         result = {'account_id': account.id, 'account': account.name, 'currency': account.currency,
                   'balance': money(state['balance']), 'reserved': money(state['reserved']),
                   'available': money(state['available']), 'as_of': state['as_of']}
@@ -371,6 +396,25 @@ def _require_money_section(user):
         raise HTTPException(403, 'Для этого раздела доступен только просмотр.')
 
 
+def _free_reference(s, account_id, reference):
+    """Номер документа после отменённой оплаты: сторнированная проводка сохраняет прежний номер,
+    поэтому повторная оплата тем же чеком получает суффикс в журнале, а в документе остаётся исходный номер."""
+    taken = s.scalar(select(Ledger.id).where(Ledger.account_id == account_id, Ledger.reference == reference))
+    if taken is None or s.scalar(select(Ledger.id).where(Ledger.reversal_of == taken)) is None:
+        return reference
+    n = 2
+    while s.scalar(select(Ledger.id).where(Ledger.account_id == account_id, Ledger.reference == f'{reference}/{n}')) is not None:
+        n += 1
+    return f'{reference}/{n}'[:160]
+
+
+def _require_both_sections(user):
+    """Реестр и отчёт показывают и заявки, и операции: оба раздела должны быть открыты."""
+    modes = getattr(user, '_sections', None)
+    if modes and user.role != 'admin' and any(modes.get(name, 'hidden') == 'hidden' for name in ('requests', 'ledger')):
+        raise HTTPException(403, 'Раздел скрыт администратором.')
+
+
 def _shortage(account, day, balance, total, main, fee):
     return HTTPException(409,
         f'Недостаточно средств на корпоративной карте «{account.name}» на {day}: остаток {money(balance)} {account.currency}, '
@@ -397,6 +441,8 @@ def card_pay(id: int, data: CardPayIn, request: Request):
             raise HTTPException(409, 'Оплата картой уже проведена. Обновите карточку, не повторяйте платёж.')
         if plan.version != data.version or req.version != data.request_version:
             raise HTTPException(409, 'Заявка или параметры карты изменились. Обновите карточку.')
+        # Как в банковском канале: проверка реквизитов совместима с оплатой (CASHFLOW_RULES_RU.md),
+        # авторство, правки и согласования запрещают. Независимость даёт сверка: её отмечает другой сотрудник.
         check_payer(s, user, req)
         if account.archived:
             raise HTTPException(409, 'Корпоративная карта в архиве. Сначала восстановите её.')
@@ -416,21 +462,23 @@ def card_pay(id: int, data: CardPayIn, request: Request):
             if balance < total:
                 raise _shortage(account, day, balance, total, req.amount, fee)
         if fee:
-            same = plan.fee_category_id == req.category_id and str(req.due_date)[:7] == str(data.date)[:7]
+            # При общей статье оплата и комиссия проверяются вместе в месяце оплаты.
+            same = plan.fee_category_id == req.category_id
             state = budget_state(s, plan.fee_category_id, str(data.date)[:7], account.currency, fee + (req.amount if same else 0), req.id)
             if state['over'] and state['mode'] == 'hard':
                 raise HTTPException(409, 'Жёсткий лимит статьи комиссии превышен. Сначала пересмотрите бюджет комиссии.')
         before = account_balance(s, account, data.date)
         reference = data.reference.strip()
+        ledger_reference = _free_reference(s, account.id, reference)
         payment = post_ledger(s, user, SimpleNamespace(
             account_id=account.id, to_account_id=None, category_id=req.category_id, kind='out', amount=money(req.amount),
-            date=data.date, counterparty=req.counterparty, reference=reference,
+            date=data.date, counterparty=req.counterparty, reference=ledger_reference,
             note=data.note.strip() or f'Оплата корп. картой по {number(req.id)}', request_id=req.id,
             request_version=req.version, receipt_id=None))
         fee_entry = None
         if fee:
             fee_entry = Ledger(account_id=account.id, category_id=plan.fee_category_id, kind='out', amount=fee, date=data.date,
-                               counterparty='Комиссия банка', reference=(reference + '-FEE')[:160],
+                               counterparty='Комиссия банка', reference=_free_reference(s, account.id, (ledger_reference + '-FEE')[:160]),
                                note=f'Комиссия за оплату корп. картой по {number(req.id)}', creator_id=user.id)
             s.add(fee_entry)
             s.flush()
@@ -468,6 +516,8 @@ def card_cancel(id: int, data: CardCancelIn, request: Request):
         if plan.version != data.version:
             raise HTTPException(409, 'Параметры оплаты картой изменились. Обновите карточку.')
         account = get(s, Account, plan.card_account_id)
+        if account.archived:
+            raise HTTPException(409, 'Корпоративная карта в архиве. Сначала восстановите её, затем отменяйте оплату.')
         for leg in (plan.payment_ledger_id, plan.fee_ledger_id):
             if leg is None:
                 continue
@@ -519,7 +569,7 @@ def _names(s, ids):
     return dict(s.execute(select(User.id, User.name).where(User.id.in_(ids)).execution_options(company_unscoped=True)).all())
 
 
-def control_row(plan, req, account, names, documents, user):
+def control_row(plan, req, account, names, documents, user, payer_id=None):
     fee = plan.actual_fee or 0
     return {'id': plan.id, 'version': plan.version, 'request_id': req.id, 'number': number(req.id), 'counterparty': req.counterparty,
             'purpose': req.purpose, 'department': req.department or '', 'card_account_id': account.id, 'card': account.name,
@@ -531,17 +581,29 @@ def control_row(plan, req, account, names, documents, user):
             'documents_checked': plan.documents_checked, 'control_note': plan.control_note,
             'controlled_by': names.get(plan.controlled_by, ''), 'controlled_at': str(plan.controlled_at) if plan.controlled_at else None,
             'documents': documents.get(req.id, 0), 'payment_ledger_id': plan.payment_ledger_id, 'fee_ledger_id': plan.fee_ledger_id,
-            'can_control': can_control(user)}
+            'paid_by_you': payer_id is not None and user.id == payer_id,
+            'can_control': can_control(user) and user.id != payer_id}
+
+
+def payers_of(s, plans):
+    """Кто провёл оплату картой: сверку отмечает другой сотрудник бухгалтерии."""
+    ids = [p.payment_ledger_id for p in plans if p.payment_ledger_id]
+    if not ids:
+        return {}
+    creators = dict(s.execute(select(Ledger.id, Ledger.creator_id).where(Ledger.id.in_(ids))).all())
+    return {p.id: creators.get(p.payment_ledger_id) for p in plans}
 
 
 @router.get('/api/treasury/card-control')
 def card_control(request: Request, status: str = 'to_check', date_from: Optional[date] = None, date_to: Optional[date] = None):
     with unit() as s:
         user, _ = session_user(s, request, ('view', 'pay_bank', 'request_check'))
+        _require_both_sections(user)
         if status not in (*CONTROL_STATES, 'all'):
             raise HTTPException(422, 'Неизвестный статус проверки.')
         query = (select(CardPayment, PaymentRequest, Account).join(PaymentRequest, PaymentRequest.id == CardPayment.request_id)
-                 .join(Account, Account.id == CardPayment.card_account_id).where(CardPayment.state == 'paid'))
+                 .join(Account, Account.id == CardPayment.card_account_id)
+                 .where(CardPayment.state == 'paid', PaymentRequest.status != 'deleted'))
         if status != 'all':
             query = query.where(CardPayment.control_status == status)
         if date_from:
@@ -555,7 +617,8 @@ def card_control(request: Request, status: str = 'to_check', date_from: Optional
             RequestDocument.request_id.in_(ids), RequestDocument.active.is_(True)).group_by(RequestDocument.request_id)).all()) if ids else {}
         counts = dict(s.execute(select(CardPayment.control_status, func.count(CardPayment.id)).where(CardPayment.state == 'paid')
                                 .group_by(CardPayment.control_status)).all())
-        return {'items': [control_row(plan, req, account, names, documents, user) for plan, req, account in rows],
+        payers = payers_of(s, [plan for plan, _, _ in rows])
+        return {'items': [control_row(plan, req, account, names, documents, user, payers.get(plan.id)) for plan, req, account in rows],
                 'counts': {key: int(counts.get(key, 0)) for key in CONTROL_STATES}, 'status': status,
                 'can_control': can_control(user)}
 
@@ -570,6 +633,9 @@ def mark_control(payment_id: int, data: ControlIn, request: Request):
         plan = get(s, CardPayment, payment_id)
         if plan.state != 'paid':
             raise HTTPException(409, 'Оплата картой ещё не проведена.')
+        payer_id = payers_of(s, [plan]).get(plan.id)
+        if payer_id == user.id:
+            raise HTTPException(403, 'Сверку отмечает другой сотрудник бухгалтерии, а не тот, кто провёл оплату.')
         if plan.version != data.version:
             raise HTTPException(409, 'Отметка уже изменена другим сотрудником. Обновите реестр.')
         note = data.note.strip()
@@ -592,7 +658,7 @@ def mark_control(payment_id: int, data: ControlIn, request: Request):
         account = get(s, Account, plan.card_account_id)
         documents = {req.id: s.scalar(select(func.count(RequestDocument.id)).where(RequestDocument.request_id == req.id,
                                                                                     RequestDocument.active.is_(True)))}
-        return control_row(plan, req, account, _names(s, [user.id]), documents, user)
+        return control_row(plan, req, account, _names(s, [user.id]), documents, user, payer_id)
 
 
 # ---------------------------------------------------------------- валютная заявка и конвертация
@@ -667,11 +733,12 @@ def conversion_leftover(conversion, block_entry=None):
     return blocked - (conversion.sold_uzs or 0) - (conversion.actual_fee or 0) - (conversion.returned_uzs or 0)
 
 
-def conversion_json(s, conversion, accounts, ledgers, user, req):
+def conversion_json(s, conversion, accounts, ledgers, user, req, independent=True):
     block_entry = ledgers.get(conversion.block_ledger_id)
     leftover = conversion_leftover(conversion, block_entry)
     approved = req.status == 'approved' and route_complete(req)
-    executor = can_execute(user)
+    # Банковские этапы подтверждает расчётный бухгалтер, не автор, не редактор и не согласующий заявки.
+    executor = can_execute(user) and independent
 
     def leg(entry_id):
         entry = ledgers.get(entry_id)
@@ -711,6 +778,77 @@ def conversion_json(s, conversion, accounts, ledgers, user, req):
     }
 
 
+CLOSED_STATES = ('rejected', 'deleted')
+
+
+def can_see_accounts(user):
+    """Остатки счетов, резервы и операции видят финансовое руководство и бухгалтерия, а не автор заявки."""
+    return bool({'view', 'pay_bank', 'request_check', 'request_edit'} & perms_of(user))
+
+
+def family_totals(parent, splits, children):
+    """Заявлено, оплачено, остаток и статус оплаты по исходной заявке и её оплаченным частям.
+
+    Если остаток исходной заявки отклонён или удалён, оплаченные части остаются, а к оплате ничего
+    не ждёт: статус «оплачена частично, остаток снят»."""
+    requested = parent.amount + sum(x.amount for x in splits)
+    paid = sum(x.amount for x in splits
+               if children.get(x.child_request_id) is not None and children[x.child_request_id].status == 'paid')
+    if parent.status == 'paid':
+        paid += parent.amount
+    closed = parent.status in CLOSED_STATES
+    outstanding = 0 if closed else max(requested - paid, 0)
+    status = ('closed' if closed and paid > 0 else 'paid' if outstanding <= 0 and paid > 0
+              else 'partial' if paid > 0 else 'unpaid')
+    return requested, paid, outstanding, status
+
+
+def fx_coverage(s, account, focus, outstanding, dedicated):
+    """Чем валюта счёта покрывает остаток заявки к оплате.
+
+    Сначала каждая заявка получает валюту, купленную под неё (не больше своего остатка к оплате),
+    затем свободная валюта счёта распределяется по сроку оплаты утверждённых заявок; заявка на
+    согласовании — после утверждённых. Если валюту, купленную под заявку, истратили на другую
+    оплату, недостача видна той заявке, под которую её покупали, а не теряется."""
+    balance = account_balance(s, account)
+    splits = list(s.scalars(select(PaymentSplit).join(PaymentRequest, PaymentRequest.id == PaymentSplit.parent_request_id)
+                            .where(PaymentRequest.account_id == account.id)))
+    parent_of = {x.child_request_id: x.parent_request_id for x in splits}
+    claims = {}
+    for r in s.scalars(select(PaymentRequest).where(PaymentRequest.account_id == account.id, PaymentRequest.status == 'approved')):
+        family_id = parent_of.get(r.id, r.id)
+        if family_id == focus.id:
+            continue
+        claim = claims.setdefault(family_id, {'id': family_id, 'due': r.due_date, 'amount': 0, 'dedicated': 0})
+        claim['amount'] += r.amount
+        claim['due'] = min(claim['due'], r.due_date)
+    if claims:
+        bought = dict(s.execute(select(CurrencyConversion.request_id, func.sum(CurrencyConversion.credited_amount))
+                                .where(CurrencyConversion.request_id.in_(list(claims)), CurrencyConversion.state == 'credited')
+                                .group_by(CurrencyConversion.request_id)).all())
+        if bought:
+            members = [x for x in splits if x.parent_request_id in bought]
+            rows = {row[0]: (row[1], row[2]) for row in s.execute(select(PaymentRequest.id, PaymentRequest.status, PaymentRequest.amount)
+                    .where(PaymentRequest.id.in_(list(bought) + [x.child_request_id for x in members])))}
+            for family_id, value in bought.items():
+                paid = sum(x.amount for x in members if x.parent_request_id == family_id and rows.get(x.child_request_id, ('', 0))[0] == 'paid')
+                if rows.get(family_id, ('', 0))[0] == 'paid':
+                    paid += rows[family_id][1]
+                claims[family_id]['dedicated'] = min(max(int(value or 0) - paid, 0), claims[family_id]['amount'])
+    mine = {'id': focus.id, 'due': focus.due_date, 'amount': outstanding, 'dedicated': dedicated}
+    everyone = sorted([*claims.values(), mine], key=lambda c: (c['due'], c['id']))
+    pool = max(balance, 0)
+    for claim in everyone:
+        claim['backed'] = min(claim['dedicated'], pool)
+        pool -= claim['backed']
+    queue = everyone if focus.status == 'approved' else [c for c in everyone if c is not mine] + [mine]
+    for claim in queue:
+        claim['free'] = max(min(claim['amount'] - claim['backed'], pool), 0)
+        pool -= claim['free']
+    return {'backed': mine['backed'], 'free': mine['free'], 'covered': mine['backed'] + mine['free'],
+            'spent_elsewhere': dedicated - mine['backed']}
+
+
 def fx_json(s, user, req, account):
     parent, link, splits, children = family(s, req)
     paid_ids = [c.id for c in children.values()] + [parent.id]
@@ -727,31 +865,43 @@ def fx_json(s, user, req, account):
     if final is not None:
         parts.append({'request_id': parent.id, 'number': number(parent.id), 'sequence': len(splits) + 1, 'amount': money(final.amount),
                       'status': parent.status, 'date': str(final.date), 'reference': final.reference, 'ledger_id': final.id})
-    requested = parent.amount + sum(x.amount for x in splits)
-    paid = sum(x.amount for x in splits if children.get(x.child_request_id) is not None and children[x.child_request_id].status == 'paid')
-    if parent.status == 'paid':
-        paid += parent.amount
-    outstanding = requested - paid
-    status = 'paid' if outstanding <= 0 and paid > 0 else 'partial' if paid > 0 else 'unpaid'
+    requested, paid, outstanding, status = family_totals(parent, splits, children)
     conversions = conversions_for(s, parent.id)
+    converted = sum(c.credited_amount or 0 for c in conversions if c.state == 'credited')
+    in_progress = sum(c.planned_amount for c in conversions if c.state in ('planned', 'blocked'))
+    # Купленная под заявку и не оплаченная валюта закреплена за ней, но не больше остатка к оплате.
+    # Купленное сверх этого — свободный «Остаток» для следующих заявок.
+    dedicated = min(max(converted - paid, 0), outstanding)
+    unused = max(converted - paid - outstanding, 0)
+    open_request = parent.status in ('pending', 'approved')
+    cover = fx_coverage(s, account, parent, outstanding, dedicated)
+    need = max(0, outstanding - cover['covered'] - in_progress) if open_request else 0
+    privileged = can_see_accounts(user)
+    result = {
+        'parent': {'id': parent.id, 'number': number(parent.id)} if link else None,
+        'sequence': link.sequence if link else None,
+        'request_id': parent.id, 'number': number(parent.id), 'currency': account.currency,
+        'payment_status': status, 'requested': money(requested), 'paid': money(paid), 'outstanding': money(outstanding),
+        'parts': parts, 'converted': money(converted), 'in_progress': money(in_progress),
+        'earmarked': money(cover['backed'] if privileged else dedicated),
+        'unused_converted': money(unused), 'restricted': not privileged,
+        'account': {'id': account.id, 'name': account.name, 'currency': account.currency, 'balance': None, 'reserved': None, 'free': None},
+        'conversions': [], 'spare_on_account': None, 'need_to_convert': None, 'earmarked_spent': None,
+        'available_for_request': None, 'block_waiting_uzs': None, 'max_payment': None,
+        'source_accounts': [], 'fee_categories': [], 'can_plan': False, 'can_pay': False,
+    }
+    if not privileged:
+        return result
     account_ids = {account.id} | {x for c in conversions for x in (c.source_account_id, c.target_account_id, c.block_account_id) if x}
     accounts = {a.id: a for a in s.scalars(select(Account).where(Account.id.in_(account_ids)))}
     ledger_ids = {x for c in conversions for x in (c.block_ledger_id, c.sell_ledger_id, c.buy_ledger_id, c.fee_ledger_id, c.return_ledger_id) if x}
     ledgers = {e.id: e for e in s.scalars(select(Ledger).where(Ledger.id.in_(ledger_ids)))} if ledger_ids else {}
-    converted = sum(c.credited_amount or 0 for c in conversions if c.state == 'credited')
-    in_progress = sum(c.planned_amount for c in conversions if c.state in ('planned', 'blocked'))
-    # Валюта, купленная под заявку и ещё не оплаченная, закреплена за ней. Свободным остатком
-    # заявки считается только купленное сверх заявленной суммы.
-    earmarked = max(converted - paid, 0)
-    others = fx_account_state(s, account, exclude_request=parent.id)
-    spare = max(others['free'] - earmarked, 0)
-    chain_need = max(0, outstanding - earmarked - in_progress) if parent.status in ('pending', 'approved') else 0
-    need = max(0, chain_need - spare)
     block_waiting = sum(max(conversion_leftover(c, ledgers.get(c.block_ledger_id)), 0) for c in conversions)
+    independent = user.id not in all_participants(s, parent, include_check=False)
     pay_allowed = (parent.status == 'approved' and route_complete(parent) and can_execute(user)
                    and 'pay' in _actions(s, user, parent))
     whole = fx_account_state(s, account)
-    planner = parent.status in ('pending', 'approved') and can_plan_conversion(user) and not link
+    planner = open_request and can_plan_conversion(user) and not link
     sources = [{'id': a.id, 'name': a.name} for a in s.scalars(select(Account).where(
         Account.kind == 'bank', Account.currency == 'UZS', Account.archived.is_(False), Account.company_id == account.company_id)
         .order_by(Account.name))] if planner else []
@@ -759,24 +909,19 @@ def fx_json(s, user, req, account):
     if planner:
         from .category_catalog import catalog
         fee_categories = [{'id': c.id, 'name': c.name} for c, _ in catalog(s) if c.type == 'outcome' and c.activity not in SYSTEM_ACTIVITIES]
-    return {
-        'parent': {'id': parent.id, 'number': number(parent.id)} if link else None,
-        'sequence': link.sequence if link else None,
-        'request_id': parent.id, 'number': number(parent.id), 'currency': account.currency,
-        'payment_status': status, 'requested': money(requested), 'paid': money(paid), 'outstanding': money(max(outstanding, 0)),
-        'parts': parts,
-        'conversions': [conversion_json(s, c, accounts, ledgers, user, parent) for c in conversions],
-        'converted': money(converted), 'in_progress': money(in_progress), 'earmarked': money(earmarked),
-        'unused_converted': money(max(converted - requested, 0)), 'spare_on_account': money(spare),
-        'need_to_convert': money(need), 'block_waiting_uzs': money(block_waiting),
+    result.update({
+        'conversions': [conversion_json(s, c, accounts, ledgers, user, parent, independent) for c in conversions],
+        'spare_on_account': money(cover['free']), 'need_to_convert': money(need), 'earmarked_spent': money(cover['spent_elsewhere']),
+        'block_waiting_uzs': money(block_waiting),
         'account': {'id': account.id, 'name': account.name, 'currency': account.currency, 'balance': money(whole['balance']),
                     'reserved': money(whole['reserved']), 'free': money(whole['free'])},
-        'available_for_request': money(min(max(outstanding, 0), earmarked + spare)),
+        'available_for_request': money(min(outstanding, cover['covered'])),
         'source_accounts': sources, 'fee_categories': fee_categories,
         'can_plan': planner,
         'can_pay': pay_allowed and not link,
         'max_payment': money(max(0, min(parent.amount, whole['balance']))) if parent.status == 'approved' else '0.00',
-    }
+    })
+    return result
 
 
 def _actions(s, user, req):
@@ -792,6 +937,7 @@ def card_json(s, user, req, account):
     category = s.get(Category, plan.fee_category_id) if plan and plan.fee_category_id else None
     total = req.amount + fee
     names = _names(s, [plan.controlled_by] if plan else [])
+    payer_id = payers_of(s, [plan]).get(plan.id) if plan and plan.state == 'paid' else None
     return {
         'id': plan.id if plan else None, 'version': plan.version if plan else None, 'state': plan.state if plan else 'planned',
         'account_id': account.id, 'account': account.name, 'currency': account.currency,
@@ -812,10 +958,12 @@ def card_json(s, user, req, account):
         'statement_checked': bool(plan and plan.statement_checked), 'documents_checked': bool(plan and plan.documents_checked),
         'control_note': plan.control_note if plan else '', 'controlled_by': names.get(plan.controlled_by, '') if plan else '',
         'controlled_at': str(plan.controlled_at) if plan and plan.controlled_at else None,
-        'can_pay': 'card_pay' in actions and plan is not None and plan.state == 'planned',
+        'can_pay': ('card_pay' in actions and plan is not None and plan.state == 'planned'
+                    and can_edit_section(user, 'requests', 'ledger')),
         'can_cancel': bool(plan and plan.state == 'paid' and 'request_delete' in perms_of(user)
                            and can_edit_section(user, 'requests', 'ledger')),
-        'can_control': bool(plan and plan.state == 'paid' and can_control(user)),
+        'paid_by_you': payer_id is not None and payer_id == user.id,
+        'can_control': bool(plan and plan.state == 'paid' and can_control(user) and payer_id != user.id),
     }
 
 
@@ -916,6 +1064,8 @@ def plan_conversion(id: int, data: ConversionPlanIn, request: Request):
                                         block_amount=uzs + fee, fee_category_id=category.id, state='planned',
                                         note=data.note, created_by=user.id)
         s.add(conversion)
+        # Новая версия заявки: повторная отправка той же формы (потерянный ответ, двойной клик) не создаст второй план.
+        flag_modified(req, 'decision_note')
         s.flush()
         log(s, user, 'Запланирована конвертация', 'request', req.id, json.dumps({
             'conversion_id': conversion.id, 'source_account_id': source.id, 'amount': money(bought), 'currency': target.currency,
@@ -948,6 +1098,8 @@ def conversion_step(conversion_id: int, action: str, data: ConversionStepIn, req
             return treasury_view(s, user, req)
         if not can_execute(user):
             raise HTTPException(403, 'Банковские этапы конвертации подтверждает расчётный бухгалтер.')
+        if user.id in all_participants(s, req, include_check=False):
+            raise HTTPException(403, 'Автор, редакторы и согласующие заявки не подтверждают банковские этапы конвертации по ней.')
         act_with_right(user, 'pay_bank')
         if action == 'block':
             if conversion.state != 'planned':
@@ -960,8 +1112,8 @@ def conversion_step(conversion_id: int, action: str, data: ConversionStepIn, req
             reference = data.reference.strip()
             _document_unused(s, 'block', source.id, reference, conversion.id, day)
             value = amount(data.amount) if data.amount else conversion.block_amount
-            if value < conversion.planned_uzs + conversion.planned_fee and len(data.note.strip()) < 10:
-                raise HTTPException(422, 'Сумма перевода меньше плановой покупки с комиссией: укажите пояснение не короче 10 символов.')
+            if value != conversion.planned_uzs + conversion.planned_fee and len(data.note.strip()) < 10:
+                raise HTTPException(422, 'Сумма перевода отличается от плановой покупки с комиссией: укажите пояснение не короче 10 символов.')
             # Перевод на блочный счёт не забирает деньги, обещанные утверждённым сумовым заявкам.
             enforce_reserved_funds(s, source, day, value, include_bank_hold=False)
             block = block_account(s, user, source)
@@ -984,6 +1136,8 @@ def conversion_step(conversion_id: int, action: str, data: ConversionStepIn, req
             if conversion.state != 'blocked':
                 raise HTTPException(409, 'Зачисление валюты учитывается после перевода сумов на блочный счёт.')
             block = get(s, Account, conversion.block_account_id)
+            if target.archived or block.archived:
+                raise HTTPException(409, 'Валютный или блочный счёт в архиве. Сначала восстановите его.')
             day = _fact_date(data, conversion.block_date, target.opening_date)
             reference = data.reference.strip()
             if data.amount is None or data.rate is None:
@@ -1036,6 +1190,8 @@ def conversion_step(conversion_id: int, action: str, data: ConversionStepIn, req
             if conversion.state not in ('blocked', 'credited'):
                 raise HTTPException(409, 'Возврат доступен для сумов на блочном счёте.')
             block = get(s, Account, conversion.block_account_id)
+            if source.archived or block.archived:
+                raise HTTPException(409, 'Сумовой или блочный счёт в архиве. Сначала восстановите его, затем возвращайте сумы.')
             leftover = conversion_leftover(conversion, get(s, Ledger, conversion.block_ledger_id))
             if leftover <= 0:
                 raise HTTPException(409, 'На блочном счёте по этой конвертации не осталось сумов.')
@@ -1139,8 +1295,9 @@ def treasury_report(request: Request, date_from: Optional[date] = None, date_to:
     start, end = _period(date_from, date_to)
     with unit() as s:
         user, _ = session_user(s, request, ('view', 'pay_bank', 'request_check'))
+        _require_both_sections(user)
         accounts = list(s.scalars(select(Account).order_by(Account.name)))
-        cards = [a for a in accounts if a.kind == 'card' and (not a.archived or account_balance(s, a, end) != 0)]
+        cards = [a for a in accounts if a.kind == 'card']
         fee_ids = {row[0] for row in s.execute(select(CardPayment.fee_ledger_id).where(CardPayment.fee_ledger_id.is_not(None)))}
         section1 = []
         for card in cards:
@@ -1159,6 +1316,9 @@ def treasury_report(request: Request, date_from: Optional[date] = None, date_to:
             statuses = dict(s.execute(select(CardPayment.control_status, func.count(CardPayment.id)).where(
                 CardPayment.card_account_id == card.id, CardPayment.state == 'paid', CardPayment.paid_date >= start,
                 CardPayment.paid_date <= end).group_by(CardPayment.control_status)).all())
+            # Архивная карта остаётся в отчёте за период, в котором по ней были движения.
+            if card.archived and not flows and not statuses and opening == 0 and closing == 0:
+                continue
             control = {key: int(statuses.get(key, 0)) for key in CONTROL_STATES}
             section1.append({'account_id': card.id, 'card': card.name, 'currency': card.currency, 'opening': money(opening),
                              'top_ups': money(top_ups - moved_out), 'spent': money(spent), 'fees': money(fees),
@@ -1168,8 +1328,11 @@ def treasury_report(request: Request, date_from: Optional[date] = None, date_to:
         fx_accounts = [a for a in accounts if is_fx(a)]
         fx_ids = {a.id for a in fx_accounts}
         children = set(s.scalars(select(PaymentSplit.child_request_id)))
+        # Исходная заявка с оплаченными частями остаётся в отчёте, даже если её остаток снят или на доработке.
+        with_parts = set(s.scalars(select(PaymentSplit.parent_request_id)))
         requests = [r for r in s.scalars(select(PaymentRequest).where(PaymentRequest.account_id.in_(fx_ids),
-                    PaymentRequest.status.in_(('pending', 'approved', 'paid'))).order_by(PaymentRequest.id)) if r.id not in children] if fx_ids else []
+                    PaymentRequest.status.in_(('pending', 'approved', 'paid')) | PaymentRequest.id.in_(with_parts))
+                    .order_by(PaymentRequest.id)) if r.id not in children] if fx_ids else []
         account_by_id = {a.id: a for a in accounts}
         rows = []
         totals = {}
@@ -1178,7 +1341,8 @@ def treasury_report(request: Request, date_from: Optional[date] = None, date_to:
             conversions = conversions_for(s, req.id)
             ledgers = payment_ledgers(s, [req.id] + [x.child_request_id for x in splits])
             events = [e.date for e in ledgers.values()] + [d for c in conversions for d in (c.block_date, c.credit_date) if d]
-            if req.status == 'paid' and not any(start <= d <= end for d in events):
+            closed = req.status in CLOSED_STATES
+            if (req.status == 'paid' or closed) and not any(start <= d <= end for d in events):
                 continue
             requested = req.amount + sum(x.amount for x in splits)
             paid = sum(x.amount for x in splits if kids.get(x.child_request_id) is not None and kids[x.child_request_id].status == 'paid'
@@ -1190,26 +1354,31 @@ def treasury_report(request: Request, date_from: Optional[date] = None, date_to:
             returned = sum(c.returned_uzs or 0 for c in conversions if c.return_date and c.return_date <= end)
             converted = sum(c.credited_amount or 0 for c in conversions if c.credit_date and c.credit_date <= end)
             currency = account_by_id[req.account_id].currency
-            free = max(converted - requested, 0)
-            status = 'paid' if paid >= requested and paid > 0 else 'partial' if paid > 0 else 'unpaid'
+            outstanding = 0 if closed else max(requested - paid, 0)
+            free = max(converted - paid - outstanding, 0)
+            status = ('closed' if closed else 'paid' if paid >= requested and paid > 0 else 'partial' if paid > 0 else 'unpaid')
             row = {'request_id': req.id, 'number': number(req.id), 'counterparty': req.counterparty, 'currency': currency,
                    'status': status, 'request_status': req.status, 'requested': money(requested), 'blocked_uzs': money(blocked),
                    'returned_uzs': money(returned), 'converted': money(converted), 'paid': money(paid),
-                   'outstanding': money(max(requested - paid, 0)), 'free': money(free)}
+                   'outstanding': money(outstanding), 'free': money(free)}
             rows.append(row)
             total = totals.setdefault(currency, {'requested': 0, 'blocked_uzs': 0, 'returned_uzs': 0, 'converted': 0, 'paid': 0, 'outstanding': 0, 'free': 0})
             for key, value in (('requested', requested), ('blocked_uzs', blocked), ('returned_uzs', returned), ('converted', converted),
-                               ('paid', paid), ('outstanding', max(requested - paid, 0)), ('free', free)):
+                               ('paid', paid), ('outstanding', outstanding), ('free', free)):
                 total[key] += value
+        # Остатки — на конец периода. Резервы утверждённых заявок известны только на сегодня,
+        # поэтому для прошлого периода показывается один остаток.
+        current = end >= today()
         balances = []
         for account in fx_accounts:
-            if account.archived and account_balance(s, account) == 0:
+            balance = account_balance(s, account, end)
+            if account.archived and balance == 0:
                 continue
-            state = fx_account_state(s, account)
-            balances.append({'account_id': account.id, 'account': account.name, 'currency': account.currency,
-                             'balance': money(state['balance']), 'reserved': money(state['reserved']), 'free': money(state['free'])})
-        blocks = [{'account_id': a.id, 'account': a.name, 'currency': a.currency, 'balance': money(account_balance(s, a))}
+            state = fx_account_state(s, account) if current else None
+            balances.append({'account_id': account.id, 'account': account.name, 'currency': account.currency, 'balance': money(balance),
+                             'reserved': money(state['reserved']) if state else None, 'free': money(state['free']) if state else None})
+        blocks = [{'account_id': a.id, 'account': a.name, 'currency': a.currency, 'balance': money(account_balance(s, a, end))}
                   for a in accounts if a.kind == 'block']
-        return {'date_from': str(start), 'date_to': str(end), 'cards': section1,
+        return {'date_from': str(start), 'date_to': str(end), 'cards': section1, 'balances_as_of': str(min(end, today())),
                 'fx': {'requests': rows, 'totals': {cur: {k: money(v) for k, v in t.items()} for cur, t in totals.items()},
                        'accounts': balances, 'block_accounts': blocks}}

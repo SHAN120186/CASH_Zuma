@@ -160,7 +160,7 @@ const money=v=>{if(v==null)return '—';let s=String(v);if(currency.value==='UZS
 // Headline balances: "5,32 млрд"; the exact figure goes into the tooltip (moneyTitle).
 const moneyShort=(v,cur=currency.value)=>formatAmount(toCents(v),cur), moneyTitle=(v,cur=currency.value)=>amountTitle(toCents(v),cur);
 const costGroups={fixed:N_('Постоянные затраты'),variable:N_('Переменные затраты'),other:N_('Прочие затраты')};
-const auditRefresh=ref(0),homeRefresh=ref(0);
+const auditRefresh=ref(0),homeRefresh=ref(0),treasuryRefresh=ref(0);
 const bankDraft=ref(null), bankStatementsPanel=ref(null);
 function alreadyPaid(id){
  if(saving.value || modal.value?.paymentRequestId!==id)return;
@@ -253,7 +253,7 @@ function queueSearch(event){
  },300);
 }
 onUnmounted(()=>clearTimeout(searchTimer));
-function archiveAccount(a){if(a.kind==='transit')return;open(a.archived?N_('Восстановить счёт'):N_('Убрать счёт в архив'),[field('reason',N_('Причина'),'textarea',{minlength:10})],{reason:''},d=>post(`/api/accounts/${a.id}/archive`,{...d,archived:!a.archived}),N_('История сохраняется. В архив можно убрать счёт с нулевым остатком и без незавершённых заявок.'))}
+function archiveAccount(a){if(['transit','block'].includes(a.kind))return;open(a.archived?N_('Восстановить счёт'):N_('Убрать счёт в архив'),[field('reason',N_('Причина'),'textarea',{minlength:10})],{reason:''},d=>post(`/api/accounts/${a.id}/archive`,{...d,archived:!a.archived}),N_('История сохраняется. В архив можно убрать счёт с нулевым остатком и без незавершённых заявок.'))}
 
 let listRequestId=0,reportRequestId=0,loadRequestId=0;
 const moreRequestsBusy=ref(false),moreRequestsError=ref(''),requestListKey=ref('');
@@ -418,6 +418,7 @@ async function load(options={}){clearTimeout(searchTimer);searchTimer=null;if(!c
  try{
  if(!options.skipBootstrap&&bootstrapLocalDay.value&&bootstrapLocalDay.value!==localBusinessDay()){await bootstrap();if(!current()||!companyReady.value)return;}
  if(page.value==='home')homeRefresh.value++;
+ if(page.value==='treasury')treasuryRefresh.value++;
  if(requestedPage==='calendar'){const horizon=days.value,data=await api(`/api/dashboard?currency=${requestedCurrency}&days=${horizon}`);if(current()&&days.value===horizon)dash.value=data;}
  if(requestedPage==='accounts'){const archived=showArchive.value,data=await api('/api/accounts?archived='+archived+'&include_statement_balance=true');if(current()&&showArchive.value===archived)rows.value=data;}
  if(['ledger','requests'].includes(requestedPage)){const requestId=++listRequestId;const params=new URLSearchParams({paginated:'true',page:String(listPage.value),page_size:String(listPageSize.value),currency:requestedCurrency,q:search.value});if(dateFrom.value)params.set('date_from',dateFrom.value);if(dateTo.value)params.set('date_to',dateTo.value);if(requestedPage==='ledger'&&showDeletedOperations.value)params.set('include_deleted','true');if(requestedPage==='requests')params.set('archive',requestArchive.value);if(requestedPage==='requests'&&requestStatus.value)params.set('state',requestStatus.value);const data=await api(`/api/${requestedPage}?${params}`);if(current()&&requestId===listRequestId){rows.value=data.items;listTotal.value=data.total;if(requestedPage==='requests')requestListKey.value=key;}}
@@ -504,7 +505,7 @@ async function save(){
  }catch(e){if(current()&&modal.value===task)formError.value=e.message;}
  finally{saving.value=false;}
 }
-function account(a=null){if(a?.kind==='transit')return;open(a?N_('Редактировать счёт'):N_('Добавить счёт'),[
+function account(a=null){if(['transit','block'].includes(a?.kind))return;open(a?N_('Редактировать счёт'):N_('Добавить счёт'),[
  field('name',N_('Название')),field('kind',N_('Тип'),'select',{options:[['bank',tx('Банковский счёт')],['cash',tx('Касса')],['card',tx('Корпоративная карта')]]}),field('currency',N_('Валюта'),'select',{options:['UZS','USD','EUR'].map(x=>[x,x])}),field('opening',N_('Начальный остаток'),'number',{min:0}),field('opening_date',N_('Дата начала учёта'),'date'),field('allow_overdraft',N_('Разрешён овердрафт'),'checkbox',{required:false}),...(a?[field('reason',N_('Причина исправления'),'textarea',{minlength:10})]:[])],a||{name:'',company_id:companyId.value,kind:'bank',currency:currency.value,opening:'0',opening_date:boot.value.today,allow_overdraft:false},d=>post(a?`/api/accounts/${a.id}`:'/api/accounts',Object.fromEntries(['name','kind','currency','opening','opening_date','allow_overdraft',...(a?['reason']:[])].map(k=>[k,k==='opening'?String(d[k]):d[k]]))),N_('Остаток на начало дня. Изменения сохраняются в журнале. Валюта счёта с историей защищена от изменения.'))}
 function transaction(link=null,receipt=false){if(receipt&&!has('write'))return;if(!link&&!manualAccounts(currentAccounts.value).length){go('accounts');return}open(link?N_('Подтвердить факт'):N_('Новая операция'),[
  field('kind',N_('Тип'),'select',{options:[['in',tx('Поступление')],['out',tx('Расход')],['transfer',tx('Внутренний перевод')]],disabled:!!link}),field('account_id',N_('Счёт'),'select',{options:accounts(),disabled:!!link}),field('to_account_id',N_('Счёт-получатель (для перевода)'),'select',{options:[[null,'—'],...accounts()],required:false}),field('category_id',N_('Статья'),'select',{options:categories(link?.category_id),disabled:!!link}),field('amount',N_('Сумма'),'number',{min:.01,disabled:!!link}),field('date',N_('Дата факта'),'date',{min:link&&!receipt?link.approved_on||undefined:undefined}),field('reference',N_('Номер документа')),field('counterparty',N_('Контрагент'),'text',{required:false,disabled:!!link&&!receipt}),field('note',link&&!receipt?N_('Комментарий к оплате'):N_('Основание / комментарий'),'textarea',{required:false})],{kind:link?(receipt?'in':'out'):'in',account_id:link?.account_id||manualAccounts(currentAccounts.value)[0]?.id,to_account_id:null,category_id:link?.category_id||boot.value.categories[0]?.id,amount:link?.amount||'',date:boot.value.today,reference:'',counterparty:link?.counterparty||'',note:link?.purpose||''},d=>post('/api/ledger',{...d,amount:String(d.amount),category_id:d.kind==='transfer'?null:Number(d.category_id),account_id:Number(d.account_id),to_account_id:d.kind==='transfer'?Number(d.to_account_id):null,request_id:link&&!receipt?link.id:null,request_version:link&&!receipt?link.version:null,receipt_id:link&&receipt?link.id:null}),link&&!receipt&&boot.value.accounts.some(a=>a.id===link.account_id&&a.kind==='bank')?N_('Введите номер платёжки, чтобы сверить списание с выпиской. При сохранении сайт проверит остаток по учёту на дату оплаты и на сегодня.'):link&&!receipt?N_('Сумма, счёт, статья и получатель берутся из утверждённой заявки. Если денег или бюджета не хватает, оплата не пройдёт: верните заявку финансовому директору через «Действия».'):N_('Записывайте только фактически совершённые операции. Для расхода без заявки основание — от 10 символов.'),null,link&&!receipt?link.id:null)}
@@ -722,7 +723,7 @@ onMounted(async()=>{const epoch=companyEpoch;try{const r=await api('/api/me');if
         <button type="button" class="secondary tiny" @click="go('ledger')">{{tx('Перейти к операциям')}}</button>
       </div>
       <div class="ac-o"><span>{{tx('Начальный остаток на {date}',{date:a.opening_date})}}</span><b class="num">{{money(a.opening)}} {{a.currency}}</b></div>
-      <div class="ac-b"><button v-if="has('write')&&!a.archived&&a.kind!=='transit'" class="secondary tiny" @click="account(a)"><AppIcon name="edit"/> {{tx('Изменить')}}</button><button v-if="has('users')&&has('write')&&a.kind!=='transit'" class="secondary tiny" @click="archiveAccount(a)"><AppIcon :name="a.archived?'restore':'archive'"/> {{a.archived?tx('Восстановить'):tx('В архив')}}</button></div>
+      <div class="ac-b"><button v-if="has('write')&&!a.archived&&!['transit','block'].includes(a.kind)" class="secondary tiny" @click="account(a)"><AppIcon name="edit"/> {{tx('Изменить')}}</button><button v-if="has('users')&&has('write')&&!['transit','block'].includes(a.kind)" class="secondary tiny" @click="archiveAccount(a)"><AppIcon :name="a.archived?'restore':'archive'"/> {{a.archived?tx('Восстановить'):tx('В архив')}}</button></div>
      </section></div>
      <section v-if="!visibleRows.length&&!busy&&!showArchive" class="empty-state card"><div class="empty-icon" aria-hidden="true"><AppIcon name="accounts"/></div><h2>{{tx('Добавьте первый счёт в {currency}',{currency})}}</h2><p>{{tx('Укажите банк или кассу и начальный остаток. Дальше баланс будет рассчитываться по операциям.')}}</p><div class="actions"><button v-if="has('write')" @click="account()"><AppIcon name="plus"/> {{tx('Добавить счёт')}}</button><button v-for="c in otherCurrencies" :key="c" class="secondary" @click="switchCurrency(c)">{{tx('Показать {currency}',{currency:c})}}</button></div></section>
      <section v-if="!visibleRows.length&&!busy&&showArchive" class="empty card"><b>{{tx('В архиве пусто')}}</b><br>{{tx('Архивные счета можно восстановить в любой момент.')}}</section>
@@ -773,7 +774,7 @@ onMounted(async()=>{const epoch=companyEpoch;try{const r=await api('/api/me');if
     <div v-if="page==='ledger'&&listPages>1" class="pagination"><span>{{tx('Найдено: {total} · Страница {page} из {pages}',{total:listTotal,page:listPage,pages:listPages})}}</span><div class="actions"><button class="secondary tiny" :disabled="listPage<=1||busy" @click="changeListPage(listPage-1)">← {{tx('Назад')}}</button><button class="secondary tiny" :disabled="listPage>=listPages||busy" @click="changeListPage(listPage+1)">{{tx('Далее')}} →</button></div></div>
 
     <!-- Казначейство: реестр контроля карт и движение по картам и валюте -->
-    <TreasuryPage v-if="page==='treasury'&&companyId" :key="`treasury-${companyId}`" :api="api" :money="money" :company-id="companyId" :today="boot.today" @open-request="openRequestCard"/>
+    <TreasuryPage v-if="page==='treasury'&&companyId" :key="`treasury-${companyId}`" :api="api" :money="money" :company-id="companyId" :today="boot.today" :refresh="treasuryRefresh" @open-request="openRequestCard"/>
 
     <!-- Календарь -->
     <template v-if="page==='calendar'&&dash">

@@ -3,7 +3,7 @@
 // («Оплата корп. картой» и «Комиссия за оплату корп. картой») и отметка реестра контроля бухгалтерии.
 import {ref, computed, watch, onUnmounted} from 'vue';
 import {tx, N_} from '../i18n/index.js';
-import {CONTROL_PILLS, controlLabel, units, decimal, dateRu} from './treasury.js';
+import {CONTROL_PILLS, controlLabel, units, decimal, plainAmount, dateRu} from './treasury.js';
 import {tashkentToday} from './cashFunding.js';
 
 const props = defineProps({api: {type: Function, required: true}, request: {type: Object, required: true}, card: {type: Object, required: true},
@@ -37,13 +37,18 @@ async function run(path, body, message) {
     const result = await props.api(path, json(body));
     if (!alive) return;
     action.value = ''; notice.value = message; emit('changed', result);
-  } catch (e) { if (alive) error.value = e.message; }
+  } catch (e) {
+    if (!alive) return;
+    error.value = e.message;
+    // Конфликт версий: карточку перечитываем, чтобы повтор шёл уже с актуальными данными.
+    if ([409, 428].includes(e.status)) emit('changed');
+  }
   finally { if (alive) working(false); }
 }
 function submitPayment() {
   if (figures.value && !figures.value.enough) { error.value = N_('Сумма оплаты с комиссией больше остатка карты. Пополните карту и повторите.'); return; }
   run(`/api/treasury/requests/${props.request.id}/card-pay`, {version: props.card.version, request_version: props.request.version,
-    date: pay.value.date, reference: pay.value.reference, fee_amount: pay.value.fee_amount || '0', note: pay.value.note}, N_('Оплата картой и комиссия проведены. Операция передана на сверку бухгалтерии.'));
+    date: pay.value.date, reference: pay.value.reference, fee_amount: plainAmount(pay.value.fee_amount || '0'), note: pay.value.note}, N_('Оплата картой и комиссия проведены. Операция передана на сверку бухгалтерии.'));
 }
 function mark(status) {
   run(`/api/treasury/card-control/${props.card.id}`, {version: props.card.version, status, ...control.value},
@@ -87,6 +92,7 @@ onUnmounted(() => { alive = false; emit('busy', false); });
     <div v-if="!action" class="actions">
       <button v-if="card.can_pay" type="button" :disabled="busy" @click="action = 'pay'">{{ tx('Провести оплату картой') }}</button>
       <button v-if="card.can_control" type="button" class="secondary" :disabled="busy" @click="action = 'control'">{{ tx('Сверка бухгалтерии') }}</button>
+      <span v-else-if="card.paid_by_you && card.state === 'paid'" class="sub">{{ tx('Сверку отмечает другой сотрудник бухгалтерии: оплату провели вы.') }}</span>
       <button v-if="card.can_cancel" type="button" class="ghost" :disabled="busy" @click="action = 'cancel'">{{ tx('Отменить ошибочную оплату') }}</button>
     </div>
     <form v-if="action === 'pay'" class="treasury-action" @submit.prevent="submitPayment">

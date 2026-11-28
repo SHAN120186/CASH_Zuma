@@ -7,7 +7,7 @@ import CardPaymentPanel from './CardPaymentPanel.vue';
 import CurrencyChainPanel from './CurrencyChainPanel.vue';
 
 const props = defineProps({api: {type: Function, required: true}, request: {type: Object, required: true}, money: {type: Function, required: true}});
-const emit = defineEmits(['busy', 'changed', 'open-request']);
+const emit = defineEmits(['busy', 'changed', 'open-request', 'loaded']);
 const data = ref(null), error = ref(''), loading = ref(false);
 let alive = true, generation = 0;
 
@@ -21,10 +21,13 @@ async function load() {
   finally { if (alive && current === generation) loading.value = false; }
 }
 watch(() => [props.request.id, props.request.version, props.request.status], load, {immediate: true});
+watch(data, value => emit('loaded', value));
 onUnmounted(() => { alive = false; generation++; });
 
 function changed(result) {
-  if (result?.request_id === props.request.id) data.value = result;
+  // Данные заменяет только ответ в форме карточки казначейства; отметка реестра или конфликт версий — повод перечитать.
+  if (result?.request_id === props.request.id && result.kind) data.value = result;
+  else load();
   emit('changed', result);
 }
 </script>

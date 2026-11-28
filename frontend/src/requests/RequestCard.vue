@@ -42,7 +42,10 @@ const required = computed(() => r.value?.required_documents || requiredDocs(r.va
 const draftLike = computed(() => ['draft', 'returned'].includes(r.value?.status));
 // Оплаченная картой заявка до сверки принимает только прочие (закрывающие) документы.
 const closingOnly = computed(() => r.value?.status === 'paid');
-const canRemove = kind => can('documents') && (closingOnly.value ? kind === 'other' : (draftLike.value || !required.value.includes(kind)));
+// Часть частичной оплаты валютной заявки оплачивается обычным фактом оплаты (например, после сторно).
+const treasuryPart = ref(false);
+// После оплаты картой закрывающие документы только добавляются, ничего не убирается.
+const canRemove = kind => can('documents') && !closingOnly.value && (draftLike.value || !required.value.includes(kind));
 const canUpload = kind => can('documents') && (!closingOnly.value || kind === 'other');
 
 async function load(afterAction = false) {
@@ -225,7 +228,7 @@ onUnmounted(() => document.removeEventListener('keydown', onKey));
 
         <CashFundingPanel v-if="r.cash_funding" :api="api" :request="r" :money="money" @busy="busy = $event" @changed="fundingChanged" />
         <CashFundingBatchPanel v-if="r.cash_funding?.mode === 'batch' && r.cash_funding.state === 'received'" :api="api" :request="r" :money="money" @busy="busy = $event" @paid="batchPaymentsRecorded" />
-        <TreasuryPanel v-if="treasuryKind(r)" :api="api" :request="r" :money="money" @busy="busy = $event" @changed="treasuryChanged" @open-request="emit('open-request', $event)" />
+        <TreasuryPanel v-if="treasuryKind(r)" :api="api" :request="r" :money="money" @busy="busy = $event" @changed="treasuryChanged" @open-request="emit('open-request', $event)" @loaded="treasuryPart = !!$event?.fx?.parent" />
 
         <section v-if="r.budget_card && r.cash_funding?.mode !== 'batch'" class="budget-check" :class="r.budget_card.status" :aria-label="tx('Бюджет статьи')">
           <strong>{{ tx('Бюджет статьи «{category}» · {period}', {category: r.category, period: periodLabel(r.budget_card.period)}) }}</strong>
@@ -264,7 +267,7 @@ onUnmounted(() => document.removeEventListener('keydown', onKey));
           <button v-if="can('delete')" type="button" class="secondary" :disabled="busy" @click="deleteRequest">{{ tx('Удалить заявку') }}</button>
           <button v-if="can('edit')" type="button" class="secondary" :disabled="busy" @click="emit('edit', r)">{{ tx('Изменить') }}</button>
           <button v-if="can('submit')" type="button" :disabled="busy || missing.length > 0" @click="submit">{{ tx('Отправить на согласование') }}</button>
-          <button v-if="can('pay') && treasuryKind(r) !== 'fx'" type="button" :disabled="busy" @click="emit('record-payment', r)">{{ tx('Факт оплаты') }}</button>
+          <button v-if="can('pay') && (treasuryKind(r) !== 'fx' || treasuryPart)" type="button" :disabled="busy" @click="emit('record-payment', r)">{{ tx('Факт оплаты') }}</button>
         </div>
 
         <form v-if="options.length" class="rq-decision card" @submit.prevent="decide">

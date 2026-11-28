@@ -5,7 +5,7 @@
 import {ref, computed, onUnmounted} from 'vue';
 import {tx, N_} from '../i18n/index.js';
 import {PAYMENT_STATES, PAYMENT_PILLS, CONVERSION_STATES, CONVERSION_PILLS, conversionAmounts, creditAmounts, defaultSupplierPayment,
-        supplierPaymentKind, positive, negative, units, decimal, dateRu} from './treasury.js';
+        supplierPaymentKind, positive, negative, units, decimal, plainAmount, dateRu} from './treasury.js';
 import {tashkentToday} from './cashFunding.js';
 
 const props = defineProps({api: {type: Function, required: true}, request: {type: Object, required: true}, fx: {type: Object, required: true},
@@ -24,7 +24,7 @@ const creditFigures = computed(() => {
   const conversion = props.fx.conversions.find(c => 'credit:' + c.id === open.value);
   if (!conversion) return null;
   const blocked = units(conversion.block_amount), returned = units(conversion.returned_uzs) || 0n;
-  return creditAmounts(step.value.amount, step.value.rate, step.value.fee, blocked == null ? null : decimal(blocked - returned));
+  return creditAmounts(step.value.amount, step.value.rate, step.value.fee, blocked == null ? null : decimal(blocked - returned), conversion.fee_percent);
 });
 const paymentKind = computed(() => payment.value ? supplierPaymentKind(props.fx, payment.value.amount) : '');
 
@@ -38,7 +38,7 @@ function startStep(conversion, action) {
   error.value = ''; notice.value = ''; open.value = action + ':' + conversion.id;
   step.value = {date: tashkentToday(), reference: '', note: '',
     amount: action === 'block' ? conversion.block_amount : action === 'credit' ? conversion.planned_amount : '',
-    rate: action === 'credit' ? conversion.planned_rate : '', fee: action === 'credit' ? conversion.planned_fee : ''};
+    rate: action === 'credit' ? conversion.planned_rate : '', fee: ''};
 }
 function startPayment() {
   error.value = ''; notice.value = ''; open.value = 'pay';
@@ -52,18 +52,27 @@ async function run(path, body, message) {
     const result = await props.api(path, json(body));
     if (!alive) return;
     open.value = ''; notice.value = message; emit('changed', result);
-  } catch (e) { if (alive) error.value = e.message; }
+  } catch (e) {
+    if (!alive) return;
+    error.value = e.message;
+    // Конфликт версий: карточку перечитываем, чтобы повтор шёл уже с актуальными данными.
+    if ([409, 428].includes(e.status)) emit('changed');
+  }
   finally { if (alive) working(false); }
 }
 function submitPlan() {
   if (planFigures.value?.error) { error.value = planFigures.value.error; return; }
   run(`/api/treasury/requests/${props.fx.request_id}/conversions`, {request_version: props.request.version, ...plan.value,
-    fee_percent: String(plan.value.fee_percent || '0').replace(',', '.')}, N_('Конвертация запланирована. Следующий шаг — перевод сумов на блочный счёт.'));
+    amount: plainAmount(plan.value.amount), fee_percent: String(plan.value.fee_percent || '0').replace(',', '.')}, N_('Конвертация запланирована. Следующий шаг — перевод сумов на блочный счёт.'));
 }
 function submitStep(conversion, action) {
   const body = {version: conversion.version, date: step.value.date, reference: step.value.reference, note: step.value.note};
-  if (action === 'block') body.amount = step.value.amount;
-  if (action === 'credit') Object.assign(body, {amount: step.value.amount, rate: step.value.rate, fee: step.value.fee || '0'});
+  if (action === 'block') body.amount = plainAmount(step.value.amount);
+  if (action === 'credit') {
+    // Пустая комиссия: сервер считает процент плана от фактической покупки.
+    Object.assign(body, {amount: plainAmount(step.value.amount), rate: step.value.rate});
+    if (String(step.value.fee ?? '').trim() !== '') body.fee = plainAmount(step.value.fee);
+  }
   if (action === 'cancel') delete body.date;
   const messages = {block: N_('Сумы переведены на блочный счёт. После зачисления валюты учтите «Приход Банк».'),
     credit: N_('Валюта зачислена на валютный счёт. Можно оплачивать поставщику.'), return: N_('Неиспользованные сумы возвращены на расчётный счёт.'),
@@ -72,7 +81,8 @@ function submitStep(conversion, action) {
 }
 function submitPayment() {
   if (paymentKind.value === 'excess') { error.value = N_('Сумма больше остатка заявки к оплате.'); return; }
-  run(`/api/treasury/requests/${props.fx.request_id}/supplier-pay`, {request_version: props.request.version, ...payment.value},
+  run(`/api/treasury/requests/${props.fx.request_id}/supplier-pay`, {request_version: props.request.version, ...payment.value,
+    amount: plainAmount(payment.value.amount)},
     paymentKind.value === 'partial' ? N_('Частичная оплата проведена: оплаченная часть выделена в связанную заявку, остаток ждёт оплаты.') : N_('Заявка оплачена полностью.'));
 }
 const stepClass = done => done ? 'done' : '';
@@ -93,17 +103,19 @@ onUnmounted(() => { alive = false; emit('busy', false); });
         <small v-if="positive(fx.in_progress)" class="sub">{{ tx('В работе: {value} {currency}', {value: money(fx.in_progress), currency: cur}) }}</small>
         <small v-if="positive(fx.earmarked) && positive(fx.outstanding)" class="sub">{{ tx('Куплено и ждёт оплаты поставщику: {value} {currency}', {value: money(fx.earmarked), currency: cur}) }}</small></div>
     </div>
+    <p v-if="fx.restricted" class="sub">{{ tx('Цепочку конвертации, остатки и резервы счёта видят бухгалтерия и финансовое руководство.') }}</p>
     <div v-if="positive(fx.unused_converted) || positive(fx.account.free) || positive(fx.need_to_convert)" class="treasury-balances">
       <p v-if="positive(fx.unused_converted)" class="notice"><b>{{ tx('Остаток {currency} по заявке: {value}', {currency: cur, value: money(fx.unused_converted)}) }}</b> — {{ tx('куплено больше заявленной суммы; остаток свободен для следующих заявок.') }}</p>
       <p v-if="positive(fx.account.free)" class="notice"><b>{{ tx('Свободный остаток на счёте «{account}»: {value} {currency}', {account: fx.account.name, value: money(fx.account.free), currency: cur}) }}</b> — {{ tx('можно использовать для следующих заявок без новой конвертации.') }}</p>
-      <p v-if="positive(fx.need_to_convert)" class="warning">{{ tx('Не хватает валюты: нужно сконвертировать {value} {currency}.', {value: money(fx.need_to_convert), currency: cur}) }}</p>
+      <p v-if="positive(fx.need_to_convert)" class="warning">{{ tx('Не хватает валюты: нужно сконвертировать {value} {currency}.', {value: money(fx.need_to_convert), currency: cur}) }}
+        <template v-if="positive(fx.earmarked_spent)"> {{ tx('Из купленной под заявку валюты {value} {currency} уже израсходовано на другие оплаты со счёта.', {value: money(fx.earmarked_spent), currency: cur}) }}</template></p>
     </div>
-    <p class="sub">{{ negative(fx.account.free)
+    <p v-if="!fx.restricted" class="sub">{{ negative(fx.account.free)
       ? tx('Счёт «{account}»: остаток {balance} {currency}, утверждено к оплате {reserved} {currency}; по всем утверждённым заявкам не хватает {short} {currency}.', {account: fx.account.name, balance: money(fx.account.balance), reserved: money(fx.account.reserved), short: money(fx.account.free.replace('-', '')), currency: cur})
       : tx('Счёт «{account}»: остаток {balance} {currency}, утверждено к оплате {reserved} {currency}, свободно {free} {currency}.', {account: fx.account.name, balance: money(fx.account.balance), reserved: money(fx.account.reserved), free: money(fx.account.free), currency: cur}) }}</p>
 
-    <h4 class="treasury-sub">{{ tx('Цепочка документов') }}</h4>
-    <p v-if="!fx.conversions.length" class="sub">{{ tx('Конвертаций по заявке нет.') }}</p>
+    <h4 v-if="!fx.restricted" class="treasury-sub">{{ tx('Цепочка документов') }}</h4>
+    <p v-if="!fx.restricted && !fx.conversions.length" class="sub">{{ tx('Конвертаций по заявке нет.') }}</p>
     <article v-for="c in fx.conversions" :key="c.id" class="fx-doc">
       <div class="section-head"><b>{{ tx('Конвертация сум → {currency} № {id}', {currency: cur, id: c.id}) }}</b>
         <span class="pill" :class="CONVERSION_PILLS[c.state]">{{ tx(CONVERSION_STATES[c.state]) }}</span></div>
@@ -138,7 +150,7 @@ onUnmounted(() => { alive = false; emit('busy', false); });
           <template v-if="open.startsWith('credit:')">
             <label>{{ tx('Зачислено, {currency}', {currency: cur}) }}<input v-model="step.amount" inputmode="decimal" required :disabled="busy"></label>
             <label>{{ tx('Курс конвертации, UZS за 1 {currency}', {currency: cur}) }}<input v-model="step.rate" inputmode="decimal" required :disabled="busy"></label>
-            <label>{{ tx('Комиссия за конвертацию, UZS') }}<input v-model="step.fee" inputmode="decimal" :disabled="busy"></label>
+            <label>{{ tx('Комиссия за конвертацию, UZS') }}<input v-model="step.fee" inputmode="decimal" :placeholder="tx('Пусто — {percent}% от покупки', {percent: c.fee_percent})" :disabled="busy"></label>
           </template>
           <label class="wide">{{ open.startsWith('cancel:') ? tx('Причина отмены (не менее 10 символов)') : tx('Комментарий (необязательно)') }}<textarea v-model="step.note" :required="open.startsWith('cancel:')" :minlength="open.startsWith('cancel:') ? 10 : undefined" maxlength="1000" :disabled="busy"></textarea></label>
         </div>

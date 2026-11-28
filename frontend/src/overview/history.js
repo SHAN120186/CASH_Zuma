@@ -40,7 +40,8 @@ export function balanceHistory({ today, days = 30, accounts, entries }) {
 export function monthPlanFact(report, monthIndex) {
   if (!report || !Array.isArray(report.rows)) return null;
   const pick = kind => {
-    const rows = report.rows.filter(r => r.kind === kind);
+    // Currency conversion moves money between own accounts: neither income nor expense, and never planned.
+    const rows = report.rows.filter(r => r.kind === kind && r.activity !== 'conversion');
     const fact = rows.reduce((s, r) => s + Math.abs(toCents(r.values[monthIndex]) ?? 0), 0);
     const plans = rows.map(r => r.plan[monthIndex]);
     const plan = rows.length && plans.every(p => p !== null && p !== undefined)

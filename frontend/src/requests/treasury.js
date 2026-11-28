@@ -8,8 +8,9 @@ export const CONTROL_STATES = {
   none: N_('Не оплачено'), to_check: N_('Ожидает сверки'), verified: N_('Сверено'), issue: N_('Расхождение'),
 };
 export const CONTROL_PILLS = {none: 'gray', to_check: 'warn', verified: 'good', issue: 'bad'};
-export const PAYMENT_STATES = {unpaid: N_('Не оплачена'), partial: N_('Частично оплачена'), paid: N_('Оплачена')};
-export const PAYMENT_PILLS = {unpaid: 'warn', partial: 'plan', paid: 'good'};
+export const PAYMENT_STATES = {unpaid: N_('Не оплачена'), partial: N_('Частично оплачена'), paid: N_('Оплачена'),
+  closed: N_('Оплачена частично, остаток снят')};
+export const PAYMENT_PILLS = {unpaid: 'warn', partial: 'plan', paid: 'good', closed: 'gray'};
 export const CONVERSION_STATES = {
   planned: N_('Запланирована'), blocked: N_('Сумы на блочном счёте'), credited: N_('Валюта зачислена'), cancelled: N_('Отменена'),
 };
@@ -54,13 +55,16 @@ export function conversionAmounts(amount, rate, feePercent) {
 }
 
 // Зачисление валюты: покупка по фактическому курсу, комиссия и остаток на блочном счёте.
-export function creditAmounts(amount, rate, fee, blocked) {
-  const value = units(amount), price = scaled(rate, 4), charge = units(fee === '' || fee == null ? '0' : fee), available = units(blocked);
+// Пустая комиссия считается, как на сервере: процент плана от фактической покупки.
+export function creditAmounts(amount, rate, fee, blocked, feePercent = '0') {
+  const value = units(amount), price = scaled(rate, 4), available = units(blocked), automatic = fee === '' || fee == null;
+  const typed = automatic ? 0n : units(fee), percent = units(feePercent === '' || feePercent == null ? '0' : feePercent);
   if (value == null || value <= 0n) return {error: N_('Укажите зачисленную сумму валюты.')};
   if (price == null || price <= 0n) return {error: N_('Укажите курс: сумов за единицу валюты, до четырёх знаков после запятой.')};
-  if (charge == null) return {error: N_('Комиссия указывается суммой в сумах с точностью до двух знаков.')};
-  const sold = roundDiv(value * price, 10000n), leftover = available == null ? null : available - sold - charge;
-  return {sold: decimal(sold), fee: decimal(charge), leftover: leftover == null ? null : decimal(leftover), enough: leftover == null || leftover >= 0n};
+  if (typed == null || (automatic && percent == null)) return {error: N_('Комиссия указывается суммой в сумах с точностью до двух знаков.')};
+  const sold = roundDiv(value * price, 10000n), charge = automatic ? feeOf(sold, percent) : typed;
+  const leftover = available == null ? null : available - sold - charge;
+  return {sold: decimal(sold), fee: decimal(charge), automatic, leftover: leftover == null ? null : decimal(leftover), enough: leftover == null || leftover >= 0n};
 }
 
 export const isCardAccount = account => account?.kind === 'card';
@@ -87,6 +91,8 @@ export function supplierPaymentKind(fx, amount) {
   return value === outstanding ? 'full' : 'partial';
 }
 
+// Сумма для сервера: «10 500,50» → «10500.50». Нераспознанное значение уходит как есть: сервер ответит понятной ошибкой.
+export const plainAmount = value => {const n = units(value); return n == null ? value : decimal(n);};
 export const positive = value => {const n = units(value); return n != null && n > 0n;};
 export const negative = value => {const raw = String(value ?? '').trim(); return raw.startsWith('-') && units(raw.slice(1)) > 0n;};
 // Дата документа: 2026-11-28 → 28.11.2026.

@@ -32,6 +32,12 @@ class TreasuryTests(base.SiteTests):
             self.payer = self.make_user('accountant', 'payer')
         return self.payer
 
+    def controller_client(self):
+        # Сверку отмечает другой сотрудник бухгалтерии, не тот, кто провёл оплату.
+        if not hasattr(self, 'controller'):
+            self.controller = self.make_user('accountant', 'controller')
+        return self.controller
+
     def treasury(self, rid, client=None):
         client = client or (self.client, self.h)
         response = client[0].get(f'/api/treasury/requests/{rid}', headers=client[1])
@@ -125,10 +131,17 @@ class TreasuryTests(base.SiteTests):
         self.assertEqual(register['counts']['to_check'], 1)
         row = register['items'][0]
         self.assertEqual((row['number'], row['fee'], row['total']), (f'CF-{rid:05d}', '10000.00', '1010000.00'))
-        early = self.post(f"/api/treasury/card-control/{row['id']}", {'version': row['version'], 'status': 'verified'}, *payer)
+        self.assertEqual((row['can_control'], row['paid_by_you']), (False, True))
+        own = self.post(f"/api/treasury/card-control/{row['id']}", {'version': row['version'], 'status': 'verified',
+                        'statement_checked': True, 'documents_checked': True}, *payer)
+        self.assertEqual(own.status_code, 403, own.text)
+        controller = self.controller_client()
+        row = controller[0].get('/api/treasury/card-control', headers=controller[1]).json()['items'][0]
+        self.assertEqual((row['can_control'], row['paid_by_you']), (True, False))
+        early = self.post(f"/api/treasury/card-control/{row['id']}", {'version': row['version'], 'status': 'verified'}, *controller)
         self.assertEqual(early.status_code, 422, early.text)
         done = self.post(f"/api/treasury/card-control/{row['id']}", {'version': row['version'], 'status': 'verified',
-                         'statement_checked': True, 'documents_checked': True, 'note': 'Сверено с выпиской'}, *payer)
+                         'statement_checked': True, 'documents_checked': True, 'note': 'Сверено с выпиской'}, *controller)
         self.assertEqual(done.status_code, 200, done.text)
         self.assertEqual(done.json()['control_status'], 'verified')
         report = self.client.get('/api/treasury/report', headers=self.h).json()
@@ -197,10 +210,11 @@ class TreasuryTests(base.SiteTests):
         self.assertEqual(accountant.status_code, 200, accountant.text)
         history = [h['action'] for h in self.client.get(f'/api/requests/{rid}', headers=self.h).json()['history']]
         self.assertIn('Добавлен закрывающий документ', history)
-        row = payer[0].get('/api/treasury/card-control', headers=payer[1]).json()['items'][0]
+        controller = self.controller_client()
+        row = controller[0].get('/api/treasury/card-control', headers=controller[1]).json()['items'][0]
         self.assertEqual(row['documents'], 3)
         done = self.post(f"/api/treasury/card-control/{row['id']}", {'version': row['version'], 'status': 'verified',
-                         'statement_checked': True, 'documents_checked': True}, *payer)
+                         'statement_checked': True, 'documents_checked': True}, *controller)
         self.assertEqual(done.status_code, 200, done.text)
         frozen = self.upload(rid, 'other', name='late.pdf')
         self.assertEqual(frozen.status_code, 409, frozen.text)
@@ -223,6 +237,15 @@ class TreasuryTests(base.SiteTests):
         rid = self.card_request()
         self.assertEqual(self.card_pay(rid).status_code, 200)
         view = self.treasury(rid)['card']
+        # A paid card request is not soft-deleted: the payment is cancelled in the card first.
+        removed = self.post(f'/api/requests/{rid}/delete', {'version': self.version_of(rid), 'reason': 'Удаляем оплаченную заявку'})
+        self.assertEqual(removed.status_code, 409, removed.text)
+        # Supporting documents stay after the card payment: closing documents are only added.
+        with unit() as s:
+            from app.db import RequestDocument
+            doc_id = s.scalar(select(RequestDocument.id).where(RequestDocument.request_id == rid))
+        kept = self.post(f'/api/request-documents/{doc_id}/remove', {'version': self.version_of(rid), 'reason': 'Убираем основание заявки'})
+        self.assertEqual(kept.status_code, 409, kept.text)
         denied = self.post(f'/api/treasury/requests/{rid}/card-cancel', {'version': view['version'], 'reason': 'Ошибочно учтённая оплата картой'},
                            *self.payer_client())
         self.assertEqual(denied.status_code, 403, denied.text)
@@ -232,7 +255,86 @@ class TreasuryTests(base.SiteTests):
         self.assertEqual(cancelled.json()['card']['state'], 'planned')
         self.assertEqual(self.row(rid)['status'], 'approved')
         self.assertEqual(self.balance(self.card), 500000000)
-        self.assertEqual(self.card_pay(rid, reference='SLIP-RETRY').status_code, 200)
+        # The real slip number is reused after the cancellation; the journal keeps it unique with a suffix.
+        again = self.card_pay(rid)
+        self.assertEqual(again.status_code, 200, again.text)
+        self.assertEqual(again.json()['card']['paid_reference'], 'SLIP-1')
+        with unit() as s:
+            plan = s.scalar(select(CardPayment).where(CardPayment.request_id == rid))
+            self.assertEqual(s.get(Ledger, plan.payment_ledger_id).reference, 'SLIP-1/2')
+
+    def test_checker_may_pay_card_and_conversion_steps_need_independent_accountant(self):
+        # As in the bank channel, the checking accountant may pay a card request.
+        rid = self.card_request()
+        checker = self.stage_user('check')
+        self.assertTrue(self.treasury(rid, checker)['card']['can_pay'])
+        self.assertEqual(self.card_pay(rid, client=checker).status_code, 200)
+        # A request authored by a settlement accountant: the author does not confirm bank steps of its conversion.
+        self.fx_setup()
+        author = self.payer_client()
+        body = self.request_body('1000', purpose='Оплата инвойса INV-90 нерезиденту', account=self.usd, counterparty='Supplier GmbH')
+        response = self.post('/api/requests', body, *author)
+        self.assertEqual(response.status_code, 200, response.text)
+        fx_rid = response.json()['id']
+        for kind in ('internal', 'contract'):
+            self.assertEqual(self.upload(fx_rid, kind, client=author[0], headers=author[1]).status_code, 200)
+        self.assertEqual(self.post(f'/api/requests/{fx_rid}/decision', {'action': 'submit'}, *author).status_code, 200)
+        self.assertEqual(self.approve(fx_rid).status_code, 200)
+        version = self.version_of(fx_rid)
+        conversion = self.plan(fx_rid, amount='1000', rate='12800', fee='0')
+        # Planning moves the request version, so a replayed plan form is refused.
+        self.assertGreater(self.version_of(fx_rid), version)
+        replay = self.post(f'/api/treasury/requests/{fx_rid}/conversions', {
+            'request_version': version, 'source_account_id': self.uzs, 'amount': '1000', 'rate': '12800',
+            'fee_percent': '0', 'fee_category_id': self.fx_fee})
+        self.assertEqual(replay.status_code, 409, replay.text)
+        self.assertFalse(self.treasury(fx_rid, author)['fx']['conversions'][0]['can_block'])
+        own = self.step(conversion, 'block', client=author, reference='PP-OWN')
+        self.assertEqual(own.status_code, 403, own.text)
+        self.assertTrue(self.treasury(fx_rid, checker)['fx']['conversions'][0]['can_block'])
+        blocked = self.step(conversion, 'block', client=checker, reference='PP-OWN')
+        self.assertEqual(blocked.status_code, 200, blocked.text)
+        # Planned amount differs from the transfer: an explanation is required.
+        second = self.plan(fx_rid, amount='10', rate='12800', fee='0')
+        odd = self.step(second, 'block', client=checker, reference='PP-ODD', amount='200000')
+        self.assertEqual(odd.status_code, 422, odd.text)
+
+    def test_fx_card_hides_account_figures_from_requester(self):
+        self.fx_setup()
+        employee = self.make_user('employee', 'requester')
+        body = self.request_body('1200', purpose='Оплата подписки нерезиденту', account=self.usd, counterparty='Supplier GmbH')
+        response = self.post('/api/requests', body, *employee)
+        self.assertEqual(response.status_code, 200, response.text)
+        fx = self.treasury(response.json()['id'], employee)['fx']
+        self.assertTrue(fx['restricted'])
+        self.assertEqual((fx['account']['balance'], fx['account']['free'], fx['need_to_convert'], fx['max_payment']), (None, None, None, None))
+        self.assertEqual(fx['conversions'], [])
+        self.assertEqual(fx['requested'], '1200.00')
+        self.assertFalse(self.treasury(response.json()['id'])['fx']['restricted'])
+
+    def test_need_to_convert_counts_currency_spent_on_another_request(self):
+        self.fx_setup()
+        first = self.fx_request('10000')
+        conversion = self.plan(first, amount='10000', rate='12800', fee='0')
+        conversion = self.step(conversion, 'block').json()['fx']['conversions'][0]
+        credited = self.step(conversion, 'credit', amount='10000', rate='12800', fee='0', reference='SWIFT-IN')
+        self.assertEqual(credited.status_code, 200, credited.text)
+        second = self.fx_request('3000')
+        payer = self.payer_client()
+        paid = self.post(f'/api/treasury/requests/{second}/supplier-pay', {'request_version': self.version_of(second), 'amount': '3000',
+                         'date': self.date, 'reference': 'SWIFT-B'}, *payer)
+        self.assertEqual(paid.status_code, 200, paid.text)
+        fx = self.treasury(first)['fx']
+        # 10 000 USD were bought for the first request, 3 000 USD of them paid the second one.
+        self.assertEqual((fx['earmarked'], fx['earmarked_spent'], fx['need_to_convert']), ('7000.00', '3000.00', '3000.00'))
+        # Conversion legs are an exchange between own accounts: not income or expense on the overview.
+        dashboard = self.client.get('/api/dashboard?currency=USD', headers=self.h).json()
+        self.assertEqual(dashboard['fact_in'], '0.00')
+        with unit() as s:
+            category_id = s.scalar(select(Category.id).where(Category.activity == 'conversion', Category.type == 'income'))
+        renamed = self.client.put(f'/api/categories/{category_id}', json={'name': 'Покупка валюты', 'type': 'income', 'activity': 'operating'},
+                                  headers=self.h)
+        self.assertEqual(renamed.status_code, 409, renamed.text)
 
     def test_card_draft_can_be_closed_and_its_plan_removed(self):
         rid = self.card_request(submit=False)
@@ -290,8 +392,8 @@ class TreasuryTests(base.SiteTests):
         self.assertEqual(part.status_code, 200, part.text)
         fx = part.json()['fx']
         self.assertEqual((fx['payment_status'], fx['requested'], fx['paid'], fx['outstanding']), ('partial', '10000.00', '6000.00', '4000.00'))
-        # Bought currency stays earmarked for the unpaid remainder; only the excess over the request is free.
-        self.assertEqual((fx['earmarked'], fx['need_to_convert'], fx['unused_converted']), ('4050.00', '0.00', '50.00'))
+        # Bought currency stays earmarked for the unpaid remainder (never more than it); the excess is the free remainder.
+        self.assertEqual((fx['earmarked'], fx['need_to_convert'], fx['unused_converted']), ('4000.00', '0.00', '50.00'))
         self.assertEqual(self.row(rid)['amount'], '4000.00')
         child = fx['parts'][0]['request_id']
         self.assertEqual(self.row(child)['status'], 'paid')

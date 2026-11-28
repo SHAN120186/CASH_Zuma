@@ -29,8 +29,9 @@ const money = value => `${value / 100n}.${String(value % 100n).padStart(2, '0')}
 export function planCompleteness(rows, indices) {
   let income = 0n, expense = 0n, incomeCells = 0, expenseCells = 0, missingRows = 0, missingCells = 0, knownCells = 0;
   for (const row of rows) {
-    // Bank receipts awaiting classification are facts, not missing plan items.
-    if (row.activity === 'unclassified') continue;
+    // Bank receipts awaiting classification and currency conversion legs are facts, not plan items
+    // (server: cash_report.TECHNICAL_ACTIVITIES).
+    if (row.activity === 'unclassified' || row.activity === 'conversion') continue;
     let missing = false;
     for (const month of indices) {
       const value = row.plan[month];

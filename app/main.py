@@ -406,6 +406,7 @@ def edit_category(id:int,data:CategoryIn,request:Request):
         u,_=session_user(s,request,'catalog');c=get(s,Category,id)
         from .bank_statement_unallocated import category_id as unallocated_category_id
         if id in (unallocated_category_id(s),unallocated_category_id(s,'out')):raise HTTPException(409,'Назначьте статью отдельной операции; системную статью менять нельзя.')
+        if c.activity=='conversion':raise HTTPException(409,'Служебную статью конвертации валют не меняют: её ведут этапы конвертации.')
         old={'name':c.name,'activity':c.activity,'type':c.type}
         c.name=data.name;c.activity=data.activity;c.type=data.type
         log(s,u,'Изменена статья','category',id,json.dumps({'before':old,'after':data.model_dump()},ensure_ascii=False))
@@ -416,14 +417,14 @@ def budgets(request:Request,month:str='',currency:Literal['UZS','USD','EUR']='UZ
     month=month or str(today())[:7]
     with unit() as s:
         session_user(s,request,'view')
-        categories=[c for c,_ in category_catalog(s) if c.type=='outcome' and c.activity!='unclassified']
+        categories=[c for c,_ in category_catalog(s) if c.type=='outcome' and c.activity not in ('unclassified','conversion')]
         states=budget_states(s,(c.id for c in categories),month,currency)
         return [dict(category_id=c.id,category=article_name(c),code=article_code(c),cost_group=c.cost_group,month=month,currency=currency,**budget_json(states[c.id])) for c in categories]
 @app.post('/api/budgets')
 def save_budget(data:BudgetIn,request:Request):
     with unit(True) as s:
         u,_=session_user(s,request,'budget');c=get(s,Category,data.category_id)
-        if c.activity=='unclassified':raise HTTPException(422,'Нераспределённые операции не являются бюджетной статьёй.')
+        if c.activity in ('unclassified','conversion'):raise HTTPException(422,'Нераспределённые операции и конвертация валют не являются бюджетной статьёй.')
         if data.cost_group is not None and data.cost_group!=c.cost_group:
             log(s,u,'Изменена группа затрат','category',c.id,json.dumps({'before':c.cost_group,'after':data.cost_group,'reason':data.reason},ensure_ascii=False))
             c.cost_group=data.cost_group
@@ -744,7 +745,7 @@ def add_receipt(data:ReceiptIn,request:Request):
         u,_=session_user(s,request,('schedule','receipts'));a=get(s,Account,data.account_id);category=get(s,Category,data.category_id)
         from .cash_funding import require_regular_account
         require_regular_account(a)
-        if category.activity=='unclassified':raise HTTPException(422,'Для плана выберите обычную статью поступлений.')
+        if category.activity in ('unclassified','conversion'):raise HTTPException(422,'Для плана выберите обычную статью поступлений.')
         if 'schedule' not in perms_of(u) and category.type!='income':
             raise HTTPException(422,'Для плана поступления выберите доходную статью.')
         if a.archived:raise HTTPException(409,'Счёт в архиве.')
@@ -762,7 +763,7 @@ def edit_receipt(id:int,data:ReceiptIn,request:Request):
         a=get(s,Account,data.account_id);c=get(s,Category,data.category_id)
         from .cash_funding import require_regular_account
         require_regular_account(a)
-        if c.activity=='unclassified':raise HTTPException(422,'Для плана выберите обычную статью поступлений.')
+        if c.activity in ('unclassified','conversion'):raise HTTPException(422,'Для плана выберите обычную статью поступлений.')
         if c.type!='income':raise HTTPException(422,'Для плана поступления выберите доходную статью.')
         if a.archived:raise HTTPException(409,'Счёт в архиве.')
         if data.date<a.opening_date:raise HTTPException(422,'Дата раньше начала учёта счёта.')
@@ -843,6 +844,8 @@ def add_ledger(data:LedgerIn,request:Request):
             linked=get(s,PaymentRequest,data.request_id)
             if get(s,Account,linked.account_id).kind=='card':
                 raise HTTPException(409,'Оплата корпоративной картой проводится в карточке заявки: там учитываются комиссия и остаток карты.')
+        if data.category_id and get(s,Category,data.category_id).activity=='conversion':
+            raise HTTPException(422,'Служебная статья конвертации валют ставится только этапами конвертации в валютной заявке.')
         t=post_ledger(s,u,data,manual_payment=True)
         if not data.request_id and not data.receipt_id:remember_counterparty(s,data.counterparty)
         return {'id':t.id}
@@ -867,6 +870,8 @@ def edit_ledger(id:int,data:LedgerEditIn,request:Request):
         if old.reversal_of or s.scalar(select(Ledger.id).where(Ledger.reversal_of==id)):raise HTTPException(409,'Операция уже сторнирована.')
         before={k:str(getattr(old,k)) for k in ('account_id','to_account_id','category_id','kind','amount','date','counterparty','reference','note')}
         fields=('account_id','to_account_id','category_id','kind','date','counterparty')
+        if data.category_id and get(s,Category,data.category_id).activity=='conversion':
+            raise HTTPException(422,'Служебная статья конвертации валют ставится только этапами конвертации в валютной заявке.')
         same=amount(data.amount)==old.amount and all(getattr(data,k)==getattr(old,k) for k in fields)
         if data.request_id!=old.request_id or data.receipt_id!=old.receipt_id:raise HTTPException(422,'Связь операции с документом менять нельзя.')
         if same:
@@ -1139,6 +1144,10 @@ def group_report(request:Request,company_id:int,currency:Literal['UZS','USD','EU
         accounts=list(s.scalars(select(Account).where(Account.company_id==company_id,Account.currency==currency)))
         aids={a.id for a in accounts}
         entries=[t for t in s.scalars(effective_cashflows(s).where(Ledger.date>=start,Ledger.date<=day)) if t.account_id in aids and t.kind!='transfer']
+        # Конвертация валют — обмен между своими счетами: не приход и не расход, но меняет остаток дня.
+        conversion_ids=set(s.scalars(select(Category.id).where(Category.company_id==company_id,Category.activity=='conversion')))
+        conversion_day=sum((t.amount if t.kind=='in' else -t.amount) for t in entries if t.category_id in conversion_ids and t.date==day)
+        entries=[t for t in entries if t.category_id not in conversion_ids]
         from .cash_report import expense_plan_summary
         plan=expense_plan_summary(s,month,currency,company_id,scenario,day)
         bank_ids={a.id for a in accounts if a.kind=='bank'}
@@ -1150,7 +1159,7 @@ def group_report(request:Request,company_id:int,currency:Literal['UZS','USD','EU
         opening=sum(day_start_balance(s,a,day) for a in opened)
         income_day=sum(t.amount for t in entries if t.kind=='in' and t.date==day)
         expense_day=sum(t.amount for t in entries if t.kind=='out' and t.date==day)
-        closing=opening+income_day-expense_day
+        closing=opening+income_day-expense_day+conversion_day
         states=[funds_state(s,a,day) for a in opened]
         reserved=sum(state['reserved'] for state in states)
         bank_hold=sum(state['bank_pending_debits'] for state in states)
@@ -1188,14 +1197,15 @@ def group_report(request:Request,company_id:int,currency:Literal['UZS','USD','EU
         day_label=day.strftime('%d.%m.%Y')
         transit_note=f'; деньги в пути {money(in_transit)} (недоступны к выдаче)' if in_transit else ''
         funding_fee_note=f'; резерв комиссии {money(funding_fee_reserved)}' if funding_fee_reserved else ''
+        conversion_note=f'; конвертация {money(conversion_day)}' if conversion_day else ''
         text='\n'.join([f'{company.name} · {month} · сценарий {scenario}',plan_line,f'Последнее банковское поступление: {last_line}',
-            f'{day_label}: начало дня {money(opening)}; приход {money(income_day)}; расход {money(expense_day)}; конец дня {money(closing)}; резерв {money(reserved)}{funding_fee_note}{transit_note}; доступно {money(available)} {currency}'])
+            f'{day_label}: начало дня {money(opening)}; приход {money(income_day)}; расход {money(expense_day)}{conversion_note}; конец дня {money(closing)}; резерв {money(reserved)}{funding_fee_note}{transit_note}; доступно {money(available)} {currency}'])
         return {'text':text,'company':company.name,'month':month,'day':str(day),'currency':currency,'scenario':scenario,
             'expense_plan':money(expense_plan),'bank_income_mtd':money(income_mtd),'last_bank_income':str(last_income) if last_income else None,
             'expense_plan_complete':plan['complete'],'expense_plan_defined_rows':plan['defined_rows'],'expense_plan_missing_rows':plan['missing_rows'],
             'expense_plan_total':money(plan['total']) if plan['total'] is not None else None,
             'expense_plan_remaining':money(remaining) if remaining is not None else None,'expense_plan_coverage_percent':coverage,
-            'opening':money(opening),'income_day':money(income_day),'expense_day':money(expense_day),'closing':money(closing),'reserved':money(reserved),
+            'opening':money(opening),'income_day':money(income_day),'expense_day':money(expense_day),'conversion_day':money(conversion_day),'closing':money(closing),'reserved':money(reserved),
             'bank_pending_debits':money(bank_hold),'in_transit_balance':money(in_transit),
             'funding_fee_reserved':money(funding_fee_reserved),'available':money(available)}
 

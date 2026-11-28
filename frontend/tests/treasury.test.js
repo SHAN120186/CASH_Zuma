@@ -28,8 +28,15 @@ test('conversion plan converts cents by a four-digit rate and adds the bank fee 
 
 test('currency credit reports the block account leftover and a shortage', () => {
   assert.deepEqual(creditAmounts('10050', '12780', '642000', '129147525.00'),
-    {sold: '128439000.00', fee: '642000.00', leftover: '66525.00', enough: true});
+    {sold: '128439000.00', fee: '642000.00', automatic: false, leftover: '66525.00', enough: true});
   assert.equal(creditAmounts('10050', '12900', '0', '129147525.00').enough, false);
+});
+
+test('an empty conversion fee is the planned percentage of the actual purchase, as on the server', () => {
+  // 0,5% of 10 050 USD at 12 780 = 0,5% of 128 439 000 = 642 195 UZS, not the planned 642 525.
+  assert.deepEqual(creditAmounts('10050', '12780', '', '129147525.00', '0.50'),
+    {sold: '128439000.00', fee: '642195.00', automatic: true, leftover: '66330.00', enough: true});
+  assert.equal(creditAmounts('10050', '12780', '0', '129147525.00', '0.50').fee, '0.00');
 });
 
 test('supplier payment defaults to the smaller of the outstanding amount and the account balance', () => {
