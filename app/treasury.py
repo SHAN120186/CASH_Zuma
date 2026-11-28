@@ -217,10 +217,11 @@ def delete_plans(s, request_id):
 
 
 def require_settled_conversions(s, r):
-    """Нельзя убрать заявку, пока сумы лежат на блочном счёте по её конвертации."""
-    if s.scalar(select(CurrencyConversion.id).where(CurrencyConversion.request_id == r.id,
-                                                   CurrencyConversion.state == 'blocked').limit(1)) is not None:
-        raise HTTPException(409, 'Сумы по заявке находятся на блочном счёте. Сначала учтите зачисление валюты или верните сумы на расчётный счёт.')
+    """Нельзя убрать заявку, пока сумы лежат на блочном счёте по её конвертации (до или после зачисления валюты)."""
+    for conversion in s.scalars(select(CurrencyConversion).where(CurrencyConversion.request_id == r.id,
+                                                                 CurrencyConversion.state.in_(('blocked', 'credited')))):
+        if conversion_leftover(conversion) > 0:
+            raise HTTPException(409, 'Сумы по заявке находятся на блочном счёте. Сначала учтите зачисление валюты или верните сумы на расчётный счёт.')
 
 
 # ---------------------------------------------------------------- план оплаты картой

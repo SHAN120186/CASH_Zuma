@@ -233,6 +233,9 @@ class TreasuryTests(base.SiteTests):
         self.assertEqual(self.balance(self.usd), 1005000)
         self.assertEqual(fx['converted'], '10050.00')
         self.assertTrue(all(conversion['documents'][key] for key in ('block', 'sell', 'buy', 'fee')))
+        kept = self.post(f'/api/requests/{rid}/delete', {'version': self.version_of(rid), 'reason': 'Попытка удалить заявку с остатком сумов'},
+                         *self.stage_user('finance'))
+        self.assertEqual(kept.status_code, 409, kept.text)
         returned = self.step(conversion, 'return', reference='PP-102')
         self.assertEqual(returned.status_code, 200, returned.text)
         self.assertEqual(self.balance(block_id), 0)
