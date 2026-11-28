@@ -62,7 +62,7 @@ onUnmounted(() => { alive = false; emit('busy', false); });
       <span class="pill" :class="paid ? CONTROL_PILLS[card.control_status] : card.enough ? 'gray' : 'bad'">{{ paid ? controlLabel(card.control_status) : card.enough ? tx('Ожидает оплаты') : tx('Не хватает остатка карты') }}</span></div>
     <div class="treasury-tiles">
       <div class="tile"><div class="k">{{ tx('Остаток по карте сейчас') }}</div><div class="v num">{{ money(card.balance) }} <small>{{ cur }}</small></div>
-        <small class="sub">{{ tx('Доступно с учётом резервов: {value}', {value: money(card.available)}) }}</small></div>
+        <small v-if="!paid" class="sub">{{ tx('Доступно с учётом резервов: {value}', {value: money(card.available)}) }}</small></div>
       <div class="tile"><div class="k">{{ tx('Сумма оплаты') }}</div><div class="v num">{{ money(card.amount) }} <small>{{ cur }}</small></div>
         <small class="sub">{{ tx('Комиссия {percent}%: {fee}', {percent: card.fee_percent, fee: money(card.actual_fee ?? card.fee_amount)}) }}</small></div>
       <div class="tile"><div class="k">{{ tx('Итого списать с карты') }}</div><div class="v num">{{ money(card.total) }} <small>{{ cur }}</small></div>
