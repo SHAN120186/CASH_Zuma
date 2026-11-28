@@ -33,13 +33,40 @@ test('opening a payment from a request focuses the exact saved debit without pos
   await view.state.openPaymentSource({batch_id:7,line_id:1,status:'preview'},accounts[0]);
   await settle();
   assert.deepEqual(writes,['/api/bank-statements/7/resume']);
-  assert.equal(view.state.draftDetails.open,true);
+  assert.equal(view.state.pendingOnly,false);
   assert.equal(view.state.draftRowsPanel.open,true);
   assert.equal(globalThis.document.activeElement?.props['data-bank-line'],1);
   assert.equal(globalThis.document.activeElement.scrolled,true);
 });
 
 function event(f=file){return {target:{files:[f],value:'file'}}}
+
+test('the draft opens only pending rows and can restore all rows without posting', async t => {
+  const writes=[];
+  const api=async (url,options={})=>{
+    if(options.method==='POST') writes.push(url);
+    if(url.includes('/preview?')) return {...statement,rows:[
+      {...statement.rows[0],id:1,posting_state:'linked'},
+      {...statement.rows[0],id:2,status:'review',posting_state:'pending'},
+      {...statement.rows[0],id:3,status:'ambiguous_duplicate'},
+    ]};
+    return url.endsWith('/settings')?{fee_category_id:null}:{items:[]};
+  };
+  const view=mount(component,{api,companyId:1,accounts,canImport:true,canPost:true});
+  t.after(view.unmount);
+  await settle();
+  await view.state.upload(event());await settle();
+  const button=title=>find(view.container,n=>n.tag==='button'&&text(n)===title);
+  const visibleLines=()=>all(view.container,n=>n.props?.['data-bank-line']).map(n=>n.props['data-bank-line']);
+  assert.match(text(view.container),/Черновик № 7/);
+  assert.ok(!view.state.moreTools.open);
+  await button('Показать спорные строки (2)').props.onClick();await settle();
+  assert.ok(view.state.draftRowsPanel.open);
+  assert.deepEqual(visibleLines(),[2,3]);
+  button('Показать все строки').props.onClick();await settle();
+  assert.deepEqual(visibleLines(),[1,2,3]);
+  assert.deepEqual(writes,['/api/bank-statements/preview?account_id=21&currency=UZS']);
+});
 
 test('the upload button opens the file picker and previews an XLSX without committing', async t => {
   const requests = [];
