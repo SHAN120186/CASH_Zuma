@@ -28,6 +28,7 @@ from .workdays import enforce_lead_time, due_minimums
 from .requests_api import request_view, can_view_request, MAX_DOCUMENT
 from .bank_statement_guard import CREATED_BANK_STATUSES
 from .cash_funding import CashFundingIn, expense_amount
+from .treasury import CardPlanIn
 
 SECURE=os.getenv('COOKIE_SECURE','0')=='1'
 ALLOWED=[x.strip() for x in os.getenv('ALLOWED_HOSTS','127.0.0.1,localhost,testserver').split(',') if x.strip()]
@@ -123,7 +124,7 @@ class PasswordIn(Input):
     new_password:str=Field(min_length=12,max_length=128)
 class AccountIn(Input):
     name:str=Field(min_length=2,max_length=160)
-    kind:Literal['bank','cash']
+    kind:Literal['bank','cash','card']
     currency:Literal['UZS','USD','EUR']
     opening:str
     opening_date:date
@@ -148,7 +149,7 @@ class RequestIn(Input):
     # Обязательные поля формы: компания, канал и валюта сверяются со счётом списания.
     company_id:int
     account_id:int
-    channel:Literal['bank','cash']
+    channel:Literal['bank','cash','card']
     currency:Literal['UZS','USD','EUR']
     category_id:int
     counterparty:str=Field(min_length=2,max_length=160)
@@ -161,6 +162,8 @@ class RequestIn(Input):
     priority:Literal['normal','high','urgent']
     status:Literal['draft','pending']='draft'
     cash_funding:Optional[CashFundingIn]=None
+    # Канал «Корпоративная карта»: процент и статья комиссии; остаток карты фиксирует сервер.
+    card:Optional[CardPlanIn]=None
 class RequestEdit(RequestIn):
     version:int=Field(ge=1)
     reason:str=Field(min_length=10,max_length=1000)
@@ -351,6 +354,7 @@ def add_account(data:AccountIn,request:Request):
         u,_=session_user(s,request,'write')
         if data.opening_date>today():raise HTTPException(422,'Начальный остаток не может быть задан будущей датой.')
         if data.kind=='cash' and data.allow_overdraft:raise HTTPException(422,'Для кассы отрицательный остаток запрещён.')
+        if data.kind=='card' and data.allow_overdraft:raise HTTPException(422,'Для корпоративной карты отрицательный остаток запрещён.')
         company_id=data.company_id or s.info['company_id']
         get(s,Company,company_id)
         a=Account(name=data.name,kind=data.kind,currency=data.currency,company_id=company_id,opening=amount(data.opening,True),opening_date=data.opening_date,allow_overdraft=data.allow_overdraft,created_by=u.id)
@@ -365,6 +369,7 @@ def edit_account(id:int,data:AccountEdit,request:Request):
         if a.archived:raise HTTPException(409,'Сначала восстановите счёт из архива.')
         if data.opening_date>today():raise HTTPException(422,'Начальный остаток не может быть задан будущей датой.')
         if data.kind=='cash' and data.allow_overdraft:raise HTTPException(422,'Для кассы отрицательный остаток запрещён.')
+        if data.kind=='card' and data.allow_overdraft:raise HTTPException(422,'Для корпоративной карты отрицательный остаток запрещён.')
         entries=list(s.scalars(select(Ledger).where((Ledger.account_id==id)|(Ledger.to_account_id==id))))
         requests=list(s.scalars(select(PaymentRequest).where(PaymentRequest.account_id==id)))
         receipts=list(s.scalars(select(Receipt).where(Receipt.account_id==id)))
@@ -519,6 +524,7 @@ def request_target(s,data):
     if a.kind!=data.channel:raise HTTPException(422,'Канал оплаты не совпадает со счётом: банковская заявка оплачивается с банковского счёта, кассовая — из кассы.')
     if a.currency!=data.currency:raise HTTPException(422,'Валюта заявки не совпадает с валютой счёта списания.')
     if c.type!='outcome':raise HTTPException(422,'Для заявки на оплату выберите расходную статью.')
+    if c.activity=='conversion':raise HTTPException(422,'Служебная статья конвертации валют не выбирается в заявке.')
     if data.date<a.opening_date:raise HTTPException(422,'Дата раньше начала учёта выбранного счёта.')
     enforce_lead_time(s,data.priority,data.date,today())
     return a,c
@@ -534,7 +540,7 @@ def add_request(data:RequestIn,request:Request):
         from .department_catalog import validate as validate_department
         validate_department(s,data.department)
         if data.status=='pending':
-            message='Сначала сохраните черновик и приложите «Внутренняя заявка / Индент», затем отправьте заявку.' if a.kind=='cash' else 'Сначала сохраните черновик и приложите «Внутренняя заявка / Индент» и «Договор / Счёт на оплату», затем отправьте заявку.'
+            message='Сначала сохраните черновик и приложите «Внутренняя заявка / Индент», затем отправьте заявку.' if a.kind in ('cash','card') else 'Сначала сохраните черновик и приложите «Внутренняя заявка / Индент» и «Договор / Счёт на оплату», затем отправьте заявку.'
             raise HTTPException(422,message)
         from .finance_author import new_finance_author
         from .request_retention import next_request_id
@@ -546,6 +552,8 @@ def add_request(data:RequestIn,request:Request):
         save_plan(s,u,r,data.cash_funding)
         log(s,u,'Создана заявка','request',r.id,json.dumps({'status':r.status,'version':r.version,'amount':money(n),'currency':a.currency,
             'category':c.name,'channel':a.kind,'date':str(r.due_date),'priority':r.priority,'department':r.department},ensure_ascii=False))
+        from .treasury import after_request_saved
+        after_request_saved(s,u,r,data.card,provided='card' in data.model_fields_set)
         return request_view(s,u,r)
 class RequestDeleteIn(Input):
     version:int=Field(ge=1)
@@ -560,6 +568,8 @@ def delete_request(id:int,data:RequestDeleteIn,request:Request):
         check_request_version(r,data.version)
         from .cash_funding import require_settled_cash_receipt
         require_settled_cash_receipt(s,r)
+        from .treasury import require_settled_conversions
+        require_settled_conversions(s,r)
         before=request_json(s,r)
         entries=list(s.scalars(select(Ledger).where(Ledger.request_id==r.id)))
         documents=list(s.scalars(select(RequestDocument).where(RequestDocument.request_id==r.id)))
@@ -598,6 +608,8 @@ def edit_request(id:int,data:RequestEdit,request:Request):
             r.department=data.department
         r.amount=n;r.due_date=data.date;clear_approval(r);r.last_editor_id=u.id;r.decision_note=data.reason;r.status=data.status
         save_plan(s,u,r,data.cash_funding,provided='cash_funding' in data.model_fields_set)
+        from .treasury import after_request_saved
+        after_request_saved(s,u,r,data.card,provided='card' in data.model_fields_set)
         s.flush()
         if data.status=='pending':
             enforce_documents(s,r)
@@ -639,7 +651,10 @@ def decide(id:int,data:DecisionIn,request:Request):
         check_request_version(r,data.version)
         stage=approval_stage(r);before=request_state(r);note=data.note.strip()
         from .cash_funding import require_unfunded,require_settled_cash_receipt
-        if data.action=='close':require_settled_cash_receipt(s,r)
+        if data.action=='close':
+            require_settled_cash_receipt(s,r)
+            from .treasury import require_settled_conversions
+            require_settled_conversions(s,r)
         elif data.action in ('return','return_finance','reschedule','submit'):require_unfunded(s,r)
         if data.action=='submit':
             if r.status not in ('draft','returned') or (r.creator_id!=u.id and 'request_edit' not in perms):raise HTTPException(403,'Отправить можно свой черновик или возвращённую заявку.')
@@ -824,6 +839,10 @@ def add_ledger(data:LedgerIn,request:Request):
         if not ('write' in perms_of(u) or payment_channels(perms_of(u))):raise HTTPException(403,'У вашей роли нет прав на это действие.')
         # Оплату заявки отмечает проверка плательщика; прочие операции идут по праву записи (в том числе ВрИО).
         if not data.request_id and 'write' in perms_of(u):act_with_right(u,'write')
+        if data.request_id:
+            linked=get(s,PaymentRequest,data.request_id)
+            if get(s,Account,linked.account_id).kind=='card':
+                raise HTTPException(409,'Оплата корпоративной картой проводится в карточке заявки: там учитываются комиссия и остаток карты.')
         t=post_ledger(s,u,data,manual_payment=True)
         if not data.request_id and not data.receipt_id:remember_counterparty(s,data.counterparty)
         return {'id':t.id}
@@ -1149,7 +1168,7 @@ def group_report(request:Request,company_id:int,currency:Literal['UZS','USD','EU
         # cover a cash issue before its physical receipt. Use this report's
         # historical cut-off, not today's balance, and never release funds
         # merely because a damaged technical account has a negative balance.
-        in_transit=sum(max(state['actual'],0) for a,state in zip(opened,states) if a.kind=='transit')
+        in_transit=sum(max(state['actual'],0) for a,state in zip(opened,states) if a.kind in ('transit','block'))
         available=closing-reserved-funding_fee_reserved-bank_hold-in_transit
         if not plan['complete']:
             if plan['defined_rows']:
@@ -1383,3 +1402,6 @@ app.include_router(department_router)
 
 from .budget_import import router as budget_import_router, article_code, article_name
 app.include_router(budget_import_router)
+
+from .treasury import router as treasury_router
+app.include_router(treasury_router)

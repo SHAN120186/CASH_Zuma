@@ -8,6 +8,7 @@ import {createSaveState, requestBody, saveRequest, removeSavedDocument, missingR
 import {tx, N_,lang} from '../i18n/index.js';
 import MoneyInput from '../MoneyInput.vue';
 import {cashFundingAmounts, cashFundingBody, fundingBankAccounts} from './cashFunding.js';
+import {cardAmounts, units} from './treasury.js';
 
 const props = defineProps({
   api: {type: Function, required: true},
@@ -56,6 +57,8 @@ const paymentMethod = computed({get: () => form.value.cash_funding ? 'cash_bank'
   form.value.channel = value === 'cash_bank' ? 'cash' : value;
   form.value.amount = gross;
   form.value.cash_funding = value === 'cash_bank' ? {mode: 'single', bank_account_id: fundingAccounts.value[0]?.id ?? null, gross_amount: gross || '', fee_percent: '1', fee_category_id: null} : null;
+  // План оплаты картой есть только у канала «Корпоративная карта»; при смене канала сервер его удаляет.
+  form.value.card = value === 'card' ? (form.value.card || {fee_percent: '0', fee_category_id: defaultCardFeeCategory()}) : null;
 }});
 const fundingAmounts = computed(() => form.value.cash_funding ? cashFundingAmounts(form.value.cash_funding.gross_amount, form.value.cash_funding.fee_percent) : null);
 const fundingProblem = computed(() => {
@@ -130,6 +133,36 @@ const foreignBank = computed(() => {
 });
 const outcomeCategories = computed(() => props.boot.categories.filter(c => c.type === 'outcome' && (!c.retired || c.id === form.value.category_id)));
 const feeCategories = computed(() => outcomeCategories.value.filter(category => !category.retired && category.activity !== 'unclassified'));
+// Корпоративная карта: остаток только для чтения, процент и статья комиссии, итог списания с карты.
+const cardMode = computed(() => form.value.channel === 'card');
+const fxRequest = computed(() => form.value.channel === 'bank' && form.value.currency !== 'UZS');
+const cardLoadFailed = ref(false);
+function defaultCardFeeCategory() { return feeCategories.value.find(category => /комисс/i.test(category.name))?.id ?? null; }
+const cardFigures = computed(() => cardMode.value && form.value.card && String(form.value.amount ?? '').trim() ? cardAmounts(form.value.amount, form.value.card.fee_percent) : null);
+const cardProblem = computed(() => {
+  if (!cardMode.value || cardLoadFailed.value) return '';
+  if (!form.value.card) return N_('Загружаем параметры оплаты картой…');
+  if (cardFigures.value?.error) return cardFigures.value.error;
+  if (cardFigures.value && units(cardFigures.value.fee_amount) > 0n && !feeCategories.value.some(category => category.id === Number(form.value.card.fee_category_id)))
+    return N_('Выберите статью комиссии за оплату корпоративной картой.');
+  return '';
+});
+const cardBalance = ref(null), cardBalanceError = ref('');
+let balanceTimer = null, balanceKey = '';
+watch(() => cardMode.value ? [form.value.account_id, cardFigures.value?.amount || '', form.value.card?.fee_percent ?? ''].join('|') : '', value => {
+  clearTimeout(balanceTimer); balanceKey = value;
+  const accountId = form.value.account_id;
+  if (!value || !accountId) { cardBalance.value = null; return; }
+  balanceTimer = setTimeout(async () => {
+    const params = new URLSearchParams({account_id: String(accountId)});
+    if (cardFigures.value && !cardFigures.value.error) { params.set('amount', cardFigures.value.amount); params.set('fee_percent', String(form.value.card?.fee_percent || '0').replace(',', '.')); }
+    if (state.id != null) params.set('request_id', String(state.id));
+    try {
+      const result = await props.api('/api/treasury/card-balance?' + params);
+      if (balanceKey === value) { cardBalance.value = result; cardBalanceError.value = ''; }
+    } catch (e) { if (balanceKey === value) { cardBalance.value = null; cardBalanceError.value = e.message; } }
+  }, 300);
+}, {immediate: true});
 const earliest = computed(() => minDue(dues.value, form.value.priority));
 const earliestLabel = computed(() => earliest.value ? earliest.value.split('-').reverse().join('.') : '');
 const title = computed(() => r ? tx('Изменить {number}', {number: r.number}) : number.value ? tx('Черновик {number}', {number: number.value}) : tx('Новая заявка на оплату'));
@@ -219,6 +252,7 @@ async function save(event) {
   error.value = ''; notice.value = '';
   if (props.company?.id !== openedCompanyId) { blocked.value = 'company_changed'; error.value = N_('Компания изменилась. Закройте форму и откройте новую заявку.'); return; }
   if (fundingProblem.value) { error.value = fundingProblem.value; return; }
+  if (cardProblem.value) { error.value = cardProblem.value; return; }
   saving.value = true; step.value = 'save';
   try {
     const result = await saveRequest(props.api, state, {
@@ -257,8 +291,16 @@ onMounted(async () => {
   if (r && !r.documents_list) {
     try { saved.value = ((await props.api(`/api/requests/${r.id}`)).documents_list || []).filter(d => d.current); } catch { /* покажем без файлов */ }
   }
+  // Сохранённые процент и статья комиссии карты. Пока они не загружены, форма их не отправляет:
+  // сервер сохранит прежние параметры.
+  if (r && (r.channel || r.account_kind) === 'card' && form.value.channel === 'card' && !form.value.card) {
+    try {
+      const plan = (await props.api(`/api/treasury/requests/${r.id}`)).card;
+      if (form.value.channel === 'card' && !form.value.card) form.value.card = {fee_percent: plan?.fee_percent || '0', fee_category_id: plan?.fee_category_id ?? null};
+    } catch { cardLoadFailed.value = true; }
+  }
 });
-onUnmounted(() => { document.removeEventListener('keydown', onKey); clearTimeout(timer); clearTimeout(partyTimer); partySequence++; });
+onUnmounted(() => { document.removeEventListener('keydown', onKey); clearTimeout(timer); clearTimeout(partyTimer); clearTimeout(balanceTimer); partySequence++; });
 </script>
 
 <template>
@@ -273,8 +315,26 @@ onUnmounted(() => { document.removeEventListener('keydown', onKey); clearTimeout
         <label>{{ tx('Канал оплаты') }}<select v-model="paymentMethod" :disabled="fundingFrozen" required><option v-for="(label, k) in CHANNELS" :key="k" :value="k">{{ tx(label) }}</option><option value="cash_bank">{{ tx('Наличные через банк') }}</option></select></label>
             <label v-if="form.cash_funding" class="wide">{{ tx('Назначение наличных') }}<select v-model="form.cash_funding.mode" :disabled="fundingFrozen" required><option value="single" :disabled="form.cash_funding.source==='counterparty'">{{ tx('Оплата одной заявки') }}</option><option value="batch">{{ tx('Пополнение кассы для нескольких заявок') }}</option></select></label>
         <label>{{ tx('Валюта') }}<select v-model="form.currency" :disabled="fundingFrozen" required><option v-for="c in ['UZS','USD','EUR']" :key="c" :value="c">{{ c }}</option></select></label>
-        <label>{{ tx('Счёт списания') }}<select v-model="form.account_id" required><option v-for="a in accountOptions" :key="a.id" :value="a.id">{{ a.name }}</option></select>
-          <small v-if="!accountOptions.length" class="field-error">{{ tx('Нет счёта для выбранного канала и валюты.') }}</small></label>
+        <label>{{ cardMode ? tx('Корпоративная карта') : tx('Счёт списания') }}<select v-model="form.account_id" required><option v-for="a in accountOptions" :key="a.id" :value="a.id">{{ a.name }}</option></select>
+          <small v-if="!accountOptions.length" class="field-error">{{ cardMode ? tx('Нет корпоративной карты в выбранной валюте. Добавьте её в разделе «Банк и касса».') : tx('Нет счёта для выбранного канала и валюты.') }}</small></label>
+        <section v-if="cardMode" class="wide treasury-card-editor" :aria-label="tx('Оплата корпоративной картой')">
+          <div class="form-grid">
+            <label>{{ tx('Остаток по карте') }}<input :value="cardBalance ? money(cardBalance.balance) + ' ' + cardBalance.currency : '—'" readonly aria-readonly="true" tabindex="-1"></label>
+            <label>{{ tx('Доступно с учётом резервов') }}<input :value="cardBalance ? money(cardBalance.available) + ' ' + cardBalance.currency : '—'" readonly aria-readonly="true" tabindex="-1">
+              <small v-if="cardBalance && Number(cardBalance.reserved) > 0" class="sub">{{ tx('Зарезервировано утверждёнными заявками: {value}', {value: money(cardBalance.reserved)}) }}</small></label>
+            <template v-if="form.card">
+              <label>{{ tx('Комиссия банка, %') }}<input v-model="form.card.fee_percent" inputmode="decimal" pattern="[0-9]+([.,][0-9]{1,2})?" required></label>
+              <label>{{ tx('Статья комиссии') }}<select v-model="form.card.fee_category_id"><option :value="null">{{ tx('Без комиссии') }}</option><option v-for="category in feeCategories" :key="category.id" :value="category.id">{{ category.name }}</option></select></label>
+            </template>
+          </div>
+          <p v-if="cardFigures && !cardFigures.error" class="notice" aria-live="polite">{{ tx('Комиссия: {fee}. Всего спишется с карты: {total} {currency}.', {fee: money(cardFigures.fee_amount), total: money(cardFigures.total), currency: form.currency}) }}</p>
+          <p v-if="cardBalance && cardBalance.enough === false" class="warning" role="status">{{ tx('Сумма оплаты с комиссией больше доступного остатка карты на {shortage} {currency}. Оплату не проведут, пока карту не пополнят.', {shortage: money(cardBalance.shortage), currency: cardBalance.currency}) }}</p>
+          <p v-if="cardBalanceError" class="field-error" role="status">{{ tx(cardBalanceError) }}</p>
+          <p v-if="cardProblem && (form.card || !cardLoadFailed)" class="field-error" role="status">{{ tx(cardProblem) }}</p>
+          <p v-if="cardLoadFailed" class="sub">{{ tx('Параметры комиссии карты не загрузились: при сохранении останутся прежние.') }}</p>
+          <small class="sub">{{ tx('Остаток карты фиксируется в заявке при сохранении. Оплату и комиссию проводит расчётный бухгалтер, затем оплата попадает в реестр контроля бухгалтерии.') }}</small>
+        </section>
+        <p v-if="fxRequest" class="wide form-note treasury-fx-note">{{ tx('Валютная заявка: после согласования в карточке планируются конвертация сумов через блочный счёт, зачисление валюты и оплата поставщику, в том числе частями.') }}</p>
         <label>{{ tx('Отдел') }}<select v-model="form.department"><option value="">{{ tx('Выберите отдел') }}</option><option v-for="item in departmentOptions" :key="item.code" :value="item.code">{{lang==='uz'&&item.name_uz?item.name_uz:tx(item.name_ru)}}</option></select></label>
         <label>{{ tx('Статья расходов') }}<select v-model="form.category_id" required><option v-for="c in outcomeCategories" :key="c.id" :value="c.id">{{ c.name }}</option></select></label>
         <section v-if="form.cash_funding" class="wide cash-funding-editor" :aria-label="tx('Получение наличных из банка')">
@@ -319,7 +379,7 @@ onUnmounted(() => { document.removeEventListener('keydown', onKey); clearTimeout
 
       <section class="request-documents-placeholder" aria-labelledby="rq-docs-title">
         <strong id="rq-docs-title">{{ tx('Документы к заявке') }}</strong>
-        <p>{{ form.channel === 'cash' ? tx('Касса: обязателен только индент. Договор и прочие документы — при наличии.') : tx('Банк: обязательны индент и договор или счёт. Прочие документы — при наличии.') }} {{ tx('PDF, PNG, JPEG, DOCX или XLSX, до 10 МБ на файл.') }}</p>
+        <p>{{ form.channel === 'cash' ? tx('Касса: обязателен только индент. Договор и прочие документы — при наличии.') : form.channel === 'card' ? tx('Корпоративная карта: обязателен только индент. Чеки и закрывающие документы прикладываются после оплаты.') : tx('Банк: обязательны индент и договор или счёт. Прочие документы — при наличии.') }} {{ tx('PDF, PNG, JPEG, DOCX или XLSX, до 10 МБ на файл.') }}</p>
         <div class="request-document-grid">
           <div v-for="(label, kind) in DOC_KINDS" :key="kind" class="request-document-slot">
             <b>{{ tx(label) }} <span v-if="required.includes(kind)" class="required-mark" :aria-label="tx('обязательно')">*</span><small v-else class="sub"> · {{ tx('Необязательно') }}</small></b>
@@ -342,11 +402,11 @@ onUnmounted(() => { document.removeEventListener('keydown', onKey); clearTimeout
         <button type="button" class="secondary" :disabled="saving" @click="close">{{ blocked ? tx('Закрыть') : tx('Отмена') }}</button>
         <button v-if="blocked && blocked !== 'company_changed'" type="button" @click="emit('open-card', state.id)">{{ tx('Открыть карточку заявки') }}</button>
         <template v-else-if="sentMode">
-          <button type="submit" data-send="1" :disabled="saving || !accountOptions.length || !!fundingProblem" @click="sendIntent = true">{{ saving ? tx('Сохраняем…') : tx('Сохранить изменения') }}</button>
+          <button type="submit" data-send="1" :disabled="saving || !accountOptions.length || !!fundingProblem || !!cardProblem" @click="sendIntent = true">{{ saving ? tx('Сохраняем…') : tx('Сохранить изменения') }}</button>
         </template>
         <template v-else>
-          <button type="submit" class="secondary" data-send="0" :disabled="saving || !accountOptions.length || !!fundingProblem" @click="sendIntent = false">{{ tx('Сохранить черновик') }}</button>
-          <button type="submit" data-send="1" :disabled="saving || !accountOptions.length || !!fundingProblem" @click="sendIntent = true" :aria-describedby="missing.length ? 'rq-missing' : undefined">{{ saving ? tx('Сохраняем…') : tx('Отправить на согласование') }}</button>
+          <button type="submit" class="secondary" data-send="0" :disabled="saving || !accountOptions.length || !!fundingProblem || !!cardProblem" @click="sendIntent = false">{{ tx('Сохранить черновик') }}</button>
+          <button type="submit" data-send="1" :disabled="saving || !accountOptions.length || !!fundingProblem || !!cardProblem" @click="sendIntent = true" :aria-describedby="missing.length ? 'rq-missing' : undefined">{{ saving ? tx('Сохраняем…') : tx('Отправить на согласование') }}</button>
         </template>
       </div>
       <p v-if="!blocked && missing.length" id="rq-missing" class="sub rq-missing">{{ tx('Для отправки не хватает: {list}.', {list: missing.map(k => tx(DOC_KINDS[k])).join(', ')}) }}</p>
@@ -357,4 +417,7 @@ onUnmounted(() => { document.removeEventListener('keydown', onKey); clearTimeout
 <style scoped>
 .cash-funding-editor{padding:14px;background:var(--primary-soft);border:1px solid var(--line);border-radius:12px;min-width:0}
 .cash-funding-editor .notice{margin:12px 0 8px}.cash-funding-editor .sub{display:block}
+.treasury-card-editor{padding:14px;background:var(--primary-soft);border:1px solid var(--line);border-radius:12px;min-width:0}
+.treasury-card-editor .notice,.treasury-card-editor .warning{margin:12px 0 8px}.treasury-card-editor .sub{display:block}
+.treasury-card-editor input[readonly]{background:var(--surface);font-weight:800}
 </style>

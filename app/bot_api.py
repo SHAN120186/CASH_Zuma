@@ -198,8 +198,10 @@ def request_number(r):
 
 
 def bot_account_kind(kind):
-    """The deployed bot accepts only bank/cash; preserve transit additively."""
-    return {'kind':'cash','source_kind':'transit'} if kind=='transit' else {'kind':kind}
+    """The deployed bot accepts only bank/cash; preserve transit, card and block additively."""
+    if kind=='transit':return {'kind':'cash','source_kind':'transit'}
+    if kind in ('card','block'):return {'kind':'bank','source_kind':kind}
+    return {'kind':kind}
 
 
 def funding_stage_label(funding,fallback):
@@ -294,7 +296,7 @@ def morning_summary(request: Request, chat_id: int, report_date: date, today: da
         for a in sorted(open_accounts, key=lambda a: (name[a.company_id], currency_key(a.currency), a.name)):
             state = funds_state(s, a, today)
             key = (a.company_id, a.currency)
-            available[key] = available.get(key, 0) + (0 if a.kind=='transit' else state['available'])
+            available[key] = available.get(key, 0) + (0 if a.kind in ('transit','block') else state['available'])
             if state['available'] < 0:
                 label = mask_digits(a.name, 80)
                 if state.get('bank_pending_debits'):

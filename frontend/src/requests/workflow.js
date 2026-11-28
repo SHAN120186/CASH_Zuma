@@ -16,7 +16,7 @@ const WAITING = {
 
 export const PRIORITIES = { normal: N_('Обычный'), high: N_('Высокий'), urgent: N_('Срочный') };
 export const LEAD_DAYS = { normal: 7, high: 3, urgent: 0 };
-export const CHANNELS = { bank: N_('Банк — перечисление'), cash: N_('Касса — наличные') };
+export const CHANNELS = { bank: N_('Банк — перечисление'), cash: N_('Касса — наличные'), card: N_('Корпоративная карта') };
 export const PRIORITY_TERMS = {normal:N_('Обычный — 7 рабочих дней'),high:N_('Высокий — 3 рабочих дня'),urgent:N_('Срочный — сегодня')};
 export const DEPARTMENTS = {qc:'QC',ml:'ML',engineering:N_('Инженерный отдел (ИТО)'),warehouse:N_('Склад'),production:N_('Производство'),office:N_('Общие закупки (офис)'),facilities:N_('Хозяйственная часть')};
 
@@ -27,7 +27,8 @@ export const DOC_KINDS = {
   other: N_('Прочие подтверждающие документы'),
 };
 export const REQUIRED_DOCS = ['internal', 'contract'];
-export const requiredDocs = channel => channel === 'cash' ? ['internal'] : REQUIRED_DOCS;
+// Касса и корпоративная карта: обязателен индент; чеки карты прикладываются после оплаты.
+export const requiredDocs = channel => ['cash', 'card'].includes(channel) ? ['internal'] : REQUIRED_DOCS;
 // Внутренняя заявка и договор — по одному действующему файлу (новый файл — новая версия); прочих может быть несколько.
 export const SINGLE_DOCS = ['internal', 'contract'];
 export const DOC_EXTENSIONS = ['.pdf', '.png', '.jpg', '.jpeg', '.docx', '.xlsx'];

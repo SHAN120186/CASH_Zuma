@@ -16,11 +16,18 @@ import {DOC_KINDS, requiredDocs, STATUS} from './workflow.js';
 import {tx, N_} from '../i18n/index.js';
 import {cashFundingBody} from './cashFunding.js';
 
+// План оплаты картой: процент и статья комиссии. Остаток карты сервер фиксирует сам.
+export function cardPlanBody(card) {
+  if (!card) return null;
+  const percent = String(card.fee_percent ?? '').trim().replace(',', '.');
+  return {fee_percent: percent || '0', fee_category_id: card.fee_category_id == null || card.fee_category_id === '' ? null : Number(card.fee_category_id)};
+}
+
 // Причина уходит на сервер по-русски (её видно в истории заявки); при показе она переводится.
 export const RETRY_REASON = N_('Повторное сохранение формы после ошибки загрузки файла');
 export const KIND_ORDER = ['internal', 'contract', 'other'];
 const EDITABLE = ['draft', 'returned'];
-const FIELDS = ['company_id', 'account_id', 'channel', 'currency', 'category_id', 'amount', 'counterparty', 'counterparty_inn', 'purpose', 'priority', 'date', 'project', 'department', 'cash_funding'];
+const FIELDS = ['company_id', 'account_id', 'channel', 'currency', 'category_id', 'amount', 'counterparty', 'counterparty_inn', 'purpose', 'priority', 'date', 'project', 'department', 'cash_funding', 'card'];
 
 // Постоянные сообщения хранятся по-русски (N_) и переводятся формой при показе;
 // сообщения с номером, статусом или текстом сервера собираются на текущем языке (tx).
@@ -64,6 +71,7 @@ export function requestBody(form, companyId) {
     amount: String(form.amount ?? '').trim(), counterparty: String(form.counterparty ?? '').trim(), counterparty_inn: String(form.counterparty_inn ?? '').trim(),
     purpose: String(form.purpose ?? '').trim(), priority: form.priority, date: form.date, project: String(form.project ?? '').trim(), department: String(form.department ?? '').trim(),
     ...(Object.hasOwn(form, 'cash_funding') ? {cash_funding: cashFundingBody(form.cash_funding)} : {}),
+    ...(Object.hasOwn(form, 'card') ? {card: cardPlanBody(form.card)} : {}),
   };
 }
 

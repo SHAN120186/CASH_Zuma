@@ -33,8 +33,9 @@ export function fundingBankAccounts(accounts, currency, companyId) {
     && (account.company_id == null || Number(account.company_id) === Number(companyId)));
 }
 
-export const manualAccounts = accounts => (accounts || []).filter(account => ['bank', 'cash'].includes(account.kind));
-export const accountKindLabel = kind => kind === 'transit' ? tx('Деньги в пути') : kind === 'bank' ? tx('Банковский счёт') : tx('Касса');
+// Корпоративная карта — обычный денежный счёт для пополнений и операций; блочный счёт ведёт только конвертация.
+export const manualAccounts = accounts => (accounts || []).filter(account => ['bank', 'cash', 'card'].includes(account.kind));
+export const accountKindLabel = kind => kind === 'transit' ? tx('Деньги в пути') : kind === 'block' ? tx('Блочный счёт под конвертацию') : kind === 'card' ? tx('Корпоративная карта') : kind === 'bank' ? tx('Банковский счёт') : tx('Касса');
 export const hasCashFundingFee = event => {const fee=units(event?.cash_funding_fee);return fee!==null&&fee>0n;};
 
 export function cashFundingBody(value) {

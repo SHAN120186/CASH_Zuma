@@ -7,6 +7,8 @@ import {RETRY_REASON} from './saveFlow.js';
 import {tx, N_, formatDate, lang} from '../i18n/index.js';
 import CashFundingPanel from './CashFundingPanel.vue';
 import CashFundingBatchPanel from './CashFundingBatchPanel.vue';
+import TreasuryPanel from './TreasuryPanel.vue';
+import {treasuryKind} from './treasury.js';
 
 const props = defineProps({
   api: {type: Function, required: true},
@@ -15,7 +17,7 @@ const props = defineProps({
   money: {type: Function, required: true},
   dues: {type: Object, default: () => ({})},
 });
-const emit = defineEmits(['close', 'changed', 'edit', 'record-payment', 'payments-recorded']);
+const emit = defineEmits(['close', 'changed', 'edit', 'record-payment', 'payments-recorded', 'open-request']);
 
 const r = ref(null), error = ref(''), busy = ref(false), notice = ref(''), dialog = ref(null), rules = ref(props.dues);
 const decision = ref({action: '', note: '', date: ''}), showHistory = ref({}), removing = ref(null), removeReason = ref('');
@@ -92,6 +94,12 @@ async function fundingChanged(row, result) {
   // A commit returns the authoritative workflow view, while GET includes
   // document versions, people and history. Never treat the short reply as an
   // empty set of attachments after a successful money fact.
+  await load(true);
+  emit('changed');
+}
+
+// Казначейство (карта, валютная цепочка) возвращает свой ответ; карточку и список читаем заново.
+async function treasuryChanged() {
   await load(true);
   emit('changed');
 }
@@ -214,6 +222,7 @@ onUnmounted(() => document.removeEventListener('keydown', onKey));
 
         <CashFundingPanel v-if="r.cash_funding" :api="api" :request="r" :money="money" @busy="busy = $event" @changed="fundingChanged" />
         <CashFundingBatchPanel v-if="r.cash_funding?.mode === 'batch' && r.cash_funding.state === 'received'" :api="api" :request="r" :money="money" @busy="busy = $event" @paid="batchPaymentsRecorded" />
+        <TreasuryPanel v-if="treasuryKind(r)" :api="api" :request="r" :money="money" @busy="busy = $event" @changed="treasuryChanged" @open-request="emit('open-request', $event)" />
 
         <section v-if="r.budget_card && r.cash_funding?.mode !== 'batch'" class="budget-check" :class="r.budget_card.status" :aria-label="tx('Бюджет статьи')">
           <strong>{{ tx('Бюджет статьи «{category}» · {period}', {category: r.category, period: periodLabel(r.budget_card.period)}) }}</strong>
@@ -252,7 +261,7 @@ onUnmounted(() => document.removeEventListener('keydown', onKey));
           <button v-if="can('delete')" type="button" class="secondary" :disabled="busy" @click="deleteRequest">{{ tx('Удалить заявку') }}</button>
           <button v-if="can('edit')" type="button" class="secondary" :disabled="busy" @click="emit('edit', r)">{{ tx('Изменить') }}</button>
           <button v-if="can('submit')" type="button" :disabled="busy || missing.length > 0" @click="submit">{{ tx('Отправить на согласование') }}</button>
-          <button v-if="can('pay')" type="button" :disabled="busy" @click="emit('record-payment', r)">{{ tx('Факт оплаты') }}</button>
+          <button v-if="can('pay') && treasuryKind(r) !== 'fx'" type="button" :disabled="busy" @click="emit('record-payment', r)">{{ tx('Факт оплаты') }}</button>
         </div>
 
         <form v-if="options.length" class="rq-decision card" @submit.prevent="decide">

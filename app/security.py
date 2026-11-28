@@ -59,7 +59,9 @@ NO_DOWNLOAD_ROLES = frozenset({'finance', 'accountant', 'cashier', 'auditor',
 # Paying an approved request is a separate right per channel: the bank account
 # is paid by the settlement accountant, the cash desk by the accountant or cashier. The
 # general right to write never pays a request.
-PAY_RIGHTS = {'bank': 'pay_bank', 'cash': 'pay_cash'}
+# A corporate card is paid and controlled by the settlement accountant; the
+# conversion block account is visible to the same bank payer.
+PAY_RIGHTS = {'bank': 'pay_bank', 'cash': 'pay_cash', 'card': 'pay_bank', 'block': 'pay_bank'}
 
 
 def pay_right(account):
