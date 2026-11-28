@@ -127,7 +127,19 @@ const labels = Object.freeze({
 const label = value => tx(labels[value] || N_('Нужна проверка бухгалтера'));
 const pendingFullReconciliation = new Set(['income_candidate','income_matched_candidate','outgoing_candidate','fee_candidate','fee_existing','interest_candidate','interest_existing','other_matched_candidate','cash_funding_candidate']);
 const rowLabel = (row, fullReconciliation) => row.posting_state === 'pending' || (!row.posting_state && fullReconciliation !== true && pendingFullReconciliation.has(row.status)) ? tx('Остаётся на проверке') : label(row.status);
-const reviewCount = (items, fullReconciliation) => items.filter(row => row.posting_state ? row.posting_state === 'pending' : ['review', 'ambiguous_duplicate'].includes(row.status) || (fullReconciliation !== true && pendingFullReconciliation.has(row.status))).length;
+const pendingRows = computed(() => rows.value.filter(row => row.posting_state
+  ? row.posting_state === 'pending'
+  : ['review', 'ambiguous_duplicate'].includes(row.status) || (preview.value?.full_reconciliation !== true && pendingFullReconciliation.has(row.status))));
+const pendingOnly = ref(false);
+watch(preview, () => { pendingOnly.value = false; });
+async function showPendingRows() {
+  pendingOnly.value = true;
+  await nextTick();
+  if (draftRowsPanel.value) {
+    draftRowsPanel.value.open = true;
+    draftRowsPanel.value.querySelector('summary')?.focus();
+  }
+}
 const selectedTransfer = row => {const action = transferActions.value[row.id]; return action?.items.find(item => String(item.ledger_id) === String(action.selected));};
 const resetSelectionConfirmation = (actions, row) => {const action = actions[row.id]; if (action) {action.confirm = false; action.note = '';}};
 const candidateStatus = value => tx(value === 'approved' ? N_('Утверждена') : value === 'paid' ? N_('Оплачена') : N_('Не определено'));
@@ -325,6 +337,7 @@ async function openBlockedStatement(batch) {
   selectedOldBatch.value = String(batch.id);
   await nextTick();
   if (company !== props.companyId || !props.canPost || !reprocessPanel.value) return;
+  moreTools.value.open = true;
   reprocessPanel.value.open = true;
   reprocessPanel.value.scrollIntoView?.({block: 'start'});
   await previewOldBatch();
@@ -511,7 +524,7 @@ async function paymentDateCorrected(result) {
   emit('changed', 'payment-date');
 }
 
-const draftDetails = ref(null), draftRowsPanel = ref(null), reviewRowsPanel = ref(null);
+const moreTools = ref(null), draftRowsPanel = ref(null), reviewRowsPanel = ref(null);
 async function openPaymentSource(source, bankAccount) {
   if (!Number.isInteger(source?.line_id) || !Number.isInteger(source.batch_id)) return;
   const draft = source.status === 'preview', company = props.companyId;
@@ -519,6 +532,7 @@ async function openPaymentSource(source, bankAccount) {
     if (!props.canImport) return;
     await resumeSaved({id:source.batch_id, status:'preview', account:bankAccount});
     if (company !== props.companyId || preview.value?.id !== source.batch_id) return;
+    pendingOnly.value = false;
   } else {
     if (source.status !== 'committed' || !props.canReview) return;
     await loadReviews();
@@ -527,7 +541,7 @@ async function openPaymentSource(source, bankAccount) {
   await nextTick();
   const panel = draft ? draftRowsPanel.value : reviewRowsPanel.value;
   if (!panel || company !== props.companyId) return;
-  if (draft && draftDetails.value) draftDetails.value.open = true;
+  if (!draft) moreTools.value.open = true;
   panel.open = true;
   const target = panel.querySelector(`[data-bank-line="${source.line_id}"]`);
   if (target) {
@@ -716,11 +730,8 @@ async function confirmAndPost(event) {
         <details class="bank-help"><summary>{{tx('Подробности проведения')}}</summary><p>{{notice}}</p></details>
       </template>
       <div v-if="preview" class="bank-preview">
-        <h3>{{tx('Проверка выписки')}}</h3>
-        <BankDraftSelection v-if="canImport && preview.status==='preview' && preview.id" :key="companyId + ':' + preview.id" :api="api" :batch-id="preview.id" :disabled="busy || reprocessBusy || reviewBusy !== null"/>
-        <BankPaymentDate v-if="preview.can_correct_payment_date && !busy" :key="companyId + ':' + preview.id" :api="api" :batch-id="preview.id" @corrected="paymentDateCorrected"/>
+        <h3>{{tx('Проверка выписки')}} <small v-if="preview.status === 'preview' && preview.id">{{tx('Черновик № {id}',{id:preview.id})}}</small></h3>
         <p>{{tx('Счёт в файле')}}: <b>{{preview.statement.account_number}}</b> · {{tx('Счёт на сайте')}}: <b>{{preview.account.name}} · {{preview.account.currency}}</b></p>
-        <p>{{tx('Владелец счёта')}}: {{preview.statement.owner_name || '—'}} · {{tx('ИНН')}}: {{preview.statement.owner_inn || '—'}}</p>
         <p>{{tx('Период')}}: {{formatShortDate(preview.statement.period_from)}} – {{formatShortDate(preview.statement.period_to)}}</p>
         <div class="bank-summary">
           <div><span>{{tx('Остаток на начало {date}', {date:formatShortDate(preview.statement.period_from)})}}</span><b>{{money(preview.statement.opening_balance)}} {{currency}}</b></div>
@@ -731,28 +742,16 @@ async function confirmAndPost(event) {
         <p v-if="hasSummaryCounts">{{tx('К проведению: {ready}. Уже учтено: {linked}. На проверку: {pending}.',{ready:postingSummary.ready.count,linked:postingSummary.linked.count,pending:postingSummary.pending.count})}}</p>
         <label v-if="ready" class="confirm"><input type="checkbox" :disabled="busy || reprocessBusy || reviewBusy !== null" @change="confirmAndPost"> {{tx('Подтверждаю счёт {account} ({currency}) и провожу проверенные строки.',{account:preview.account.name,currency})}}</label>
         <p v-if="ready" class="sub">{{tx('Галочка сразу проводит проверенные строки. Спорные строки останутся бухгалтеру.')}}</p>
-        <p v-else-if="canPost && !uncertain && hasSummaryCounts && postingSummary.ready.count === 0 && postingSummary.linked.count === 0 && postingSummary.pending.count > 0" class="sub">{{tx('Черновик сохранён. Откройте подробности сверки и проверьте спорные строки.')}}</p>
+        <p v-else-if="canPost && !uncertain && hasSummaryCounts && postingSummary.ready.count === 0 && postingSummary.linked.count === 0 && postingSummary.pending.count > 0" class="sub">{{tx('Черновик сохранён.')}}</p>
         <p v-else-if="canPost && !uncertain" class="sub">{{tx('Черновик сохранён. Для проведения нужна повторная проверка.')}}</p>
         <p v-if="preview.opening_matches === false" class="error" role="alert">{{tx('Начальный остаток не совпадает: на сайте {amount} {currency}. Готовность каждой строки показана ниже; счёт остаётся несверенным.',{amount:preview.site_opening == null ? '—' : money(preview.site_opening),currency})}}</p>
         <p v-if="postingSummary?.blocking_reason" class="error" role="alert">{{tx(postingSummary.blocking_reason)}}</p>
         <p v-if="preview.statement.ready !== true || preview.statement.balance_matches !== true || preview.statement.declared_totals_match === false" class="error" role="alert">{{tx('Остатки или обороты выписки не подтверждены. Исправьте файл до загрузки.')}}</p>
-        <slot name="comparison"/>
-        <details ref="draftDetails" class="bank-help">
-        <summary>{{tx('Подробности сверки')}}</summary>
-        <BankStatementIncome :statement="preview.statement" :rows="rows" :currency="currency"/>
-        <p v-if="preview.opening_matches === true" class="good-text">{{tx('Начальный остаток выписки совпадает с остатком на сайте: {amount} {currency}.',{amount:money(preview.site_opening),currency})}}</p>
-        <p v-if="preview.statement.ready === true && preview.statement.balance_matches === true && preview.statement.declared_totals_match !== false" class="good-text">{{tx('Баланс выписки сходится.')}}</p>
-        <p v-if="preview.full_reconciliation === true" class="good-text">{{tx('Все строки готовы к полной сверке. Результат будет перепроверен при подтверждении.')}}</p>
-        <p v-else-if="preview.full_reconciliation === false && ready" class="sub">{{tx('После подтверждения сервер проведёт доступные проверенные строки. Спорные строки останутся на проверке; счёт останется несверенным.')}}</p>
-        <p v-else-if="typeof preview.full_reconciliation !== 'boolean'" class="error" role="alert">{{tx('Сервер не подтвердил полную сверку. Загрузите выписку заново.')}}</p>
-        <p>{{tx('Точных совпадений с заявками: {n}',{n:count('auto_pay_candidate')})}} · {{tx('Уже оплачено на сайте: {n}',{n:count('paid_match')})}} · {{tx('На проверку: {n}',{n:reviewCount(rows,preview.full_reconciliation)})}}</p>
-        <BankStatementPostingSummary :summary="preview.posting_summary" :currency="currency" :full-reconciliation="preview.full_reconciliation"/>
-        <BankStatementExpenses :statement="preview.statement" :rows="rows" :currency="currency"/>
-        <p v-if="canViewCashFlow" class="sub">{{tx('Cash Flow показывает месяцы с первого числа начального месяца до даты окончания выписки. Если выписка охватывает разные годы, предыдущий год откройте отдельно.')}}</p>
-        <button v-if="canViewCashFlow" type="button" class="secondary tiny" @click="emit('cash-flow',{currency,period_from:preview.statement.period_from,period_to:preview.statement.period_to})">{{tx('Открыть Cash Flow')}}</button>
-        <details ref="draftRowsPanel" class="statement-source"><summary>{{tx('Исходные строки и статусы проведения')}}</summary>
+        <button v-if="pendingRows.length" type="button" class="secondary" @click="showPendingRows">{{tx('Показать спорные строки ({count})',{count:pendingRows.length})}}</button>
+        <details ref="draftRowsPanel" class="statement-source"><summary>{{pendingOnly ? tx('Строки на проверке') : tx('Все строки выписки')}}</summary>
+        <button v-if="pendingOnly" type="button" class="secondary tiny" @click="pendingOnly = false">{{tx('Показать все строки')}}</button>
         <div class="table-scroll"><table><thead><tr><th>{{tx('Дата')}}</th><th>{{tx('Контрагент / документ')}}</th><th>{{tx('Назначение')}}</th><th>{{tx('Движение')}}</th><th>{{tx('Результат сверки')}}</th></tr></thead><tbody>
-          <tr v-for="row in rows" :key="row.id" :data-bank-line="row.id" tabindex="-1"><td>{{formatShortDate(row.date)}}</td><td>{{row.correspondent_name}}<small>{{row.correspondent_inn || '—'}} · {{row.document_number}}</small></td><td>{{row.purpose}}</td><td>{{directionLabel(row.direction)}}<small>{{money(row.amount)}} {{currency}}</small></td><td>{{rowLabel(row,preview.full_reconciliation)}}<CashFundingBankCaption :row="row" :currency="currency"/><small v-if="categoryName(row)">{{tx('Статья')}}: {{categoryName(row)}}</small><small v-if="categoryRuleLabel(row)">{{categoryRuleLabel(row)}}</small><small v-if="row.reason">{{tx(row.reason)}}</small><small v-if="row.request_id">{{tx('Заявка №{id}',{id:row.request_id})}}</small><small v-if="row.status === 'manual_match' && row.classification?.startsWith('paid:')">{{tx('Дата оплаты')}}: {{row.classification.slice(5)}}</small>
+          <tr v-for="row in (pendingOnly ? pendingRows : rows)" :key="row.id" :data-bank-line="row.id" tabindex="-1"><td>{{formatShortDate(row.date)}}</td><td>{{row.correspondent_name}}<small>{{row.correspondent_inn || '—'}} · {{row.document_number}}</small></td><td>{{row.purpose}}</td><td>{{directionLabel(row.direction)}}<small>{{money(row.amount)}} {{currency}}</small></td><td>{{rowLabel(row,preview.full_reconciliation)}}<CashFundingBankCaption :row="row" :currency="currency"/><small v-if="categoryName(row)">{{tx('Статья')}}: {{categoryName(row)}}</small><small v-if="categoryRuleLabel(row)">{{categoryRuleLabel(row)}}</small><small v-if="row.reason">{{tx(row.reason)}}</small><small v-if="row.request_id">{{tx('Заявка №{id}',{id:row.request_id})}}</small><small v-if="row.status === 'manual_match' && row.classification?.startsWith('paid:')">{{tx('Дата оплаты')}}: {{row.classification.slice(5)}}</small>
             <div v-if="canPost && row.status === 'review' && row.direction === 'out' && !row.uncertain" class="review-actions">
               <button type="button" class="secondary" :disabled="reviewBusy !== null" @click="findCandidates(row,true)">{{tx('Найти учтённую оплату')}}</button>
               <template v-if="matchActions[row.id]">
@@ -768,11 +767,41 @@ async function confirmAndPost(event) {
             </div></td></tr>
         </tbody></table></div>
         </details>
+        <details class="bank-help">
+        <summary>{{tx('Подробности сверки')}}</summary>
+        <p>{{tx('Владелец счёта')}}: {{preview.statement.owner_name || '—'}} · {{tx('ИНН')}}: {{preview.statement.owner_inn || '—'}}</p>
+        <BankDraftSelection v-if="canImport && preview.status==='preview' && preview.id" :key="companyId + ':' + preview.id" :api="api" :batch-id="preview.id" :disabled="busy || reprocessBusy || reviewBusy !== null"/>
+        <BankPaymentDate v-if="preview.can_correct_payment_date && !busy" :key="companyId + ':' + preview.id" :api="api" :batch-id="preview.id" @corrected="paymentDateCorrected"/>
+        <slot name="comparison"/>
+        <BankStatementIncome :statement="preview.statement" :rows="rows" :currency="currency"/>
+        <p v-if="preview.opening_matches === true" class="good-text">{{tx('Начальный остаток выписки совпадает с остатком на сайте: {amount} {currency}.',{amount:money(preview.site_opening),currency})}}</p>
+        <p v-if="preview.statement.ready === true && preview.statement.balance_matches === true && preview.statement.declared_totals_match !== false" class="good-text">{{tx('Баланс выписки сходится.')}}</p>
+        <p v-if="preview.full_reconciliation === true" class="good-text">{{tx('Все строки готовы к полной сверке. Результат будет перепроверен при подтверждении.')}}</p>
+        <p v-else-if="preview.full_reconciliation === false && ready" class="sub">{{tx('После подтверждения сервер проведёт доступные проверенные строки. Спорные строки останутся на проверке; счёт останется несверенным.')}}</p>
+        <p v-else-if="typeof preview.full_reconciliation !== 'boolean'" class="error" role="alert">{{tx('Сервер не подтвердил полную сверку. Загрузите выписку заново.')}}</p>
+        <p>{{tx('Точных совпадений с заявками: {n}',{n:count('auto_pay_candidate')})}} · {{tx('Уже оплачено на сайте: {n}',{n:count('paid_match')})}} · {{tx('На проверку: {n}',{n:pendingRows.length})}}</p>
+        <BankStatementPostingSummary :summary="preview.posting_summary" :currency="currency" :full-reconciliation="preview.full_reconciliation"/>
+        <BankStatementExpenses :statement="preview.statement" :rows="rows" :currency="currency"/>
+        <p v-if="canViewCashFlow" class="sub">{{tx('Cash Flow показывает месяцы с первого числа начального месяца до даты окончания выписки. Если выписка охватывает разные годы, предыдущий год откройте отдельно.')}}</p>
+        <button v-if="canViewCashFlow" type="button" class="secondary tiny" @click="emit('cash-flow',{currency,period_from:preview.statement.period_from,period_to:preview.statement.period_to})">{{tx('Открыть Cash Flow')}}</button>
         <p class="sub">{{tx('После подтверждения заявка оплачивается автоматически только при наличии права оплаты и успешном прохождении проверок. В остальных случаях строка останется бухгалтеру на проверку.')}}</p>
         <p class="sub">{{tx('Каждая проверенная строка проводится с учётом прав, остатков и отсутствия повторов. Спорные строки не становятся фактом.')}}</p>
         </details>
       </div>
 
+      <p v-if="feeSettingsError" class="error" role="alert">{{feeSettingsError}}</p>
+      <div v-if="(canReview || canPost || canImport) && unreconciledAccounts.length" class="error" role="alert">
+        <p>{{tx('Ручная оплата заявок приостановлена. Сверьте выписку, чтобы снова оплачивать заявки с этого счёта.')}}</p>
+        <ul><li v-for="a in unreconciledAccounts" :key="a.id">{{a.name}} · {{a.currency}} — {{tx('Несверенных выписок: {n}',{n:a.unreconciled_statements})}}
+          <button v-for="batch in oldBatches.filter(b => b.requires_reconciliation && b.account_id === a.id)" :key="batch.id" type="button" class="secondary tiny" :disabled="busy || reprocessBusy" @click="openBlockedStatement(batch)">{{tx('Проверить выписку')}} · {{batch.period_from}} — {{batch.period_to}}</button>
+        </li></ul>
+      </div>
+      <SavedBankStatements :api="api" :company-id="companyId" :can-resume="canImport" :busy="busy || reprocessBusy" :refresh-key="savedRefresh" @resume="resumeSaved"/>
+      <p v-if="canImport && !canPost" class="sub">{{tx('Для проведения поступлений и комиссий требуется право записи операций.')}}</p>
+      <p v-if="account && currency && !validSelection" class="error" role="alert">{{tx('Валюта выписки должна совпадать с валютой выбранного счёта.')}}</p>
+
+      <details ref="moreTools" class="bank-tools">
+        <summary>{{tx('Дополнительные инструменты')}}</summary>
       <details v-if="!preview" class="bank-help">
         <summary>{{tx('Как работает сверка')}}</summary>
         <p class="sub">{{tx('Загрузите выписку и проверьте счёт. После подтверждения совпадения обрабатываются с учётом прав и проверок; спорные операции попадут бухгалтеру.')}}</p>
@@ -809,17 +838,6 @@ async function confirmAndPost(event) {
       <label v-if="canImport || canPost" class="bank-category">{{tx('Статья банковских комиссий')}}<select v-model="feeCategoryId" :disabled="busy || reprocessBusy" @change="feeTouched = true; feeSettingsError = ''"><option value="">{{tx('Автоматический выбор статьи комиссии')}}</option><option v-for="c in feeCategories" :key="c.id" :value="String(c.id)">{{c.name}}</option></select></label>
       <p v-if="canPost && !canManageFee" class="sub">{{tx('Выбор статьи комиссии не меняет общую настройку компании.')}}</p>
       </details>
-      <p v-if="feeSettingsError" class="error" role="alert">{{feeSettingsError}}</p>
-      <div v-if="(canReview || canPost || canImport) && unreconciledAccounts.length" class="error" role="alert">
-        <p>{{tx('Ручная оплата заявок приостановлена. Сверьте выписку, чтобы снова оплачивать заявки с этого счёта.')}}</p>
-        <ul><li v-for="a in unreconciledAccounts" :key="a.id">{{a.name}} · {{a.currency}} — {{tx('Несверенных выписок: {n}',{n:a.unreconciled_statements})}}
-          <button v-for="batch in oldBatches.filter(b => b.requires_reconciliation && b.account_id === a.id)" :key="batch.id" type="button" class="secondary tiny" :disabled="busy || reprocessBusy" @click="openBlockedStatement(batch)">{{tx('Проверить выписку')}} · {{batch.period_from}} — {{batch.period_to}}</button>
-        </li></ul>
-      </div>
-      <SavedBankStatements :api="api" :company-id="companyId" :can-resume="canImport" :busy="busy || reprocessBusy" :refresh-key="savedRefresh" @resume="resumeSaved"/>
-      <p v-if="canImport && !canPost" class="sub">{{tx('Для проведения поступлений и комиссий требуется право записи операций.')}}</p>
-      <p v-if="account && currency && !validSelection" class="error" role="alert">{{tx('Валюта выписки должна совпадать с валютой выбранного счёта.')}}</p>
-
       <details ref="reviewRowsPanel" class="review-list">
         <summary>{{tx('Операции для проверки бухгалтера')}}<span v-if="reviewsLoaded"> ({{reviews.length}})</span></summary>
         <div>
@@ -931,6 +949,7 @@ async function confirmAndPost(event) {
         </div>
         <BankStatementPostingSummary v-if="reprocessResult" :summary="reprocessResult.posting_summary" :currency="reprocessResult.currency" :result="true" :full-reconciliation="reprocessResult.full_reconciliation"/>
       </details>
+      </details>
     </div>
   </section>
 </template>
@@ -938,7 +957,7 @@ async function confirmAndPost(event) {
 <style scoped>
 tr[data-bank-line]:focus{outline:2px solid var(--accent,#6539d5);outline-offset:-2px}
 .bank-help{margin:8px 0 12px}.bank-help summary{cursor:pointer;font-weight:600;font-size:13px}.bank-help p{max-width:85ch}
-.review-list>summary{cursor:pointer;font-weight:600}
+.bank-tools{margin-top:16px}.bank-tools>summary,.statement-source>summary{padding:8px 0;cursor:pointer;font-weight:600}.review-list>summary{cursor:pointer;font-weight:600}
 .bank-preview label.confirm{display:flex;align-items:center;gap:12px;padding:14px;border:1px solid var(--line,#dce0e8);border-radius:8px;font-weight:600;cursor:pointer}
 .confirm input[type=checkbox]{flex:0 0 auto;width:20px;height:20px}
 .bank-statements{margin:16px 0}.bank-fields{display:flex;gap:12px;flex-wrap:wrap;align-items:end}.bank-fields label,.bank-category{display:grid;gap:4px;min-width:170px}.bank-category{max-width:420px;margin-top:12px}.bank-preview,.review-list{margin-top:20px}.bank-summary{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:10px}.bank-summary div{display:grid;gap:4px;padding:10px;background:#f5f6fb;border-radius:8px}.bank-summary b{font-variant-numeric:tabular-nums}.good-text{color:#167145}.confirm{display:block;margin:10px 0}.table-scroll td{max-width:340px;white-space:normal;overflow-wrap:anywhere}.table-scroll small{display:block}.form-actions{margin-top:12px}.review-actions{display:grid;gap:7px;margin-top:8px;min-width:200px}.review-actions label{display:grid;gap:3px}

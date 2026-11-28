@@ -1,4 +1,11 @@
 export default {
+  'Черновик № {id}': '{id}-sonli qoralama',
+  'Черновик сохранён.': 'Qoralama saqlandi.',
+  'Дополнительные инструменты': 'Qo‘shimcha vositalar',
+  'Сверка по дням и периодам': 'Kunlar va davrlar bo‘yicha solishtirish',
+  'Показать спорные строки ({count})': 'Tekshiriladigan qatorlarni ko‘rsatish ({count})',
+  'Все строки выписки': 'Ko‘chirmaning barcha qatorlari',
+  'Показать все строки': 'Barcha qatorlarni ko‘rsatish',
   'Учёт исполненной платёжки № {number}': 'Bajarilgan {number}-sonli to‘lovni hisobga olish',
   'Учесть списание датой банка': 'Chiqimni bank sanasi bilan qayd etish',
   'Банк исполнил платёж до согласования. Проверьте документ и получателя. Расход будет учтён датой банка, согласование сохранится.': 'Bank to‘lovni tasdiqlashdan oldin bajargan. Hujjat va oluvchini tekshiring. Chiqim bank sanasi bilan qayd etiladi, tasdiqlash sanasi saqlanadi.',
